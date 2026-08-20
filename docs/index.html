@@ -1598,7 +1598,8 @@
         const sourceImage = button.querySelector("img");
         lightboxImage.src = button.dataset.lightbox;
         lightboxImage.alt = sourceImage.alt;
-        lightbox.style.width = `min(96vw, ${sourceImage.naturalWidth}px)`;
+        const lightboxWidth = sourceImage.naturalWidth || Number(sourceImage.getAttribute("width"));
+        lightbox.style.width = `min(96vw, ${lightboxWidth}px)`;
         lightbox.showModal();
       });
     });
