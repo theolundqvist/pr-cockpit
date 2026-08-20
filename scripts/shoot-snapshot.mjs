@@ -153,6 +153,8 @@ async function verifyAligned(page, leftSelector, rightSelector) {
 
 function scenariosFor(snapshot, roles) {
   const repo = snapshot.repo;
+  const paletteTitle = snapshot.details.find((detail) => detail.number === roles.palette.number).title;
+  const paletteQuery = paletteTitle.split(/\W+/).filter(Boolean).slice(0, 3).join(" ");
   return [
     {
       name: "inbox",
@@ -216,7 +218,7 @@ function scenariosFor(snapshot, roles) {
       interact: async (page) => {
         await page.keyboard.press("Meta+K");
         const input = page.locator(".palette-input");
-        await input.fill(`#${roles.palette.number}`);
+        await input.fill(paletteQuery);
         await page.locator(".palette-result").first().waitFor();
       },
     },

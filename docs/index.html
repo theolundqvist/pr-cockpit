@@ -583,6 +583,7 @@
     }
 
     .keys-section {
+      padding-block: 144px;
       text-align: center;
     }
 
@@ -787,6 +788,10 @@
         padding: 84px 0;
       }
 
+      .keys-section {
+        padding-block: 116px;
+      }
+
       .section-intro,
       .palette-layout,
       .agents-panel,
@@ -878,6 +883,10 @@
 
       .section {
         padding: 72px 0;
+      }
+
+      .keys-section {
+        padding-block: 96px;
       }
 
       h2.section-title,
@@ -975,7 +984,7 @@
     <section class="wrap hero">
       <span class="eyebrow">Local-first GitHub reviews</span>
       <h1>GitHub PRs at local speed.</h1>
-      <p class="hero-copy">PRs, diffs, threads, checks, and images are already on your Mac. Webhooks keep them current.</p>
+      <p class="hero-copy">Everything is instant. PRs, diffs, threads, checks, and images are already on your Mac.</p>
       <div class="hero-actions">
         <a class="button primary" href="#install">Install pr-cockpit</a>
         <a class="button" href="https://github.com/theolundqvist/pr-cockpit">View source</a>
@@ -1027,10 +1036,10 @@
       <div class="wrap section">
         <div class="section-intro">
           <div>
-            <span class="kicker">Files</span>
-            <h2 class="section-title">Read, edit, ship.</h2>
+            <span class="kicker">Hide all tests</span>
+            <h2 class="section-title">See only the change.</h2>
           </div>
-          <p class="section-copy">Hide tests, inspect the diff, edit source, and commit the patch back to the pull request.</p>
+          <p class="section-copy">One key hides every test file. Inspect the diff, edit source, and commit the patch back to the pull request.</p>
         </div>
         <div class="files-stack">
           <div class="shot-shell">
@@ -1052,8 +1061,8 @@
         <div class="agents-panel">
           <div class="agents-copy">
             <span class="kicker">Agents</span>
-            <h2>Local agents, when you want them.</h2>
-            <p>Fix a blocked pull request, wait for a clean merge, or run your own prompt.</p>
+            <h2>Press p. Put an agent on it.</h2>
+            <p>Run a local agent on any pull request, or arm auto-merge until CI is green and every thread is resolved.</p>
           </div>
           <div class="agent-console" aria-label="Example agent run">
             <div class="console-head">
@@ -1081,6 +1090,8 @@
           <span class="key-action"><kbd>c</kbd> comment</span>
           <span class="key-action"><kbd>v</kbd> review</span>
           <span class="key-action"><kbd>m</kbd> merge</span>
+          <span class="key-action"><kbd>p</kbd> agent</span>
+          <span class="key-action"><kbd>a</kbd> auto-merge</span>
           <span class="key-action"><kbd>?</kbd> every shortcut</span>
         </div>
       </div>
