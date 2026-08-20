@@ -1469,17 +1469,24 @@ export async function postInlineComment(
   repo: string,
   number: number,
   commitId: string,
-  path: string,
-  line: number,
-  side: "LEFT" | "RIGHT",
-  body: string,
+  comment: {
+    path: string;
+    line: number;
+    side: "LEFT" | "RIGHT";
+    startLine?: number;
+    startSide?: "LEFT" | "RIGHT";
+    body: string;
+  },
 ): Promise<void> {
   await restRequest("POST", `/repos/${repo}/pulls/${number}/comments`, {
-    body,
+    body: comment.body,
     commit_id: commitId,
-    path,
-    line,
-    side,
+    path: comment.path,
+    line: comment.line,
+    side: comment.side,
+    ...(comment.startLine === undefined
+      ? {}
+      : { start_line: comment.startLine, start_side: comment.startSide ?? comment.side }),
   });
 }
 

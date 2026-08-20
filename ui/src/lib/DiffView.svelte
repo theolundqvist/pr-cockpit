@@ -7,7 +7,7 @@
   import { getHighlighter, ensureTheme, langForPath, tokenizeLine } from "./highlight.js";
   import { renderMarkdown } from "./markdown.js";
   import { theme } from "./theme.svelte.js";
-  import { buildWholeFile, buildGapRows, fileUsesSplitLayout, hunkOldOffset, splitDiffRows } from "./diff.js";
+  import { buildWholeFile, buildGapRows, fileUsesSplitLayout, hunkOldOffset, revertHunk, splitDiffRows } from "./diff.js";
   import { fetchFileContents } from "./api.js";
   import { columnWithin, createDefinitionHover, tokenAtPoint } from "./wordAtPoint.js";
 
@@ -47,6 +47,7 @@
   let fileEditRequest;
   let editMenu = $state(null);
   let editMenuNode;
+  let commentDrag = $state(null);
   let fileEditSpan = $derived.by(() => {
     if (!fileEditor || fileEditor.phase === "loading" || fileEditor.phase === "error") return null;
     return changedLineSpan(fileEditor.original, fileEditor.content);
@@ -169,28 +170,45 @@
 
   function onEditContextMenu(event, file) {
     if (!editable || file.isBinary || file.isDeleted || fileEditor) return;
+    const hunkNode = event.target.closest("[data-hunk-index]");
+    const hunkIndex = Number(hunkNode?.dataset.hunkIndex);
+    const hunk = !file.isNew && Number.isInteger(hunkIndex) ? file.hunks[hunkIndex] : null;
     const lineEl = event.target.closest(".line");
     const line = Number(lineEl?.dataset.newLine);
-    if (!lineEl || !Number.isInteger(line) || line <= 0) return;
-    const section = lineEl.closest(".file");
-    const code = lineEl.querySelector(".code");
-    const column = code && event.clientX >= code.getBoundingClientRect().left ? columnAtPoint(code, event.clientX, event.clientY) : 0;
-    const placement = editPlacement(section, lineEl, column);
-    if (!placement) return;
+    const section = event.currentTarget.closest(".file");
+    let placement = null;
+    if (lineEl && Number.isInteger(line) && line > 0) {
+      const code = lineEl.querySelector(".code");
+      const column = code && event.clientX >= code.getBoundingClientRect().left ? columnAtPoint(code, event.clientX, event.clientY) : 0;
+      placement = editPlacement(section, lineEl, column);
+    }
+    if (!placement && !hunk) return;
     event.preventDefault();
     editMenu = {
       file,
-      placement,
-      x: Math.max(8, Math.min(event.clientX, window.innerWidth - 132)),
-      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 44)),
+      hunk,
+      canEdit: !!placement,
+      placement: placement ?? fallbackEditPlacement(section),
+      x: Math.max(8, Math.min(event.clientX, window.innerWidth - 152)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - (hunk ? 76 : 44))),
     };
   }
 
   function startContextEdit() {
-    if (!editMenu) return;
+    if (!editMenu?.canEdit) return;
     const { file, placement } = editMenu;
     editMenu = null;
     startFileEdit(file, placement);
+  }
+
+  function startContextRevert() {
+    if (!editMenu?.hunk) return;
+    const { file, hunk, placement } = editMenu;
+    editMenu = null;
+    startFileEdit(file, placement, {
+      apply: (content) => revertHunk(content, hunk),
+      message: `Revert hunk in ${file.path.split("/").pop()}`,
+    });
   }
 
   let pendingByLine = $derived.by(() => {
@@ -208,9 +226,84 @@
     return { side: "RIGHT", line: row.newNum };
   }
 
-  function openComposer(file, target) {
+  function commentRange() {
+    const context = commentDrag
+      ? { path: commentDrag.file.path, side: commentDrag.anchor.side, line: commentDrag.current.line, startLine: commentDrag.anchor.line }
+      : openCtx;
+    if (!context) return null;
+    return {
+      path: context.path,
+      side: context.side,
+      start: Math.min(context.startLine ?? context.line, context.line),
+      end: Math.max(context.startLine ?? context.line, context.line),
+    };
+  }
+
+  function isCommentSelected(file, row) {
+    const range = commentRange();
+    if (!range) return false;
+    const target = rowTarget(row);
+    return file.path === range.path && target.side === range.side && target.line >= range.start && target.line <= range.end;
+  }
+
+  function isCommentEndpoint(file, target) {
+    return commentDrag?.file.path === file.path && commentDrag.current.side === target.side && commentDrag.current.line === target.line;
+  }
+
+  function commentTargetAt(x, y) {
+    const line = document.elementFromPoint(x, y)?.closest(".line");
+    const button = line?.querySelector(".add-comment:not(:disabled)");
+    if (!button) return null;
+    return {
+      path: button.dataset.commentPath,
+      side: button.dataset.commentSide,
+      line: Number(button.dataset.commentLine),
+      hunk: button.dataset.commentHunk,
+    };
+  }
+
+  function startCommentDrag(event, file, target) {
+    if (!commentable || event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const hunk = event.currentTarget.dataset.commentHunk;
+    commentDrag = { file, anchor: target, current: target };
+
+    const move = (pointerEvent) => {
+      if (pointerEvent.pointerId !== event.pointerId) return;
+      const next = commentTargetAt(pointerEvent.clientX, pointerEvent.clientY);
+      if (!next || next.path !== file.path || next.side !== target.side || next.hunk !== hunk || !Number.isInteger(next.line)) return;
+      commentDrag = { file, anchor: target, current: next };
+    };
+    const finish = (pointerEvent) => {
+      if (pointerEvent.pointerId !== event.pointerId) return;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      const selection = commentDrag;
+      commentDrag = null;
+      if (!selection) return;
+      const startLine = Math.min(selection.anchor.line, selection.current.line);
+      const line = Math.max(selection.anchor.line, selection.current.line);
+      openComposer(
+        file,
+        { side: target.side, line },
+        startLine === line ? null : { side: target.side, line: startLine },
+      );
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+  }
+
+  function openComposer(file, target, start = null) {
     openKey = `${file.path}:${target.side}:${target.line}`;
-    openCtx = { path: file.path, side: target.side, line: target.line };
+    openCtx = {
+      path: file.path,
+      side: target.side,
+      line: target.line,
+      ...(start ? { startLine: start.line, startSide: start.side } : {}),
+    };
     draft = "";
   }
 
@@ -224,7 +317,7 @@
     if (!draft.trim() || submitting) return;
     submitting = true;
     try {
-      await onInlineComment(openCtx.path, openCtx.line, openCtx.side, draft);
+      await onInlineComment({ ...openCtx, body: draft });
       cancelInline();
     } finally {
       submitting = false;
@@ -426,7 +519,7 @@
     return error instanceof Error && error.message ? error.message : fallback;
   }
 
-  async function startFileEdit(file, placement) {
+  async function startFileEdit(file, placement, change = null) {
     if (!editable || file.isBinary || file.isDeleted || fileEditor || !placement) return;
     const token = {};
     fileEditRequest = token;
@@ -436,7 +529,7 @@
       eol: "\n",
       original: "",
       content: "",
-      message: "",
+      message: change?.message ?? "",
       phase: "loading",
       error: null,
       ...placement,
@@ -444,13 +537,21 @@
     try {
       const result = await fetchFileContents(repo, file.path, headSha);
       if (fileEditRequest !== token) return;
-      fileEditRequest = null;
       const normalized = result.tooLarge ? null : normalizeFileEndings(result.content);
-      fileEditor = result.tooLarge
-        ? { ...fileEditor, phase: "error", error: "This file is too large to edit inline." }
-        : normalized
-          ? { ...fileEditor, eol: normalized.eol, original: normalized.content, content: normalized.content, phase: "editing" }
-          : { ...fileEditor, phase: "error", error: "This file has mixed or bare CR line endings and can't be edited inline." };
+      if (result.tooLarge) {
+        fileEditor = { ...fileEditor, phase: "error", error: "This file is too large to edit inline." };
+      } else if (!normalized) {
+        fileEditor = { ...fileEditor, phase: "error", error: "This file has mixed or bare CR line endings and can't be edited inline." };
+      } else {
+        fileEditor = {
+          ...fileEditor,
+          eol: normalized.eol,
+          original: normalized.content,
+          content: change ? change.apply(normalized.content) : normalized.content,
+          phase: change ? "review" : "editing",
+        };
+      }
+      fileEditRequest = null;
     } catch (error) {
       if (fileEditRequest !== token) return;
       fileEditRequest = null;
@@ -724,7 +825,7 @@
         <div class="compose">
           <textarea
             class="mono"
-            placeholder="Comment on line {target.line}…"
+            placeholder={openCtx?.startLine ? `Comment on lines ${openCtx.startLine}–${target.line}…` : `Comment on line ${target.line}…`}
             bind:value={draft}
             onkeydown={composerKey}
             use:focusOnMount
@@ -741,19 +842,31 @@
   {/if}
 {/snippet}
 
-{#snippet lineRow(file, row)}
+{#snippet lineRow(file, row, hunkIndex)}
   {@const target = rowTarget(row)}
   {@const key = target.line !== null ? `${file.path}:${target.side}:${target.line}` : null}
-  <div class="line {row.type}" class:ws-only={row.wsOnly} data-new-line={row.newNum ?? undefined} title={row.wsOnly ? "whitespace-only change" : undefined}>
+  <div
+    class="line {row.type}"
+    class:ws-only={row.wsOnly}
+    class:comment-selected={isCommentSelected(file, row)}
+    data-new-line={row.newNum ?? undefined}
+    data-hunk-index={hunkIndex ?? undefined}
+    title={row.wsOnly ? "whitespace-only change" : undefined}
+  >
     {#if key}
       <button
         class="add-comment"
-        class:active={openKey === key}
+        class:active={openKey === key || isCommentEndpoint(file, target)}
         class:disabled={!commentable}
         disabled={!commentable}
-        title={commentable ? "Comment on this line" : "Comments anchor to the latest commit — switch to All changes to comment"}
+        data-comment-path={file.path}
+        data-comment-side={target.side}
+        data-comment-line={target.line}
+        data-comment-hunk={hunkIndex ?? undefined}
+        title={commentable ? "Comment on this line or drag to select a range" : "Comments anchor to the latest commit — switch to All changes to comment"}
         aria-label="Comment on this line"
-        onclick={() => openComposer(file, target)}
+        onpointerdown={(event) => startCommentDrag(event, file, target)}
+        onclick={(event) => event.detail === 0 && openComposer(file, target)}
       >+</button>
     {/if}
     <span class="ln">{row.oldNum ?? ""}</span>
@@ -764,11 +877,13 @@
   {@render lineExtras(file, row, true)}
 {/snippet}
 
-{#snippet splitCell(file, row, side)}
+{#snippet splitCell(file, row, side, hunkIndex)}
   <div
     class="line split-cell {row?.type ?? "empty"} {side}"
     class:ws-only={row?.wsOnly}
+    class:comment-selected={row && (side === "right" || row.type === "del") && isCommentSelected(file, row)}
     data-new-line={row?.newNum ?? undefined}
+    data-hunk-index={hunkIndex ?? undefined}
     title={row?.wsOnly ? "whitespace-only change" : undefined}
   >
     {#if row}
@@ -778,12 +893,17 @@
       {#if canComment}
         <button
           class="add-comment"
-          class:active={openKey === key}
+          class:active={openKey === key || isCommentEndpoint(file, target)}
           class:disabled={!commentable}
           disabled={!commentable}
-          title={commentable ? "Comment on this line" : "Comments anchor to the latest commit — switch to All changes to comment"}
+          data-comment-path={file.path}
+          data-comment-side={target.side}
+          data-comment-line={target.line}
+          data-comment-hunk={hunkIndex ?? undefined}
+          title={commentable ? "Comment on this line or drag to select a range" : "Comments anchor to the latest commit — switch to All changes to comment"}
           aria-label="Comment on this line"
-          onclick={() => openComposer(file, target)}
+          onpointerdown={(event) => startCommentDrag(event, file, target)}
+          onclick={(event) => event.detail === 0 && openComposer(file, target)}
         >+</button>
       {/if}
       <span class="ln">{side === "left" ? row.oldNum ?? "" : row.newNum ?? ""}</span>
@@ -795,10 +915,10 @@
   </div>
 {/snippet}
 
-{#snippet splitPair(file, pair)}
+{#snippet splitPair(file, pair, hunkIndex)}
   <div class="split-row">
-    {@render splitCell(file, pair.left, "left")}
-    {@render splitCell(file, pair.right, "right")}
+    {@render splitCell(file, pair.left, "left", hunkIndex)}
+    {@render splitCell(file, pair.right, "right", hunkIndex)}
   </div>
   {#if pair.left && pair.left !== pair.right}
     {@render lineExtras(file, pair.left, false)}
@@ -808,11 +928,11 @@
   {/if}
 {/snippet}
 
-{#snippet diffRows(file, rows)}
+{#snippet diffRows(file, rows, hunkIndex)}
   {#if usesSplitLayout(file)}
-    {#each pairedRows(rows) as pair}{@render splitPair(file, pair)}{/each}
+    {#each pairedRows(rows) as pair}{@render splitPair(file, pair, hunkIndex)}{/each}
   {:else}
-    {#each rows as row}{@render lineRow(file, row)}{/each}
+    {#each rows as row}{@render lineRow(file, row, hunkIndex)}{/each}
   {/if}
 {/snippet}
 
@@ -957,7 +1077,7 @@
           onmousedown={(e) => onCodeMouseDown(e, file)}
           oncontextmenu={(event) => onEditContextMenu(event, file)}
         >
-          {@render diffRows(file, whole.rows)}
+          {@render diffRows(file, whole.rows, null)}
         </div>
       {:else}
         <div
@@ -973,11 +1093,12 @@
             {@const bounds = gapBounds(file, hi)}
             {@const expandable = !file.isNew && bounds.to - bounds.from > 1}
             {#if Array.isArray(gap)}
-              {@render diffRows(file, gap)}
+              {@render diffRows(file, gap, null)}
             {:else}
               <button
                 class="hunk-head"
                 class:expandable
+                data-hunk-index={hi}
                 disabled={!expandable}
                 onclick={() => expandGap(file, hi)}
               >
@@ -986,7 +1107,7 @@
                 {#if expandable}<span class="hunk-expand">expand ↕</span>{/if}
               </button>
             {/if}
-            {@render diffRows(file, hunk.rows)}
+            {@render diffRows(file, hunk.rows, hi)}
           {/each}
         </div>
       {/if}
@@ -999,11 +1120,16 @@
       class="edit-context-menu"
       bind:this={editMenuNode}
       role="menu"
-      aria-label="Line actions"
+      aria-label="Diff actions"
       style="left:{editMenu.x}px;top:{editMenu.y}px"
       oncontextmenu={(event) => event.preventDefault()}
     >
-      <button class="mono" role="menuitem" use:focusOnMount onclick={startContextEdit}>Edit here</button>
+      {#if editMenu.canEdit}
+        <button class="mono" role="menuitem" use:focusOnMount onclick={startContextEdit}>Edit here</button>
+        {#if editMenu.hunk}<button class="mono" role="menuitem" onclick={startContextRevert}>Revert hunk</button>{/if}
+      {:else if editMenu.hunk}
+        <button class="mono" role="menuitem" use:focusOnMount onclick={startContextRevert}>Revert hunk</button>
+      {/if}
     </div>
   {/if}
 </div>
@@ -1355,8 +1481,7 @@
   .add-comment {
     position: absolute;
     left: 2px;
-    top: 50%;
-    transform: translateY(-50%);
+    top: 1px;
     width: 18px;
     height: 18px;
     display: none;
@@ -1383,6 +1508,9 @@
     background: var(--text-faint);
     cursor: default;
     opacity: 0.7;
+  }
+  .line.comment-selected {
+    box-shadow: inset 3px 0 var(--link);
   }
   .line.add {
     background: var(--add-bg);

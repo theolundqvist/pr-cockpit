@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildGapRows, buildWholeFile, fileDiffFingerprint, fileUsesSplitLayout, hunkOldOffset, parseDiff, splitDiffRows } from "./diff.js";
+import { buildGapRows, buildWholeFile, fileDiffFingerprint, fileUsesSplitLayout, hunkOldOffset, parseDiff, revertHunk, splitDiffRows } from "./diff.js";
 
 function makeDiff(hunkBody) {
   return `diff --git a/foo.ts b/foo.ts\nindex abc..def 100644\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1,3 +1,3 @@\n${hunkBody}\n`;
@@ -9,7 +9,7 @@ describe("parseDiff whitespace-tolerant alignment", () => {
   test("an indent-only change renders as an unchanged, marked line", () => {
     const files = parseDiff(makeDiff("-  const x = 1;\n+    const x = 1;"));
     const rows = files[0].hunks[0].rows;
-    expect(rows).toEqual([{ type: "context", oldNum: 1, newNum: 1, text: "    const x = 1;", wsOnly: true }]);
+    expect(rows).toEqual([{ type: "context", oldNum: 1, newNum: 1, text: "    const x = 1;", oldText: "  const x = 1;", wsOnly: true }]);
     expect(files[0].additions).toBe(0);
     expect(files[0].deletions).toBe(0);
   });
@@ -28,7 +28,7 @@ describe("parseDiff whitespace-tolerant alignment", () => {
     );
     const rows = files[0].hunks[0].rows;
     expect(rows).toEqual([
-      { type: "context", oldNum: 1, newNum: 1, text: "    const a = 1;", wsOnly: true },
+      { type: "context", oldNum: 1, newNum: 1, text: "    const a = 1;", oldText: "  const a = 1;", wsOnly: true },
       { type: "del", oldNum: 2, newNum: null, text: "const b = 1;", intra: { start: 10, end: 11 } },
       { type: "add", oldNum: null, newNum: 2, text: "const b = 2;", intra: { start: 10, end: 11 } },
       { type: "del", oldNum: 3, newNum: null, text: "const c = 1;" },
@@ -126,6 +126,46 @@ describe("hunkOldOffset", () => {
   test("derives the unchanged-line offset from compact and counted ranges", () => {
     expect(hunkOldOffset("@@ -1 +1 @@")).toBe(0);
     expect(hunkOldOffset("@@ -496,3 +517,3 @@")).toBe(-21);
+  });
+});
+
+describe("revertHunk", () => {
+  test("replaces only the selected hunk with its original lines", () => {
+    const [file] = parseDiff(
+      "diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@ -2,3 +2,4 @@\n before\n-old\n+new\n+extra\n after\n",
+    );
+
+    expect(revertHunk("top\nbefore\nnew\nextra\nafter\nbottom\n", file.hunks[0])).toBe(
+      "top\nbefore\nold\nafter\nbottom\n",
+    );
+  });
+
+  test("restores the old text of whitespace-only rows", () => {
+    const [file] = parseDiff(makeDiff("-  const x = 1;\n+    const x = 1;"));
+
+    expect(revertHunk("    const x = 1;\n", file.hunks[0])).toBe("  const x = 1;\n");
+  });
+
+  test("restores a trailing newline removed by the hunk", () => {
+    const [file] = parseDiff(
+      "diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1 @@\n-old\n+new\n\\ No newline at end of file\n",
+    );
+
+    expect(revertHunk("new", file.hunks[0])).toBe("old\n");
+  });
+
+  test("removes a trailing newline added by the hunk", () => {
+    const [file] = parseDiff(
+      "diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1 @@\n-old\n\\ No newline at end of file\n+new\n",
+    );
+
+    expect(revertHunk("new\n", file.hunks[0])).toBe("old");
+  });
+
+  test("rejects a hunk that no longer matches the head file", () => {
+    const [file] = parseDiff(makeDiff("-const x = 1;\n+const x = 2;"));
+
+    expect(() => revertHunk("const x = 3;\n", file.hunks[0])).toThrow("file no longer matches this hunk");
   });
 });
 

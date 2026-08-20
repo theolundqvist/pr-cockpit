@@ -34,7 +34,13 @@ export function parseDiff(text) {
     if (hunkHeader) {
       oldNum = Number(hunkHeader[2]);
       newNum = Number(hunkHeader[3]);
-      file.hunks.push({ range: hunkHeader[1], context: hunkHeader[4].trim(), rows: [] });
+      file.hunks.push({
+        range: hunkHeader[1],
+        context: hunkHeader[4].trim(),
+        rows: [],
+        oldNoNewline: false,
+        newNoNewline: false,
+      });
     } else if (file.hunks.length > 0) {
       const hunk = file.hunks[file.hunks.length - 1];
       const kind = line[0];
@@ -47,7 +53,13 @@ export function parseDiff(text) {
         file.deletions++;
         oldNum++;
       } else if (kind === "\\") {
-        continue;
+        const previous = hunk.rows.at(-1);
+        if (previous?.type === "del") hunk.oldNoNewline = true;
+        else if (previous?.type === "add") hunk.newNoNewline = true;
+        else if (previous?.type === "context") {
+          hunk.oldNoNewline = true;
+          hunk.newNoNewline = true;
+        }
       } else {
         hunk.rows.push({ type: "context", oldNum, newNum, text: line.slice(1) });
         oldNum++;
@@ -137,7 +149,7 @@ function alignWhitespaceOnly(file, hunk) {
       const add = rows[delEnd + k];
       if (isWhitespaceOnlyChange(del.text, add.text)) {
         flushPending();
-        out.push({ type: "context", oldNum: del.oldNum, newNum: add.newNum, text: add.text, wsOnly: true });
+        out.push({ type: "context", oldNum: del.oldNum, newNum: add.newNum, text: add.text, oldText: del.text, wsOnly: true });
         file.additions--;
         file.deletions--;
       } else {
@@ -177,11 +189,14 @@ export function fileDiffFingerprint(file) {
   add(file.index);
   for (const hunk of file.hunks) {
     add(hunk.range);
+    add(hunk.oldNoNewline);
+    add(hunk.newNoNewline);
     for (const row of hunk.rows) {
       add(row.type);
       add(row.oldNum);
       add(row.newNum);
       add(row.text);
+      add(row.oldText);
     }
   }
   return `${(first >>> 0).toString(16).padStart(8, "0")}${(second >>> 0).toString(16).padStart(8, "0")}`;
@@ -203,6 +218,29 @@ function parseHunkRange(range) {
 export function hunkOldOffset(range) {
   const hunk = parseHunkRange(range);
   return hunk ? hunk.oldStart - hunk.newStart : 0;
+}
+
+export function revertHunk(content, hunk) {
+  const range = parseHunkRange(hunk.range);
+  if (!range) throw new Error("Couldn't read this hunk.");
+
+  const endsWithNewline = content.endsWith("\n");
+  const lines = content.split("\n");
+  if (endsWithNewline) lines.pop();
+
+  const start = Math.max(0, range.newStart - 1);
+  const current = hunk.rows.filter((row) => row.type !== "del").map((row) => row.text);
+  const original = hunk.rows.filter((row) => row.type !== "add").map((row) => row.oldText ?? row.text);
+  const actual = lines.slice(start, start + range.newCount);
+  if (actual.length !== current.length || actual.some((line, index) => line !== current[index])) {
+    throw new Error("The file no longer matches this hunk. Refresh the pull request and try again.");
+  }
+
+  const touchesEnd = start + range.newCount === lines.length;
+  lines.splice(start, range.newCount, ...original);
+  const revertedEndsWithNewline =
+    touchesEnd && (hunk.oldNoNewline || hunk.newNoNewline) ? !hunk.oldNoNewline : endsWithNewline;
+  return `${lines.join("\n")}${revertedEndsWithNewline ? "\n" : ""}`;
 }
 
 export function buildWholeFile(file, content) {

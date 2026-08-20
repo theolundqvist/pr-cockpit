@@ -424,8 +424,8 @@
   let pendingComments = $derived(mutations.filter((m) => m.kind === "comment"));
   let pendingInline = $derived(mutations.filter((m) => m.kind === "inline-comment"));
 
-  async function submitInlineComment(path, line, side, body) {
-    await enqueueMutation(repo, number, { kind: "inline-comment", path, line, side, body });
+  async function submitInlineComment(comment) {
+    await enqueueMutation(repo, number, { kind: "inline-comment", ...comment });
     await refreshMutations();
   }
 
