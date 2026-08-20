@@ -1,4 +1,5 @@
 <script>
+  import { tick } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import Thread from "./Thread.svelte";
   import MutationBadge from "./MutationBadge.svelte";
@@ -457,14 +458,72 @@
     }
   }
 
-  function cancelFileEdit() {
+  function discardFileEdit() {
     if (fileEditor?.phase === "committing") return;
     fileEditRequest = null;
     fileEditor = null;
   }
 
+  export function finishFileEdit() {
+    if (!fileEditor) return true;
+    if (fileEditor.phase === "loading" || fileEditor.phase === "error") {
+      discardFileEdit();
+      return true;
+    }
+    if (fileEditor.phase === "editing" && !fileEditSpan) {
+      discardFileEdit();
+      return true;
+    }
+    if (fileEditor.phase === "editing") reviewFileEdit();
+    return false;
+  }
+
+  export async function openEditor(target) {
+    if (fileEditor) {
+      finishFileEdit();
+      return true;
+    }
+    if (!editable) return false;
+    const index = Math.max(0, target ? files.findIndex((file) => file.path === target.path) : 0);
+    const file = files[index];
+    const section = document.getElementById(`diff-file-${index}`);
+    if (!file || !section || file.isBinary || file.isDeleted) return false;
+    if (collapsed.has(file.path)) {
+      onToggleFile(file);
+      await tick();
+    }
+    const line = target?.line;
+    const row = Number.isInteger(line) ? section.querySelector(`.file-diff-content .line[data-new-line="${line}"]`) : null;
+    await startFileEdit(file, row ? editPlacement(section, row) : fallbackEditPlacement(section));
+    return true;
+  }
+
   $effect(() => {
-    if (!editable && fileEditor && fileEditor.phase !== "committing") cancelFileEdit();
+    if (!editable && fileEditor && fileEditor.phase !== "committing") finishFileEdit();
+  });
+
+  $effect(() => {
+    if (!fileEditSpan) return;
+    const guardNavigation = (event) => {
+      const anchor = event.target.closest?.("a[href]");
+      if (!anchor || anchor.target === "_blank") return;
+      event.preventDefault();
+      reviewFileEdit();
+    };
+    const guardBrowserNavigation = (event) => {
+      if (!event.cancelable) return;
+      event.preventDefault();
+      reviewFileEdit();
+    };
+    const guardUnload = (event) => event.preventDefault();
+    document.addEventListener("click", guardNavigation, true);
+    window.addEventListener("beforeunload", guardUnload);
+    window.navigation?.addEventListener("navigate", guardBrowserNavigation);
+    return () => {
+      document.removeEventListener("click", guardNavigation, true);
+      window.removeEventListener("beforeunload", guardUnload);
+      window.navigation?.removeEventListener("navigate", guardBrowserNavigation);
+    };
   });
 
   function reviewFileEdit() {
@@ -764,7 +823,7 @@
     {@const whole = wholeFile.get(file.path)}
     <section class="file" id="diff-file-{i}" style="--est-h:{estimateHeight(file, isCollapsed, whole)}px" use:nearViewport={file.path}>
       <div class="file-head-row">
-        <button class="file-head mono" onclick={() => onToggleFile(file)}>
+        <button class="file-head mono" onclick={() => (fileEditor?.path === file.path ? finishFileEdit() : onToggleFile(file))}>
           <span class="caret">{isCollapsed ? "▸" : "▾"}</span>
           <span class="file-path">{file.path}</span>
           <span
@@ -791,8 +850,11 @@
         </button>
         {#if fileEditor?.path === file.path}
           <div class="file-editor-actions file-editor-header-actions">
-            {#if fileEditor.phase === "editing"}<button class="cbtn mono" onclick={reviewFileEdit}>Review changes</button>{/if}
-            <button class="cbtn ghost mono" onclick={cancelFileEdit}>Cancel</button>
+            {#if fileEditor.phase === "editing"}
+              <button class="cbtn mono" onclick={finishFileEdit}>{fileEditSpan ? "Review changes" : "Close"}</button>
+            {:else if fileEditor.phase === "loading" || fileEditor.phase === "error"}
+              <button class="cbtn ghost mono" onclick={discardFileEdit}>Close</button>
+            {/if}
           </div>
         {:else if !isCollapsed && editable && !file.isBinary && !file.isDeleted}
           <button class="whole-btn file-edit-btn mono" onclick={(event) => startFileEdit(file, toolbarEditPlacement(event.currentTarget))}>edit</button>
@@ -843,6 +905,7 @@
                 initialColumn={fileEditor.column}
                 rowOffset={fileEditor.rowOffset}
                 layout={usesSplitLayout(file) ? "split" : "unified"}
+                onFinish={finishFileEdit}
               />
             </div>
             {#if fileEditor.error}<div class="file-edit-error file-editor-overlay-error mono" role="alert">{fileEditor.error}</div>{/if}
@@ -874,7 +937,7 @@
               <button class="cbtn mono" disabled={fileEditor.phase === "committing" || !fileEditor.message.trim()} onclick={commitFileEdit}>
                 {fileEditor.phase === "committing" ? "Committing…" : "Commit to PR"}
               </button>
-              <button class="cbtn ghost mono" disabled={fileEditor.phase === "committing"} onclick={cancelFileEdit}>Cancel</button>
+              <button class="cbtn ghost mono" disabled={fileEditor.phase === "committing"} onclick={discardFileEdit}>Ignore changes</button>
             </div>
           </div>
         {/if}

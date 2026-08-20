@@ -289,11 +289,13 @@
   });
 
   function selectCommit(oid) {
+    if (!finishFileEdit()) return;
     rangeKey = `c${oid}`;
     goToTab("files");
   }
 
   function viewSinceChanges() {
+    if (!finishFileEdit()) return;
     rangeKey = "since";
     goToTab("files");
   }
@@ -1095,17 +1097,19 @@
   }
 
   async function openEditor() {
-    if (!pr) return;
-    if (!window.cockpitShell?.openEditor) {
-      showFlash("Opening an editor needs the desktop app.");
+    if (!pr || !fileEditable) {
+      showFlash("Inline editing is only available for the current open pull request.");
       return;
     }
-    try {
-      const result = await window.cockpitShell.openEditor(repo, number, editorTargetFromDiff());
-      if (result?.error) showFlash(result.error);
-      else if (result?.warning) showFlash(result.warning);
-    } catch (err) {
-      showFlash(err instanceof Error ? err.message : "Couldn't open the editor.");
+    if (tab !== "files") {
+      goToTab("files");
+      await tick();
+    }
+    for (let attempt = 0; attempt < 20 && !diffView; attempt++) {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    if (!diffView || !(await diffView.openEditor(editorTargetFromDiff()))) {
+      showFlash("Choose an editable file before opening the editor.");
     }
   }
 
@@ -1544,15 +1548,31 @@
     requestAnimationFrame(reveal);
   }
 
+  function finishFileEdit() {
+    return diffView?.finishFileEdit() ?? true;
+  }
+
   function goToTab(next) {
+    if (tab === "files" && next !== "files" && !finishFileEdit()) return false;
     location.hash = next === "conversation" ? `#/pr/${repo}/${number}` : `#/pr/${repo}/${number}/${next}`;
+    return true;
+  }
+
+  function guardTabNavigation(event, next) {
+    if (tab === "files" && next !== "files" && !finishFileEdit()) event.preventDefault();
+  }
+
+  function selectRange(key) {
+    if (finishFileEdit()) rangeKey = key;
   }
 
   let telescope = $state(null);
+  let diffView = $state(null);
   let telescopeOpen = $state(false);
   let historyOpen = $derived(historyPath !== null);
   let historyFile = $derived(historyPath ? files.find((file) => file.path === historyPath) ?? null : null);
   function openFileHistory(path, symbol = null) {
+    if (!finishFileEdit()) return;
     if (rangeKey !== "all") {
       rangeKey = "all";
       files = [];
@@ -1581,7 +1601,7 @@
       }
       if (keyOwner === "typing") return;
       if (e.metaKey && e.key === ",") {
-        location.hash = "#/settings";
+        if (finishFileEdit()) location.hash = "#/settings";
         e.preventDefault();
         return;
       }
@@ -1678,7 +1698,7 @@
       }
       if (e.key === "Escape") {
         if (tab === "files") goToTab("conversation");
-        else location.hash = "#/";
+        else if (finishFileEdit()) location.hash = "#/";
         e.preventDefault();
         return;
       }
@@ -2157,11 +2177,11 @@
       {/if}
 
       <nav class="tabs mono">
-        <a class="tab" class:active={tab === "conversation"} href="#/pr/{repo}/{number}">Conversation</a>
+        <a class="tab" class:active={tab === "conversation"} href="#/pr/{repo}/{number}" onclick={(event) => guardTabNavigation(event, "conversation")}>Conversation</a>
         <a class="tab" class:active={tab === "files"} href="#/pr/{repo}/{number}/files">
           Files {#if diffState === "ready"}<span class="tab-count">{files.length}</span>{/if}
         </a>
-        <a class="tab" class:active={tab === "agents"} href="#/pr/{repo}/{number}/agents">
+        <a class="tab" class:active={tab === "agents"} href="#/pr/{repo}/{number}/agents" onclick={(event) => guardTabNavigation(event, "agents")}>
           Agents {#if agent?.state === "running"}<span class="tab-count">1</span>{/if}
         </a>
       </nav>
@@ -2180,7 +2200,7 @@
                   {rangeKey}
                   showSince={sinceAvailable}
                   sinceLabel="Changes since your last visit"
-                  onSelect={(key) => (rangeKey = key)}
+                  onSelect={selectRange}
                   bind:open={rangeOpen}
                 />
                 {#if diffState === "ready"}<span class="fcount">{files.length} files</span>{/if}
@@ -2205,6 +2225,7 @@
               <div class="diff-status mono">no changes in this range.</div>
             {:else}
               <DiffView
+                bind:this={diffView}
                 {files}
                 anchored={threadSplit.anchored}
                 {threadProps}

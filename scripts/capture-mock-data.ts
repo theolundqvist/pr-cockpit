@@ -1,8 +1,18 @@
-// Capture a repo's open PRs into an offline mock snapshot: bun scripts/capture-mock-data.ts microsoft/vscode --count 15 --history-path src/vs/code/electron-main/app.ts --history-pr 326431
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+// Capture exact open PRs into an offline mock snapshot:
+// bun scripts/capture-mock-data.ts microsoft/vscode --numbers 1,2 --conversation-pr 1 --files-pr 2 --editing-pr 2 --history-pr 2 --palette-pr 1
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import {
   fetchDiff,
+  fetchFileContents,
   fetchFileHistory,
   fetchFileHistoryDiff,
   fetchPrDetail,
@@ -14,57 +24,76 @@ import { extractGithubImageUrls } from "../server/imageproxy.ts";
 
 interface Args {
   repo: string;
-  count: number;
-  historyPath: string;
+  numbers: number[];
+  conversationPr: number;
+  filesPr: number;
+  editingPr: number;
+  editingPath: string;
   historyPr: number;
-  include: number[];
+  historyPath: string;
+  palettePr: number;
 }
 
 function parseArgs(argv: string[]): Args {
   const [repo, ...rest] = argv;
-  if (!repo || !/^[^/]+\/[^/]+$/.test(repo)) throw new Error("usage: capture-mock-data.ts <owner/repo> [--count N] [--history-path P] [--history-pr N]");
+  if (!repo || !/^[^/]+\/[^/]+$/.test(repo)) {
+    throw new Error("usage: capture-mock-data.ts <owner/repo> --numbers N,N --conversation-pr N --files-pr N --editing-pr N [--editing-path P] --history-pr N [--history-path P] --palette-pr N");
+  }
   const opts: Record<string, string> = {};
   for (let i = 0; i < rest.length; i += 2) {
     const key = rest[i]?.replace(/^--/, "");
     if (!key || rest[i + 1] === undefined) throw new Error(`missing value for ${rest[i]}`);
     opts[key] = rest[i + 1]!;
   }
-  return {
-    repo,
-    count: Number(opts.count ?? 15),
-    historyPath: opts["history-path"] ?? "",
-    historyPr: Number(opts["history-pr"] ?? 0),
-    include: (opts.include ?? "").split(",").map((n) => Number(n.trim())).filter(Boolean),
+  const numbers = (opts.numbers ?? "").split(",").map((value) => Number(value.trim())).filter(Number.isInteger);
+  const requiredNumber = (key: string): number => {
+    const value = Number(opts[key]);
+    if (!Number.isInteger(value) || value <= 0) throw new Error(`--${key} must be a positive PR number`);
+    return value;
   };
+  if (!numbers.length || numbers.some((number) => number <= 0)) throw new Error("--numbers must contain exact positive PR numbers");
+  const args = {
+    repo,
+    numbers: [...new Set(numbers)],
+    conversationPr: requiredNumber("conversation-pr"),
+    filesPr: requiredNumber("files-pr"),
+    editingPr: requiredNumber("editing-pr"),
+    editingPath: opts["editing-path"] ?? "",
+    historyPr: requiredNumber("history-pr"),
+    historyPath: opts["history-path"] ?? "",
+    palettePr: requiredNumber("palette-pr"),
+  };
+  for (const number of [args.conversationPr, args.filesPr, args.editingPr, args.historyPr, args.palettePr]) {
+    if (!args.numbers.includes(number)) throw new Error(`role PR #${number} is not present in --numbers`);
+  }
+  return args;
 }
 
 const ghImgBin = Bun.env.COCKPIT_GH_IMG ?? `${Bun.env.HOME}/dev/gh-img/gh-img`;
 
-async function openPrNumbers(repo: string, count: number): Promise<number[]> {
-  // custom search, deliberately WITHOUT involves:@me so it works on any public repo
-  const proc = Bun.spawn(["gh", "pr", "list", "-R", repo, "--state", "open", "--limit", String(count), "--search", "sort:updated-desc", "--json", "number"], { stdout: "pipe", stderr: "pipe" });
-  const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-  if ((await proc.exited) !== 0) throw new Error(`gh pr list failed: ${err}`);
-  return (JSON.parse(out) as Array<{ number: number }>).map((r) => r.number);
-}
-
 function avatarUrls(detail: PrDetail): string[] {
   const urls = new Set<string>();
-  const add = (u: string | undefined) => { if (u) urls.add(u); };
+  const add = (url: string | undefined) => {
+    if (url) urls.add(url);
+  };
   add(detail.author?.avatarUrl);
-  for (const r of detail.reviews.nodes) add(r.author?.avatarUrl);
-  for (const c of detail.comments.nodes) add(c.author?.avatarUrl);
-  for (const t of detail.reviewThreads.nodes) for (const c of t.comments.nodes) add(c.author?.avatarUrl);
-  for (const c of detail.commitList.nodes) add(c.commit.author?.user?.avatarUrl);
-  for (const r of detail.reviewRequests.nodes) add(r.requestedReviewer?.avatarUrl);
+  for (const review of detail.reviews.nodes) add(review.author?.avatarUrl);
+  for (const comment of detail.comments.nodes) add(comment.author?.avatarUrl);
+  for (const thread of detail.reviewThreads.nodes) {
+    for (const comment of thread.comments.nodes) add(comment.author?.avatarUrl);
+  }
+  for (const commit of detail.commitList.nodes) add(commit.commit.author?.user?.avatarUrl);
+  for (const request of detail.reviewRequests.nodes) add(request.requestedReviewer?.avatarUrl);
   return [...urls];
 }
 
 function bodyImageUrls(detail: PrDetail): string[] {
   const bodies = [detail.body];
-  for (const r of detail.reviews.nodes) bodies.push(r.body);
-  for (const c of detail.comments.nodes) bodies.push(c.body);
-  for (const t of detail.reviewThreads.nodes) for (const c of t.comments.nodes) bodies.push(c.body);
+  for (const review of detail.reviews.nodes) bodies.push(review.body);
+  for (const comment of detail.comments.nodes) bodies.push(comment.body);
+  for (const thread of detail.reviewThreads.nodes) {
+    for (const comment of thread.comments.nodes) bodies.push(comment.body);
+  }
   return [...new Set(bodies.flatMap(extractGithubImageUrls))];
 }
 
@@ -89,61 +118,139 @@ async function httpsBytes(url: string): Promise<Uint8Array> {
   return new Uint8Array(await res.arrayBuffer());
 }
 
+async function editableFile(repo: string, detail: PrDetail, requestedPath: string): Promise<{ path: string; content: string }> {
+  const candidates = requestedPath
+    ? [requestedPath]
+    : detail.files.nodes
+      .filter((file) => /\.(?:[cm]?[jt]sx?|css|svelte)$/.test(file.path) && !/(?:^|\/)(?:test|tests|fixtures)(?:\/|$)|\.(?:test|spec)\./i.test(file.path))
+      .sort((left, right) => {
+        const leftSource = left.path.includes("/src/") || left.path.startsWith("src/") ? 1 : 0;
+        const rightSource = right.path.includes("/src/") || right.path.startsWith("src/") ? 1 : 0;
+        return rightSource - leftSource || (right.additions + right.deletions) - (left.additions + left.deletions) || left.path.localeCompare(right.path);
+      })
+      .map((file) => file.path);
+
+  for (const path of candidates) {
+    try {
+      const result = await fetchFileContents(repo, path, detail.headRefOid);
+      if ("tooLarge" in result) continue;
+      const lines = result.content.split(/\r?\n/).length;
+      if (lines >= 30 && lines <= 800 && result.content.length >= 1_000 && result.content.length <= 80_000) {
+        return { path, content: result.content };
+      }
+    } catch {
+      if (requestedPath) throw new Error(`unable to capture requested editable file ${requestedPath}`);
+    }
+  }
+  throw new Error(`no moderate editable source file found in ${repo}#${detail.number}`);
+}
+
+function installSnapshot(tempDir: string, outDir: string): void {
+  const backupDir = `${outDir}.previous-${process.pid}-${Date.now()}`;
+  const hadPrevious = existsSync(outDir);
+  if (hadPrevious) renameSync(outDir, backupDir);
+  try {
+    renameSync(tempDir, outDir);
+  } catch (error) {
+    if (hadPrevious) renameSync(backupDir, outDir);
+    throw error;
+  }
+  if (hadPrevious) rmSync(backupDir, { recursive: true });
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const viewer = await getViewerLogin();
   const outDir = resolve(import.meta.dirname, "..", "server", "mockData", args.repo.replace("/", "-"));
-  const blobsDir = `${outDir}/blobs`;
-  rmSync(outDir, { recursive: true, force: true });
-  mkdirSync(blobsDir, { recursive: true });
+  const tempDir = mkdtempSync(join(dirname(outDir), `.${args.repo.replace("/", "-")}-`));
+  const blobsDir = join(tempDir, "blobs");
+  mkdirSync(blobsDir);
+  let installed = false;
 
-  const recent = await openPrNumbers(args.repo, args.count);
-  const numbers = [...new Set([...args.include, ...recent])].slice(0, args.count);
-  const details: PrDetail[] = [];
-  const diffs: Record<number, string> = {};
-  for (const number of numbers) {
-    const detail = await fetchPrDetail(args.repo, number);
-    details.push(detail);
-    diffs[number] = await fetchDiff(args.repo, number);
-    console.log(`captured #${number} [${detail.author?.login}] ${detail.title.slice(0, 55)}`);
-  }
+  try {
+    const details: PrDetail[] = [];
+    const diffs: Record<number, string> = {};
+    for (const number of args.numbers) {
+      const detail = await fetchPrDetail(args.repo, number);
+      if (detail.state !== "OPEN") throw new Error(`${args.repo}#${number} is ${detail.state}, expected OPEN`);
+      details.push(detail);
+      diffs[number] = await fetchDiff(args.repo, number);
+      console.log(`captured #${number} [${detail.author?.login}] ${detail.title}`);
+    }
+    const detailFor = (number: number): PrDetail => details.find((detail) => detail.number === number)!;
 
-  const assets: Record<string, string> = {};
-  const writeAsset = async (url: string, fetcher: (u: string) => Promise<Uint8Array>) => {
-    if (assets[url]) return;
-    try {
+    const assets: Record<string, string> = {};
+    const writeAsset = async (url: string, fetcher: (assetUrl: string) => Promise<Uint8Array>) => {
+      if (assets[url]) return;
       const bytes = await fetcher(url);
       const name = new Bun.CryptoHasher("sha256").update(url).digest("hex").slice(0, 16) + ext(bytes);
-      writeFileSync(`${blobsDir}/${name}`, bytes);
+      writeFileSync(join(blobsDir, name), bytes);
       assets[url] = name;
-    } catch (err) {
-      console.error(`  skip asset ${url}: ${err instanceof Error ? err.message : err}`);
-    }
-  };
-  const imageUrls = [...new Set(details.flatMap(bodyImageUrls))];
-  const avatarSet = [...new Set(details.flatMap(avatarUrls))];
-  for (const url of imageUrls) await writeAsset(url, ghImgBytes);
-  for (const url of avatarSet) await writeAsset(url, httpsBytes);
-  console.log(`captured ${Object.keys(assets).length} assets (${imageUrls.length} images, ${avatarSet.length} avatars)`);
+    };
+    const imageUrls = [...new Set(details.flatMap(bodyImageUrls))];
+    const avatarSet = [...new Set(details.flatMap(avatarUrls))];
+    for (const url of imageUrls) await writeAsset(url, ghImgBytes);
+    for (const url of avatarSet) await writeAsset(url, httpsBytes);
+    console.log(`captured ${Object.keys(assets).length} assets (${imageUrls.length} images, ${avatarSet.length} avatars)`);
 
-  let history = { repo: args.repo, path: args.historyPath, base: "main", commits: [] as Awaited<ReturnType<typeof fetchFileHistory>> };
-  const historyDiffs: Record<string, FileHistoryDiff> = {};
-  if (args.historyPath && args.historyPr) {
-    const base = details.find((d) => d.number === args.historyPr)?.baseRefName ?? "main";
-    history = { repo: args.repo, path: args.historyPath, base, commits: await fetchFileHistory(args.repo, args.historyPath, base) };
+    const editingDetail = detailFor(args.editingPr);
+    const editing = await editableFile(args.repo, editingDetail, args.editingPath);
+    const fileContents = { [`${editingDetail.headRefOid}:${editing.path}`]: editing.content };
+    console.log(`captured editable file ${editing.path} at ${editingDetail.headRefOid} (${editing.content.length} bytes)`);
+
+    const historyDetail = detailFor(args.historyPr);
+    const historyPath = args.historyPath || editing.path;
+    const history = {
+      repo: args.repo,
+      path: historyPath,
+      base: historyDetail.baseRefName,
+      commits: await fetchFileHistory(args.repo, historyPath, historyDetail.baseRefName),
+    };
+    if (!history.commits.length) throw new Error(`no file history captured for ${historyPath}`);
+    const historyDiffs: Record<string, FileHistoryDiff> = {};
     for (const commit of history.commits) {
-      const diff = await fetchFileHistoryDiff(args.repo, commit.sha, args.historyPath).catch(() => null);
-      if (diff) historyDiffs[commit.sha] = diff;
+      const diff = await fetchFileHistoryDiff(args.repo, commit.sha, historyPath);
+      if (!diff) throw new Error(`no history diff for ${historyPath} at ${commit.sha}`);
+      historyDiffs[commit.sha] = diff;
     }
-    console.log(`captured file history for ${args.historyPath}: ${history.commits.length} commits`);
-  }
+    console.log(`captured file history for ${historyPath}: ${history.commits.length} commits`);
 
-  const snapshot = { repo: args.repo, viewer, capturedAt: new Date().toISOString(), details, diffs, history, historyDiffs, assets };
-  writeFileSync(`${outDir}/snapshot.json`, JSON.stringify(snapshot, null, 2));
-  console.log(`\nwrote snapshot to ${outDir}`);
+    const roles = {
+      inbox: { numbers: args.numbers },
+      conversation: { number: args.conversationPr },
+      files: { number: args.filesPr },
+      editing: { number: args.editingPr, path: editing.path, headSha: editingDetail.headRefOid },
+      history: { number: args.historyPr, path: historyPath },
+      palette: { number: args.palettePr },
+    };
+    const snapshot = {
+      repo: args.repo,
+      viewer,
+      capturedAt: new Date().toISOString(),
+      roles,
+      details,
+      diffs,
+      history,
+      historyDiffs,
+      assets,
+      fileContents,
+    };
+    const snapshotPath = join(tempDir, "snapshot.json");
+    writeFileSync(snapshotPath, JSON.stringify(snapshot, null, 2));
+    JSON.parse(readFileSync(snapshotPath, "utf8"));
+    for (const name of Object.values(assets)) {
+      if (!existsSync(join(blobsDir, name))) throw new Error(`missing captured asset ${name}`);
+    }
+
+    installSnapshot(tempDir, outDir);
+    installed = true;
+    console.log(`\nwrote snapshot to ${outDir}`);
+  } finally {
+    if (!installed) rmSync(tempDir, { recursive: true, force: true });
+  }
 }
 
-main().catch((err) => {
-  console.error(err);
+main().catch((error) => {
+  console.error(error);
   process.exit(1);
 });

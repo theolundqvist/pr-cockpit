@@ -216,72 +216,6 @@
       font-size: 12px;
     }
 
-    .bets {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 12px;
-      max-width: 1040px;
-      margin: 64px auto 0;
-      text-align: left;
-    }
-
-    .bet {
-      position: relative;
-      min-height: 184px;
-      overflow: hidden;
-      padding: 26px;
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      background: linear-gradient(145deg, rgba(255, 255, 255, 0.028), transparent), var(--panel);
-    }
-
-    .bet::after {
-      position: absolute;
-      right: -25px;
-      bottom: -68px;
-      width: 150px;
-      height: 150px;
-      border: 1px solid rgba(94, 210, 141, 0.15);
-      border-radius: 50%;
-      content: "";
-    }
-
-    .bet-label {
-      color: var(--green);
-      font-family: var(--mono);
-      font-size: 11px;
-      text-transform: uppercase;
-    }
-
-    .bet h2 {
-      margin: 25px 0 9px;
-      font-size: 21px;
-      letter-spacing: -0.025em;
-    }
-
-    .bet p {
-      max-width: 360px;
-      margin: 0;
-      color: var(--text-dim);
-      font-size: 14px;
-    }
-
-    .speed-proof {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      margin-top: 22px;
-      color: var(--green);
-      font-family: var(--mono);
-      font-size: 12px;
-    }
-
-    .speed-proof::before {
-      width: 20px;
-      height: 1px;
-      background: currentColor;
-      content: "";
-    }
 
     .shot-shell {
       position: relative;
@@ -294,6 +228,7 @@
     .hero-shot {
       margin-top: 36px;
       padding: 7px;
+      overflow: clip;
     }
 
     .shot-button {
@@ -375,36 +310,9 @@
       font-size: 17px;
     }
 
-    .section-copy strong {
-      color: var(--text);
-      font-weight: 600;
-    }
 
-    .duo {
-      display: grid;
-      grid-template-columns: minmax(0, 1.55fr) minmax(260px, 0.45fr);
-      gap: 14px;
-      align-items: stretch;
-    }
-
-    .duo .shot-shell {
+    .solo-shot {
       padding: 6px;
-    }
-
-    .duo .secondary-shot {
-      display: flex;
-      overflow: hidden;
-    }
-
-    .duo .secondary-shot .shot-button {
-      height: 100%;
-    }
-
-    .duo .secondary-shot img {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      object-position: 66% center;
     }
 
     .files-stack {
@@ -450,7 +358,7 @@
       border-top: 0;
     }
 
-    .feature-item h3 {
+    .feature-item h2 {
       margin: 0 0 8px;
       font-size: 21px;
       letter-spacing: -0.025em;
@@ -516,52 +424,101 @@
         var(--panel);
     }
 
-    .flow {
+    .system {
       display: grid;
-      grid-template-columns: minmax(130px, 0.75fr) 34px minmax(155px, 1fr) 34px minmax(155px, 1fr) 34px minmax(130px, 0.75fr);
-      align-items: stretch;
-      margin-top: 40px;
+      grid-template-columns: minmax(170px, 0.55fr) minmax(210px, 0.95fr) minmax(280px, 1.1fr);
+      gap: 22px;
+      align-items: center;
+      margin: 40px 0 0;
     }
 
-    .flow-node {
+    .system-node {
       display: flex;
-      min-height: 126px;
       flex-direction: column;
-      justify-content: space-between;
-      gap: 18px;
+      gap: 7px;
       padding: 19px;
       border: 1px solid var(--border);
       border-radius: 12px;
       background: #151514;
     }
 
-    .flow-node.primary {
+    .system-node.primary {
       border-color: rgba(94, 210, 141, 0.34);
       background: var(--green-soft);
     }
 
-    .flow-node strong {
+    .system-node strong {
       font-size: 16px;
       letter-spacing: -0.02em;
     }
 
-    .flow-node span {
+    .system-node span {
       color: var(--text-faint);
       font-family: var(--mono);
       font-size: 11px;
       line-height: 1.45;
     }
 
-    .flow-arrow {
+    .system-paths {
       display: grid;
-      place-items: center;
-      color: var(--text-faint);
-      font-family: var(--mono);
-      font-size: 18px;
+      gap: 30px;
+      padding: 0 6px;
     }
 
-    .flow-label {
-      margin: 32px 0 -24px;
+    .system-path {
+      display: grid;
+      gap: 8px;
+      font-family: var(--mono);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    .system-path.inbound {
+      color: var(--blue);
+    }
+
+    .system-path.outbound {
+      color: var(--green);
+    }
+
+    .path-label {
+      letter-spacing: 0.02em;
+    }
+
+    .path-line {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      font-size: 15px;
+      line-height: 1;
+    }
+
+    .line-in::before,
+    .line-out::after {
+      flex: 1;
+      height: 1px;
+      background: currentColor;
+      opacity: 0.55;
+      content: "";
+    }
+
+    .glyph-v {
+      display: none;
+    }
+
+    .system-local {
+      position: relative;
+      display: grid;
+      gap: 10px;
+      padding: 42px 16px 16px;
+      border: 1px dashed var(--border-strong);
+      border-radius: 14px;
+    }
+
+    .system-local-label {
+      position: absolute;
+      top: 15px;
+      left: 17px;
       color: var(--text-faint);
       font-family: var(--mono);
       font-size: 11px;
@@ -569,24 +526,15 @@
       text-transform: uppercase;
     }
 
-    .how-note {
+    .system-join {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 24px;
-      margin-top: 34px;
-      padding-top: 28px;
-      border-top: 1px solid var(--border);
-    }
-
-    .how-note p {
-      margin: 0;
-      color: var(--text-dim);
+      place-items: center;
+      color: var(--text-faint);
+      font-family: var(--mono);
       font-size: 14px;
+      line-height: 1;
     }
 
-    .how-note strong {
-      color: var(--text);
-    }
 
     .console-head {
       display: flex;
@@ -714,17 +662,69 @@
       font-size: 12px;
     }
 
-    .code-block {
-      overflow-x: auto;
-      padding: 23px 24px;
+    .code-shell {
+      overflow: hidden;
       border: 1px solid var(--border);
       border-radius: 12px;
       background: #10100f;
+    }
+
+    .code-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 10px 8px 24px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text-faint);
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .copy-install {
+      min-width: 76px;
+      min-height: 44px;
+      padding: 0 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel-raised);
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .copy-install:hover {
+      border-color: var(--border-strong);
+      background: var(--surface);
+    }
+
+    .copy-install:focus-visible {
+      outline: 2px solid var(--green);
+      outline-offset: 2px;
+    }
+
+    .code-block {
+      overflow-x: auto;
+      margin: 0;
+      padding: 23px 24px;
       color: var(--text-dim);
       font-family: var(--mono);
       font-size: 13px;
       line-height: 1.8;
       white-space: pre;
+    }
+
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
     }
 
     .prompt {
@@ -799,18 +799,6 @@
         margin-bottom: 36px;
       }
 
-      .duo {
-        grid-template-columns: 1fr;
-      }
-
-      .duo .secondary-shot {
-        max-height: 440px;
-      }
-
-      .duo .secondary-shot img {
-        object-position: center;
-      }
-
       .palette-layout .feature-list {
         order: 2;
       }
@@ -821,21 +809,30 @@
         border-left: 0;
       }
 
-      .flow {
+      .system {
         grid-template-columns: 1fr;
+        gap: 16px;
       }
 
-      .flow-arrow {
-        min-height: 30px;
-        transform: rotate(90deg);
+      .system-paths {
+        gap: 22px;
+        padding: 0;
       }
 
-      .flow-node {
-        min-height: 104px;
+      .glyph-h {
+        display: none;
+      }
+
+      .glyph-v {
+        display: inline;
       }
 
       .install-card {
         padding: 38px;
+      }
+
+      .history-shot {
+        right: 0;
       }
     }
 
@@ -868,14 +865,6 @@
         flex: 1 1 150px;
       }
 
-      .bets {
-        grid-template-columns: 1fr;
-        margin-top: 48px;
-      }
-
-      .bet {
-        min-height: 0;
-      }
 
       .hero-shot {
         margin-top: 22px;
@@ -907,7 +896,7 @@
       }
 
       .history-shot {
-        right: -3px;
+        right: 0;
         width: 82%;
       }
 
@@ -925,10 +914,6 @@
         padding: 28px;
       }
 
-      .how-note {
-        grid-template-columns: 1fr;
-      }
-
       .key-action {
         font-size: 12px;
       }
@@ -937,9 +922,16 @@
         gap: 26px;
       }
 
-      .code-block {
+      .code-shell {
         margin-inline: -12px;
-        padding: 18px;
+      }
+
+      .code-toolbar {
+        padding-left: 18px;
+      }
+
+      .code-block {
+        padding: 16px 18px;
         font-size: 11px;
       }
 
@@ -981,38 +973,19 @@
 
   <main id="top">
     <section class="wrap hero">
-      <span class="eyebrow">Live GitHub reviews · zero refreshes</span>
+      <span class="eyebrow">Local-first GitHub reviews</span>
       <h1>GitHub PRs at local speed.</h1>
-      <p class="hero-copy">GitHub makes you wait 2–5 seconds per click. pr-cockpit keeps the repositories you care about in a local cache, then uses webhooks to bring every comment, review, and CI change to you live.</p>
-      <span class="speed-proof">No loading screens. No refreshes. Every action feels instant.</span>
+      <p class="hero-copy">PRs, diffs, threads, checks, and images are already on your Mac. Webhooks keep them current.</p>
       <div class="hero-actions">
         <a class="button primary" href="#install">Install pr-cockpit</a>
         <a class="button" href="https://github.com/theolundqvist/pr-cockpit">View source</a>
       </div>
-      <p class="requirements">macOS · bun · gh logged in</p>
-
-      <div class="bets" aria-label="How pr-cockpit works">
-        <article class="bet">
-          <span class="bet-label">Open instantly</span>
-          <h2>Everything is prefetched</h2>
-          <p>Detail, diffs, threads, and images are waiting on your disk. Opening a cached PR never waits on the network.</p>
-        </article>
-        <article class="bet">
-          <span class="bet-label">Stay current</span>
-          <h2>Webhook updates arrive live</h2>
-          <p>The relay brings GitHub events to your cockpit in seconds. The poller runs underneath for startup and reconciliation.</p>
-        </article>
-        <article class="bet">
-          <span class="bet-label">Jump anywhere</span>
-          <h2>Any PR, one chord</h2>
-          <p><kbd>⌘⌥K</kbd> opens the global palette from anywhere, searching a local index of recent PRs instantly.</p>
-        </article>
-      </div>
+      <p class="requirements">macOS · open source</p>
     </section>
 
     <div class="wrap shot-shell hero-shot">
-      <button class="shot-button" type="button" data-lightbox="screenshots/inbox.png" aria-label="Open inbox screenshot">
-        <img src="screenshots/inbox.png" alt="pr-cockpit inbox sorting open pull requests into ready to merge, your move, and waiting" width="1440" height="900">
+      <button class="shot-button" type="button" data-lightbox="screenshots/inbox-dark.png" aria-label="Open inbox screenshot">
+        <img src="screenshots/inbox-dark.png" alt="pr-cockpit inbox sorting open pull requests into ready to merge, your move, and waiting" width="1100" height="800">
       </button>
     </div>
 
@@ -1020,18 +993,14 @@
       <div class="wrap section palette-layout">
         <div class="feature-list">
           <article class="feature-item">
-            <span class="kicker">No navigation tax</span>
-            <h3>Any PR. One chord. Already indexed.</h3>
-            <p><kbd>⌘⌥K</kbd> opens the palette globally, from anywhere. It searches recent open, merged, and closed PRs across your tracked repositories locally, then falls back to live GitHub search only when needed.</p>
-          </article>
-          <article class="feature-item">
-            <h3>No loading cascade after the click.</h3>
-            <p>The PR, its diffs, review threads, and images are already cached. Even file-history diffs are prefetched before you step through them.</p>
+            <span class="kicker">Jump anywhere</span>
+            <h2>Any PR. One chord.</h2>
+            <p><kbd>⌘⌥K</kbd> searches recent open, merged, and closed pull requests from any app.</p>
           </article>
         </div>
         <div class="shot-shell">
-          <button class="shot-button" type="button" data-lightbox="screenshots/palette.png" aria-label="Open command palette screenshot">
-            <img src="screenshots/palette.png" alt="Command palette searching recent pull requests across tracked repositories" width="1440" height="900" loading="lazy">
+          <button class="shot-button" type="button" data-lightbox="screenshots/palette-light.png" aria-label="Open command palette screenshot">
+            <img src="screenshots/palette-light.png" alt="Command palette searching recent pull requests across tracked repositories" width="1100" height="800" loading="lazy">
           </button>
         </div>
       </div>
@@ -1041,26 +1010,15 @@
       <div class="wrap section">
         <div class="section-intro">
           <div>
-            <span class="kicker">The inbox</span>
-            <h2 class="section-title">Built around your next decision.</h2>
+            <span class="kicker">One view</span>
+            <h2 class="section-title">Everything needed to decide.</h2>
           </div>
-          <p class="section-copy">Open PRs are sorted into <strong>ready to merge</strong>, <strong>your move</strong>, and <strong>waiting</strong>. Stacks stay nested. Your checked-out branch stays marked.</p>
+          <p class="section-copy">Conversation, checks, threads, reviewers, and the real merge gate.</p>
         </div>
-        <div class="duo">
-          <div class="shot-shell">
-            <button class="shot-button" type="button" data-lightbox="screenshots/pr-detail.png" aria-label="Open PR detail screenshot">
-              <img src="screenshots/pr-detail.png" alt="Pull request detail with conversation, checks, actions, review controls, and reviewers" width="1440" height="900" loading="lazy">
-            </button>
-          </div>
-          <div class="shot-shell secondary-shot">
-            <button class="shot-button" type="button" data-lightbox="screenshots/merge-confirm.png" aria-label="Open merge confirmation screenshot">
-              <img src="screenshots/merge-confirm.png" alt="Force merge confirmation shown in pr-cockpit" width="1440" height="900" loading="lazy">
-            </button>
-          </div>
-        </div>
-        <div class="section-intro" style="margin-top: 34px; margin-bottom: 0;">
-          <p class="section-copy"><strong>Full read parity.</strong> Description, commits, comments, review threads, checks, reviewers, and labels live in one view.</p>
-          <p class="section-copy"><strong>The same merge gate.</strong> The action mirrors GitHub's real button verbatim. Merge, force merge, and close still ask before they fire.</p>
+        <div class="shot-shell solo-shot">
+          <button class="shot-button" type="button" data-lightbox="screenshots/conversation-dark.png" aria-label="Open pull request detail screenshot">
+            <img src="screenshots/conversation-dark.png" alt="Pull request detail with checks, merge conflicts, conversation, and review actions" width="1100" height="800" loading="lazy">
+          </button>
         </div>
       </div>
     </section>
@@ -1069,20 +1027,20 @@
       <div class="wrap section">
         <div class="section-intro">
           <div>
-            <span class="kicker">Less noise, more context</span>
-            <h2 class="section-title">Hide the tests. Keep the signal.</h2>
+            <span class="kicker">Files</span>
+            <h2 class="section-title">Read, edit, ship.</h2>
           </div>
-          <p class="section-copy"><strong>Auto-hide test files</strong> with one toggle, expand only changed ranges, or open the whole file. Press <kbd>h</kbd> to walk that file's history on the base branch, with every diff already prefetched.</p>
+          <p class="section-copy">Hide tests, inspect the diff, edit source, and commit the patch back to the pull request.</p>
         </div>
         <div class="files-stack">
           <div class="shot-shell">
-            <button class="shot-button" type="button" data-lightbox="screenshots/files.png" aria-label="Open files screenshot">
-              <img src="screenshots/files.png" alt="Files tab with file tree, filters, and expanded diffs" width="1440" height="900" loading="lazy">
+            <button class="shot-button" type="button" data-lightbox="screenshots/files-light.png" aria-label="Open files screenshot">
+              <img src="screenshots/files-light.png" alt="Files tab with a file tree and expanded source diff" width="1100" height="800" loading="lazy">
             </button>
           </div>
           <div class="shot-shell history-shot">
-            <button class="shot-button" type="button" data-lightbox="screenshots/file-history.png" aria-label="Open file history screenshot">
-              <img src="screenshots/file-history.png" alt="File history with a vertical commit rail and prefetched diffs" width="1440" height="900" loading="lazy">
+            <button class="shot-button" type="button" data-lightbox="screenshots/editing-dark.png" aria-label="Open inline file editor screenshot">
+              <img src="screenshots/editing-dark.png" alt="Inline source editor with a visible local change ready for review" width="1100" height="800" loading="lazy">
             </button>
           </div>
         </div>
@@ -1094,9 +1052,8 @@
         <div class="agents-panel">
           <div class="agents-copy">
             <span class="kicker">Agents</span>
-            <h2>Auto-fix. Auto-merge. Your rules.</h2>
-            <p>Run and stream local Claude agents against your own PRs. Auto-fix a blocked PR, auto-merge once CI is green and threads are resolved, re-score a Greptile review, or write a one-off prompt.</p>
-            <p class="small">Off by default. Each action is editable and keybindable.</p>
+            <h2>Local agents, when you want them.</h2>
+            <p>Fix a blocked pull request, wait for a clean merge, or run your own prompt.</p>
           </div>
           <div class="agent-console" aria-label="Example agent run">
             <div class="console-head">
@@ -1115,32 +1072,16 @@
     <section class="section-rule">
       <div class="wrap section keys-section">
         <span class="kicker">Keyboard first</span>
-        <h2 class="section-title">The mouse can take the day off.</h2>
-        <p class="section-copy">The important path is always under your fingers. The full cheatsheet is one <kbd>?</kbd> away.</p>
+        <h2 class="section-title">Every action has a key.</h2>
         <div class="key-grid" aria-label="Keyboard shortcuts">
           <span class="key-action"><kbd>j / k</kbd> move</span>
           <span class="key-action"><kbd>enter</kbd> open</span>
           <span class="key-action"><kbd>esc</kbd> back</span>
           <span class="key-action"><kbd>d</kbd> files / conversation</span>
           <span class="key-action"><kbd>c</kbd> comment</span>
-          <span class="key-action"><kbd>r</kbd> reply</span>
-          <span class="key-action"><kbd>e</kbd> resolve / archive</span>
-          <span class="key-action"><kbd>⇧E</kbd> edit description</span>
           <span class="key-action"><kbd>v</kbd> review</span>
-          <span class="key-action"><kbd>s</kbd> assign</span>
-          <span class="key-action"><kbd>q</kbd> request review</span>
           <span class="key-action"><kbd>m</kbd> merge</span>
-          <span class="key-action"><kbd>⇧M</kbd> force merge</span>
-          <span class="key-action"><kbd>u</kbd> update branch</span>
-          <span class="key-action"><kbd>x</kbd> close / toggle tests</span>
-          <span class="key-action"><kbd>h</kbd> file history</span>
-          <span class="key-action"><kbd>p</kbd> prompt agent</span>
-          <span class="key-action"><kbd>o</kbd> github.com</span>
-          <span class="key-action"><kbd>t</kbd> switch branch</span>
-          <span class="key-action"><kbd>⌘K</kbd> any PR in app</span>
-          <span class="key-action"><kbd>⌘⌥K</kbd> any PR globally</span>
-          <span class="key-action"><kbd>⌘,</kbd> settings</span>
-          <span class="key-action"><kbd>?</kbd> cheatsheet</span>
+          <span class="key-action"><kbd>?</kbd> every shortcut</span>
         </div>
       </div>
     </section>
@@ -1150,85 +1091,41 @@
         <div class="section-intro">
           <div>
             <span class="kicker">How it works</span>
-            <h2 class="section-title">The network moves off the critical path.</h2>
+            <h2 class="section-title">GitHub stays true. The wait disappears.</h2>
           </div>
-          <p class="section-copy">GitHub webhooks trigger targeted refreshes as changes happen. A local Bun server keeps the result on disk and echoes your writes immediately, so the interaction never blocks on GitHub.</p>
+          <p class="section-copy">Reads land on your Mac. Writes echo locally, then sync through your existing <code>gh</code> login.</p>
         </div>
 
         <div class="how-card" aria-label="How pr-cockpit reads, writes, and receives live updates">
-          <p class="flow-label">Freshness · webhook-driven</p>
-          <div class="flow">
-            <div class="flow-node">
-              <strong>GitHub webhooks</strong>
-              <span>comments, reviews, CI, PRs</span>
-            </div>
-            <div class="flow-arrow" aria-hidden="true">→</div>
-            <div class="flow-node">
-              <strong>Cloudflare relay</strong>
-              <span>small worker · deploy once</span>
-            </div>
-            <div class="flow-arrow" aria-hidden="true">→</div>
-            <div class="flow-node">
-              <strong>Local cockpit</strong>
-              <span>event triggers a targeted refresh</span>
-            </div>
-            <div class="flow-arrow" aria-hidden="true">→</div>
-            <div class="flow-node primary">
-              <strong>No refresh</strong>
-              <span>updates arrive live</span>
-            </div>
-          </div>
-
-          <p class="flow-label">Local cache · always ready</p>
-          <div class="flow">
-            <div class="flow-node">
-              <strong>GitHub GraphQL</strong>
-              <span>source of truth</span>
-            </div>
-            <div class="flow-arrow" aria-hidden="true">→</div>
-            <div class="flow-node">
-              <strong>Bun poller</strong>
-              <span>3-minute reconciliation · configurable</span>
-            </div>
-            <div class="flow-arrow" aria-hidden="true">→</div>
-            <div class="flow-node">
-              <strong>SQLite + disk images</strong>
-              <span>PRs, diffs, threads, warmed images</span>
-            </div>
-            <div class="flow-arrow" aria-hidden="true">→</div>
-            <div class="flow-node primary">
-              <strong>Local UI</strong>
-              <span>reads cache only · opens ~0 ms</span>
-            </div>
-          </div>
-
-          <p class="flow-label">Writes · echo first</p>
-          <div class="flow">
-            <div class="flow-node primary">
-              <strong>Local UI</strong>
-              <span>change appears instantly</span>
-            </div>
-            <div class="flow-arrow" aria-hidden="true">→</div>
-            <div class="flow-node">
-              <strong>Persisted queue</strong>
-              <span>posts in the background</span>
-            </div>
-            <div class="flow-arrow" aria-hidden="true">→</div>
-            <div class="flow-node">
-              <strong>Your <code>gh</code> auth</strong>
-              <span>no OAuth app</span>
-            </div>
-            <div class="flow-arrow" aria-hidden="true">→</div>
-            <div class="flow-node">
+          <figure class="system">
+            <div class="system-node">
               <strong>GitHub</strong>
-              <span>webhook or poll reconciles</span>
+              <span>source of truth · webhooks + GraphQL</span>
             </div>
-          </div>
+            <div class="system-paths">
+              <div class="system-path inbound">
+                <span class="path-label">Events and reads flow in · live in seconds</span>
+                <span class="path-line line-in" aria-hidden="true"><span class="glyph glyph-h">→</span><span class="glyph glyph-v">↓</span></span>
+              </div>
+              <div class="system-path outbound">
+                <span class="path-label">Writes echo instantly, then post via your gh auth</span>
+                <span class="path-line line-out" aria-hidden="true"><span class="glyph glyph-h">←</span><span class="glyph glyph-v">↑</span></span>
+              </div>
+            </div>
+            <div class="system-local">
+              <span class="system-local-label">Local cockpit · your Mac</span>
+              <div class="system-node">
+                <strong>SQLite + disk images</strong>
+                <span>PRs, diffs, threads, warmed images</span>
+              </div>
+              <span class="system-join" aria-hidden="true">↓</span>
+              <div class="system-node primary">
+                <strong>Local UI</strong>
+                <span>reads cache only · opens ~0 ms</span>
+              </div>
+            </div>
+          </figure>
 
-          <div class="how-note">
-            <p><strong>The live experience:</strong> configure the relay whether you work solo or with a team. GitHub changes reach your cockpit in seconds instead of waiting for the next poll.</p>
-            <p><strong>The dependable base layer:</strong> the relay is off until configured. The 3-minute poll still handles cold starts, missed events, and reconciliation.</p>
-          </div>
         </div>
       </div>
     </section>
@@ -1239,18 +1136,24 @@
           <div>
             <span class="kicker">Install</span>
             <h2>One command.</h2>
-            <p>The installer checks for bun and gh, asks before installing anything, clones to <code>~/.pr-cockpit</code>, builds the UI, creates <code>~/Applications/PR Cockpit.app</code>, registers deep links, and sets up launch at login.</p>
-            <p>On first run the app walks you through GitHub access, picking repos, and turning on live updates. Until the webhook relay is connected, the poller keeps the local cache correct.</p>
-            <p class="plain-note">macOS only. Rerun the same command to upgrade.</p>
+            <p>Checks the macOS prerequisites, installs the app, and opens setup. A legacy private install is replaced; local PR data and settings stay.</p>
+            <p class="plain-note">Rerun the same command to upgrade.</p>
           </div>
-          <div class="code-block" role="region" aria-label="Install command" tabindex="0"><span class="prompt">$</span> curl -fsSL https://raw.githubusercontent.com/theolundqvist/pr-cockpit/main/scripts/bootstrap | bash</div>
+          <div class="code-shell">
+            <div class="code-toolbar">
+              <span id="install-label">Install command</span>
+              <button class="copy-install" type="button" aria-label="Copy install command">Copy</button>
+            </div>
+            <pre class="code-block" role="region" aria-labelledby="install-label" tabindex="0"><span class="prompt" aria-hidden="true">$ </span><code class="install-command">curl -fsSL https://raw.githubusercontent.com/theolundqvist/pr-cockpit/main/scripts/bootstrap | bash</code></pre>
+            <span class="copy-status visually-hidden" role="status"></span>
+          </div>
         </div>
       </div>
     </section>
   </main>
 
   <footer class="wrap footer">
-    <span>Built for one review queue. Yours, if you want it.</span>
+    <span>PR reviews at local speed.</span>
     <div class="footer-links">
       <a href="https://github.com/theolundqvist/pr-cockpit">GitHub</a>
       <a href="#top">Back to top ↑</a>
@@ -1278,6 +1181,27 @@
     lightbox.querySelector(".lightbox-close").addEventListener("click", () => lightbox.close());
     lightbox.addEventListener("click", (event) => {
       if (event.target === lightbox) lightbox.close();
+    });
+
+    const copyButton = document.querySelector(".copy-install");
+    const copyStatus = document.querySelector(".copy-status");
+    const installCommand = document.querySelector(".install-command");
+    let copyResetTimer;
+
+    copyButton.addEventListener("click", async () => {
+      clearTimeout(copyResetTimer);
+      try {
+        await navigator.clipboard.writeText(installCommand.textContent);
+      } catch {
+        copyStatus.textContent = "Copy failed. Select the command and copy it manually.";
+        return;
+      }
+      copyButton.textContent = "Copied";
+      copyStatus.textContent = "Install command copied to clipboard.";
+      copyResetTimer = setTimeout(() => {
+        copyButton.textContent = "Copy";
+        copyStatus.textContent = "";
+      }, 2000);
     });
   </script>
 </body>

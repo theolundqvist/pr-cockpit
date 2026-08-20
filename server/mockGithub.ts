@@ -25,6 +25,7 @@ interface Snapshot {
   history: { repo: string; path: string; base: string; commits: FileHistoryCommit[] };
   historyDiffs: Record<string, FileHistoryDiff>;
   assets: Record<string, string>;
+  fileContents: Record<string, string>;
 }
 
 const snapshotDir = isMockGithub ? Bun.env.COCKPIT_MOCK_DATA || null : null;
@@ -461,7 +462,11 @@ export const mockGithub = isMockGithub ? {
     return structuredClone(historyDiffs.get(commitSha)!);
   },
   fileContents: (repo: string, path: string, fileSha: string): FileContents => {
-    if (capturedRepo) return { tooLarge: true };
+    if (capturedRepo) {
+      if (repo !== capturedRepo) throw new Error(`no mock file contents for ${repo}:${fileSha}:${path}`);
+      const content = snapshot?.fileContents[`${fileSha}:${path}`];
+      return content === undefined ? { tooLarge: true } : { content };
+    }
     const detail = Object.entries(details).find(([key, candidate]) => key.startsWith(`${repo}#`) && candidate.headRefOid === fileSha)?.[1];
     if (!detail?.files.nodes.some((candidate) => candidate.path === path)) throw new Error(`no mock file contents for ${repo}:${fileSha}:${path}`);
     return path.endsWith(".bin") ? { tooLarge: true } : { content: `export const fixturePath = ${JSON.stringify(path)};\nexport const capturedAt = ${JSON.stringify(MOCK_FIXTURE_CLOCK)};\n` };

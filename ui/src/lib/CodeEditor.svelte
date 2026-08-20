@@ -8,7 +8,7 @@
   import { ensureTheme, getHighlighter, langForPath, tokenizeCode } from "./highlight.js";
   import { theme } from "./theme.svelte.js";
 
-  let { content = $bindable(), path, initialLine = 1, initialColumn = 0, rowOffset = 0, layout = "unified" } = $props();
+  let { content = $bindable(), path, initialLine = 1, initialColumn = 0, rowOffset = 0, layout = "unified", onFinish = null } = $props();
   let host;
   let editor;
   let shikiTheme;
@@ -156,6 +156,12 @@
           EditorView.contentAttributes.of({ "aria-label": `Edit ${path}`, spellcheck: "false" }),
           EditorView.updateListener.of((update) => {
             if (update.docChanged) content = update.state.doc.toString();
+          }),
+          EditorView.domEventHandlers({
+            blur: () => {
+              onFinish?.();
+              return false;
+            },
           }),
           languageForPath(path),
           shikiCompartment.of(shikiHighlighting(path, shikiTheme)),

@@ -7,6 +7,7 @@ repo_slug="theolundqvist/pr-cockpit"
 repo_url="https://github.com/$repo_slug.git"
 target="${COCKPIT_HOME:-$HOME/.pr-cockpit}"
 dry_run="${COCKPIT_BOOTSTRAP_DRY_RUN:-0}"
+legacy_backup=""
 
 say() { echo "pr-cockpit: $*"; }
 die() { echo "pr-cockpit: $*" >&2; exit 1; }
@@ -123,19 +124,65 @@ remote_slug() {
   printf '%s' "$url"
 }
 
+replace_legacy_checkout() {
+  local replacement="${target}.new.$$"
+  local previous="${target}.old.$$"
+
+  say "replacing the legacy private checkout at $target"
+  if [[ "$dry_run" == "1" ]]; then
+    say "would clone $repo_slug, replace $target, and remove the legacy checkout"
+    return
+  fi
+
+  rm -rf "$replacement" "$previous"
+  if ! git clone --quiet "$repo_url" "$replacement"; then
+    rm -rf "$replacement"
+    die "couldn't clone $repo_slug — the legacy checkout is unchanged"
+  fi
+  mv "$target" "$previous"
+  if ! mv "$replacement" "$target"; then
+    mv "$previous" "$target"
+    rm -rf "$replacement"
+    die "couldn't replace $target — the legacy checkout was restored"
+  fi
+  legacy_backup="$previous"
+}
+
 if [[ -e "$target" ]]; then
   [[ -d "$target/.git" ]] || die "$target already exists and is not a git checkout — move it aside or set COCKPIT_HOME to another path"
   origin="$(git -C "$target" remote get-url origin 2>/dev/null || true)"
-  [[ "$(remote_slug "$origin")" == "$repo_slug" ]] || die "$target is a checkout of ${origin:-an unknown remote}, not $repo_slug — move it aside or set COCKPIT_HOME to another path"
-  say "updating existing checkout at $target"
-  run "$target/scripts/update-pull" >/dev/null || die "couldn't fast-forward $target (reason above) — resolve it there, then rerun this command"
+  origin_slug="$(remote_slug "$origin")"
+  if [[ "$origin_slug" == "theolundqvist/pr-cockpit-private" ]]; then
+    replace_legacy_checkout
+  elif [[ "$origin_slug" == "$repo_slug" ]]; then
+    say "updating existing checkout at $target"
+    if ! pull_reason="$("$target/scripts/update-pull" 2>&1 >/dev/null)"; then
+      if [[ -z "${COCKPIT_HOME:-}" && ( "$pull_reason" == local\ history\ diverged* || "$pull_reason" == branch\ *\ only\ exists\ locally* ) ]]; then
+        replace_legacy_checkout
+      else
+        die "couldn't fast-forward $target (${pull_reason:-reason above}) — resolve it there, then rerun this command"
+      fi
+    fi
+  else
+    die "$target is a checkout of ${origin:-an unknown remote}, not $repo_slug — move it aside or set COCKPIT_HOME to another path"
+  fi
 else
   say "cloning $repo_slug into $target"
   run git clone --quiet "$repo_url" "$target"
 fi
 
 say "running the installer..."
-run "$target/scripts/install"
+if ! run "$target/scripts/install"; then
+  if [[ -n "$legacy_backup" ]]; then
+    rm -rf "$target"
+    mv "$legacy_backup" "$target"
+    die "installer failed — the legacy checkout was restored"
+  fi
+  die "installer failed"
+fi
+if [[ -n "$legacy_backup" ]]; then
+  rm -rf "$legacy_backup"
+fi
 
 say "ready"
 echo "  open:     open \"$HOME/Applications/PR Cockpit.app\""

@@ -8,8 +8,8 @@ import { mockAvatarSvg } from "../server/mockImages.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const FIXED_NOW = Date.parse("2026-07-15T10:00:00.000Z");
-const DEFAULT_SIZES = ["1440x900", "2560x1440", "1100x800"];
-const DEFAULT_OUT = "artifacts/views";
+const DEFAULT_SIZES = ["1100x800"];
+const DEFAULT_OUT = "screenshots";
 const REPO = "fixture/cockpit";
 
 function mockAvatarLogin(url) {
@@ -52,6 +52,45 @@ const scenarios = [
     },
   },
   {
+    name: "inbox-recently-merged",
+    route: "#/",
+    description: "Recently finished pull requests with merged and closed results.",
+    beforeGoto: async (page, { baseURL }) => {
+      const { prs } = await requestJson(`${baseURL}/api/inbox`);
+      const terminalAt = new Date(FIXED_NOW - 1_800_000).toISOString();
+      const closed = [
+        { ...prs[0], state: "MERGED", mergedAt: terminalAt, closedAt: terminalAt, terminalAt },
+        { ...prs[1], state: "CLOSED", mergedAt: null, closedAt: terminalAt, terminalAt },
+      ];
+      await page.route("**/api/closed", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ prs: closed }),
+      }));
+    },
+    ready: ".inbox-layout",
+    interact: async (page) => {
+      await page.getByRole("tab", { name: /Recently merged/ }).click();
+      await page.locator(".queue-group .row").first().waitFor();
+    },
+    verify: async (page) => page.getByText("Recently finished", { exact: true }).waitFor(),
+  },
+  {
+    name: "inbox-filter",
+    route: "#/",
+    description: "Inbox filtered to draft pull requests.",
+    ready: ".inbox-layout .queue-group",
+    interact: async (page) => {
+      await page.keyboard.press("/");
+      await page.locator(".filter-row input").fill("author:octocat");
+    },
+    verify: async (page) => {
+      const value = await page.locator(".filter-row input").inputValue();
+      if (value !== "author:octocat") throw new Error(`unexpected inbox filter: ${value}`);
+      await page.locator(".queue-group .row").first().waitFor();
+    },
+  },
+  {
     ...detail("detail-conversation", 101, "Green PR conversation with approvals, threads, comments, and successful checks."),
     verify: async (page) => page.locator(".current-branch-badge").getByText("current", { exact: true }).waitFor(),
   },
@@ -83,6 +122,96 @@ const scenarios = [
     verify: async (page) => {
       await page.getByRole("heading", { name: "Ship the rename feature", exact: true }).waitFor();
       await page.getByText("SAVING…", { exact: true }).waitFor();
+    },
+  },
+  {
+    ...detail("detail-description-edit", 101, "Pull request description editor with a deterministic visible draft."),
+    interact: async (page) => {
+      await page.locator(".body-edit").click();
+      const editor = page.locator(".body-editor textarea");
+      await editor.fill("## Release plan\n\nShip the deterministic capture matrix with every interactive state visible.");
+      await editor.scrollIntoViewIfNeeded();
+    },
+    verify: async (page) => {
+      const value = await page.locator(".body-editor textarea").inputValue();
+      if (!value.includes("deterministic capture matrix")) throw new Error("description draft was not rendered");
+    },
+  },
+  {
+    ...detail("detail-comment-compose", 101, "Conversation comment composer with a deterministic draft."),
+    interact: async (page) => {
+      const composer = page.locator("#composer-input");
+      await composer.fill("The release notes now explain the state transition and rollback behavior.");
+      await composer.scrollIntoViewIfNeeded();
+    },
+    verify: async (page) => page.getByRole("button", { name: "Comment", exact: true }).waitFor(),
+  },
+  {
+    ...detail("detail-thread-reply", 103, "Open review thread with a deterministic reply draft."),
+    interact: async (page) => {
+      const reply = page.getByPlaceholder("Reply…").first();
+      await reply.fill("I moved the conflict handling to the navigation state boundary.");
+      await reply.scrollIntoViewIfNeeded();
+    },
+    verify: async (page) => page.getByRole("button", { name: "Reply", exact: true }).first().waitFor(),
+  },
+  {
+    ...detail("detail-review-submission", 102, "Review submission controls prepared with a request-changes verdict."),
+    interact: async (page) => {
+      await page.locator("#verdict-control").selectOption("REQUEST_CHANGES");
+      const body = page.getByPlaceholder("Optional body…");
+      await body.fill("Please resolve the branch-protection blocker before merging.");
+      await body.scrollIntoViewIfNeeded();
+    },
+    verify: async (page) => page.getByRole("button", { name: "Submit review", exact: true }).waitFor(),
+  },
+  {
+    ...detail("detail-reviewer-picker", 102, "Reviewer picker populated with deterministic repository users."),
+    interact: async (page) => {
+      await page.keyboard.press("q");
+      await page.getByRole("dialog", { name: "Request review from" }).waitFor();
+      await page.getByPlaceholder("Filter people…").fill("reviewer");
+    },
+  },
+  {
+    ...detail("detail-assignee-picker", 101, "Assignee picker populated with deterministic repository users."),
+    interact: async (page) => {
+      await page.keyboard.press("s");
+      await page.getByRole("dialog", { name: "Assign people" }).waitFor();
+      await page.getByPlaceholder("Filter people…").fill("reviewer");
+    },
+  },
+  {
+    ...detail("detail-merge-confirmation", 101, "Ordinary merge confirmation without submitting the merge."),
+    interact: async (page) => {
+      await page.keyboard.press("m");
+      await page.locator(".merge-confirm").waitFor();
+    },
+    verify: async (page) => page.getByText(/merge PR #101 into/).waitFor(),
+  },
+  {
+    ...detail("detail-close-confirmation", 101, "Close confirmation without closing the pull request."),
+    interact: async (page) => {
+      await page.keyboard.press("x");
+      await page.locator(".close-confirm").waitFor();
+    },
+    verify: async (page) => page.getByText("close PR #101?", { exact: true }).waitFor(),
+  },
+  {
+    ...detail("detail-find-bar", 101, "Find-in-page bar with deterministic matches highlighted."),
+    interact: async (page) => {
+      await page.keyboard.press("Meta+f");
+      await page.getByPlaceholder("Find").fill("fixture");
+    },
+    verify: async (page) => page.locator(".find-bar .count").getByText(/\d+\/\d+/).waitFor(),
+  },
+  {
+    ...detail("detail-image-lightbox", 101, "Markdown image opened in the deterministic image lightbox."),
+    interact: async (page) => {
+      const image = page.locator(".body-card .md img").first();
+      await image.waitFor();
+      await image.click();
+      await page.locator(".lightbox img").waitFor();
     },
   },
   detail("detail-conversation-blocked", 102, "PR blocked by branch protection without an admin bypass."),
@@ -124,6 +253,70 @@ const scenarios = [
     route: `#/pr/${REPO}/101/files`,
     description: "Files tab with an ordinary three-file diff and inline threads.",
     ready: ".files-layout .diff",
+  },
+  {
+    name: "detail-range-picker",
+    route: `#/pr/${REPO}/101/files`,
+    description: "Changed-range picker opened over a multi-commit pull request.",
+    ready: ".files-layout .diff",
+    interact: async (page) => {
+      await page.locator(".rp-trigger").click();
+      await page.locator(".rp-popover").waitFor();
+    },
+    verify: async (page) => page.getByText("drag, or space + j/k, to select a range", { exact: true }).waitFor(),
+  },
+  {
+    name: "detail-inline-comment-compose",
+    route: `#/pr/${REPO}/101/files`,
+    description: "Inline diff comment composer with a deterministic draft.",
+    ready: ".files-layout .diff",
+    interact: async (page) => {
+      await page.locator(".add-comment:not([disabled])").first().evaluate((button) => button.click());
+      const composer = page.locator(".inline-compose textarea");
+      await composer.fill("This boundary should preserve the previous scheduling mode.");
+      await composer.scrollIntoViewIfNeeded();
+    },
+    verify: async (page) => page.locator(".inline-compose").getByRole("button", { name: "Comment", exact: true }).waitFor(),
+  },
+  {
+    name: "detail-file-editing",
+    route: `#/pr/${REPO}/101/files`,
+    description: "Full-file editor with a legible deterministic edit in progress.",
+    ready: ".files-layout .diff",
+    interact: async (page) => {
+      const file = page.locator(".diff .file").filter({ hasText: "src/flight.ts" });
+      await file.getByRole("button", { name: "edit", exact: true }).click();
+      const editor = page.getByRole("textbox", { name: "Edit src/flight.ts" });
+      await editor.fill("export function launch(mode = \"automatic\") {\n  return `launch:${mode}`;\n}\n\nexport const fixtureNumber = 101;\n");
+      await file.locator(".file-editor").scrollIntoViewIfNeeded();
+    },
+    verify: async (page) => page.getByRole("button", { name: "Review changes", exact: true }).waitFor(),
+  },
+  {
+    name: "detail-file-edit-review",
+    route: `#/pr/${REPO}/101/files`,
+    description: "Modified editor automatically enters review with a diff, commit message, and explicit ignore action.",
+    ready: ".files-layout .diff",
+    interact: async (page) => {
+      const file = page.locator(".diff .file").filter({ hasText: "src/flight.ts" });
+      const edit = file.getByRole("button", { name: "edit", exact: true });
+      await edit.click();
+      let editor = page.getByRole("textbox", { name: "Edit src/flight.ts" });
+      await editor.fill("export function launch(mode = \"automatic\") {\n  return `launch:${mode}`;\n}\n\nexport const fixtureNumber = 101;\n");
+      await editor.blur();
+      await page.getByRole("button", { name: "Ignore changes", exact: true }).click();
+      await edit.click();
+      editor = page.getByRole("textbox", { name: "Edit src/flight.ts" });
+      await editor.fill("export function launch(mode = \"automatic\") {\n  return `launch:${mode}`;\n}\n\nexport const fixtureNumber = 101;\n");
+      await editor.blur();
+      await page.getByLabel("Commit message").fill("Make launch mode explicit");
+      await file.locator(".file-edit-review").scrollIntoViewIfNeeded();
+    },
+    verify: async (page) => {
+      await page.locator(".file-edit-preview").getByText("+  return `launch:${mode}`;", { exact: true }).waitFor();
+      await page.getByRole("button", { name: "Commit to PR", exact: true }).waitFor();
+      await page.getByRole("button", { name: "Ignore changes", exact: true }).waitFor();
+    },
   },
   {
     name: "detail-files-large-diff",
@@ -182,6 +375,27 @@ const scenarios = [
     },
   },
   {
+    name: "detail-agent-run-detail",
+    route: `#/pr/${REPO}/110/agents`,
+    description: "Successful agent run detail with structured turns expanded.",
+    ready: ".agents-layout .run-row",
+    interact: async (page) => {
+      await page.locator(".run-row").nth(1).click();
+      await page.locator(".run-detail-head").waitFor();
+      const turn = page.locator(".turn-toggle").first();
+      if (await turn.count()) await turn.click();
+    },
+    verify: async (page) => page.locator(".run-turns").waitFor(),
+  },
+  {
+    ...detail("detail-agent-prompt", 101, "Agent prompt dialog with a deterministic task instruction."),
+    interact: async (page) => {
+      await page.keyboard.press("p");
+      await page.getByPlaceholder("e.g. remove the comments you just added").fill("Explain the failing check and prepare the smallest safe fix.");
+    },
+    verify: async (page) => page.getByText("prompt an agent on #101", { exact: true }).waitFor(),
+  },
+  {
     name: "detail-agents-empty",
     route: `#/pr/${REPO}/101/agents`,
     description: "Agents tab before any runs exist.",
@@ -220,7 +434,7 @@ const scenarios = [
     description: "PR jump palette populated from the fixture inbox and index.",
     ready: ".inbox-layout",
     interact: async (page) => {
-      await page.getByRole("button", { name: "Find a PR" }).first().click();
+      await page.keyboard.press("Meta+k");
       await page.locator(".palette .palette-result").first().waitFor();
     },
   },
@@ -245,8 +459,15 @@ const scenarios = [
     route: "#/",
     description: "First-run repository picker.",
     prepare: clearConfiguredRepos,
-    ready: ".onb-page .repo-list",
+    beforeGoto: onboardingFixtureRoutes,
+    ready: ".onb-page",
+    interact: async (page) => advanceOnboarding(page, 2),
+    verify: async (page) => page.getByText("Step 2 of 4", { exact: true }).waitFor(),
   },
+  onboardingStep("onboarding-step-1-connect", 1, "Successful GitHub authentication step."),
+  onboardingStep("onboarding-step-2-repositories", 2, "Successful repository selection step."),
+  onboardingStep("onboarding-step-3-live-updates", 3, "Successful live-update coverage step."),
+  onboardingStep("onboarding-step-4-ready", 4, "Successful initial inbox sync step."),
   {
     name: "detail-not-found",
     route: `#/pr/${REPO}/999`,
@@ -276,6 +497,65 @@ function settings(name, description, tab) {
       });
     },
   };
+}
+function onboardingStep(name, step, description) {
+  return {
+    name,
+    route: "#/",
+    description,
+    prepare: clearConfiguredRepos,
+    beforeGoto: onboardingFixtureRoutes,
+    ready: ".onb-page",
+    interact: step === 1 ? undefined : async (page) => advanceOnboarding(page, step),
+    verify: async (page) => {
+      await page.getByText(`Step ${step} of 4`, { exact: true }).waitFor();
+      if (step === 1) await page.getByText("Connected as", { exact: false }).waitFor();
+      if (step === 3) await page.getByText("Live updates confirmed for every selected repository.", { exact: true }).waitFor();
+      if (step === 4) await page.getByText("Your inbox is ready.", { exact: true }).waitFor();
+    },
+  };
+}
+
+async function onboardingFixtureRoutes(page) {
+  await page.route("**/api/auth/status", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ ok: true, login: "theolundqvist" }),
+  }));
+  await page.route("**/api/onboarding/repos", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify([
+      { nameWithOwner: REPO, isPrivate: false, pushedAt: new Date(FIXED_NOW - 3_600_000).toISOString() },
+      { nameWithOwner: "fixture/relay", isPrivate: false, pushedAt: new Date(FIXED_NOW - 86_400_000).toISOString() },
+    ]),
+  }));
+  await page.route("**/api/relay/coverage**", (route) => {
+    const repos = new URL(route.request().url()).searchParams.get("repos")?.split(",") ?? [];
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ repos: Object.fromEntries(repos.map((repo) => [repo, true])), installUrl: "https://github.com/apps/pr-cockpit" }),
+    });
+  });
+  await page.route("**/api/refresh", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ ok: true }),
+  }));
+}
+
+async function advanceOnboarding(page, targetStep) {
+  await page.getByText("Connected as", { exact: false }).waitFor();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.locator(".repo-list").waitFor();
+  if (targetStep === 2) return;
+  await page.locator(".repo-row input").first().check();
+  await page.getByRole("button", { name: "Continue with 1", exact: true }).click();
+  await page.getByText("Live updates confirmed for every selected repository.", { exact: true }).waitFor();
+  if (targetStep === 3) return;
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByText("Your inbox is ready.", { exact: true }).waitFor();
 }
 
 function parseArgs(argv) {
@@ -528,6 +808,15 @@ async function clearManifestScreenshots(out) {
   }
   await rm(manifestPath, { force: true });
 }
+async function pngFiles(out, directory = out) {
+  const files = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...await pngFiles(out, path));
+    else if (entry.isFile() && entry.name.endsWith(".png")) files.push(relative(out, path).split(sep).join("/"));
+  }
+  return files.sort();
+}
 
 async function run() {
   const options = parseArgs(process.argv.slice(2));
@@ -563,6 +852,11 @@ async function run() {
 
   try {
     await waitForServer(server, baseURL, logs);
+    await requestJson(`${baseURL}/api/settings`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ hide_sidebar: true }),
+    });
     browser = await chromium.launch({ headless: true });
     for (const viewport of options.viewports) {
       for (const theme of options.themes) {
@@ -601,11 +895,18 @@ async function run() {
           let cleanup;
           try {
             cleanup = await scenario.prepare?.({ baseURL });
-            await scenario.beforeGoto?.(page);
+            await scenario.beforeGoto?.(page, { baseURL });
             await page.goto(`${baseURL}/${scenario.route}`, { waitUntil: "domcontentloaded" });
             await page.locator(scenario.ready).first().waitFor({ state: "visible", timeout: 15_000 });
             await scenario.interact?.(page);
             await scenario.verify?.(page);
+            const sidebar = page.locator(".app-sidebar");
+            if (await sidebar.count()) await sidebar.waitFor({ state: "hidden" });
+            if (scenario.name === "inbox-populated") {
+              const quickActions = page.getByText("Quick actions", { exact: true });
+              const box = await quickActions.boundingBox();
+              if (box && box.y < viewport.height) throw new Error(`Quick actions are visible at y=${box.y}`);
+            }
             await settle(page, theme);
             if (externalRequests.length) throw new Error(`external network request blocked: ${externalRequests.join(", ")}`);
             if (pageErrors.length) throw new AggregateError(pageErrors, "uncaught browser error");
@@ -649,6 +950,11 @@ async function run() {
     if (failures.length) {
       for (const failure of failures) console.error(`\n${failure.scenario} ${failure.size} ${failure.theme}:\n${failure.error.stack ?? failure.error}`);
       throw new Error(`${failures.length} screenshot variant${failures.length === 1 ? "" : "s"} failed`);
+    }
+    const manifestFiles = Object.values(manifest).flatMap((entry) => entry.files).sort();
+    const outputFiles = await pngFiles(options.out);
+    if (JSON.stringify(outputFiles) !== JSON.stringify(manifestFiles)) {
+      throw new Error(`manifest files do not match output files: manifest=${manifestFiles.length}, output=${outputFiles.length}`);
     }
     console.log(`\nWrote ${summary.reduce((total, row) => total + row.shots, 0)} screenshots and manifest.json to ${options.out}`);
   } finally {
