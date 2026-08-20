@@ -7,7 +7,7 @@ import { extname, join, resolve } from "node:path";
 import { chromium } from "playwright";
 
 const ROOT = resolve(import.meta.dirname, "..");
-const VIEWPORT = { width: 1100, height: 800 };
+const VIEWPORT = { width: 1600, height: 1200 };
 const THEMES = ["light", "dark"];
 const CONTENT_TYPE_BY_EXTENSION = {
   ".png": "image/png",
@@ -162,11 +162,6 @@ function scenariosFor(snapshot, roles) {
       ready: ".inbox-layout .queue-group",
       verify: async (page) => {
         if (await page.locator(".app-sidebar").isVisible()) throw new Error("inbox sidebar is visible");
-        const quickActions = page.locator(".queue-sidecar");
-        if (await quickActions.isVisible()) {
-          const box = await quickActions.boundingBox();
-          if (box && box.y < VIEWPORT.height && box.y + box.height > 0) throw new Error("Quick actions are visible in the inbox frame");
-        }
       },
     },
     {

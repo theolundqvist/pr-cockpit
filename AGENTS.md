@@ -15,6 +15,7 @@ This repository is worked on by humans and coding agents alike. Leave it easier 
 - `bun install` at the repository root, in `ui/`, and in `shell/`.
 - `cd ui && bun run dev` for a hot-reloading UI. It proxies `/api` to `127.0.0.1:4820`, so it needs a server on that port.
 - `bun test server/<file>.test.ts` for a targeted test. Prefer targeted runs over the whole suite while iterating.
+- Screenshot harnesses render at `1600x1200`; keep their default viewport and PNG dimension checks aligned.
 - Match the surrounding style. Comments are for a non-obvious constraint, not for narration.
 
 ## Restarting the local server
