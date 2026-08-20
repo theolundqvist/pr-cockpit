@@ -24,8 +24,8 @@
       --red: #ff806e;
       --mono: "SFMono-Regular", "SF Mono", Menlo, Monaco, Consolas, monospace;
       --sans: "SF Pro Display", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      --page: 1160px;
-      --radius: 18px;
+      --page: 1240px;
+      --radius: 8px;
     }
 
     * {
@@ -45,7 +45,7 @@
         var(--bg);
       color: var(--text);
       font-family: var(--sans);
-      font-size: 16px;
+      font-size: 15px;
       line-height: 1.55;
       -webkit-font-smoothing: antialiased;
     }
@@ -77,7 +77,7 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      height: 72px;
+      height: 60px;
       border-bottom: 1px solid rgba(255, 255, 255, 0.06);
     }
 
@@ -129,53 +129,27 @@
     }
 
     .hero {
-      padding: 112px 0 56px;
+      padding: 72px 0 36px;
       text-align: center;
     }
 
-    .eyebrow {
-      display: inline-flex;
-      align-items: center;
-      gap: 9px;
-      color: var(--text-dim);
-      font-family: var(--mono);
-      font-size: 12px;
-      letter-spacing: 0.03em;
-      text-transform: uppercase;
-    }
-
-    .eyebrow::before {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: var(--green);
-      box-shadow: 0 0 18px rgba(94, 210, 141, 0.7);
-      content: "";
-    }
 
     h1 {
       max-width: 900px;
-      margin: 24px auto 22px;
-      font-size: clamp(48px, 7.4vw, 88px);
+      margin: 0 auto;
+      font-size: clamp(44px, 6vw, 72px);
       font-weight: 650;
-      letter-spacing: -0.065em;
+      letter-spacing: -0.06em;
       line-height: 0.98;
     }
 
-    .hero-copy {
-      max-width: 680px;
-      margin: 0 auto;
-      color: var(--text-dim);
-      font-size: clamp(18px, 2.2vw, 23px);
-      letter-spacing: -0.018em;
-    }
 
     .hero-actions {
       display: flex;
       flex-wrap: wrap;
       justify-content: center;
       gap: 10px;
-      margin-top: 34px;
+      margin-top: 24px;
     }
 
     .button {
@@ -185,7 +159,7 @@
       min-height: 44px;
       padding: 0 18px;
       border: 1px solid var(--border);
-      border-radius: 10px;
+      border-radius: 6px;
       background: var(--panel-raised);
       color: var(--text);
       font-size: 14px;
@@ -222,12 +196,12 @@
       border: 1px solid var(--border);
       border-radius: var(--radius);
       background: var(--panel);
-      box-shadow: 0 32px 100px rgba(0, 0, 0, 0.42);
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.36);
     }
 
     .hero-shot {
-      margin-top: 36px;
-      padding: 7px;
+      margin-top: 24px;
+      padding: 4px;
       overflow: clip;
     }
 
@@ -271,7 +245,7 @@
     }
 
     .section {
-      padding: 112px 0;
+      padding: 72px 0;
     }
 
     .section-rule {
@@ -280,59 +254,37 @@
 
     .section-intro {
       display: grid;
-      grid-template-columns: minmax(0, 0.72fr) minmax(300px, 0.48fr);
-      gap: 80px;
-      align-items: end;
-      margin-bottom: 50px;
+      grid-template-columns: 1fr;
+      gap: 0;
+      margin-bottom: 30px;
     }
 
-    .kicker {
-      display: block;
-      margin-bottom: 17px;
-      color: var(--text-faint);
-      font-family: var(--mono);
-      font-size: 12px;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-    }
 
     h2.section-title {
       margin: 0;
-      font-size: clamp(38px, 5vw, 62px);
+      font-size: clamp(32px, 4vw, 48px);
       font-weight: 620;
-      letter-spacing: -0.052em;
+      letter-spacing: -0.048em;
       line-height: 1.02;
     }
 
-    .section-copy {
-      margin: 0;
-      color: var(--text-dim);
-      font-size: 17px;
-    }
 
     .benchmark-intro {
       max-width: 760px;
-      margin: 0 auto 56px;
+      margin: 0 auto 32px;
       text-align: center;
     }
 
-    .benchmark-intro .section-copy {
-      max-width: 650px;
-      margin: 18px auto 0;
-    }
 
     .benchmark-grid {
       display: grid;
-      max-width: 1040px;
-      margin: 0 auto;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 12px;
     }
 
     .benchmark-card {
-      display: grid;
-      grid-template-columns: 170px minmax(0, 1fr);
-      gap: 28px;
-      padding: 24px;
+      min-width: 0;
+      padding: 16px;
       overflow: hidden;
       border: 1px solid var(--border);
       border-radius: var(--radius);
@@ -342,10 +294,10 @@
     .benchmark-card-header {
       display: flex;
       min-width: 0;
-      flex-direction: column;
-      align-items: flex-start;
-      justify-content: center;
+      align-items: center;
+      justify-content: space-between;
       gap: 10px;
+      margin-bottom: 14px;
     }
 
     .benchmark-label {
@@ -357,14 +309,10 @@
     .benchmark-speedup {
       flex: none;
       max-width: 100%;
-      padding: 4px 8px;
       overflow: hidden;
-      border: 1px solid color-mix(in srgb, var(--green) 35%, transparent);
-      border-radius: 999px;
-      background: color-mix(in srgb, var(--green) 10%, transparent);
       color: var(--green);
       font-family: var(--mono);
-      font-size: 11px;
+      font-size: 12px;
       font-weight: 650;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -373,7 +321,7 @@
     .benchmark-products {
       display: grid;
       min-width: 0;
-      gap: 14px;
+      gap: 10px;
     }
 
     .benchmark-product {
@@ -382,11 +330,11 @@
 
     .benchmark-bar {
       position: relative;
-      height: 52px;
+      height: 44px;
       min-width: 0;
       overflow: hidden;
       border: 1px solid var(--border);
-      border-radius: 9px;
+      border-radius: 5px;
       background: var(--panel-strong);
       isolation: isolate;
     }
@@ -417,8 +365,8 @@
       min-width: 0;
       align-items: center;
       justify-content: space-between;
-      gap: 16px;
-      padding: 0 16px;
+      gap: 10px;
+      padding: 0 10px;
     }
 
     .benchmark-product-name {
@@ -449,7 +397,7 @@
     }
 
     .benchmark-value {
-      font-size: clamp(22px, 2.5vw, 30px);
+      font-size: 22px;
       font-weight: 650;
       letter-spacing: -0.05em;
       line-height: 1;
@@ -491,7 +439,7 @@
 
     .benchmark-method {
       max-width: 900px;
-      margin: 24px auto 0;
+      margin: 18px auto 0;
       color: var(--text-faint);
       font-family: var(--mono);
       font-size: 11px;
@@ -530,7 +478,7 @@
     .palette-layout {
       display: grid;
       grid-template-columns: minmax(0, 0.9fr) minmax(340px, 1.1fr);
-      gap: 60px;
+      gap: 32px;
       align-items: center;
     }
 
@@ -554,16 +502,11 @@
     }
 
     .feature-item h2 {
-      margin: 0 0 8px;
+      margin: 0;
       font-size: 21px;
       letter-spacing: -0.025em;
     }
 
-    .feature-item p {
-      margin: 0;
-      color: var(--text-dim);
-      font-size: 15px;
-    }
 
     .agents-panel {
       display: grid;
@@ -575,35 +518,23 @@
     }
 
     .agents-copy {
-      padding: clamp(34px, 6vw, 72px);
+      padding: 32px;
     }
 
     .agents-copy h2 {
-      margin: 0 0 18px;
-      font-size: clamp(36px, 4.6vw, 56px);
-      letter-spacing: -0.05em;
+      margin: 0;
+      font-size: clamp(32px, 3.8vw, 44px);
+      letter-spacing: -0.045em;
       line-height: 1.02;
     }
 
-    .agents-copy p {
-      margin: 0;
-      color: var(--text-dim);
-      font-size: 17px;
-    }
-
-    .agents-copy .small {
-      margin-top: 18px;
-      color: var(--text-faint);
-      font-family: var(--mono);
-      font-size: 12px;
-    }
 
     .agent-console {
       display: flex;
       flex-direction: column;
       justify-content: center;
-      min-height: 420px;
-      padding: 40px;
+      min-height: 300px;
+      padding: 28px;
       border-left: 1px solid var(--border);
       background: #141413;
       font-family: var(--mono);
@@ -611,12 +542,10 @@
     }
 
     .how-card {
-      padding: clamp(30px, 5vw, 58px);
+      padding: 32px;
       border: 1px solid var(--border);
       border-radius: var(--radius);
-      background:
-        linear-gradient(145deg, rgba(112, 174, 255, 0.045), transparent 45%),
-        var(--panel);
+      background: var(--panel);
     }
 
     .system {
@@ -624,7 +553,7 @@
       grid-template-columns: minmax(170px, 0.55fr) minmax(210px, 0.95fr) minmax(280px, 1.1fr);
       gap: 22px;
       align-items: center;
-      margin: 40px 0 0;
+      margin: 24px 0 0;
     }
 
     .system-node {
@@ -633,7 +562,7 @@
       gap: 7px;
       padding: 19px;
       border: 1px solid var(--border);
-      border-radius: 12px;
+      border-radius: 6px;
       background: #151514;
     }
 
@@ -707,7 +636,7 @@
       gap: 10px;
       padding: 42px 16px 16px;
       border: 1px dashed var(--border-strong);
-      border-radius: 14px;
+      border-radius: 6px;
     }
 
     .system-local-label {
@@ -778,13 +707,12 @@
     }
 
     .cli-panel {
-      margin-top: 18px;
-      grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+      margin-top: 12px;
+      grid-template-columns: 1fr;
     }
 
     .cli-panel .agent-console {
-      border-left: 0;
-      border-right: 1px solid var(--border);
+      border: 0;
     }
 
     .console-line .cli-prompt {
@@ -799,25 +727,6 @@
       color: var(--green);
     }
 
-    .cli-why {
-      margin-top: 14px;
-    }
-
-    .cli-commands {
-      display: grid;
-      gap: 9px;
-      margin: 28px 0 0;
-      padding: 0;
-      list-style: none;
-      color: var(--text-faint);
-      font-family: var(--mono);
-      font-size: 12px;
-      line-height: 1.5;
-    }
-
-    .cli-commands code {
-      color: var(--text-dim);
-    }
 
     .visual-pr-media {
       display: grid;
@@ -838,7 +747,7 @@
       display: flex;
       flex-wrap: wrap;
       gap: 10px;
-      margin-top: 26px;
+      margin-top: 18px;
     }
 
     .visual-pr-links .button {
@@ -848,13 +757,8 @@
     }
 
     .keys-section {
-      padding-block: 144px;
+      padding-block: 72px;
       text-align: center;
-    }
-
-    .keys-section .section-copy {
-      max-width: 610px;
-      margin: 20px auto 44px;
     }
 
     .key-grid {
@@ -863,7 +767,7 @@
       justify-content: center;
       gap: 9px;
       max-width: 980px;
-      margin: 48px auto 0;
+      margin: 28px auto 0;
     }
 
     .key-action {
@@ -873,7 +777,7 @@
       min-height: 38px;
       padding: 5px 11px 5px 6px;
       border: 1px solid var(--border);
-      border-radius: 8px;
+      border-radius: 5px;
       background: var(--panel);
       color: var(--text-dim);
       font-size: 13px;
@@ -898,40 +802,27 @@
 
     .install-card {
       display: grid;
-      grid-template-columns: minmax(0, 0.8fr) minmax(420px, 1.2fr);
-      gap: 80px;
+      grid-template-columns: minmax(0, 0.55fr) minmax(420px, 1.45fr);
+      gap: 40px;
       align-items: center;
-      padding: clamp(34px, 6vw, 72px);
+      padding: 32px;
       border: 1px solid var(--border);
       border-radius: var(--radius);
-      background:
-        linear-gradient(135deg, rgba(94, 210, 141, 0.065), transparent 42%),
-        var(--panel);
+      background: var(--panel);
     }
 
     .install-card h2 {
-      margin: 0 0 15px;
-      font-size: clamp(38px, 5vw, 58px);
-      letter-spacing: -0.052em;
+      margin: 0;
+      font-size: clamp(32px, 3.8vw, 44px);
+      letter-spacing: -0.048em;
       line-height: 1;
     }
 
-    .install-card p {
-      margin: 0;
-      color: var(--text-dim);
-    }
-
-    .install-card .plain-note {
-      margin-top: 16px;
-      color: var(--yellow);
-      font-family: var(--mono);
-      font-size: 12px;
-    }
 
     .code-shell {
       overflow: hidden;
       border: 1px solid var(--border);
-      border-radius: 12px;
+      border-radius: 6px;
       background: #10100f;
     }
 
@@ -955,7 +846,7 @@
       min-height: 44px;
       padding: 0 14px;
       border: 1px solid var(--border);
-      border-radius: 8px;
+      border-radius: 5px;
       background: var(--panel-raised);
       color: var(--text);
       font-size: 13px;
@@ -976,7 +867,7 @@
     .code-block {
       overflow-x: auto;
       margin: 0;
-      padding: 23px 24px;
+      padding: 18px;
       color: var(--text-dim);
       font-family: var(--mono);
       font-size: 13px;
@@ -1050,11 +941,11 @@
 
     @media (max-width: 900px) {
       .section {
-        padding: 84px 0;
+        padding: 60px 0;
       }
 
       .keys-section {
-        padding-block: 116px;
+        padding-block: 60px;
       }
 
       .section-intro,
@@ -1062,11 +953,15 @@
       .agents-panel,
       .install-card {
         grid-template-columns: 1fr;
-        gap: 30px;
+        gap: 24px;
       }
 
       .section-intro {
-        margin-bottom: 36px;
+        margin-bottom: 24px;
+      }
+
+      .benchmark-grid {
+        grid-template-columns: 1fr;
       }
 
       .palette-layout .feature-list {
@@ -1074,15 +969,13 @@
       }
 
       .agent-console {
-        min-height: 340px;
+        min-height: 260px;
         border-top: 1px solid var(--border);
         border-left: 0;
       }
 
       .cli-panel .agent-console {
-        border-top: 0;
-        border-right: 0;
-        border-bottom: 1px solid var(--border);
+        border: 0;
       }
 
       .visual-pr-media {
@@ -1109,7 +1002,7 @@
       }
 
       .install-card {
-        padding: 38px;
+        padding: 28px;
       }
 
       .history-shot {
@@ -1123,7 +1016,7 @@
       }
 
       .nav {
-        height: 62px;
+        height: 56px;
       }
 
       .nav-links > a:first-child {
@@ -1131,16 +1024,13 @@
       }
 
       .hero {
-        padding-top: 74px;
+        padding: 48px 0 24px;
       }
 
       h1 {
-        font-size: clamp(46px, 15vw, 68px);
+        font-size: 44px;
       }
 
-      .hero-copy {
-        font-size: 18px;
-      }
 
       .hero-actions .button {
         flex: 1 1 150px;
@@ -1148,33 +1038,31 @@
 
 
       .hero-shot {
-        margin-top: 22px;
-        padding: 4px;
-        border-radius: 12px;
+        margin-top: 18px;
+        padding: 3px;
+        border-radius: var(--radius);
       }
 
       .hero-shot .shot-button {
-        border-radius: 8px;
+        border-radius: 4px;
       }
 
       .section {
-        padding: 72px 0;
+        padding: 52px 0;
       }
 
       .keys-section {
-        padding-block: 96px;
+        padding-block: 52px;
       }
 
       h2.section-title,
       .agents-copy h2,
       .install-card h2 {
-        font-size: 39px;
+        font-size: 34px;
       }
 
       .benchmark-card {
-        grid-template-columns: 1fr;
-        gap: 18px;
-        padding: 18px;
+        padding: 14px;
       }
 
       .benchmark-card-header {
@@ -1200,10 +1088,6 @@
         gap: 10px;
       }
 
-      .section-copy,
-      .agents-copy p {
-        font-size: 16px;
-      }
 
       .files-stack {
         padding-bottom: 22%;
@@ -1217,7 +1101,7 @@
       .agents-copy,
       .agent-console,
       .install-card {
-        padding: 28px;
+        padding: 22px;
       }
 
       .agent-console {
@@ -1225,7 +1109,7 @@
       }
 
       .how-card {
-        padding: 28px;
+        padding: 24px;
       }
 
       .key-action {
@@ -1287,9 +1171,7 @@
 
   <main id="top">
     <section class="wrap hero">
-      <span class="eyebrow">Local-first GitHub reviews</span>
       <h1>GitHub PRs at local speed.</h1>
-      <p class="hero-copy">Everything is instant. PRs, diffs, threads, checks, and images are already on your Mac.</p>
       <div class="hero-actions">
         <a class="button primary" href="#install">Install pr-cockpit</a>
         <a class="button" href="https://github.com/theolundqvist/pr-cockpit">View source</a>
@@ -1306,9 +1188,7 @@
     <section class="section-rule" id="performance">
       <div class="wrap section">
         <div class="benchmark-intro">
-          <span class="kicker">Performance</span>
           <h2 class="section-title">PR Cockpit vs GitHub.</h2>
-          <p class="section-copy">The same warm-cache browser actions, measured side by side. PR Cockpit reads its local disk cache; GitHub uses the current network connection.</p>
         </div>
         <div class="benchmark-grid" aria-label="PR Cockpit and GitHub performance comparison">
           <article class="benchmark-card">
@@ -1433,8 +1313,7 @@
           </article>
         </div>
         <p class="benchmark-method">
-          <span data-benchmark-status>Benchmark results unavailable.</span> ·
-          <a href="https://github.com/theolundqvist/pr-cockpit/blob/main/scripts/benchmark-ui.mjs">reproduce it</a>
+          <a href="https://github.com/theolundqvist/pr-cockpit/blob/main/scripts/benchmark-ui.mjs">Reproduce benchmark</a>
         </p>
       </div>
     </section>
@@ -1443,9 +1322,7 @@
       <div class="wrap section palette-layout">
         <div class="feature-list">
           <article class="feature-item">
-            <span class="kicker">Jump anywhere</span>
-            <h2>Any PR. One chord.</h2>
-            <p><kbd>⌘⌥K</kbd> searches recent open, merged, and closed pull requests from any app.</p>
+            <h2>⌘⌥K. Any PR.</h2>
           </article>
         </div>
         <div class="shot-shell">
@@ -1460,10 +1337,8 @@
       <div class="wrap section">
         <div class="section-intro">
           <div>
-            <span class="kicker">One view</span>
             <h2 class="section-title">Everything needed to decide.</h2>
           </div>
-          <p class="section-copy">Conversation, checks, threads, reviewers, and the real merge gate.</p>
         </div>
         <div class="shot-shell solo-shot">
           <button class="shot-button" type="button" data-lightbox="screenshots/conversation-dark.png" aria-label="Open pull request detail screenshot">
@@ -1477,10 +1352,8 @@
       <div class="wrap section">
         <div class="section-intro">
           <div>
-            <span class="kicker">Hide all tests</span>
-            <h2 class="section-title">See only the change.</h2>
+            <h2 class="section-title">Hide tests. See the change.</h2>
           </div>
-          <p class="section-copy">One key hides every test file. Inspect the diff, edit source, and commit the patch back to the pull request.</p>
         </div>
         <div class="files-stack">
           <div class="shot-shell">
@@ -1501,9 +1374,7 @@
       <div class="wrap section">
         <div class="agents-panel">
           <div class="agents-copy">
-            <span class="kicker">Agents</span>
             <h2>Press p. Put an agent on it.</h2>
-            <p>Run a local agent on any pull request, or arm auto-merge until CI is green and every thread is resolved.</p>
           </div>
           <div class="agent-console" aria-label="Example agent run">
             <div class="console-head">
@@ -1528,19 +1399,6 @@
             <div class="console-line wake"><span>→</span><span>woke · CI failed on the new push · 1 unresolved thread</span></div>
             <div class="console-line active"><span class="cli-prompt">$</span><span>pr-cockpit owner/repo#6278<span class="console-cursor" aria-hidden="true"></span></span></div>
           </div>
-          <div class="agents-copy">
-            <span class="kicker">CLI</span>
-            <h2>Listen, don’t poll.</h2>
-            <p>The installer adds the open-source <code>pr-cockpit</code> CLI. Reads are served from the local cache, so they return fast in agent-shaped form and only touch GitHub when that cache has actually gone stale.</p>
-            <p class="cli-why"><code>listen</code> blocks until substantive cached state changes, so agents skip the repeated <code>gh</code> polls that spend GitHub calls and tokens re-reading a quiet PR.</p>
-            <ul class="cli-commands">
-              <li><code>pr-cockpit owner/repo#N</code> · state, checks, unresolved threads</li>
-              <li><code>--diff</code> · the cached diff</li>
-              <li><code>--file path</code> · a full file at the PR head</li>
-              <li><code>resolve HANDLE</code> · resolve a review thread</li>
-              <li><code>update</code> · fast-forward and rebuild the installed app</li>
-            </ul>
-          </div>
         </div>
       </div>
     </section>
@@ -1549,9 +1407,7 @@
       <div class="wrap section">
         <div class="agents-panel visual-pr-panel">
           <div class="agents-copy">
-            <span class="kicker">Visual reviews</span>
             <h2>The story lives in the PR.</h2>
-            <p>JustShowMe draws the change as 1–4 focused slides. <code>gh-img</code> uploads them inline. Together they are the best pairing for a visual review that never sends the reviewer elsewhere.</p>
             <div class="visual-pr-links">
               <a class="button primary" href="https://github.com/theolundqvist/justshowme/pull/1">See open-source PR #1</a>
               <a class="button" href="https://github.com/theolundqvist/justshowme">Get JustShowMe</a>
@@ -1570,7 +1426,6 @@
 
     <section class="section-rule">
       <div class="wrap section keys-section">
-        <span class="kicker">Keyboard first</span>
         <h2 class="section-title">Every action has a key.</h2>
         <div class="key-grid" aria-label="Keyboard shortcuts">
           <span class="key-action"><kbd>j / k</kbd> move</span>
@@ -1591,10 +1446,8 @@
       <div class="wrap section">
         <div class="section-intro">
           <div>
-            <span class="kicker">How it works</span>
             <h2 class="section-title">GitHub stays true. The wait disappears.</h2>
           </div>
-          <p class="section-copy">Reads land on your Mac. Writes echo locally, then sync through your existing <code>gh</code> login.</p>
         </div>
 
         <div class="how-card" aria-label="How pr-cockpit reads, writes, and receives live updates">
@@ -1635,10 +1488,7 @@
       <div class="wrap section">
         <div class="install-card">
           <div>
-            <span class="kicker">Install</span>
             <h2>One command.</h2>
-            <p>Checks the macOS prerequisites, installs the app, and opens setup. A legacy private install is replaced; local PR data and settings stay.</p>
-            <p class="plain-note">Rerun the same command to upgrade.</p>
           </div>
           <div class="code-shell">
             <div class="code-toolbar">
@@ -1681,11 +1531,6 @@
         }
         document.querySelector(`[data-benchmark-speedup="${metric.id}"]`).textContent = `${metric.speedup}× faster`;
       }
-      const environment = benchmarkResults.environment;
-      const browser = environment.browser.replace(/^Chromium ([0-9]+).*/, "Chromium $1");
-      const measuredDate = benchmarkResults.measuredAt.slice(0, 10);
-      document.querySelector("[data-benchmark-status]").textContent =
-        `${environment.runs} measured runs across ${environment.dataset} after ${environment.warmups} warmups · ${environment.machine} · ${browser} · warm browser caches, GitHub over the current network · measured ${measuredDate} UTC`;
     }
 
     document.querySelectorAll("[data-lightbox]").forEach((button) => {

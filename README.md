@@ -94,3 +94,11 @@ Settings live in the app. Optional shell overrides live in `~/.config/pr-cockpit
 | `COCKPIT_RELAY_URL` | Optional self-hosted webhook relay |
 
 </details>
+
+## Contributions welcome
+
+Functionality, themes, visual polish, and fixes for rough UI edges are all welcome.
+
+New functionality must default off. Styling must be opt-in unless it is minor polish that preserves the default appearance.
+
+Every pull request must attach before-and-after screenshots showing its effect in the app.

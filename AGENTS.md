@@ -17,6 +17,12 @@ This repository is worked on by humans and coding agents alike. Leave it easier 
 - `bun test server/<file>.test.ts` for a targeted test. Prefer targeted runs over the whole suite while iterating.
 - Match the surrounding style. Comments are for a non-obvious constraint, not for narration.
 
+## Pull requests
+
+- Functionality, themes, and small UI-polish fixes are welcome.
+- New functionality defaults off. Styling is opt-in unless it is minor polish that preserves the default appearance.
+- Every pull request includes before-and-after screenshots showing its effect in the app.
+
 ## Restarting the local server
 
 `scripts/cockpit` is the full launcher: it builds if needed, starts the server only when it is down, and opens the Electron shell. Do not use it when the request is specifically to restart only the server.
