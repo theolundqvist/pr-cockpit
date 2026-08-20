@@ -2179,7 +2179,7 @@
       <nav class="tabs mono">
         <a class="tab" class:active={tab === "conversation"} href="#/pr/{repo}/{number}" onclick={(event) => guardTabNavigation(event, "conversation")}>Conversation</a>
         <a class="tab" class:active={tab === "files"} href="#/pr/{repo}/{number}/files">
-          Files {#if diffState === "ready"}<span class="tab-count">{files.length}</span>{/if}
+          Files {#if diffState === "ready"}<span class="tab-count">{treeFiles.length}</span>{/if}
         </a>
         <a class="tab" class:active={tab === "agents"} href="#/pr/{repo}/{number}/agents" onclick={(event) => guardTabNavigation(event, "agents")}>
           Agents {#if agent?.state === "running"}<span class="tab-count">1</span>{/if}
@@ -2203,7 +2203,7 @@
                   onSelect={selectRange}
                   bind:open={rangeOpen}
                 />
-                {#if diffState === "ready"}<span class="fcount">{files.length} files</span>{/if}
+                {#if diffState === "ready"}<span class="fcount">{treeFiles.length} file{treeFiles.length === 1 ? "" : "s"}</span>{/if}
               </div>
               {#if testFiles.length && diffState === "ready"}
                 <button class="toolbar-btn" onclick={toggleTests}>

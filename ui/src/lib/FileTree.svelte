@@ -21,6 +21,7 @@
       node.files.push({ name, path: file.path, additions: file.additions, deletions: file.deletions, tone: fileTone(file) });
     });
     compress(root);
+    sumLines(root);
     return root;
   });
 
@@ -35,6 +36,18 @@
       dirs.set(dir.path, dir);
     }
     node.dirs = dirs;
+  }
+
+  function sumLines(node) {
+    let additions = node.files.reduce((sum, file) => sum + file.additions, 0);
+    let deletions = node.files.reduce((sum, file) => sum + file.deletions, 0);
+    for (const dir of node.dirs.values()) {
+      sumLines(dir);
+      additions += dir.additions;
+      deletions += dir.deletions;
+    }
+    node.additions = additions;
+    node.deletions = deletions;
   }
 
   function fileTone(file) {
@@ -74,6 +87,7 @@
       <span class="caret">{collapsedDirs.has(dir.path) ? "▸" : "▾"}</span>
       <span class="folder-icon"></span>
       <span class="name">{dir.name}</span>
+      <span class="counts mono"><span class="add">+{dir.additions}</span><span class="del">−{dir.deletions}</span></span>
     </button>
     {#if !collapsedDirs.has(dir.path)}
       {@render branch(dir, depth + 1)}
