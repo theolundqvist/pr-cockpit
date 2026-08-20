@@ -8,8 +8,8 @@ import { chromium } from "playwright";
 const ROOT = resolve(import.meta.dirname, "..");
 const SNAPSHOT_DIR = resolve(ROOT, "server/mockData/microsoft-vscode");
 const VIEWPORT = { width: 1100, height: 800 };
-const RUNS = 50;
-const WARMUPS = 5;
+const RUNS = 20;
+const WARMUPS = 3;
 
 const delay = (milliseconds) => new Promise((done) => setTimeout(done, milliseconds));
 
@@ -41,21 +41,27 @@ function percentile(samples, fraction) {
   return sorted[Math.ceil(sorted.length * fraction) - 1];
 }
 
-function summarize(id, label, definition, samples) {
+function summarizeSamples(samples) {
   const round = (value) => Math.round(value * 10) / 10;
   return {
-    id,
-    label,
-    definition,
     unit: "ms",
     p50: round(percentile(samples, 0.5)),
     p95: round(percentile(samples, 0.95)),
   };
 }
 
-function titleQuery(title) {
-  return title.split(/\W+/).filter(Boolean).slice(0, 3).join(" ");
+function compare(id, label, cockpitDefinition, githubDefinition, cockpitSamples, githubSamples) {
+  const cockpit = summarizeSamples(cockpitSamples);
+  const github = summarizeSamples(githubSamples);
+  return {
+    id,
+    label,
+    cockpit: { ...cockpit, definition: cockpitDefinition },
+    github: { ...github, definition: githubDefinition },
+    speedup: Math.round((github.p50 / cockpit.p50) * 10) / 10,
+  };
 }
+
 
 async function benchmarkPrOpen(page, repo, prs) {
   const samples = [];
@@ -73,7 +79,7 @@ async function benchmarkPrOpen(page, repo, prs) {
       await new Promise((resolve, reject) => {
         const deadline = startedAt + 5_000;
         const check = () => {
-          if (location.hash === targetHref && document.querySelector(".detail")) return resolve();
+          if (location.hash === targetHref && document.querySelector(".detail .tabs")) return resolve();
           if (performance.now() > deadline) return reject(new Error("timed out opening PR"));
           requestAnimationFrame(check);
         };
@@ -123,7 +129,7 @@ async function benchmarkPrSearch(page, prs) {
       });
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       return performance.now() - startedAt;
-    }, { searchQuery: titleQuery(pr.title), title: pr.title });
+    }, { searchQuery: String(pr.number), title: pr.title });
     await page.keyboard.press("Escape");
     await page.locator(".palette").waitFor({ state: "detached" });
     if (iteration >= WARMUPS) samples.push(duration);
@@ -148,7 +154,7 @@ async function benchmarkDiffOpen(page, repo, prs) {
       await new Promise((resolve, reject) => {
         const deadline = startedAt + 5_000;
         const check = () => {
-          if (location.hash === targetHref && document.querySelector(".files-layout .diff")) return resolve();
+          if (location.hash === targetHref && document.querySelector(".files-layout .line[data-new-line], .files-layout .binary")) return resolve();
           if (performance.now() > deadline) return reject(new Error("timed out opening diff"));
           requestAnimationFrame(check);
         };
@@ -161,6 +167,85 @@ async function benchmarkDiffOpen(page, repo, prs) {
   }
   return samples;
 }
+async function afterPaint(page, startedAt) {
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  return page.evaluate((started) => performance.timeOrigin + performance.now() - started, startedAt);
+}
+
+async function benchmarkGithubPrOpen(page, repo, prs) {
+  const samples = [];
+  for (let iteration = 0; iteration < RUNS + WARMUPS; iteration++) {
+    const pr = prs[iteration % prs.length];
+    const href = `/${repo}/pull/${pr.number}`;
+    await page.goto(`https://github.com/${repo}/pulls?q=${encodeURIComponent(`is:pr ${pr.number}`)}`, { waitUntil: "domcontentloaded" });
+    const result = page.locator(`a[href="${href}"]`).first();
+    await result.waitFor();
+    const startedAt = await page.evaluate((targetHref) => {
+      const link = [...document.querySelectorAll("a")].find(
+        (candidate) => candidate.getAttribute("href") === targetHref && candidate.textContent.trim(),
+      );
+      if (!link) throw new Error(`missing GitHub PR result ${targetHref}`);
+      const started = performance.timeOrigin + performance.now();
+      link.click();
+      return started;
+    }, href);
+    await page.waitForURL((url) => url.pathname === href);
+    await page.locator(`a[href="${href}/files"]`).first().waitFor();
+    const duration = await afterPaint(page, startedAt);
+    if (iteration >= WARMUPS) samples.push(duration);
+  }
+  return samples;
+}
+
+async function benchmarkGithubPrSearch(page, repo, prs) {
+  const samples = [];
+  for (let iteration = 0; iteration < RUNS + WARMUPS; iteration++) {
+    const pr = prs[iteration % prs.length];
+    const searchQuery = String(pr.number);
+    const expectedQuery = `is:pr ${searchQuery}`;
+    const href = `/${repo}/pull/${pr.number}`;
+    await page.goto(`https://github.com/${repo}/pulls?q=is%3Apr`, { waitUntil: "domcontentloaded" });
+    await page.locator('input[aria-label="Search all issues"]').waitFor();
+    const startedAt = await page.evaluate((query) => {
+      const input = document.querySelector('input[aria-label="Search all issues"]');
+      if (!input?.form) throw new Error("missing GitHub pull request search");
+      input.value = query;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      const started = performance.timeOrigin + performance.now();
+      input.form.requestSubmit();
+      return started;
+    }, expectedQuery);
+    await page.waitForURL((url) => url.pathname === `/${repo}/pulls` && url.searchParams.get("q") === expectedQuery);
+    await page.locator(`a[href="${href}"]`).first().waitFor();
+    const duration = await afterPaint(page, startedAt);
+    if (iteration >= WARMUPS) samples.push(duration);
+  }
+  return samples;
+}
+
+async function benchmarkGithubDiffOpen(page, repo, prs) {
+  const samples = [];
+  for (let iteration = 0; iteration < RUNS + WARMUPS; iteration++) {
+    const pr = prs[iteration % prs.length];
+    const conversationHref = `/${repo}/pull/${pr.number}`;
+    const filesHref = `${conversationHref}/files`;
+    await page.goto(`https://github.com${conversationHref}`, { waitUntil: "domcontentloaded" });
+    await page.locator(`a[href="${filesHref}"]`).first().waitFor();
+    const startedAt = await page.evaluate((targetHref) => {
+      const link = document.querySelector(`a[href="${targetHref}"]`);
+      if (!link) throw new Error(`missing GitHub files tab ${targetHref}`);
+      const started = performance.timeOrigin + performance.now();
+      link.click();
+      return started;
+    }, filesHref);
+    await page.waitForURL((url) => url.pathname === filesHref);
+    await page.locator("table.diff-table .blob-code, table.diff-table [data-line-number]").first().waitFor();
+    const duration = await afterPaint(page, startedAt);
+    if (iteration >= WARMUPS) samples.push(duration);
+  }
+  return samples;
+}
+
 
 async function main() {
   const snapshot = JSON.parse(await readFile(join(SNAPSHOT_DIR, "snapshot.json"), "utf8"));
@@ -191,19 +276,28 @@ async function main() {
   try {
     await waitForServer(server, baseURL);
     browser = await chromium.launch({ headless: true });
-    const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1, reducedMotion: "reduce" });
-    await context.route("**/*", (route) => {
+    const localContext = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1, reducedMotion: "reduce" });
+    await localContext.route("**/*", (route) => {
       const url = new URL(route.request().url());
       if (url.origin === baseURL || url.protocol === "data:" || url.protocol === "blob:") return route.continue();
       return route.abort("blockedbyclient");
     });
-    const page = await context.newPage();
-    await page.goto(`${baseURL}/#/`, { waitUntil: "domcontentloaded" });
-    await page.locator(".inbox-layout .row").first().waitFor();
+    const localPage = await localContext.newPage();
+    await localPage.goto(`${baseURL}/#/`, { waitUntil: "domcontentloaded" });
+    await localPage.locator(".inbox-layout .row").first().waitFor();
 
-    const openSamples = await benchmarkPrOpen(page, repo, prs);
-    const searchSamples = await benchmarkPrSearch(page, prs);
-    const diffSamples = await benchmarkDiffOpen(page, repo, diffPrs);
+    const cockpitOpenSamples = await benchmarkPrOpen(localPage, repo, prs);
+    const cockpitSearchSamples = await benchmarkPrSearch(localPage, prs);
+    const cockpitDiffSamples = await benchmarkDiffOpen(localPage, repo, diffPrs);
+    await localContext.close();
+
+    const githubContext = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1, reducedMotion: "reduce" });
+    const githubPage = await githubContext.newPage();
+    const githubOpenSamples = await benchmarkGithubPrOpen(githubPage, repo, prs);
+    const githubSearchSamples = await benchmarkGithubPrSearch(githubPage, repo, prs);
+    const githubDiffSamples = await benchmarkGithubDiffOpen(githubPage, repo, diffPrs);
+    await githubContext.close();
+
     const results = {
       measuredAt: new Date().toISOString(),
       environment: {
@@ -213,20 +307,27 @@ async function main() {
         runs: RUNS,
         warmups: WARMUPS,
         dataset: `${prs.length} public microsoft/vscode PRs`,
+        cache: "Warm browser cache for both products; PR Cockpit reads its local disk cache while GitHub uses the current network connection",
       },
       metrics: [
-        summarize("pr-open", "Open cached PR", "Inbox click to painted PR detail", openSamples),
-        summarize("pr-search", "Search recent PRs", "⌘K to painted local title match", searchSamples),
-        summarize("diff-open", "Open cached diff", "Files click to painted cached diff", diffSamples),
+        compare("pr-open", "Open a PR", "Inbox row to painted PR detail", "Pull-request result to painted PR detail", cockpitOpenSamples, githubOpenSamples),
+        compare("pr-search", "Search PRs", "⌘K PR-number query to painted local result", "Pull-request number query submit to painted result", cockpitSearchSamples, githubSearchSamples),
+        compare("diff-open", "Open a diff", "Files click to painted cached diff", "Files changed click to painted GitHub diff", cockpitDiffSamples, githubDiffSamples),
       ],
     };
-    console.table(results.metrics.map(({ label, p50, p95 }) => ({ metric: label, p50, p95 })));
+    console.table(
+      results.metrics.map(({ label, cockpit, github, speedup }) => ({
+        metric: label,
+        "PR Cockpit p50": cockpit.p50,
+        "GitHub p50": github.p50,
+        "faster ×": speedup,
+      })),
+    );
     if (process.argv.includes("--write")) {
       const output = `window.PR_COCKPIT_BENCHMARKS = ${JSON.stringify(results, null, 2)};\n`;
       await writeFile(join(ROOT, "docs/benchmark-results.js"), output);
       console.log("wrote docs/benchmark-results.js");
     }
-    await context.close();
   } finally {
     await browser?.close();
     if (server.exitCode === null) {

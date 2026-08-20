@@ -18,6 +18,12 @@ This repository is worked on by humans and coding agents alike. Leave it easier 
 - Screenshot harnesses render at `1600x1200`; keep their default viewport and PNG dimension checks aligned.
 - Match the surrounding style. Comments are for a non-obvious constraint, not for narration.
 
+## Pull requests
+
+- Functionality, themes, and small UI-polish fixes are welcome.
+- New functionality defaults off. Styling is opt-in unless it is minor polish that preserves the default appearance.
+- Every pull request includes before-and-after screenshots showing its effect in the app.
+
 ## Restarting the local server
 
 `scripts/cockpit` is the full launcher: it builds if needed, starts the server only when it is down, and opens the Electron shell. Do not use it when the request is specifically to restart only the server.
@@ -57,6 +63,12 @@ Stop it when you are done. `COCKPIT_MOCK=1` seeds a fixture database instead of 
 ## Known test flakes
 
 `bun test server/` runs the whole directory in one process and two tests flake there regardless of your change: `webhooks.test.ts` "migrates legacy window-keyed registrations" and `updateHandoff.test.ts` "new source launcher finishes an old updater's installation handoff once". Both pass when their file is run alone. Confirm a suspected regression by running the single file before believing the directory run.
+
+## Verifying the installer
+
+`scripts/bootstrap` and `scripts/install` run under `set -euo pipefail`, so a helper ending in `[[ cond ]] || return` propagates the failed test and aborts the whole install with no message. Always write `return 0`.
+
+Walk both install paths before trusting a change: `COCKPIT_BOOTSTRAP_DRY_RUN=1 COCKPIT_HOME=/tmp/some-path scripts/bootstrap` must reach stage `3/3`, and a fake `HOME`/`PATH` fixture covers the legacy migration. A silent exit before the last stage is the signature of the bug above.
 
 ## Durable lessons
 

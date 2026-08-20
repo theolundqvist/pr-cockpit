@@ -46,6 +46,7 @@
   let fileEditor = $state(null);
   let fileEditRequest;
   let editMenu = $state(null);
+  let editMenuRequest = 0;
   let editMenuNode;
   let commentDrag = $state(null);
   let fileEditSpan = $derived.by(() => {
@@ -144,19 +145,19 @@
     return row ? editPlacement(section, row) : fallbackEditPlacement(section);
   }
 
+  function caretAtPoint(x, y) {
+    const range = document.caretRangeFromPoint?.(x, y);
+    if (range) return { node: range.startContainer, offset: range.startOffset };
+    const position = document.caretPositionFromPoint?.(x, y);
+    return position ? { node: position.offsetNode, offset: position.offset } : null;
+  }
+
   function columnAtPoint(code, x, y) {
-    const caretRange = document.caretRangeFromPoint?.(x, y);
-    if (caretRange && code.contains(caretRange.startContainer)) {
+    const caret = caretAtPoint(x, y);
+    if (caret && code.contains(caret.node)) {
       const range = document.createRange();
       range.setStart(code, 0);
-      range.setEnd(caretRange.startContainer, caretRange.startOffset);
-      return range.toString().length;
-    }
-    const caretPosition = document.caretPositionFromPoint?.(x, y);
-    if (caretPosition && code.contains(caretPosition.offsetNode)) {
-      const range = document.createRange();
-      range.setStart(code, 0);
-      range.setEnd(caretPosition.offsetNode, caretPosition.offset);
+      range.setEnd(caret.node, caret.offset);
       return range.toString().length;
     }
     const text = code.textContent ?? "";
@@ -166,6 +167,42 @@
     context.font = getComputedStyle(code).font;
     const characterWidth = context.measureText("M").width || 1;
     return Math.max(0, Math.min(text.length, Math.round((x - code.getBoundingClientRect().left) / characterWidth)));
+  }
+  function selectionEndpoint(section, node, offset) {
+    const element = node.nodeType === 1 ? node : node.parentElement;
+    const code = element?.closest(".code");
+    const lineEl = code?.closest(".line");
+    const line = Number(lineEl?.dataset.newLine);
+    if (!code || lineEl?.closest(".file") !== section || !Number.isInteger(line) || line <= 0) return null;
+    const range = document.createRange();
+    range.setStart(code, 0);
+    range.setEnd(node, offset);
+    return { line, column: range.toString().length };
+  }
+
+  function selectedEditRange(section, event) {
+    const selection = document.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount !== 1 || !event.target.closest(".code")) return null;
+    const range = selection.getRangeAt(0);
+    const start = selectionEndpoint(section, range.startContainer, range.startOffset);
+    const end = selectionEndpoint(section, range.endContainer, range.endOffset);
+    const caret = caretAtPoint(event.clientX, event.clientY);
+    if (!start || !end || !caret || !range.isPointInRange(caret.node, caret.offset)) return null;
+    return start.line < end.line || (start.line === end.line && start.column <= end.column)
+      ? { from: start, to: end }
+      : { from: end, to: start };
+  }
+
+  async function positionEditMenu(request, clientX, clientY) {
+    await tick();
+    if (editMenuRequest !== request || !editMenu || !editMenuNode) return;
+    const rect = editMenuNode.getBoundingClientRect();
+    const app = editMenuNode.closest("#app");
+    const scale = Number.parseFloat(getComputedStyle(app).zoom);
+    const viewportX = Math.max(8, Math.min(clientX, Math.max(8, window.innerWidth - rect.width - 8)));
+    const viewportY = Math.max(8, Math.min(clientY, Math.max(8, window.innerHeight - rect.height - 8)));
+    // Fixed descendants of a zoomed #app use pre-zoom coordinates while pointer and menu rects use viewport coordinates.
+    editMenu = { ...editMenu, x: (viewportX - rect.left) / scale, y: (viewportY - rect.top) / scale };
   }
 
   function onEditContextMenu(event, file) {
@@ -183,15 +220,22 @@
       placement = editPlacement(section, lineEl, column);
     }
     if (!placement && !hunk) return;
-    event.preventDefault();
-    editMenu = {
+    const selection = placement ? selectedEditRange(section, event) : null;
+    const menu = {
       file,
       hunk,
       canEdit: !!placement,
-      placement: placement ?? fallbackEditPlacement(section),
-      x: Math.max(8, Math.min(event.clientX, window.innerWidth - 152)),
-      y: Math.max(8, Math.min(event.clientY, window.innerHeight - (hunk ? 76 : 44))),
+      placement: placement
+        ? selection
+          ? { ...placement, selection }
+          : placement
+        : fallbackEditPlacement(section),
+      x: 0,
+      y: 0,
     };
+    event.preventDefault();
+    editMenu = menu;
+    positionEditMenu(++editMenuRequest, event.clientX, event.clientY);
   }
 
   function startContextEdit() {
@@ -1024,6 +1068,7 @@
                 initialLine={fileEditor.line}
                 initialColumn={fileEditor.column}
                 rowOffset={fileEditor.rowOffset}
+                initialSelection={fileEditor.selection}
                 layout={usesSplitLayout(file) ? "split" : "unified"}
                 onFinish={finishFileEdit}
               />
