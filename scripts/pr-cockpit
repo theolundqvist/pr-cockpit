@@ -14,12 +14,14 @@ Usage:
   pr-cockpit                                  # list cached PRs for current repository
   pr-cockpit listen [pr://owner/repo/123]
   pr-cockpit resolve owner/repo#123 THREAD
+  pr-cockpit update
 
 Commands:
   listen [REF]        wait for substantive cached state to change, print it, then exit
                       returns immediately when the current PR has failed CI or open comments
                       without REF, watch the current repository
   resolve REF THREAD  resolve one cached review thread by its displayed handle
+  update              fast-forward, rebuild, and reconcile the installed app
 
 Options:
   --json              machine-readable Cockpit status
@@ -34,6 +36,22 @@ Default output is Markdown for agents and humans. Use --json only for automation
 EOF
   exit "$status"
 }
+if [[ "${1:-}" = "update" ]]; then
+  [[ "$#" -eq 1 ]] || usage
+  source_path="${BASH_SOURCE[0]}"
+  while [[ -L "$source_path" ]]; do
+    source_dir="$(cd "$(dirname "$source_path")" && pwd -P)"
+    link_target="$(readlink "$source_path")"
+    if [[ "$link_target" = /* ]]; then
+      source_path="$link_target"
+    else
+      source_path="$source_dir/$link_target"
+    fi
+  done
+  root="$(cd "$(dirname "$source_path")/.." && pwd -P)"
+  exec env COCKPIT_HOME="$root" "$root/scripts/bootstrap"
+fi
+
 
 command="read"
 if [[ "${1:-}" = "listen" || "${1:-}" = "resolve" ]]; then

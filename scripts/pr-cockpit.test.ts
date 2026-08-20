@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -338,4 +338,41 @@ test("resolve rejects PR resource query options", async () => {
     process.exited,
   ]);
   expect(exitCode).toBe(2);
+});
+
+
+test("update resolves an installed symlink to its checkout and rejects extra arguments", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pr-cockpit-update-"));
+  const scripts = join(root, "scripts");
+  const bin = join(root, "bin");
+  const command = join(bin, "pr-cockpit");
+  mkdirSync(scripts);
+  mkdirSync(bin);
+  copyFileSync(join(import.meta.dir, "pr-cockpit"), join(scripts, "pr-cockpit"));
+  writeFileSync(join(scripts, "bootstrap"), '#!/usr/bin/env bash\nprintf "%s\\n" "$COCKPIT_HOME"\n');
+  chmodSync(join(scripts, "pr-cockpit"), 0o755);
+  chmodSync(join(scripts, "bootstrap"), 0o755);
+  symlinkSync(join(scripts, "pr-cockpit"), command);
+
+  try {
+    const update = Bun.spawn([command, "update"], { stdout: "pipe", stderr: "pipe" });
+    const [output, error, exitCode] = await Promise.all([
+      new Response(update.stdout).text(),
+      new Response(update.stderr).text(),
+      update.exited,
+    ]);
+    expect(exitCode).toBe(0);
+    expect(error).toBe("");
+    expect(output).toBe(`${realpathSync(root)}\n`);
+
+    const invalid = Bun.spawn([command, "update", "unexpected"], { stdout: "pipe", stderr: "pipe" });
+    const [invalidError, invalidExitCode] = await Promise.all([
+      new Response(invalid.stderr).text(),
+      invalid.exited,
+    ]);
+    expect(invalidExitCode).toBe(2);
+    expect(invalidError).toContain("pr-cockpit update");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

@@ -8,6 +8,7 @@ repo_url="https://github.com/$repo_slug.git"
 target="${COCKPIT_HOME:-$HOME/.pr-cockpit}"
 dry_run="${COCKPIT_BOOTSTRAP_DRY_RUN:-0}"
 legacy_backup=""
+legacy_migration=0
 
 if [[ -t 1 ]]; then
   bold=$'\033[1m'
@@ -52,6 +53,74 @@ confirm() {
   read -r reply <&3 || return 1
   [[ "$reply" == [yY]* ]]
 }
+agent_instruction_marker="<!-- pr-cockpit-agent-instructions -->"
+agent_instruction_block='<!-- pr-cockpit-agent-instructions -->
+## PR Cockpit
+For pull-request reads, use `pr-cockpit owner/repo#N` instead of `gh pr view`, `gh api`, or direct GitHub API reads. Use `--json` only for automation, `--diff` for the cached diff, and `--file PATH` for a file at the PR head. When waiting on a pull request, use `pr-cockpit listen owner/repo#N` instead of polling. Resolve settled review threads with `pr-cockpit resolve owner/repo#N HANDLE`.
+<!-- /pr-cockpit-agent-instructions -->'
+agent_instruction_targets=()
+install_agent_instructions=0
+
+prepare_agent_instructions() {
+  [[ "$have_tty" -eq 1 ]] || return 0
+  local common="$HOME/.config/AGENTS.md"
+  local candidate
+  if [[ -e "$common" || -L "$common" ]]; then
+    agent_instruction_targets=("$common")
+  else
+    for candidate in \
+      "$HOME/.config/omp/agent/AGENTS.md:omp" \
+      "${CODEX_HOME:-$HOME/.codex}/AGENTS.md:codex" \
+      "$HOME/.claude/CLAUDE.md:claude"; do
+      local path="${candidate%:*}"
+      local command="${candidate##*:}"
+      if [[ -e "$path" || -L "$path" ]] || command -v "$command" >/dev/null 2>&1; then
+        agent_instruction_targets+=("$path")
+      fi
+    done
+  fi
+  ((${#agent_instruction_targets[@]})) || return 0
+
+
+  local pending=()
+  for candidate in "${agent_instruction_targets[@]}"; do
+    if [[ ! -f "$candidate" ]] || ! grep -Fq "$agent_instruction_marker" "$candidate"; then
+      pending+=("$candidate")
+    fi
+  done
+  if ((${#pending[@]} == 0)); then
+    agent_instruction_targets=()
+    return 0
+  fi
+  agent_instruction_targets=("${pending[@]}")
+
+  printf '\nOptional assistant setup\n'
+  printf 'Add these instructions to:\n'
+  printf '  %s\n' "${agent_instruction_targets[@]}"
+  printf '\n%s\n\n' "$agent_instruction_block"
+  if confirm "Teach assistants to use pr-cockpit instead of gh for pull-request reads?"; then
+    install_agent_instructions=1
+  else
+    agent_instruction_targets=()
+  fi
+}
+
+write_agent_instructions() {
+  [[ "$install_agent_instructions" -eq 1 ]] || return 0
+  local path
+  for path in "${agent_instruction_targets[@]}"; do
+    if {
+      mkdir -p "$(dirname "$path")"
+      [[ ! -s "$path" ]] || printf '\n'
+      printf '%s\n' "$agent_instruction_block"
+    } >> "$path"; then
+      say "added assistant instructions to $path"
+    else
+      say "couldn't add assistant instructions to $path"
+    fi
+  done
+}
+
 
 need() {
   local what="$1" fix="$2"
@@ -124,6 +193,8 @@ if command -v gh >/dev/null 2>&1 && ! gh auth status >/dev/null 2>&1; then
     die "gh is still not authenticated — run 'gh auth login', then rerun this command"
   fi
 fi
+prepare_agent_instructions
+
 
 stage "2/3" "Prepare checkout"
 
@@ -164,12 +235,31 @@ replace_legacy_checkout() {
   fi
   legacy_backup="$previous"
 }
+uninstall_legacy_app() {
+  [[ "$legacy_migration" -eq 1 ]] || return
+  say "uninstalling the legacy PR Cockpit app"
+  if [[ "$dry_run" == "1" ]]; then
+    say "would stop its background services and remove its app bundle"
+    return
+  fi
+  local domain="gui/$(id -u)"
+  launchctl bootout "$domain/app.pr-cockpit.server" >/dev/null 2>&1 || true
+  launchctl bootout "$domain/app.pr-cockpit" >/dev/null 2>&1 || true
+  rm -f \
+    "$HOME/Library/LaunchAgents/app.pr-cockpit.server.plist" \
+    "$HOME/Library/LaunchAgents/app.pr-cockpit.plist"
+  rm -rf \
+    "$HOME/Applications/PR Cockpit.app" \
+    "$HOME/Library/Application Support/PR Cockpit"
+}
+
 
 if [[ -e "$target" ]]; then
   [[ -d "$target/.git" ]] || die "$target already exists and is not a git checkout — move it aside or set COCKPIT_HOME to another path"
   origin="$(git -C "$target" remote get-url origin 2>/dev/null || true)"
   origin_slug="$(remote_slug "$origin")"
   if [[ "$origin_slug" == "theolundqvist/pr-cockpit-private" ]]; then
+    legacy_migration=1
     replace_legacy_checkout
   elif [[ "$origin_slug" == "$repo_slug" ]]; then
     say "updating existing checkout at $target"
@@ -187,6 +277,8 @@ else
   say "cloning $repo_slug into $target"
   run git clone --quiet "$repo_url" "$target"
 fi
+uninstall_legacy_app
+
 
 stage "3/3" "Install PR Cockpit"
 if ! run "$target/scripts/install"; then
@@ -200,6 +292,7 @@ if ! run "$target/scripts/install"; then
   fi
   die "installer failed"
 fi
+write_agent_instructions
 if [[ -n "$legacy_backup" ]]; then
   rm -rf "$legacy_backup"
 fi

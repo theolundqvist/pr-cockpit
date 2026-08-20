@@ -8,7 +8,16 @@
   import { ensureTheme, getHighlighter, langForPath, tokenizeCode } from "./highlight.js";
   import { theme } from "./theme.svelte.js";
 
-  let { content = $bindable(), path, initialLine = 1, initialColumn = 0, rowOffset = 0, layout = "unified", onFinish = null } = $props();
+  let {
+    content = $bindable(),
+    path,
+    initialLine = 1,
+    initialColumn = 0,
+    initialSelection = null,
+    rowOffset = 0,
+    layout = "unified",
+    onFinish = null,
+  } = $props();
   let host;
   let editor;
   let shikiTheme;
@@ -137,6 +146,11 @@
     ];
   }
 
+  function positionOffset(doc, position) {
+    const line = doc.line(Math.max(1, Math.min(position.line, doc.lines)));
+    return Math.min(line.to, line.from + Math.max(0, position.column));
+  }
+
   $effect(() => {
     if (!host) return;
     shikiTheme = untrack(() => theme.shiki);
@@ -172,10 +186,16 @@
 
     const line = editor.state.doc.line(Math.max(1, Math.min(initialLine, editor.state.doc.lines)));
     const caret = Math.min(line.to, line.from + Math.max(0, initialColumn));
-    editor.dispatch({ selection: { anchor: caret } });
+    const range = initialSelection
+      ? {
+          anchor: positionOffset(editor.state.doc, initialSelection.from),
+          head: positionOffset(editor.state.doc, initialSelection.to),
+        }
+      : { anchor: caret };
+    editor.dispatch({ selection: range });
     editor.requestMeasure({
       read(view) {
-        return view.lineBlockAt(caret).top;
+        return view.lineBlockAt(range.anchor).top;
       },
       write(lineTop, view) {
         view.scrollDOM.scrollTop = Math.max(0, lineTop - Math.max(0, rowOffset));

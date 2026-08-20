@@ -330,6 +330,6 @@ fi
 printf '\n%bPR Cockpit is ready%b\n' "$green$bold" "$reset"
 echo "  App      $HOME/Applications/PR Cockpit.app"
 echo "  CLI      pr-cockpit owner/repo#123"
-echo "  Hotkey   cmd+ctrl+g"
+echo "  Hotkey   cmd+opt+k"
 echo "  Setup    Open the app and follow first-run setup"
-echo "  Upgrade  curl -fsSL https://raw.githubusercontent.com/theolundqvist/pr-cockpit/main/scripts/bootstrap | bash"
+echo "  Upgrade  pr-cockpit update"
