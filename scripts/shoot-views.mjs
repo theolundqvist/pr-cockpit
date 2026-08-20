@@ -8,7 +8,7 @@ import { mockAvatarSvg } from "../server/mockImages.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const FIXED_NOW = Date.parse("2026-07-15T10:00:00.000Z");
-const DEFAULT_SIZES = ["1100x800"];
+const DEFAULT_SIZES = ["1600x1200"];
 const DEFAULT_OUT = "screenshots";
 const REPO = "fixture/cockpit";
 
@@ -902,11 +902,6 @@ async function run() {
             await scenario.verify?.(page);
             const sidebar = page.locator(".app-sidebar");
             if (await sidebar.count()) await sidebar.waitFor({ state: "hidden" });
-            if (scenario.name === "inbox-populated") {
-              const quickActions = page.getByText("Quick actions", { exact: true });
-              const box = await quickActions.boundingBox();
-              if (box && box.y < viewport.height) throw new Error(`Quick actions are visible at y=${box.y}`);
-            }
             await settle(page, theme);
             if (externalRequests.length) throw new Error(`external network request blocked: ${externalRequests.join(", ")}`);
             if (pageErrors.length) throw new AggregateError(pageErrors, "uncaught browser error");

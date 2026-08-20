@@ -48,7 +48,7 @@ export type MutationPayload =
   | { kind: "auto-merge"; enable: boolean }
   | { kind: "github-auto-merge"; enable: true; method: MergeMethod }
   | { kind: "github-auto-merge"; enable: false }
-  | { kind: "inline-comment"; path: string; line: number; side: "LEFT" | "RIGHT"; body: string }
+  | { kind: "inline-comment"; path: string; line: number; side: "LEFT" | "RIGHT"; startLine?: number; startSide?: "LEFT" | "RIGHT"; body: string }
   | { kind: "assign"; logins: string[] }
   | { kind: "unassign"; logins: string[] }
   | { kind: "request-reviewers"; logins: string[] }
@@ -218,7 +218,7 @@ async function executeMutation(row: MutationRow): Promise<boolean> {
     }
     case "inline-comment": {
       const { headSha } = requirePrRef(row.repo, row.number);
-      await postInlineComment(row.repo, row.number, headSha, payload.path, payload.line, payload.side, payload.body);
+      await postInlineComment(row.repo, row.number, headSha, payload);
       return false;
     }
     // Cockpit bot auto-merge: a fixer agent waits/fixes, then the supervisor merges.
