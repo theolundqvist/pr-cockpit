@@ -3,6 +3,46 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
+if [[ -t 1 ]]; then
+  bold=$'\033[1m'
+  accent=$'\033[36m'
+  green=$'\033[32m'
+  reset=$'\033[0m'
+else
+  bold=""
+  accent=""
+  green=""
+  reset=""
+fi
+
+stage() { printf '\n%b[%s]%b %s\n' "$accent" "$1" "$reset" "$2"; }
+
+quiet_log=""
+cleanup_quiet_log() {
+  [[ -z "$quiet_log" ]] || rm -f "$quiet_log"
+}
+trap cleanup_quiet_log EXIT
+
+quiet_in() {
+  local label="$1"
+  local directory="$2"
+  local status
+  shift 2
+  quiet_log="$(mktemp "${TMPDIR:-/tmp}/pr-cockpit-install.XXXXXX")"
+  if (cd "$directory" && "$@") >"$quiet_log" 2>&1; then
+    rm -f "$quiet_log"
+    quiet_log=""
+    return 0
+  else
+    status=$?
+    printf '%bpr-cockpit: %s failed%b\n' "$bold" "$label" "$reset" >&2
+    cat "$quiet_log" >&2
+    rm -f "$quiet_log"
+    quiet_log=""
+    return "$status"
+  fi
+}
+
 missing=0
 if ! command -v bun >/dev/null 2>&1; then
   echo "pr-cockpit: bun not found — install from https://bun.sh"
@@ -23,22 +63,23 @@ bun="$(command -v bun)"
 gh_bin="$(command -v gh)"
 launch_path="$(dirname "$bun"):$(dirname "$gh_bin"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-echo "pr-cockpit: installing dependencies..."
-(cd "$root" && "$bun" install)
-(cd "$root/ui" && "$bun" install)
-(cd "$root/shell" && "$bun" install)
+stage "1/6" "Install dependencies"
+quiet_in "root dependency install" "$root" "$bun" install
+quiet_in "UI dependency install" "$root/ui" "$bun" install
+quiet_in "shell dependency install" "$root/shell" "$bun" install
 
 # Both guards import from node_modules, so they only run once install has populated it.
-(cd "$root" && "$bun" scripts/check-release.ts)
-(cd "$root" && "$bun" scripts/check-worktree-runtime.ts)
+stage "2/6" "Verify release"
+quiet_in "release check" "$root" "$bun" scripts/check-release.ts
+quiet_in "worktree runtime check" "$root" "$bun" scripts/check-worktree-runtime.ts
 
-echo "pr-cockpit: building UI..."
-(cd "$root/ui" && "$bun" run build)
+stage "3/6" "Build UI"
+quiet_in "UI build" "$root/ui" "$bun" run build
 
-echo "pr-cockpit: installing app wrapper..."
+stage "4/6" "Install desktop app"
 COCKPIT_GH_BIN="$gh_bin" "$root/scripts/make-app.sh"
 
-echo "pr-cockpit: installing CLI..."
+stage "5/6" "Install CLI and runtime"
 cli_dir="$(dirname "$bun")"
 if [[ ! -w "$cli_dir" ]]; then
   cli_dir="$HOME/.local/bin"
@@ -94,6 +135,7 @@ if [[ -x "$lsregister" ]]; then
   "$lsregister" -f "$HOME/Applications/PR Cockpit.app" "$bundle" >/dev/null 2>&1 || true
 fi
 
+stage "6/6" "Configure and start services"
 config_dir="$HOME/.config/pr-cockpit"
 config_file="$config_dir/config"
 if [[ ! -f "$config_file" ]]; then
@@ -221,7 +263,7 @@ cat > "$agent_plist" <<PLIST
 </plist>
 PLIST
 
-echo "pr-cockpit: loading launch agent..."
+echo "pr-cockpit: starting background services..."
 shell_agent_loaded=0
 if launchctl print "gui/$(id -u)/$agent_label" >/dev/null 2>&1; then
   shell_agent_loaded=1
@@ -285,11 +327,9 @@ if installed_rev="$(git -C "$root" rev-parse HEAD 2>/dev/null)"; then
   fi
 fi
 
-echo ""
-echo "pr-cockpit: install complete"
-echo "  app:      $HOME/Applications/PR Cockpit.app"
-echo "  cli:      pr-cockpit owner/repo#number [--json | --diff | --file path]"
-echo "  hotkey:   cmd+ctrl+g (in-app, works once the app is running)"
-echo "  config:   $config_file"
-echo ""
-echo "manual step: add an Alfred keyword 'p' running 'exec \"$root/scripts/cockpit\" \"\$1\"' to open a specific PR by number"
+printf '\n%bPR Cockpit is ready%b\n' "$green$bold" "$reset"
+echo "  App      $HOME/Applications/PR Cockpit.app"
+echo "  CLI      pr-cockpit owner/repo#123"
+echo "  Hotkey   cmd+ctrl+g"
+echo "  Setup    Open the app and follow first-run setup"
+echo "  Upgrade  curl -fsSL https://raw.githubusercontent.com/theolundqvist/pr-cockpit/main/scripts/bootstrap | bash"

@@ -9,8 +9,19 @@ target="${COCKPIT_HOME:-$HOME/.pr-cockpit}"
 dry_run="${COCKPIT_BOOTSTRAP_DRY_RUN:-0}"
 legacy_backup=""
 
+if [[ -t 1 ]]; then
+  bold=$'\033[1m'
+  accent=$'\033[36m'
+  reset=$'\033[0m'
+else
+  bold=""
+  accent=""
+  reset=""
+fi
+
 say() { echo "pr-cockpit: $*"; }
 die() { echo "pr-cockpit: $*" >&2; exit 1; }
+stage() { printf '\n%b[%s]%b %s\n' "$accent" "$1" "$reset" "$2"; }
 
 run() {
   if [[ "$dry_run" == "1" ]]; then
@@ -26,6 +37,10 @@ have_tty=0
 if { exec 3</dev/tty; } 2>/dev/null; then
   have_tty=1
 fi
+
+printf '\n%bPR Cockpit%b\n' "$bold" "$reset"
+printf 'A focused cockpit for GitHub pull requests.\n'
+stage "1/3" "Check prerequisites"
 
 # Answers yes only on an explicit y from the terminal; no terminal means no consent.
 confirm() {
@@ -110,6 +125,8 @@ if command -v gh >/dev/null 2>&1 && ! gh auth status >/dev/null 2>&1; then
   fi
 fi
 
+stage "2/3" "Prepare checkout"
+
 if [[ -n "${COCKPIT_HOME:-}" ]]; then
   say "installing to $target — this path is baked into the LaunchAgents, so don't move it afterwards (rerun this command if you do)"
 fi
@@ -171,21 +188,18 @@ else
   run git clone --quiet "$repo_url" "$target"
 fi
 
-say "running the installer..."
+stage "3/3" "Install PR Cockpit"
 if ! run "$target/scripts/install"; then
   if [[ -n "$legacy_backup" ]]; then
     rm -rf "$target"
     mv "$legacy_backup" "$target"
-    die "installer failed — the legacy checkout was restored"
+    if "$target/scripts/install"; then
+      die "installer failed — the legacy checkout and its services were restored"
+    fi
+    die "installer failed — the legacy checkout was restored, but its services could not be recovered"
   fi
   die "installer failed"
 fi
 if [[ -n "$legacy_backup" ]]; then
   rm -rf "$legacy_backup"
 fi
-
-say "ready"
-echo "  open:     open \"$HOME/Applications/PR Cockpit.app\""
-echo "  hotkey:   cmd+ctrl+g brings the window forward once the app is running"
-echo "  setup:    the app walks you through GitHub access, repos and live updates on first run"
-echo "  upgrade:  rerun this same command any time"
