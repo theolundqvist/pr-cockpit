@@ -1234,7 +1234,7 @@
         <div class="benchmark-grid" aria-label="PR Cockpit and GitHub performance comparison">
           <article class="benchmark-card">
             <div class="benchmark-card-header">
-              <h3 class="benchmark-label">Open a PR</h3>
+              <h2 class="benchmark-label">Open a PR</h2>
               <span class="benchmark-speedup" data-benchmark-speedup="pr-open">—× faster</span>
             </div>
             <div class="benchmark-products">
@@ -1274,7 +1274,7 @@
           </article>
           <article class="benchmark-card">
             <div class="benchmark-card-header">
-              <h3 class="benchmark-label">Search PRs</h3>
+              <h2 class="benchmark-label">Search PRs</h2>
               <span class="benchmark-speedup" data-benchmark-speedup="pr-search">—× faster</span>
             </div>
             <div class="benchmark-products">
@@ -1314,7 +1314,7 @@
           </article>
           <article class="benchmark-card">
             <div class="benchmark-card-header">
-              <h3 class="benchmark-label">Open a diff</h3>
+              <h2 class="benchmark-label">Open a diff</h2>
               <span class="benchmark-speedup" data-benchmark-speedup="diff-open">—× faster</span>
             </div>
             <div class="benchmark-products">
@@ -1598,6 +1598,7 @@
         const sourceImage = button.querySelector("img");
         lightboxImage.src = button.dataset.lightbox;
         lightboxImage.alt = sourceImage.alt;
+        lightbox.style.width = `min(96vw, ${sourceImage.naturalWidth}px)`;
         lightbox.showModal();
       });
     });
