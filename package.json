@@ -1,0 +1,17 @@
+{
+  "name": "pr-cockpit-v3",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "scripts/cockpit",
+    "check:worktree-runtime": "bun scripts/check-worktree-runtime.ts",
+    "check:release": "bun scripts/check-release.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "playwright": "^1.61.1"
+  },
+  "dependencies": {
+    "typescript": "^5"
+  }
+}

@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# One-command installer, safe to rerun as the upgrade path:
+#   curl -fsSL https://raw.githubusercontent.com/theolundqvist/pr-cockpit/main/scripts/bootstrap | bash
+set -euo pipefail
+
+repo_slug="theolundqvist/pr-cockpit"
+repo_url="https://github.com/$repo_slug.git"
+target="${COCKPIT_HOME:-$HOME/.pr-cockpit}"
+dry_run="${COCKPIT_BOOTSTRAP_DRY_RUN:-0}"
+
+say() { echo "pr-cockpit: $*"; }
+die() { echo "pr-cockpit: $*" >&2; exit 1; }
+
+run() {
+  if [[ "$dry_run" == "1" ]]; then
+    say "dry run, skipping: $*"
+    return 0
+  fi
+  "$@"
+}
+
+# Piped into bash, stdin is the script body itself, so every prompt and every
+# interactive child reads the terminal on fd 3 instead.
+have_tty=0
+if { exec 3</dev/tty; } 2>/dev/null; then
+  have_tty=1
+fi
+
+# Answers yes only on an explicit y from the terminal; no terminal means no consent.
+confirm() {
+  local reply=""
+  if [[ "$have_tty" -ne 1 ]]; then
+    return 1
+  fi
+  printf 'pr-cockpit: %s [y/N] ' "$1"
+  read -r reply <&3 || return 1
+  [[ "$reply" == [yY]* ]]
+}
+
+need() {
+  local what="$1" fix="$2"
+  if [[ "$have_tty" -ne 1 ]]; then
+    die "$what is missing and there is no terminal to ask on — run: $fix"
+  fi
+  die "$what is missing — run: $fix"
+}
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  die "macOS only — the app is an Electron bundle driven by LaunchAgents, launchctl, plutil and ditto"
+fi
+
+brew_bin="$(command -v brew || true)"
+
+if ! command -v git >/dev/null 2>&1; then
+  if confirm "git not found, install the Xcode command line tools now?"; then
+    run xcode-select --install || true
+    say "finish the Xcode command line tools install, then rerun this command"
+    exit 0
+  fi
+  need "git" "xcode-select --install"
+fi
+
+if ! command -v bun >/dev/null 2>&1; then
+  if [[ -n "$brew_bin" ]]; then
+    if ! confirm "bun not found, install it with Homebrew now?"; then
+      need "bun" "brew install oven-sh/bun/bun"
+    fi
+    run "$brew_bin" install oven-sh/bun/bun
+    PATH="$("$brew_bin" --prefix)/bin:$PATH"
+  else
+    if ! confirm "bun not found, install it from https://bun.sh now?"; then
+      need "bun" "curl -fsSL https://bun.sh/install | bash"
+    fi
+    run bash -c 'curl -fsSL https://bun.sh/install | bash'
+    PATH="$HOME/.bun/bin:$PATH"
+  fi
+  export PATH
+  if [[ "$dry_run" != "1" ]] && ! command -v bun >/dev/null 2>&1; then
+    die "bun still not on PATH after install — open a new shell and rerun this command"
+  fi
+fi
+
+if ! command -v gh >/dev/null 2>&1; then
+  if [[ -z "$brew_bin" ]]; then
+    need "the GitHub CLI (gh)" "install Homebrew from https://brew.sh, then 'brew install gh' (or download gh from https://cli.github.com)"
+  fi
+  if ! confirm "the GitHub CLI (gh) is not found, install it with Homebrew now?"; then
+    need "the GitHub CLI (gh)" "brew install gh"
+  fi
+  run "$brew_bin" install gh
+  PATH="$("$brew_bin" --prefix)/bin:$PATH"
+  export PATH
+  if [[ "$dry_run" != "1" ]] && ! command -v gh >/dev/null 2>&1; then
+    die "gh still not on PATH after install — open a new shell and rerun this command"
+  fi
+fi
+
+if command -v gh >/dev/null 2>&1 && ! gh auth status >/dev/null 2>&1; then
+  if [[ "$have_tty" -ne 1 ]]; then
+    die "gh is not authenticated and there is no terminal to log in on — run 'gh auth login', then rerun this command"
+  fi
+  if ! confirm "gh is not authenticated, run 'gh auth login' now?"; then
+    die "gh needs access to read your pull requests — run 'gh auth login', then rerun this command"
+  fi
+  # Cockpit reads PRs and posts reviews through gh, so the token needs repo scope.
+  run gh auth login --hostname github.com --git-protocol https --scopes repo <&3
+  if [[ "$dry_run" != "1" ]] && ! gh auth status >/dev/null 2>&1; then
+    die "gh is still not authenticated — run 'gh auth login', then rerun this command"
+  fi
+fi
+
+if [[ -n "${COCKPIT_HOME:-}" ]]; then
+  say "installing to $target — this path is baked into the LaunchAgents, so don't move it afterwards (rerun this command if you do)"
+fi
+
+remote_slug() {
+  local url="$1"
+  url="${url%.git}"
+  url="${url#git@github.com:}"
+  url="${url#ssh://git@github.com/}"
+  url="${url#https://github.com/}"
+  url="${url#http://github.com/}"
+  printf '%s' "$url"
+}
+
+if [[ -e "$target" ]]; then
+  [[ -d "$target/.git" ]] || die "$target already exists and is not a git checkout — move it aside or set COCKPIT_HOME to another path"
+  origin="$(git -C "$target" remote get-url origin 2>/dev/null || true)"
+  [[ "$(remote_slug "$origin")" == "$repo_slug" ]] || die "$target is a checkout of ${origin:-an unknown remote}, not $repo_slug — move it aside or set COCKPIT_HOME to another path"
+  say "updating existing checkout at $target"
+  run "$target/scripts/update-pull" >/dev/null || die "couldn't fast-forward $target (reason above) — resolve it there, then rerun this command"
+else
+  say "cloning $repo_slug into $target"
+  run git clone --quiet "$repo_url" "$target"
+fi
+
+say "running the installer..."
+run "$target/scripts/install"
+
+say "ready"
+echo "  open:     open \"$HOME/Applications/PR Cockpit.app\""
+echo "  hotkey:   cmd+ctrl+g brings the window forward once the app is running"
+echo "  setup:    the app walks you through GitHub access, repos and live updates on first run"
+echo "  upgrade:  rerun this same command any time"

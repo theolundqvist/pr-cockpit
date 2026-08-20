@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0b0f16" />
+    <script>
+      if (location.hash.startsWith("#/palette")) document.documentElement.classList.add("palette-standalone-page");
+    </script>
+    <style>
+      html.palette-standalone-page,
+      html.palette-standalone-page body {
+        background: transparent;
+      }
+    </style>
+    <title>pr cockpit</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+cd "$root"
+
+data_dir="${COCKPIT_DATA_DIR:-$root/data}"
+
+fail_and_relaunch() {
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) update failed at: $BASH_COMMAND" >> "$data_dir/update-failures.log" 2>/dev/null || true
+  echo "pr-cockpit: restart step failed after pull, relaunching (last-good build if the rebuild broke)..."
+  exec env COCKPIT_SKIP_RECONCILE=1 "$root/scripts/cockpit" --managed-server --show
+}
+
+mkdir -p "$data_dir"
+
+old_rev="$(git rev-parse HEAD)"
+
+# Pull gates everything: a failed pull must not restart, so the app stays up and reports it instead of looping.
+echo "pr-cockpit: pulling..."
+if ! pull_reason="$("$root/scripts/update-pull" 2>&1 >/dev/null)"; then
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) update-pull failed: $pull_reason" >> "$data_dir/update-failures.log" 2>/dev/null || true
+  echo "UPDATE_FAILED ${pull_reason:-pull failed}" >&2
+  exit 1
+fi
+
+# Pull ok: the shell may quit and hand off now. Only past here does a failure relaunch the previous version.
+echo "PULL_OK"
+# The shell quits after PULL_OK and closes this pipe; reopen to a log so the restart doesn't die on SIGPIPE.
+exec >>"$data_dir/update.log" 2>&1
+trap fail_and_relaunch ERR
+
+new_rev="$(git rev-parse HEAD)"
+
+# Reconcile launch agents, wrappers, CLI, dependencies, and the packaged shell on every update.
+echo "pr-cockpit: reconciling install..."
+"$root/scripts/install"
+
+echo "pr-cockpit: $old_rev -> $new_rev"
+echo "pr-cockpit: restarting..."
+exec "$root/scripts/cockpit" --managed-server --show

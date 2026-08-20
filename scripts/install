@@ -1,0 +1,295 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+
+missing=0
+if ! command -v bun >/dev/null 2>&1; then
+  echo "pr-cockpit: bun not found — install from https://bun.sh"
+  missing=1
+fi
+if ! command -v gh >/dev/null 2>&1; then
+  echo "pr-cockpit: gh not found — install from https://cli.github.com"
+  missing=1
+elif ! gh auth status >/dev/null 2>&1; then
+  echo "pr-cockpit: gh is installed but not authenticated — run 'gh auth login'"
+  missing=1
+fi
+if [[ "$missing" -eq 1 ]]; then
+  exit 1
+fi
+
+bun="$(command -v bun)"
+gh_bin="$(command -v gh)"
+launch_path="$(dirname "$bun"):$(dirname "$gh_bin"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+echo "pr-cockpit: installing dependencies..."
+(cd "$root" && "$bun" install)
+(cd "$root/ui" && "$bun" install)
+(cd "$root/shell" && "$bun" install)
+
+# Both guards import from node_modules, so they only run once install has populated it.
+(cd "$root" && "$bun" scripts/check-release.ts)
+(cd "$root" && "$bun" scripts/check-worktree-runtime.ts)
+
+echo "pr-cockpit: building UI..."
+(cd "$root/ui" && "$bun" run build)
+
+echo "pr-cockpit: installing app wrapper..."
+COCKPIT_GH_BIN="$gh_bin" "$root/scripts/make-app.sh"
+
+echo "pr-cockpit: installing CLI..."
+cli_dir="$(dirname "$bun")"
+if [[ ! -w "$cli_dir" ]]; then
+  cli_dir="$HOME/.local/bin"
+  mkdir -p "$cli_dir"
+fi
+if ln -sfn "$root/scripts/pr-cockpit" "$cli_dir/pr-cockpit" 2>/dev/null; then
+  if [[ ":$PATH:" != *":$cli_dir:"* ]]; then
+    echo "pr-cockpit: CLI linked at $cli_dir/pr-cockpit — add $cli_dir to PATH to call 'pr-cockpit' from a shell; the app itself works without it"
+  fi
+else
+  echo "pr-cockpit: couldn't link the CLI into $cli_dir, skipping it; the app itself works without it"
+fi
+
+# macOS blocks LaunchAgents from executing scripts in protected folders such as
+# ~/Documents. Keep a tiny launcher outside the checkout; it points back to the
+# source root and invokes Bun/Electron directly, both of which launch correctly.
+runtime_dir="$HOME/Library/Application Support/PR Cockpit"
+runtime_launcher="$runtime_dir/launch"
+mkdir -p "$runtime_dir"
+cp "$root/scripts/cockpit" "$runtime_launcher"
+chmod +x "$runtime_launcher"
+
+echo "pr-cockpit: packaging shell app (so it shows up as \"PR Cockpit\", not \"Electron\", in Activity Monitor)..."
+electron_src="$root/shell/node_modules/electron/dist/Electron.app"
+bundle="$root/shell/PR Cockpit.app"
+if [[ -d "$electron_src" ]]; then
+  electron_version="$(grep -m1 '"version"' "$root/shell/node_modules/electron/package.json" | sed -E 's/.*"version": *"([^"]+)".*/\1/')"
+  icon_hash="$(shasum -a 256 "$root/assets/icon.icns" | awk '{print substr($1, 1, 12)}')"
+  icon_name="pr-cockpit-$icon_hash"
+  icon_version="$(printf '%d' "0x${icon_hash:0:7}")"
+  rm -rf "$bundle"
+  ditto "$electron_src" "$bundle"
+  mv "$bundle/Contents/MacOS/Electron" "$bundle/Contents/MacOS/PR Cockpit"
+  plutil -replace CFBundleName -string "PR Cockpit" "$bundle/Contents/Info.plist"
+  plutil -replace CFBundleDisplayName -string "PR Cockpit" "$bundle/Contents/Info.plist"
+  plutil -replace CFBundleExecutable -string "PR Cockpit" "$bundle/Contents/Info.plist"
+  plutil -replace CFBundleIdentifier -string "app.pr-cockpit" "$bundle/Contents/Info.plist"
+  plutil -replace CFBundleIconFile -string "$icon_name" "$bundle/Contents/Info.plist"
+  plutil -replace CFBundleVersion -string "$icon_version" "$bundle/Contents/Info.plist"
+  plutil -replace CFBundleURLTypes -json '[{"CFBundleURLName":"app.pr-cockpit","CFBundleURLSchemes":["prcockpit"]}]' "$bundle/Contents/Info.plist"
+  cp "$root/assets/icon.icns" "$bundle/Contents/Resources/$icon_name.icns"
+  echo "$electron_version" > "$bundle/Contents/Resources/pr-cockpit-electron-version"
+  codesign --force --deep -s - "$bundle" >/dev/null 2>&1 || echo "pr-cockpit: ad-hoc codesign failed, continuing (Gatekeeper may complain on first launch)"
+  echo "pr-cockpit: packaged $bundle"
+else
+  echo "pr-cockpit: electron dist not found at $electron_src, skipping shell app packaging (will fall back to the plain electron binary)"
+fi
+
+# Register both bundles after replacing their icon resources so Finder and the
+# Dock do not retain a stale icon for the unchanged bundle identifiers.
+lsregister="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [[ -x "$lsregister" ]]; then
+  "$lsregister" -f "$HOME/Applications/PR Cockpit.app" "$bundle" >/dev/null 2>&1 || true
+fi
+
+config_dir="$HOME/.config/pr-cockpit"
+config_file="$config_dir/config"
+if [[ ! -f "$config_file" ]]; then
+  mkdir -p "$config_dir"
+  cat > "$config_file" <<EXAMPLE
+# pr-cockpit config — plain shell vars, env still wins over these.
+# Uncomment and edit to point the cockpit at your own repos.
+# COCKPIT_REPOS="owner/repo,owner/other-repo"
+# COCKPIT_PORT=4820
+# COCKPIT_DEFAULT_REPO="owner/repo"
+# COCKPIT_TMUX_HOSTS="builder,build-vm"
+# COCKPIT_RELAY_URL="https://my-relay.example.workers.dev"
+# COCKPIT_REVIEW_BOTS='[{"login":"my-review-bot","patterns":["Confidence Score:\\\\s*(\\\\d)/5"]}]'
+EXAMPLE
+  echo "pr-cockpit: wrote example config to $config_file"
+fi
+
+# Use the same config precedence as scripts/cockpit to restart the existing
+# backend on update. Otherwise a healthy but stale server keeps old code and
+# its old LaunchAgent environment indefinitely.
+install_port_env="${COCKPIT_PORT:-}"
+install_tmux_hosts_env="${COCKPIT_TMUX_HOSTS:-}"
+if [[ -f "$config_file" ]]; then
+  # shellcheck disable=SC1090
+  source "$config_file"
+fi
+install_port="${install_port_env:-${COCKPIT_PORT:-4820}}"
+install_tmux_hosts="${install_tmux_hosts_env:-${COCKPIT_TMUX_HOSTS:-}}"
+
+agent_dir="$HOME/Library/LaunchAgents"
+agent_label="app.pr-cockpit"
+agent_plist="$agent_dir/$agent_label.plist"
+server_agent_label="$agent_label.server"
+server_agent_plist="$agent_dir/$server_agent_label.plist"
+agent_log_dir="$HOME/Library/Logs/PR Cockpit"
+server_agent_owns_port() {
+  local agent_pid
+  local listener_pid
+  agent_pid="$(launchctl print "gui/$(id -u)/$server_agent_label" 2>/dev/null | sed -n 's/^[[:space:]]*pid = //p' | head -n 1)" || return 1
+  [[ "$agent_pid" =~ ^[0-9]+$ ]] || return 1
+  while IFS= read -r listener_pid; do
+    [[ "$listener_pid" == "$agent_pid" ]] && return 0
+  done < <(lsof -nP -tiTCP:"$install_port" -sTCP:LISTEN 2>/dev/null)
+  return 1
+}
+
+health_is_ours() {
+  local health
+  health="$(curl --max-time 2 -fsS "http://127.0.0.1:$install_port/healthz" 2>/dev/null)" || return 1
+  [[ "$health" == *"\"root\":\"$root\""* ]] && return 0
+  [[ "$health" != *'"root":'* ]] && server_agent_owns_port
+}
+
+mkdir -p "$agent_dir"
+mkdir -p "$agent_log_dir"
+# launchd never sources a shell profile. The coding harness the agents drive resolves its
+# auth store under XDG_DATA_HOME and its instructions under XDG_CONFIG_HOME, and silently
+# falls back to a stale store when they are missing, so bake them into the agents.
+xdg_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+xdg_config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+
+cat > "$server_agent_plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$server_agent_label</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>COCKPIT_ROOT=$root</string>
+    <string>COCKPIT_GH_BIN=$gh_bin</string>
+    <string>PATH=$launch_path</string>
+    <string>COCKPIT_TMUX_HOSTS=$install_tmux_hosts</string>
+    <string>COCKPIT_NO_BUILD=1</string>
+    <string>XDG_DATA_HOME=$xdg_data_home</string>
+    <string>XDG_CONFIG_HOME=$xdg_config_home</string>
+    <string>$runtime_launcher</string>
+    <string>--server-only</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>$agent_log_dir/server.log</string>
+  <key>StandardErrorPath</key>
+  <string>$agent_log_dir/server.err.log</string>
+</dict>
+</plist>
+PLIST
+cat > "$agent_plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$agent_label</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>COCKPIT_ROOT=$root</string>
+    <string>COCKPIT_LAUNCHER=$runtime_launcher</string>
+    <string>COCKPIT_GH_BIN=$gh_bin</string>
+    <string>PATH=$launch_path</string>
+    <string>COCKPIT_NO_BUILD=1</string>
+    <string>XDG_DATA_HOME=$xdg_data_home</string>
+    <string>XDG_CONFIG_HOME=$xdg_config_home</string>
+    <string>$runtime_launcher</string>
+    <string>--cockpit-hidden</string>
+    <string>--foreground-shell</string>
+    <string>--managed-server</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>$agent_log_dir/launch-agent.log</string>
+  <key>StandardErrorPath</key>
+  <string>$agent_log_dir/launch-agent.err.log</string>
+</dict>
+</plist>
+PLIST
+
+echo "pr-cockpit: loading launch agent..."
+shell_agent_loaded=0
+if launchctl print "gui/$(id -u)/$agent_label" >/dev/null 2>&1; then
+  shell_agent_loaded=1
+fi
+if health_is_ours; then
+  curl --max-time 2 -fsS -X POST "http://127.0.0.1:$install_port/api/shutdown" >/dev/null 2>&1 || true
+  for _ in {1..20}; do
+    health_is_ours || break
+    sleep 0.1
+  done
+elif curl --max-time 2 -fsS -o /dev/null "http://127.0.0.1:$install_port/healthz"; then
+  echo "pr-cockpit: port $install_port is already serving another app; pick a free port with COCKPIT_PORT (env, or COCKPIT_PORT=4821 in $config_file) and rerun" >&2
+  exit 1
+fi
+launchctl bootout "gui/$(id -u)/$server_agent_label" >/dev/null 2>&1 || true
+
+# bootout returns before launchd has always released the old service. Retrying
+# avoids an intermittent Bootstrap failed: 5 when installing an update while
+# Cockpit is still shutting down.
+bootstrap_agent() {
+  local plist="$1"
+  local loaded=0
+  for _ in {1..20}; do
+    if launchctl bootstrap "gui/$(id -u)" "$plist" >/dev/null 2>&1; then
+      loaded=1
+      break
+    fi
+    sleep 0.25
+  done
+  if [[ "$loaded" -ne 1 ]]; then
+    launchctl bootstrap "gui/$(id -u)" "$plist"
+  fi
+}
+
+# Restart only the server. A loaded renderer stays alive and picks up UI assets
+# on its next navigation or refresh.
+bootstrap_agent "$server_agent_plist"
+if [[ "$shell_agent_loaded" -eq 0 ]]; then
+  bootstrap_agent "$agent_plist"
+else
+  echo "pr-cockpit: preserving running app"
+fi
+
+server_ready=0
+server_deadline=$((SECONDS + 60))
+while (( SECONDS < server_deadline )); do
+  if server_agent_owns_port && health_is_ours; then
+    server_ready=1
+    break
+  fi
+  sleep 0.2
+done
+if [[ "$server_ready" -ne 1 ]]; then
+  echo "pr-cockpit: managed server failed to become ready on port $install_port" >&2
+  exit 1
+fi
+if installed_rev="$(git -C "$root" rev-parse HEAD 2>/dev/null)"; then
+  marker_tmp="$runtime_dir/installed-rev.$$"
+  if ! { printf '%s\n' "$installed_rev" > "$marker_tmp" && mv "$marker_tmp" "$runtime_dir/installed-rev"; }; then
+    rm -f "$marker_tmp" || true
+  fi
+fi
+
+echo ""
+echo "pr-cockpit: install complete"
+echo "  app:      $HOME/Applications/PR Cockpit.app"
+echo "  cli:      pr-cockpit owner/repo#number [--json | --diff | --file path]"
+echo "  hotkey:   cmd+ctrl+g (in-app, works once the app is running)"
+echo "  config:   $config_file"
+echo ""
+echo "manual step: add an Alfred keyword 'p' running 'exec \"$root/scripts/cockpit\" \"\$1\"' to open a specific PR by number"

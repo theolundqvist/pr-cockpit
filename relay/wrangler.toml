@@ -1,0 +1,11 @@
+name = "pr-cockpit-relay"
+main = "src/index.ts"
+compatibility_date = "2026-06-01"
+
+[[durable_objects.bindings]]
+name = "EVENTS"
+class_name = "Events"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Events"]

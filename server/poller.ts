@@ -1,0 +1,330 @@
+import { fetchGithubQuota, fetchPrDetail, lookupPr, searchClosedPrs, searchOpenPrs, searchRecentPrs, type PrDetail } from "./github.ts";
+import {
+  deleteWebhookRegistrationsForPr,
+  evictReposNotIn,
+  evictStalePrs,
+  getPr,
+  listWebhookRegistrations,
+  setAutoMergeArmed,
+  upsertPr,
+  upsertPrIndex,
+  type PrRow,
+  type WebhookRegistrationRow,
+} from "./db.ts";
+import { reconcileForwarders } from "./forwarders.ts";
+import { prKeyOf } from "./prKey.ts";
+import { extractGithubImageUrls, prefetchImages } from "./imageproxy.ts";
+import { fetchMirror, pruneMirrors } from "./mirror.ts";
+import { needsMeRank } from "./rank.ts";
+import { refreshRepoUsers } from "./repoUsers.ts";
+import { createPrRefreshScheduler } from "./refreshScheduler.ts";
+import { pollIntervalMs, settingsRepos } from "./settings.ts";
+import { discoveredRepos, refreshWorktreeScan } from "./worktreeScan.ts";
+import { onPrActivity } from "./activity.ts";
+import { scoreReviewers } from "./reviewScore.ts";
+
+const INDEX_SWEEP_MS = 1_800_000;
+
+export let lastPollAt: string | null = null;
+const GRAPHQL_BACKGROUND_RESERVE = 200;
+let quotaPauseResetAt: string | null = null;
+let openInboxKeys = new Set<string>();
+
+export async function backgroundPollAllowed(): Promise<boolean> {
+  const quota = await fetchGithubQuota();
+  if (quota.graphql.remaining > GRAPHQL_BACKGROUND_RESERVE) {
+    quotaPauseResetAt = null;
+    return true;
+  }
+  if (quotaPauseResetAt !== quota.graphql.resetAt) {
+    quotaPauseResetAt = quota.graphql.resetAt;
+    console.warn(`background polling paused with ${quota.graphql.remaining} GraphQL points left; resets ${quota.graphql.resetAt}`);
+  }
+  return false;
+}
+
+export async function trackedRepos(): Promise<string[]> {
+  const repos = new Set(settingsRepos());
+  for (const r of await discoveredRepos()) repos.add(r);
+  return [...repos];
+}
+
+function checkRollupStatus(detail: PrDetail): string {
+  return detail.lastCommit.nodes[0]?.commit.statusCheckRollup?.state ?? "NONE";
+}
+
+// outdated counts as handled - the code the thread commented on is gone
+function countUnresolved(detail: PrDetail): number {
+  return detail.reviewThreads.nodes.filter((t) => !t.isResolved && !t.isOutdated).length;
+}
+
+const GREPTILE_LOGIN = "greptile-apps";
+const GREPTILE_CONFIDENCE_RE = /Confidence Score:\s*(\d)\/5/i;
+// greptile embeds the commit its summary was written against as a link in the same comment
+const GREPTILE_REVIEWED_COMMIT_RE = /Last reviewed commit:.*?\/commit\/([0-9a-f]{40})/is;
+
+type GreptileComments = { comments: { nodes: Array<{ author: { login: string } | null; body: string }> } };
+type GreptileThreads = { reviewThreads: { nodes: Array<{ isResolved: boolean; isOutdated: boolean; comments: { nodes: Array<{ author: { login: string } | null }> } }> } };
+
+export function lastGreptileComment(detail: GreptileComments): string | null {
+  const scored = detail.comments.nodes.filter((c) => c.author?.login === GREPTILE_LOGIN && GREPTILE_CONFIDENCE_RE.test(c.body));
+  return scored[scored.length - 1]?.body ?? null;
+}
+
+export function greptileConfidence(detail: GreptileComments): number | null {
+  const body = lastGreptileComment(detail);
+  const match = body?.match(GREPTILE_CONFIDENCE_RE);
+  return match ? Number(match[1]) : null;
+}
+
+export function greptileReviewedSha(detail: GreptileComments): string | null {
+  const body = lastGreptileComment(detail);
+  return body?.match(GREPTILE_REVIEWED_COMMIT_RE)?.[1] ?? null;
+}
+
+export function greptileUnresolvedCount(detail: GreptileThreads): number {
+  return detail.reviewThreads.nodes.filter((t) => !t.isResolved && !t.isOutdated && t.comments.nodes[0]?.author?.login === GREPTILE_LOGIN).length;
+}
+
+function notifyRankTransition(previous: PrRow | null, rank: number, title: string, url: string): void {
+  if (!previous || previous.needs_me_rank === rank) return;
+  if (rank === 0) spawnNotify(url, `${title}: CI failing`);
+  else if (rank === 2) spawnNotify(url, `${title}: ready to merge`);
+}
+
+function prefetchDetailImages(detail: PrDetail): void {
+  const bodies = [detail.body];
+  for (const review of detail.reviews.nodes) bodies.push(review.body);
+  for (const comment of detail.comments.nodes) bodies.push(comment.body);
+  for (const thread of detail.reviewThreads.nodes) for (const comment of thread.comments.nodes) bodies.push(comment.body);
+  const urls = [...new Set(bodies.flatMap(extractGithubImageUrls))];
+  if (urls.length === 0) return;
+  prefetchImages(urls).catch((err) => console.error(`image prefetch failed for ${detail.url}:`, err));
+}
+
+function spawnNotify(url: string, message: string): void {
+  try {
+    Bun.spawn([`${Bun.env.HOME}/.config/scripts/notify`, "--url", url, "--", message], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+  } catch (err) {
+    console.error("notify spawn failed:", err);
+  }
+}
+
+async function refreshPrNow(repo: string, number: number): Promise<void> {
+  const previous = getPr(repo, number);
+  const snapshotCutoffAt = new Date().toISOString();
+  const detail = await fetchPrDetail(repo, number);
+  if (!previous || previous.head_sha !== detail.headRefOid) {
+    fetchMirror(repo).catch((err) => console.error(`mirror fetch failed for ${repo}:`, err));
+    onPrActivity(repo, number, previous !== null);
+  }
+  scoreReviewers(repo, number, detail);
+  const ciStatus = checkRollupStatus(detail);
+  const unresolvedCount = countUnresolved(detail);
+  const rank = needsMeRank({
+    ciStatus,
+    reviewDecision: detail.reviewDecision,
+    unresolvedCount,
+    mergeable: detail.mergeable,
+    isDraft: detail.isDraft,
+  });
+
+  upsertPr({
+    repo,
+    number,
+    state: detail.isDraft ? "draft" : detail.state,
+    is_draft: detail.isDraft ? 1 : 0,
+    title: detail.title,
+    author: detail.author?.login ?? "unknown",
+    base_ref: detail.baseRefName,
+    head_ref: detail.headRefName,
+    head_sha: detail.headRefOid,
+    updated_at: detail.updatedAt,
+    additions: detail.additions,
+    deletions: detail.deletions,
+    changed_files: detail.changedFiles,
+    commit_count: detail.commitCount.totalCount,
+    mergeable: detail.mergeable,
+    merge_state_status: detail.mergeStateStatus,
+    // insert-only column (see db.ts's upsertStmt) - only matters the first time a PR is seen, never armed yet
+    auto_merge_enabled: 0,
+    viewer_is_author: detail.viewerIsAuthor ? 1 : 0,
+    viewer_review_requested: detail.viewerReviewRequested ? 1 : 0,
+    viewer_review_state: detail.viewerReviewState,
+    ci_status: ciStatus,
+    review_decision: detail.reviewDecision,
+    unresolved_count: unresolvedCount,
+    needs_me_rank: rank,
+    greptile_confidence: greptileConfidence(detail),
+    greptile_reviewed_sha: greptileReviewedSha(detail),
+    greptile_unresolved_count: greptileUnresolvedCount(detail),
+    detail_json: JSON.stringify(detail),
+    fetched_at: snapshotCutoffAt,
+  });
+
+  upsertPrIndex([{
+    repo,
+    number,
+    title: detail.title,
+    state: detail.state,
+    isDraft: detail.isDraft,
+    author: detail.author?.login ?? "unknown",
+    mergedAt: detail.mergedAt,
+    closedAt: detail.closedAt,
+    involvesMe: openInboxKeys.has(prKeyOf(repo, number)),
+    updatedAt: detail.updatedAt,
+  }]);
+
+  prefetchDetailImages(detail);
+
+  // keyed on the freshly observed state, not the pre-await `previous` snapshot - closed prs can't be re-armed
+  if (detail.state === "MERGED" || detail.state === "CLOSED") setAutoMergeArmed(repo, number, false);
+
+  notifyRankTransition(previous, rank, detail.title, detail.url);
+}
+
+export const refreshPr = createPrRefreshScheduler(refreshPrNow);
+
+export interface PollDeps {
+  backgroundPollAllowed: typeof backgroundPollAllowed;
+  refreshWorktreeScan: typeof refreshWorktreeScan;
+  trackedRepos: typeof trackedRepos;
+  listWebhookRegistrations: typeof listWebhookRegistrations;
+  searchOpenPrs: typeof searchOpenPrs;
+  searchRecentPrs: typeof searchRecentPrs;
+  searchClosedPrs: typeof searchClosedPrs;
+  getPr: typeof getPr;
+  refreshPr: typeof refreshPr;
+  lookupPr: (repo: string, number: number) => Promise<{ state: string } | null>;
+  deleteWebhookRegistrationsForPr: typeof deleteWebhookRegistrationsForPr;
+  reconcileForwarders: typeof reconcileForwarders;
+  evictStalePrs: typeof evictStalePrs;
+  evictReposNotIn: typeof evictReposNotIn;
+  pruneMirrors: typeof pruneMirrors;
+  upsertPrIndex: typeof upsertPrIndex;
+}
+
+export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number; refreshed: number }> {
+  let inFlightPoll: Promise<{ checked: number; refreshed: number }> | null = null;
+  let lastIndexSweepAt: number | null = null;
+
+  async function pollOnceInner(): Promise<{ checked: number; refreshed: number }> {
+    await deps.refreshWorktreeScan();
+    if (!await deps.backgroundPollAllowed()) return { checked: 0, refreshed: 0 };
+    const repos = await deps.trackedRepos();
+    const registrations = deps.listWebhookRegistrations();
+    const tracked = new Set(repos);
+    const registered = new Set(registrations.map((r) => prKeyOf(r.repo, r.number)));
+    const searchRepos = [...new Set([...repos, ...registrations.map((r) => r.repo)])];
+    if (searchRepos.length === 0) {
+      lastPollAt = new Date().toISOString();
+      return { checked: 0, refreshed: 0 };
+    }
+
+    const hits = await deps.searchOpenPrs(searchRepos);
+    openInboxKeys = new Set(hits.map((hit) => prKeyOf(hit.repo, hit.number)));
+    let refreshed = 0;
+    for (const hit of hits) {
+      if (!tracked.has(hit.repo) && !registered.has(prKeyOf(hit.repo, hit.number))) continue;
+      const cached = deps.getPr(hit.repo, hit.number);
+      // fetched_at deliberately stays put: thread resolution moves none of these fields, so only detail staleness repairs it.
+      const unchanged = cached && cached.head_sha === hit.headRefOid && cached.updated_at === hit.updatedAt && cached.ci_status === hit.ciState;
+      if (unchanged) continue;
+      await deps.refreshPr(hit.repo, hit.number);
+      refreshed++;
+    }
+
+    await reconcileRegistrations(registrations, new Set(hits.map((h) => prKeyOf(h.repo, h.number))));
+
+    for (const repo of repos) {
+      const keepNumbers = hits.filter((h) => h.repo === repo).map((h) => h.number);
+      deps.evictStalePrs(repo, keepNumbers);
+    }
+    const keepRepos = [...new Set([...repos, ...deps.listWebhookRegistrations().map((r) => r.repo)])];
+    deps.evictReposNotIn(keepRepos);
+    deps.pruneMirrors(keepRepos);
+
+    await sweepPrIndexIfDue(repos);
+    lastPollAt = new Date().toISOString();
+    return { checked: hits.length, refreshed };
+  }
+
+  // searchOpenPrs scopes to involves:@me, so an open registered PR can be absent from hits;
+  // confirm with a direct lookup before dropping, and refresh it here since nothing else will.
+  async function reconcileRegistrations(registrations: WebhookRegistrationRow[], openKeys: Set<string>): Promise<void> {
+    let dropped = false;
+    for (const reg of registrations) {
+      if (openKeys.has(prKeyOf(reg.repo, reg.number))) continue;
+      try {
+        const status = await deps.lookupPr(reg.repo, reg.number);
+        if (status?.state === "OPEN") {
+          await deps.refreshPr(reg.repo, reg.number);
+          continue;
+        }
+        deps.deleteWebhookRegistrationsForPr(reg.repo, reg.number);
+        console.log(`registration dropped (${status?.state ?? "not found"}): ${reg.repo}#${reg.number}`);
+        dropped = true;
+      } catch (e) {
+        console.error(`registration check failed for ${reg.repo}#${reg.number}:`, e);
+      }
+    }
+    if (dropped) deps.reconcileForwarders();
+  }
+
+  async function sweepPrIndexIfDue(repos: string[]): Promise<void> {
+    if (lastIndexSweepAt !== null && Date.now() - lastIndexSweepAt < INDEX_SWEEP_MS) return;
+    const sweeps = await Promise.allSettled([
+      ...repos.map((repo) => deps.searchRecentPrs(repo)),
+      deps.searchClosedPrs(repos),
+    ]);
+    for (const sweep of sweeps) {
+      if (sweep.status === "fulfilled") deps.upsertPrIndex(sweep.value);
+      else console.error("pr-index sweep failed:", sweep.reason);
+    }
+    lastIndexSweepAt = Date.now();
+  }
+
+  return () => {
+    if (inFlightPoll) return inFlightPoll;
+    inFlightPoll = pollOnceInner().finally(() => {
+      inFlightPoll = null;
+    });
+    return inFlightPoll;
+  };
+}
+
+export const pollOnce = createPollOnce({
+  backgroundPollAllowed,
+  refreshWorktreeScan,
+  trackedRepos,
+  listWebhookRegistrations,
+  searchOpenPrs,
+  searchRecentPrs,
+  searchClosedPrs,
+  getPr,
+  refreshPr,
+  lookupPr,
+  deleteWebhookRegistrationsForPr,
+  reconcileForwarders,
+  evictStalePrs,
+  evictReposNotIn,
+  pruneMirrors,
+  upsertPrIndex,
+});
+
+export function startPoller(): void {
+  const tick = () => {
+    pollOnce()
+      .catch((err) => console.error("poll failed:", err))
+      .finally(() => setTimeout(tick, pollIntervalMs()));
+  };
+  tick();
+
+  // Keep the first assignee/reviewer picker from opening on a cold cache.
+  trackedRepos()
+    .then((repos) => Promise.allSettled(repos.map((repo) => refreshRepoUsers(repo))))
+    .catch((err) => console.error("repo-users priming failed:", err));
+}

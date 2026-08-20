@@ -1,0 +1,901 @@
+import { Database } from "bun:sqlite";
+import { mkdirSync } from "node:fs";
+import { SCHEMA_EPOCH, type PrIndexEntry } from "./github.ts";
+import { prKey } from "./prKey.ts";
+
+const dataDir = Bun.env.COCKPIT_DATA_DIR ?? "data";
+mkdirSync(dataDir, { recursive: true });
+
+export const db = new Database(`${dataDir}/cockpit.db`);
+db.exec("PRAGMA journal_mode = WAL;");
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS prs (
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  is_draft INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  author TEXT NOT NULL,
+  base_ref TEXT NOT NULL,
+  head_ref TEXT NOT NULL,
+  head_sha TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  additions INTEGER NOT NULL,
+  deletions INTEGER NOT NULL,
+  changed_files INTEGER NOT NULL,
+  commit_count INTEGER NOT NULL,
+  mergeable TEXT NOT NULL,
+  merge_state_status TEXT NOT NULL DEFAULT '',
+  auto_merge_enabled INTEGER NOT NULL DEFAULT 0,
+  viewer_is_author INTEGER NOT NULL DEFAULT 0,
+  viewer_review_requested INTEGER NOT NULL DEFAULT 0,
+  viewer_review_state TEXT,
+  ci_status TEXT NOT NULL,
+  review_decision TEXT,
+  unresolved_count INTEGER NOT NULL,
+  needs_me_rank INTEGER NOT NULL,
+  greptile_confidence INTEGER,
+  greptile_reviewed_sha TEXT,
+  greptile_unresolved_count INTEGER NOT NULL DEFAULT 0,
+  detail_json TEXT NOT NULL,
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY (repo, number)
+);
+
+CREATE INDEX IF NOT EXISTS prs_rank_idx ON prs (needs_me_rank, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS diffs (
+  head_sha TEXT PRIMARY KEY,
+  patch TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS file_contents (
+  sha TEXT NOT NULL,
+  path TEXT NOT NULL,
+  content TEXT NOT NULL,
+  PRIMARY KEY (sha, path)
+);
+
+CREATE TABLE IF NOT EXISTS mutations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  state TEXT NOT NULL,
+  error TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS mutations_pr_idx ON mutations (repo, number, id);
+
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS pr_index (
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  state TEXT NOT NULL,
+  is_draft INTEGER NOT NULL,
+  author TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  merged_at TEXT,
+  closed_at TEXT,
+  involves_me INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (repo, number)
+);
+
+CREATE TABLE IF NOT EXISTS archived_prs (
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  archived_at TEXT NOT NULL,
+  PRIMARY KEY (repo, number)
+);
+
+CREATE TABLE IF NOT EXISTS pr_rank (
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  position REAL NOT NULL,
+  PRIMARY KEY (repo, number)
+);
+
+CREATE TABLE IF NOT EXISTS pr_detail_cache (
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  head_sha TEXT NOT NULL,
+  detail_json TEXT NOT NULL,
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY (repo, number)
+);
+
+CREATE TABLE IF NOT EXISTS repo_users (
+  repo TEXT NOT NULL,
+  login TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  avatar_url TEXT NOT NULL,
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY (repo, login)
+);
+
+CREATE TABLE IF NOT EXISTS webhook_registrations (
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  window_id TEXT,
+  last_webhook_at TEXT,
+  PRIMARY KEY (repo, number)
+);
+
+CREATE TABLE IF NOT EXISTS pr_webhook_activity (
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  received_at TEXT NOT NULL,
+  PRIMARY KEY (repo, number)
+);
+
+CREATE TABLE IF NOT EXISTS review_rescores (
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  reviewer TEXT NOT NULL,
+  review_sha TEXT NOT NULL,
+  head_sha TEXT NOT NULL,
+  score REAL NOT NULL,
+  verdicts_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (repo, number, reviewer, review_sha, head_sha)
+);
+`);
+
+const prsColumns = db.query("PRAGMA table_info(prs)").all() as Array<{ name: string }>;
+if (!prsColumns.some((c) => c.name === "merge_state_status")) {
+  db.exec("ALTER TABLE prs ADD COLUMN merge_state_status TEXT NOT NULL DEFAULT ''");
+}
+if (!prsColumns.some((c) => c.name === "auto_merge_enabled")) {
+  db.exec("ALTER TABLE prs ADD COLUMN auto_merge_enabled INTEGER NOT NULL DEFAULT 0");
+}
+if (!prsColumns.some((c) => c.name === "viewer_is_author")) {
+  db.exec("ALTER TABLE prs ADD COLUMN viewer_is_author INTEGER NOT NULL DEFAULT 0");
+}
+if (!prsColumns.some((c) => c.name === "viewer_review_requested")) {
+  db.exec("ALTER TABLE prs ADD COLUMN viewer_review_requested INTEGER NOT NULL DEFAULT 0");
+}
+if (!prsColumns.some((c) => c.name === "viewer_review_state")) {
+  db.exec("ALTER TABLE prs ADD COLUMN viewer_review_state TEXT");
+}
+if (!prsColumns.some((c) => c.name === "greptile_confidence")) {
+  db.exec("ALTER TABLE prs ADD COLUMN greptile_confidence INTEGER");
+}
+if (!prsColumns.some((c) => c.name === "greptile_reviewed_sha")) {
+  db.exec("ALTER TABLE prs ADD COLUMN greptile_reviewed_sha TEXT");
+}
+if (!prsColumns.some((c) => c.name === "greptile_unresolved_count")) {
+  db.exec("ALTER TABLE prs ADD COLUMN greptile_unresolved_count INTEGER NOT NULL DEFAULT 0");
+}
+
+const prIndexColumns = db.query("PRAGMA table_info(pr_index)").all() as Array<{ name: string }>;
+if (!prIndexColumns.some((c) => c.name === "merged_at")) {
+  db.exec("ALTER TABLE pr_index ADD COLUMN merged_at TEXT");
+}
+if (!prIndexColumns.some((c) => c.name === "closed_at")) {
+  db.exec("ALTER TABLE pr_index ADD COLUMN closed_at TEXT");
+}
+if (!prIndexColumns.some((c) => c.name === "involves_me")) {
+  db.exec("ALTER TABLE pr_index ADD COLUMN involves_me INTEGER NOT NULL DEFAULT 0");
+}
+db.exec("CREATE INDEX IF NOT EXISTS pr_index_terminal_idx ON pr_index (involves_me, state, COALESCE(merged_at, closed_at, updated_at) DESC)");
+
+const webhookRegistrationColumns = db.query("PRAGMA table_info(webhook_registrations)").all() as Array<{ name: string; pk: number }>;
+if (webhookRegistrationColumns.find((c) => c.name === "window_id")?.pk) {
+  db.transaction(() => {
+    db.exec(`
+      CREATE TABLE webhook_registrations_rekey (
+        repo TEXT NOT NULL,
+        number INTEGER NOT NULL,
+        window_id TEXT,
+        last_webhook_at TEXT,
+        PRIMARY KEY (repo, number)
+      );
+      INSERT INTO webhook_registrations_rekey (repo, number, window_id, last_webhook_at)
+      SELECT repo, number, window_id, last_webhook_at
+      FROM (
+        SELECT repo, number, window_id, last_webhook_at,
+          ROW_NUMBER() OVER (
+            PARTITION BY repo, number
+            ORDER BY last_webhook_at IS NULL, last_webhook_at DESC, rowid DESC
+          ) AS row_number
+        FROM webhook_registrations
+      )
+      WHERE row_number = 1;
+      DROP TABLE webhook_registrations;
+      ALTER TABLE webhook_registrations_rekey RENAME TO webhook_registrations;
+    `);
+  })();
+}
+
+// Old merge rows lack the click-time branch/method snapshot required by the current contract.
+db.exec(`
+  UPDATE mutations
+  SET kind = 'merge', payload_json = json_set(payload_json, '$.kind', 'merge')
+  WHERE kind = 'merge-squash';
+  DELETE FROM mutations
+  WHERE kind = 'merge' AND json_extract(payload_json, '$.baseRef') IS NULL;
+`);
+
+// merge methods learned from GitHub or explicitly selected by the user, keyed per repo:base
+db.exec(`
+  CREATE TABLE IF NOT EXISTS merge_methods (
+    repo TEXT NOT NULL,
+    base_ref TEXT NOT NULL,
+    method TEXT NOT NULL,
+    learned_at TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'learned',
+    PRIMARY KEY (repo, base_ref)
+  );
+`);
+const mergeMethodColumns = db.query("PRAGMA table_info(merge_methods)").all() as Array<{ name: string }>;
+if (!mergeMethodColumns.some((c) => c.name === "source")) {
+  db.exec("ALTER TABLE merge_methods ADD COLUMN source TEXT NOT NULL DEFAULT 'learned'");
+}
+const diffColumns = db.query("PRAGMA table_info(diffs)").all() as Array<{ name: string }>;
+if (!diffColumns.some((c) => c.name === "fetched_at")) {
+  db.exec("ALTER TABLE diffs ADD COLUMN fetched_at TEXT NOT NULL DEFAULT ''");
+}
+
+const storedEpoch = (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
+if (storedEpoch !== SCHEMA_EPOCH) {
+  db.exec("DELETE FROM prs; DELETE FROM diffs; DELETE FROM pr_index; DELETE FROM pr_detail_cache;");
+  db.exec(`PRAGMA user_version = ${SCHEMA_EPOCH}`);
+}
+
+db.exec("DELETE FROM pr_detail_cache WHERE fetched_at < datetime('now', '-30 days')");
+db.exec("DELETE FROM pr_webhook_activity WHERE received_at < datetime('now', '-30 days')");
+// Diffs are a pure re-fetchable cache and were insert-only until this column existed;
+// legacy rows carry '' and so are swept by the same retention pass.
+db.exec("DELETE FROM diffs WHERE fetched_at < datetime('now', '-30 days')");
+
+export interface PrRow {
+  repo: string;
+  number: number;
+  state: string;
+  is_draft: number;
+  title: string;
+  author: string;
+  base_ref: string;
+  head_ref: string;
+  head_sha: string;
+  updated_at: string;
+  additions: number;
+  deletions: number;
+  changed_files: number;
+  commit_count: number;
+  mergeable: string;
+  merge_state_status: string;
+  auto_merge_enabled: number;
+  viewer_is_author: number;
+  viewer_review_requested: number;
+  viewer_review_state: string | null;
+  ci_status: string;
+  review_decision: string | null;
+  unresolved_count: number;
+  needs_me_rank: number;
+  greptile_confidence: number | null;
+  greptile_reviewed_sha: string | null;
+  greptile_unresolved_count: number;
+  detail_json: string;
+  fetched_at: string;
+}
+
+const upsertStmt = db.prepare(`
+INSERT INTO prs (
+  repo, number, state, is_draft, title, author, base_ref, head_ref, head_sha,
+  updated_at, additions, deletions, changed_files, commit_count, mergeable, merge_state_status,
+  auto_merge_enabled, viewer_is_author, viewer_review_requested, viewer_review_state,
+  ci_status, review_decision, unresolved_count, needs_me_rank, greptile_confidence, greptile_reviewed_sha,
+  greptile_unresolved_count, detail_json, fetched_at
+) VALUES (
+  $repo, $number, $state, $is_draft, $title, $author, $base_ref, $head_ref, $head_sha,
+  $updated_at, $additions, $deletions, $changed_files, $commit_count, $mergeable, $merge_state_status,
+  $auto_merge_enabled, $viewer_is_author, $viewer_review_requested, $viewer_review_state,
+  $ci_status, $review_decision, $unresolved_count, $needs_me_rank, $greptile_confidence, $greptile_reviewed_sha,
+  $greptile_unresolved_count, $detail_json, $fetched_at
+)
+ON CONFLICT (repo, number) DO UPDATE SET
+  state = excluded.state,
+  is_draft = excluded.is_draft,
+  title = excluded.title,
+  author = excluded.author,
+  base_ref = excluded.base_ref,
+  head_ref = excluded.head_ref,
+  head_sha = excluded.head_sha,
+  updated_at = excluded.updated_at,
+  additions = excluded.additions,
+  deletions = excluded.deletions,
+  changed_files = excluded.changed_files,
+  commit_count = excluded.commit_count,
+  mergeable = excluded.mergeable,
+  merge_state_status = excluded.merge_state_status,
+  -- auto_merge_enabled deliberately absent: insert-only, cockpit-owned, see setAutoMergeArmed
+  viewer_is_author = excluded.viewer_is_author,
+  viewer_review_requested = excluded.viewer_review_requested,
+  viewer_review_state = excluded.viewer_review_state,
+  ci_status = excluded.ci_status,
+  review_decision = excluded.review_decision,
+  unresolved_count = excluded.unresolved_count,
+  needs_me_rank = excluded.needs_me_rank,
+  greptile_confidence = excluded.greptile_confidence,
+  greptile_reviewed_sha = excluded.greptile_reviewed_sha,
+  greptile_unresolved_count = excluded.greptile_unresolved_count,
+  detail_json = excluded.detail_json,
+  fetched_at = excluded.fetched_at
+`);
+
+export function upsertPr(row: PrRow): void {
+  upsertStmt.run({
+    $repo: row.repo,
+    $number: row.number,
+    $state: row.state,
+    $is_draft: row.is_draft,
+    $title: row.title,
+    $author: row.author,
+    $base_ref: row.base_ref,
+    $head_ref: row.head_ref,
+    $head_sha: row.head_sha,
+    $updated_at: row.updated_at,
+    $additions: row.additions,
+    $deletions: row.deletions,
+    $changed_files: row.changed_files,
+    $commit_count: row.commit_count,
+    $mergeable: row.mergeable,
+    $merge_state_status: row.merge_state_status,
+    $auto_merge_enabled: row.auto_merge_enabled,
+    $viewer_is_author: row.viewer_is_author,
+    $viewer_review_requested: row.viewer_review_requested,
+    $viewer_review_state: row.viewer_review_state,
+    $ci_status: row.ci_status,
+    $review_decision: row.review_decision,
+    $unresolved_count: row.unresolved_count,
+    $needs_me_rank: row.needs_me_rank,
+    $greptile_confidence: row.greptile_confidence,
+    $greptile_reviewed_sha: row.greptile_reviewed_sha,
+    $greptile_unresolved_count: row.greptile_unresolved_count,
+    $detail_json: row.detail_json,
+    $fetched_at: row.fetched_at,
+  });
+}
+
+const getPrStmt = db.prepare<PrRow, [string, number]>(
+  "SELECT * FROM prs WHERE repo = ? AND number = ?",
+);
+
+export function getPr(repo: string, number: number): PrRow | null {
+  return getPrStmt.get(repo, number) ?? null;
+}
+
+const getPrByBranchStmt = db.prepare<PrRow, [string, string]>(
+  "SELECT * FROM prs WHERE repo = ? AND head_ref = ? ORDER BY updated_at DESC LIMIT 1",
+);
+
+export function getPrByBranch(repo: string, branch: string): PrRow | null {
+  return getPrByBranchStmt.get(repo, branch) ?? null;
+}
+
+const setAutoMergeArmedStmt = db.prepare("UPDATE prs SET auto_merge_enabled = ? WHERE repo = ? AND number = ?");
+
+export interface RepoUserRow {
+  repo: string;
+  login: string;
+  user_id: string;
+  avatar_url: string;
+  fetched_at: string;
+}
+
+const listRepoUsersStmt = db.prepare<RepoUserRow, [string]>("SELECT * FROM repo_users WHERE repo = ? ORDER BY login ASC");
+
+export function getRepoUsers(repo: string): RepoUserRow[] {
+  return listRepoUsersStmt.all(repo);
+}
+
+const insertRepoUserStmt = db.prepare(`
+INSERT INTO repo_users (repo, login, user_id, avatar_url, fetched_at) VALUES ($repo, $login, $user_id, $avatar_url, $fetched_at)
+ON CONFLICT (repo, login) DO UPDATE SET user_id = excluded.user_id, avatar_url = excluded.avatar_url, fetched_at = excluded.fetched_at
+`);
+const deleteRepoUsersStmt = db.prepare("DELETE FROM repo_users WHERE repo = ?");
+
+// full replace per refresh - GitHub's assignableUsers list is the current truth, stale logins should drop off
+const setRepoUsersTxn = db.transaction((repo: string, users: Array<{ login: string; id: string; avatarUrl: string }>, fetchedAt: string) => {
+  deleteRepoUsersStmt.run(repo);
+  for (const u of users) {
+    insertRepoUserStmt.run({ $repo: repo, $login: u.login, $user_id: u.id, $avatar_url: u.avatarUrl, $fetched_at: fetchedAt });
+  }
+});
+
+export function setRepoUsers(repo: string, users: Array<{ login: string; id: string; avatarUrl: string }>, fetchedAt: string): void {
+  setRepoUsersTxn(repo, users, fetchedAt);
+}
+
+const repoUserIdStmt = db.prepare<{ user_id: string }, [string, string]>("SELECT user_id FROM repo_users WHERE repo = ? AND login = ?");
+
+export function repoUserId(repo: string, login: string): string | null {
+  return repoUserIdStmt.get(repo, login)?.user_id ?? null;
+}
+
+export interface WebhookRegistrationRow {
+  window_id: string | null;
+  repo: string;
+  number: number;
+  last_webhook_at: string | null;
+}
+
+export interface WebhookRegistrationKey {
+  repo: string;
+  number: number;
+}
+
+const listWebhookRegistrationsStmt = db.prepare<WebhookRegistrationRow, []>("SELECT * FROM webhook_registrations");
+
+export function listWebhookRegistrations(): WebhookRegistrationRow[] {
+  return listWebhookRegistrationsStmt.all();
+}
+
+const registrationsBoundToWindowStmt = db.prepare<WebhookRegistrationKey, { $window_id: string; $repo: string; $number: number }>(
+  "SELECT repo, number FROM webhook_registrations WHERE window_id = $window_id AND NOT (repo = $repo AND number = $number)",
+);
+const clearOtherWebhookRegistrationsForWindowStmt = db.prepare(
+  "UPDATE webhook_registrations SET window_id = NULL WHERE window_id = $window_id AND NOT (repo = $repo AND number = $number)",
+);
+const upsertWebhookRegistrationStmt = db.prepare(`
+INSERT INTO webhook_registrations (repo, number, window_id, last_webhook_at) VALUES ($repo, $number, $window_id, NULL)
+ON CONFLICT (repo, number) DO UPDATE SET
+  window_id = COALESCE(excluded.window_id, webhook_registrations.window_id),
+  last_webhook_at = NULL
+`);
+const setWebhookRegistrationTxn = db.transaction((repo: string, number: number, windowId: string | null): WebhookRegistrationKey[] => {
+  const rebound = windowId
+    ? registrationsBoundToWindowStmt.all({ $window_id: windowId, $repo: repo, $number: number })
+    : [];
+  if (windowId) clearOtherWebhookRegistrationsForWindowStmt.run({ $window_id: windowId, $repo: repo, $number: number });
+  upsertWebhookRegistrationStmt.run({ $repo: repo, $number: number, $window_id: windowId });
+  return rebound;
+});
+
+export function setWebhookRegistration(repo: string, number: number, windowId?: string): WebhookRegistrationKey[] {
+  return setWebhookRegistrationTxn(repo, number, windowId ?? null);
+}
+
+const deleteWebhookRegistrationsForWindowStmt = db.prepare("DELETE FROM webhook_registrations WHERE window_id = ?");
+
+export function deleteWebhookRegistrationsForWindow(windowId: string): boolean {
+  return deleteWebhookRegistrationsForWindowStmt.run(windowId).changes > 0;
+}
+
+const deleteWebhookRegistrationStmt = db.prepare("DELETE FROM webhook_registrations WHERE repo = ? AND number = ?");
+
+export function deleteWebhookRegistration(repo: string, number: number): boolean {
+  return deleteWebhookRegistrationStmt.run(repo, number).changes > 0;
+}
+
+export function deleteWebhookRegistrationsForPr(repo: string, number: number): void {
+  deleteWebhookRegistrationStmt.run(repo, number);
+}
+
+const touchWebhookRegistrationsStmt = db.prepare(
+  "UPDATE webhook_registrations SET last_webhook_at = $last_webhook_at WHERE repo = $repo AND number = $number",
+);
+
+export function touchWebhookRegistrations(repo: string, number: number, at: string): void {
+  touchWebhookRegistrationsStmt.run({ $repo: repo, $number: number, $last_webhook_at: at });
+}
+
+const recordPrWebhookActivityStmt = db.prepare(`
+INSERT INTO pr_webhook_activity (repo, number, received_at) VALUES ($repo, $number, $received_at)
+ON CONFLICT (repo, number) DO UPDATE SET received_at = excluded.received_at
+`);
+
+export function recordPrWebhookActivity(repo: string, number: number, receivedAt: string): void {
+  recordPrWebhookActivityStmt.run({ $repo: repo, $number: number, $received_at: receivedAt });
+}
+
+const openPrNumbersForBranchStmt = db.prepare<{ number: number }, [string, string, string]>(
+  "SELECT number FROM prs WHERE repo = ? AND state NOT IN ('MERGED', 'CLOSED') AND (base_ref = ? OR head_ref = ?)",
+);
+
+export function openPrNumbersForBranch(repo: string, branch: string): number[] {
+  return openPrNumbersForBranchStmt.all(repo, branch, branch).map((row) => row.number);
+}
+
+const lastWebhookAtForPrStmt = db.prepare<{ received_at: string }, [string, number]>(
+  "SELECT received_at FROM pr_webhook_activity WHERE repo = ? AND number = ?",
+);
+
+export function lastWebhookAtForPr(repo: string, number: number): string | null {
+  return lastWebhookAtForPrStmt.get(repo, number)?.received_at ?? null;
+}
+
+export interface RescoreRow {
+  repo: string;
+  number: number;
+  reviewer: string;
+  review_sha: string;
+  head_sha: string;
+  score: number;
+  verdicts_json: string;
+  created_at: string;
+}
+
+const getRescoreStmt = db.prepare<RescoreRow, [string, number, string, string, string]>(
+  "SELECT * FROM review_rescores WHERE repo = ? AND number = ? AND reviewer = ? AND review_sha = ? AND head_sha = ?",
+);
+
+export function getRescoreFor(repo: string, number: number, reviewer: string, reviewSha: string, headSha: string): RescoreRow | null {
+  return getRescoreStmt.get(repo, number, reviewer, reviewSha, headSha) ?? null;
+}
+
+const insertRescoreStmt = db.prepare(`
+INSERT INTO review_rescores (repo, number, reviewer, review_sha, head_sha, score, verdicts_json, created_at)
+VALUES ($repo, $number, $reviewer, $review_sha, $head_sha, $score, $verdicts_json, $created_at)
+ON CONFLICT (repo, number, reviewer, review_sha, head_sha) DO NOTHING
+`);
+
+// a triple is scored at most once - re-running a scored triple would defeat the whole point of memoizing it
+export function insertRescore(row: RescoreRow): void {
+  insertRescoreStmt.run({
+    $repo: row.repo,
+    $number: row.number,
+    $reviewer: row.reviewer,
+    $review_sha: row.review_sha,
+    $head_sha: row.head_sha,
+    $score: row.score,
+    $verdicts_json: row.verdicts_json,
+    $created_at: row.created_at,
+  });
+}
+
+const latestRescoreForHeadStmt = db.prepare<RescoreRow, [string, number, string]>(
+  "SELECT * FROM review_rescores WHERE repo = ? AND number = ? AND head_sha = ? ORDER BY created_at DESC LIMIT 1",
+);
+
+export function latestRescoreForHead(repo: string, number: number, headSha: string): RescoreRow | null {
+  return latestRescoreForHeadStmt.get(repo, number, headSha) ?? null;
+}
+
+// cockpit no longer calls GitHub's own auto-merge mutation, so this is the sole source of truth for "armed"
+export function setAutoMergeArmed(repo: string, number: number, armed: boolean): void {
+  setAutoMergeArmedStmt.run(armed ? 1 : 0, repo, number);
+}
+
+const countPrsStmt = db.prepare<{ count: number }, []>("SELECT COUNT(*) AS count FROM prs");
+
+export function countPrs(): number {
+  return countPrsStmt.get()!.count;
+}
+
+const listPrsStmt = db.prepare<PrRow, []>(
+  "SELECT * FROM prs ORDER BY needs_me_rank ASC, updated_at DESC",
+);
+
+export function listPrs(): PrRow[] {
+  return listPrsStmt.all();
+}
+
+const getDiffStmt = db.prepare<{ patch: string }, [string]>(
+  "SELECT patch FROM diffs WHERE head_sha = ?",
+);
+
+export function getDiff(headSha: string): string | null {
+  return getDiffStmt.get(headSha)?.patch ?? null;
+}
+
+const insertDiffStmt = db.prepare(
+  "INSERT OR IGNORE INTO diffs (head_sha, patch, fetched_at) VALUES (?, ?, datetime('now'))",
+);
+
+export function saveDiff(headSha: string, patch: string): void {
+  insertDiffStmt.run(headSha, patch);
+}
+
+const getFileContentsStmt = db.prepare<{ content: string }, [string, string]>(
+  "SELECT content FROM file_contents WHERE sha = ? AND path = ?",
+);
+
+export function getFileContents(sha: string, path: string): string | null {
+  return getFileContentsStmt.get(sha, path)?.content ?? null;
+}
+
+const saveFileContentsStmt = db.prepare(
+  "INSERT OR IGNORE INTO file_contents (sha, path, content) VALUES (?, ?, ?)",
+);
+
+export function saveFileContents(sha: string, path: string, content: string): void {
+  saveFileContentsStmt.run(sha, path, content);
+}
+
+export interface MutationRow {
+  id: number;
+  repo: string;
+  number: number;
+  kind: string;
+  payload_json: string;
+  state: string;
+  error: string | null;
+  created_at: string;
+}
+
+const insertMutationStmt = db.prepare(`
+INSERT INTO mutations (repo, number, kind, payload_json, state, error, created_at)
+VALUES ($repo, $number, $kind, $payload_json, 'pending', NULL, $created_at)
+`);
+
+export function insertMutation(row: {
+  repo: string;
+  number: number;
+  kind: string;
+  payload_json: string;
+  created_at: string;
+}): number {
+  const result = insertMutationStmt.run({
+    $repo: row.repo,
+    $number: row.number,
+    $kind: row.kind,
+    $payload_json: row.payload_json,
+    $created_at: row.created_at,
+  });
+  return Number(result.lastInsertRowid);
+}
+
+const listMutationsForPrStmt = db.prepare<MutationRow, [string, number]>(
+  "SELECT * FROM mutations WHERE repo = ? AND number = ? AND state != 'done' ORDER BY id ASC",
+);
+
+export function listMutationsForPr(repo: string, number: number): MutationRow[] {
+  return listMutationsForPrStmt.all(repo, number);
+}
+
+const nextPendingMutationStmt = db.prepare<MutationRow, []>(
+  "SELECT * FROM mutations WHERE state = 'pending' ORDER BY id ASC LIMIT 1",
+);
+
+export function nextPendingMutation(): MutationRow | null {
+  return nextPendingMutationStmt.get() ?? null;
+}
+
+const listRefreshingMutationsStmt = db.prepare<MutationRow, []>(
+  "SELECT * FROM mutations WHERE state = 'refreshing' ORDER BY id ASC",
+);
+
+export function listRefreshingMutations(): MutationRow[] {
+  return listRefreshingMutationsStmt.all();
+}
+
+const setMutationStateStmt = db.prepare(
+  "UPDATE mutations SET state = $state, error = $error WHERE id = $id",
+);
+
+export function setMutationState(id: number, state: string, error: string | null): void {
+  setMutationStateStmt.run({ $id: id, $state: state, $error: error });
+}
+
+const deleteMutationStmt = db.prepare("DELETE FROM mutations WHERE id = ?");
+
+export function deleteMutation(id: number): void {
+  deleteMutationStmt.run(id);
+}
+
+export function failInterruptedMutations(): void {
+  db.prepare("UPDATE mutations SET state = 'failed', error = 'interrupted' WHERE state = 'pending'").run();
+}
+
+export interface PrIndexRow {
+  repo: string;
+  number: number;
+  title: string;
+  state: string;
+  is_draft: number;
+  author: string;
+  updated_at: string;
+  merged_at: string | null;
+  closed_at: string | null;
+  involves_me: number;
+}
+
+const upsertPrIndexStmt = db.prepare(`
+INSERT INTO pr_index (
+  repo, number, title, state, is_draft, author, updated_at, merged_at, closed_at, involves_me
+)
+VALUES (
+  $repo, $number, $title, $state, $is_draft, $author, $updated_at, $merged_at, $closed_at, $involves_me
+)
+ON CONFLICT (repo, number) DO UPDATE SET
+  title = excluded.title,
+  state = excluded.state,
+  is_draft = excluded.is_draft,
+  author = excluded.author,
+  updated_at = excluded.updated_at,
+  merged_at = COALESCE(excluded.merged_at, pr_index.merged_at),
+  closed_at = COALESCE(excluded.closed_at, pr_index.closed_at),
+  involves_me = MAX(pr_index.involves_me, excluded.involves_me)
+`);
+
+const upsertPrIndexTxn = db.transaction((entries: PrIndexEntry[]) => {
+  for (const entry of entries) {
+    upsertPrIndexStmt.run({
+      $repo: entry.repo,
+      $number: entry.number,
+      $title: entry.title,
+      $state: entry.state,
+      $is_draft: entry.isDraft ? 1 : 0,
+      $author: entry.author,
+      $updated_at: entry.updatedAt,
+      $merged_at: entry.mergedAt ?? null,
+      $closed_at: entry.closedAt ?? null,
+      $involves_me: entry.involvesMe ? 1 : 0,
+    });
+  }
+});
+
+export function upsertPrIndex(entries: PrIndexEntry[]): void {
+  upsertPrIndexTxn(entries);
+}
+
+const listPrIndexStmt = db.prepare<PrIndexRow, []>(
+  "SELECT * FROM pr_index ORDER BY updated_at DESC",
+);
+
+export function listPrIndex(): PrIndexRow[] {
+  return listPrIndexStmt.all();
+}
+
+const listClosedPrsStmt = db.prepare<PrIndexRow, [number]>(`
+SELECT *
+FROM pr_index
+WHERE state IN ('MERGED', 'CLOSED') AND involves_me = 1
+ORDER BY COALESCE(merged_at, closed_at, updated_at) DESC
+LIMIT ?
+`);
+
+export function listClosedPrs(limit: number): PrIndexRow[] {
+  return listClosedPrsStmt.all(limit);
+}
+
+const getSettingStmt = db.prepare<{ value: string }, [string]>(
+  "SELECT value FROM settings WHERE key = ?",
+);
+
+export function getSetting(key: string): string | null {
+  return getSettingStmt.get(key)?.value ?? null;
+}
+
+const setSettingStmt = db.prepare(
+  "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+);
+
+export function setSetting(key: string, value: string): void {
+  setSettingStmt.run(key, value);
+}
+
+function preservePrDetails(whereSql: string, params: Array<string | number>): void {
+  db.prepare(`
+    INSERT INTO pr_detail_cache (repo, number, head_sha, detail_json, fetched_at)
+    SELECT repo, number, head_sha, detail_json, strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day')
+    FROM prs
+    WHERE ${whereSql}
+    ON CONFLICT (repo, number) DO UPDATE SET
+      head_sha = excluded.head_sha,
+      detail_json = excluded.detail_json,
+      fetched_at = excluded.fetched_at
+  `).run(...params);
+}
+
+const evictReposNotInTxn = db.transaction((repos: string[]) => {
+  const placeholders = repos.map(() => "?").join(",");
+  const whereSql = `repo NOT IN (${placeholders})`;
+  preservePrDetails(whereSql, repos);
+  db.prepare(`DELETE FROM prs WHERE ${whereSql}`).run(...repos);
+});
+
+export function evictReposNotIn(repos: string[]): void {
+  if (repos.length === 0) return;
+  evictReposNotInTxn(repos);
+}
+
+const distinctPrReposStmt = db.prepare<{ repo: string }, []>("SELECT DISTINCT repo FROM prs");
+
+export function distinctPrRepos(): string[] {
+  return distinctPrReposStmt.all().map((row) => row.repo);
+}
+
+const evictStalePrsTxn = db.transaction((repo: string, keepNumbers: number[]) => {
+  const params: Array<string | number> = [repo, ...keepNumbers];
+  const whereSql = keepNumbers.length === 0
+    ? "repo = ?"
+    : `repo = ? AND number NOT IN (${keepNumbers.map(() => "?").join(",")})`;
+  preservePrDetails(whereSql, params);
+  db.prepare(`DELETE FROM prs WHERE ${whereSql}`).run(...params);
+});
+
+export function evictStalePrs(repo: string, keepNumbers: number[]): void {
+  evictStalePrsTxn(repo, keepNumbers);
+}
+
+const setArchivedStmt = db.prepare(`
+INSERT INTO archived_prs (repo, number, archived_at) VALUES ($repo, $number, $archived_at)
+ON CONFLICT (repo, number) DO UPDATE SET archived_at = excluded.archived_at
+`);
+
+const unsetArchivedStmt = db.prepare("DELETE FROM archived_prs WHERE repo = ? AND number = ?");
+
+export function setArchived(repo: string, number: number, archived: boolean): void {
+  if (archived) {
+    setArchivedStmt.run({ $repo: repo, $number: number, $archived_at: new Date().toISOString() });
+  } else {
+    unsetArchivedStmt.run(repo, number);
+  }
+}
+
+const archivedKeysStmt = db.prepare<{ repo: string; number: number }, []>(
+  "SELECT repo, number FROM archived_prs",
+);
+
+export function listArchivedKeys(): Set<string> {
+  return new Set(archivedKeysStmt.all().map(prKey));
+}
+
+const setRankStmt = db.prepare(`
+INSERT INTO pr_rank (repo, number, position) VALUES ($repo, $number, $position)
+ON CONFLICT (repo, number) DO UPDATE SET position = excluded.position
+`);
+
+const unsetRankStmt = db.prepare("DELETE FROM pr_rank WHERE repo = ? AND number = ?");
+
+export function setRank(repo: string, number: number, position: number): void {
+  setRankStmt.run({ $repo: repo, $number: number, $position: position });
+}
+
+export function unsetRank(repo: string, number: number): void {
+  unsetRankStmt.run(repo, number);
+}
+
+const ranksStmt = db.prepare<{ repo: string; number: number; position: number }, []>(
+  "SELECT repo, number, position FROM pr_rank",
+);
+
+export function getRanks(): Map<string, number> {
+  return new Map(ranksStmt.all().map((r) => [prKey(r), r.position]));
+}
+
+export interface CachedPrDetailRow {
+  repo: string;
+  number: number;
+  head_sha: string;
+  detail_json: string;
+  fetched_at: string;
+}
+
+const upsertCachedPrDetailStmt = db.prepare(`
+INSERT INTO pr_detail_cache (repo, number, head_sha, detail_json, fetched_at)
+VALUES ($repo, $number, $head_sha, $detail_json, $fetched_at)
+ON CONFLICT (repo, number) DO UPDATE SET
+  head_sha = excluded.head_sha,
+  detail_json = excluded.detail_json,
+  fetched_at = excluded.fetched_at
+`);
+
+export function upsertCachedPrDetail(row: CachedPrDetailRow): void {
+  upsertCachedPrDetailStmt.run({
+    $repo: row.repo,
+    $number: row.number,
+    $head_sha: row.head_sha,
+    $detail_json: row.detail_json,
+    $fetched_at: row.fetched_at,
+  });
+}
+
+const getCachedPrDetailStmt = db.prepare<CachedPrDetailRow, [string, number]>(
+  "SELECT * FROM pr_detail_cache WHERE repo = ? AND number = ?",
+);
+
+export function getCachedPrDetail(repo: string, number: number): CachedPrDetailRow | null {
+  return getCachedPrDetailStmt.get(repo, number) ?? null;
+}

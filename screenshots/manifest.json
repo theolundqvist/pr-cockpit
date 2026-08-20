@@ -1,0 +1,443 @@
+{
+  "inbox-populated": {
+    "route": "#/",
+    "description": "Populated inbox with mixed ownership, CI, review, and merge states.",
+    "localAvatarHrefs": [
+      "https://github.com/theolundqvist.png?size=64",
+      "https://github.com/octocat.png?size=64"
+    ],
+    "files": [
+      "1440x900/light/inbox-populated.png",
+      "1440x900/dark/inbox-populated.png",
+      "2560x1440/light/inbox-populated.png",
+      "2560x1440/dark/inbox-populated.png",
+      "1100x800/light/inbox-populated.png",
+      "1100x800/dark/inbox-populated.png"
+    ]
+  },
+  "inbox-empty": {
+    "route": "#/",
+    "description": "Inbox after every active fixture PR has been archived.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/inbox-empty.png",
+      "1440x900/dark/inbox-empty.png",
+      "2560x1440/light/inbox-empty.png",
+      "2560x1440/dark/inbox-empty.png",
+      "1100x800/light/inbox-empty.png",
+      "1100x800/dark/inbox-empty.png"
+    ]
+  },
+  "inbox-error": {
+    "route": "#/",
+    "description": "Inbox error state after its API request fails.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/inbox-error.png",
+      "1440x900/dark/inbox-error.png",
+      "2560x1440/light/inbox-error.png",
+      "2560x1440/dark/inbox-error.png",
+      "1100x800/light/inbox-error.png",
+      "1100x800/dark/inbox-error.png"
+    ]
+  },
+  "inbox-archived": {
+    "route": "#/",
+    "description": "Inbox with the archived queue expanded, including a closed PR.",
+    "localAvatarHrefs": [
+      "https://github.com/theolundqvist.png?size=64",
+      "https://github.com/octocat.png?size=64"
+    ],
+    "files": [
+      "1440x900/light/inbox-archived.png",
+      "1440x900/dark/inbox-archived.png",
+      "2560x1440/light/inbox-archived.png",
+      "2560x1440/dark/inbox-archived.png",
+      "1100x800/light/inbox-archived.png",
+      "1100x800/dark/inbox-archived.png"
+    ]
+  },
+  "detail-conversation": {
+    "route": "#/pr/fixture/cockpit/101",
+    "description": "Green PR conversation with approvals, threads, comments, and successful checks.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/detail-conversation.png",
+      "1440x900/dark/detail-conversation.png",
+      "2560x1440/light/detail-conversation.png",
+      "2560x1440/dark/detail-conversation.png",
+      "1100x800/light/detail-conversation.png",
+      "1100x800/dark/detail-conversation.png"
+    ]
+  },
+  "detail-conversation-blocked": {
+    "route": "#/pr/fixture/cockpit/102",
+    "description": "PR blocked by branch protection without an admin bypass.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/detail-conversation-blocked.png",
+      "1440x900/dark/detail-conversation-blocked.png",
+      "2560x1440/light/detail-conversation-blocked.png",
+      "2560x1440/dark/detail-conversation-blocked.png",
+      "1100x800/light/detail-conversation-blocked.png",
+      "1100x800/dark/detail-conversation-blocked.png"
+    ]
+  },
+  "detail-conversation-blocked-admin": {
+    "route": "#/pr/fixture/admin-cockpit/112",
+    "description": "Branch-protection block with the admin force-merge confirmation visible.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/detail-conversation-blocked-admin.png",
+      "1440x900/dark/detail-conversation-blocked-admin.png",
+      "2560x1440/light/detail-conversation-blocked-admin.png",
+      "2560x1440/dark/detail-conversation-blocked-admin.png",
+      "1100x800/light/detail-conversation-blocked-admin.png",
+      "1100x800/dark/detail-conversation-blocked-admin.png"
+    ]
+  },
+  "detail-conversation-conflicts": {
+    "route": "#/pr/fixture/cockpit/103",
+    "description": "PR with exact conflict paths and an agent resolution action.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/detail-conversation-conflicts.png",
+      "1440x900/dark/detail-conversation-conflicts.png",
+      "2560x1440/light/detail-conversation-conflicts.png",
+      "2560x1440/dark/detail-conversation-conflicts.png",
+      "1100x800/light/detail-conversation-conflicts.png",
+      "1100x800/dark/detail-conversation-conflicts.png"
+    ]
+  },
+  "detail-unstable": {
+    "route": "#/pr/fixture/cockpit/104",
+    "description": "UNSTABLE PR with failing non-required checks.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/detail-unstable.png",
+      "1440x900/dark/detail-unstable.png",
+      "2560x1440/light/detail-unstable.png",
+      "2560x1440/dark/detail-unstable.png",
+      "1100x800/light/detail-unstable.png",
+      "1100x800/dark/detail-unstable.png"
+    ]
+  },
+  "detail-draft": {
+    "route": "#/pr/fixture/cockpit/105",
+    "description": "Draft PR conversation.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/detail-draft.png",
+      "1440x900/dark/detail-draft.png",
+      "2560x1440/light/detail-draft.png",
+      "2560x1440/dark/detail-draft.png",
+      "1100x800/light/detail-draft.png",
+      "1100x800/dark/detail-draft.png"
+    ]
+  },
+  "detail-merged": {
+    "route": "#/pr/fixture/cockpit/106",
+    "description": "Merged PR conversation.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/detail-merged.png",
+      "1440x900/dark/detail-merged.png",
+      "2560x1440/light/detail-merged.png",
+      "2560x1440/dark/detail-merged.png",
+      "1100x800/light/detail-merged.png",
+      "1100x800/dark/detail-merged.png"
+    ]
+  },
+  "detail-closed": {
+    "route": "#/pr/fixture/cockpit/111",
+    "description": "Closed PR conversation from the archived fixture set.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/detail-closed.png",
+      "1440x900/dark/detail-closed.png",
+      "2560x1440/light/detail-closed.png",
+      "2560x1440/dark/detail-closed.png",
+      "1100x800/light/detail-closed.png",
+      "1100x800/dark/detail-closed.png"
+    ]
+  },
+  "detail-no-checks": {
+    "route": "#/pr/fixture/cockpit/113",
+    "description": "Open PR with no checks, no description, and no changed files.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/detail-no-checks.png",
+      "1440x900/dark/detail-no-checks.png",
+      "2560x1440/light/detail-no-checks.png",
+      "2560x1440/dark/detail-no-checks.png",
+      "1100x800/light/detail-no-checks.png",
+      "1100x800/dark/detail-no-checks.png"
+    ]
+  },
+  "detail-checks-pending": {
+    "route": "#/pr/fixture/cockpit/114",
+    "description": "PR with queued and in-progress required checks.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/detail-checks-pending.png",
+      "1440x900/dark/detail-checks-pending.png",
+      "2560x1440/light/detail-checks-pending.png",
+      "2560x1440/dark/detail-checks-pending.png",
+      "1100x800/light/detail-checks-pending.png",
+      "1100x800/dark/detail-checks-pending.png"
+    ]
+  },
+  "detail-files": {
+    "route": "#/pr/fixture/cockpit/101/files",
+    "description": "Files tab with an ordinary three-file diff and inline threads.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/detail-files.png",
+      "1440x900/dark/detail-files.png",
+      "2560x1440/light/detail-files.png",
+      "2560x1440/dark/detail-files.png",
+      "1100x800/light/detail-files.png",
+      "1100x800/dark/detail-files.png"
+    ]
+  },
+  "detail-files-large-diff": {
+    "route": "#/pr/fixture/cockpit/107/files",
+    "description": "Files tab with 50+ files, binary and renamed files, and a giant single-file diff.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/detail-files-large-diff.png",
+      "1440x900/dark/detail-files-large-diff.png",
+      "2560x1440/light/detail-files-large-diff.png",
+      "2560x1440/dark/detail-files-large-diff.png",
+      "1100x800/light/detail-files-large-diff.png",
+      "1100x800/dark/detail-files-large-diff.png"
+    ]
+  },
+  "detail-files-empty": {
+    "route": "#/pr/fixture/cockpit/113/files",
+    "description": "Zero-file PR showing the empty diff state.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/detail-files-empty.png",
+      "1440x900/dark/detail-files-empty.png",
+      "2560x1440/light/detail-files-empty.png",
+      "2560x1440/dark/detail-files-empty.png",
+      "1100x800/light/detail-files-empty.png",
+      "1100x800/dark/detail-files-empty.png"
+    ]
+  },
+  "detail-files-error": {
+    "route": "#/pr/fixture/cockpit/101/files",
+    "description": "Files tab after its diff request fails, with retry visible.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/detail-files-error.png",
+      "1440x900/dark/detail-files-error.png",
+      "2560x1440/light/detail-files-error.png",
+      "2560x1440/dark/detail-files-error.png",
+      "1100x800/light/detail-files-error.png",
+      "1100x800/dark/detail-files-error.png"
+    ]
+  },
+  "detail-file-history": {
+    "route": "#/pr/fixture/cockpit/101/files",
+    "description": "Base-branch history and diff for a selected file.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/detail-file-history.png",
+      "1440x900/dark/detail-file-history.png",
+      "2560x1440/light/detail-file-history.png",
+      "2560x1440/dark/detail-file-history.png",
+      "1100x800/light/detail-file-history.png",
+      "1100x800/dark/detail-file-history.png"
+    ]
+  },
+  "detail-agents": {
+    "route": "#/pr/fixture/cockpit/110/agents",
+    "description": "Agents tab with completed, failed, killed, and running fixture runs.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/detail-agents.png",
+      "1440x900/dark/detail-agents.png",
+      "2560x1440/light/detail-agents.png",
+      "2560x1440/dark/detail-agents.png",
+      "1100x800/light/detail-agents.png",
+      "1100x800/dark/detail-agents.png"
+    ]
+  },
+  "detail-agents-empty": {
+    "route": "#/pr/fixture/cockpit/101/agents",
+    "description": "Agents tab before any runs exist.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/detail-agents-empty.png",
+      "1440x900/dark/detail-agents-empty.png",
+      "2560x1440/light/detail-agents-empty.png",
+      "2560x1440/dark/detail-agents-empty.png",
+      "1100x800/light/detail-agents-empty.png",
+      "1100x800/dark/detail-agents-empty.png"
+    ]
+  },
+  "detail-long-markdown": {
+    "route": "#/pr/fixture/cockpit/108",
+    "description": "Huge Markdown description with a table, code block, and embedded image.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/detail-long-markdown.png",
+      "1440x900/dark/detail-long-markdown.png",
+      "2560x1440/light/detail-long-markdown.png",
+      "2560x1440/dark/detail-long-markdown.png",
+      "1100x800/light/detail-long-markdown.png",
+      "1100x800/dark/detail-long-markdown.png"
+    ]
+  },
+  "detail-failed-mutation": {
+    "route": "#/pr/fixture/cockpit/109",
+    "description": "Failed mutation with retry and discard actions.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/detail-failed-mutation.png",
+      "1440x900/dark/detail-failed-mutation.png",
+      "2560x1440/light/detail-failed-mutation.png",
+      "2560x1440/dark/detail-failed-mutation.png",
+      "1100x800/light/detail-failed-mutation.png",
+      "1100x800/dark/detail-failed-mutation.png"
+    ]
+  },
+  "detail-pending-mutation": {
+    "route": "#/pr/fixture/cockpit/114",
+    "description": "Pending comment mutation rendered alongside queued CI.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/detail-pending-mutation.png",
+      "1440x900/dark/detail-pending-mutation.png",
+      "2560x1440/light/detail-pending-mutation.png",
+      "2560x1440/dark/detail-pending-mutation.png",
+      "1100x800/light/detail-pending-mutation.png",
+      "1100x800/dark/detail-pending-mutation.png"
+    ]
+  },
+  "settings": {
+    "route": "#/settings",
+    "description": "General settings and workspace configuration.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/settings.png",
+      "1440x900/dark/settings.png",
+      "2560x1440/light/settings.png",
+      "2560x1440/dark/settings.png",
+      "1100x800/light/settings.png",
+      "1100x800/dark/settings.png"
+    ]
+  },
+  "settings-keybinds": {
+    "route": "#/settings",
+    "description": "Global and in-app keyboard shortcuts.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/settings-keybinds.png",
+      "1440x900/dark/settings-keybinds.png",
+      "2560x1440/light/settings-keybinds.png",
+      "2560x1440/dark/settings-keybinds.png",
+      "1100x800/light/settings-keybinds.png",
+      "1100x800/dark/settings-keybinds.png"
+    ]
+  },
+  "settings-agents": {
+    "route": "#/settings",
+    "description": "Built-in and custom agent configuration.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/settings-agents.png",
+      "1440x900/dark/settings-agents.png",
+      "2560x1440/light/settings-agents.png",
+      "2560x1440/dark/settings-agents.png",
+      "1100x800/light/settings-agents.png",
+      "1100x800/dark/settings-agents.png"
+    ]
+  },
+  "settings-diff-tests": {
+    "route": "#/settings",
+    "description": "Diff rendering and test-file preferences.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/settings-diff-tests.png",
+      "1440x900/dark/settings-diff-tests.png",
+      "2560x1440/light/settings-diff-tests.png",
+      "2560x1440/dark/settings-diff-tests.png",
+      "1100x800/light/settings-diff-tests.png",
+      "1100x800/dark/settings-diff-tests.png"
+    ]
+  },
+  "palette": {
+    "route": "#/",
+    "description": "PR jump palette populated from the fixture inbox and index.",
+    "localAvatarHrefs": [
+      "https://github.com/theolundqvist.png?size=64",
+      "https://github.com/octocat.png?size=64"
+    ],
+    "files": [
+      "1440x900/light/palette.png",
+      "1440x900/dark/palette.png",
+      "2560x1440/light/palette.png",
+      "2560x1440/dark/palette.png",
+      "1100x800/light/palette.png",
+      "1100x800/dark/palette.png"
+    ]
+  },
+  "palette-standalone": {
+    "route": "#/palette",
+    "description": "Standalone PR search palette opened outside the dashboard shell.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/palette-standalone.png",
+      "1440x900/dark/palette-standalone.png",
+      "2560x1440/light/palette-standalone.png",
+      "2560x1440/dark/palette-standalone.png",
+      "1100x800/light/palette-standalone.png",
+      "1100x800/dark/palette-standalone.png"
+    ]
+  },
+  "cheatsheet": {
+    "route": "#/",
+    "description": "Keyboard shortcuts overlay.",
+    "localAvatarHrefs": [
+      "https://github.com/theolundqvist.png?size=64",
+      "https://github.com/octocat.png?size=64"
+    ],
+    "files": [
+      "1440x900/light/cheatsheet.png",
+      "1440x900/dark/cheatsheet.png",
+      "2560x1440/light/cheatsheet.png",
+      "2560x1440/dark/cheatsheet.png",
+      "1100x800/light/cheatsheet.png",
+      "1100x800/dark/cheatsheet.png"
+    ]
+  },
+  "onboarding": {
+    "route": "#/",
+    "description": "First-run repository picker.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/onboarding.png",
+      "1440x900/dark/onboarding.png",
+      "2560x1440/light/onboarding.png",
+      "2560x1440/dark/onboarding.png",
+      "1100x800/light/onboarding.png",
+      "1100x800/dark/onboarding.png"
+    ]
+  },
+  "detail-not-found": {
+    "route": "#/pr/fixture/cockpit/999",
+    "description": "Stable detail error for a PR absent from the fixture set.",
+    "localAvatarHrefs": [],
+    "files": [
+      "1440x900/light/detail-not-found.png",
+      "1440x900/dark/detail-not-found.png",
+      "2560x1440/light/detail-not-found.png",
+      "2560x1440/dark/detail-not-found.png",
+      "1100x800/light/detail-not-found.png",
+      "1100x800/dark/detail-not-found.png"
+    ]
+  }
+}

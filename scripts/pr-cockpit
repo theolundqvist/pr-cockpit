@@ -1,0 +1,312 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  local status=${1:-2}
+  cat >&2 <<'EOF'
+Read PR Cockpit's cached PR data with the same addresses as the built-in pr:// resource.
+
+Usage:
+  pr-cockpit pr://owner/repo/123
+  pr-cockpit pr://123                         # current repository
+  pr-cockpit owner/repo#123                   # short form
+  pr-cockpit pr://owner/repo/123?comments=0   # omit review comments
+  pr-cockpit                                  # list cached PRs for current repository
+  pr-cockpit listen [pr://owner/repo/123]
+  pr-cockpit resolve owner/repo#123 THREAD
+
+Commands:
+  listen [REF]        wait for substantive cached state to change, print it, then exit
+                      returns immediately when the current PR has failed CI or open comments
+                      without REF, watch the current repository
+  resolve REF THREAD  resolve one cached review thread by its displayed handle
+
+Options:
+  --json              machine-readable Cockpit status
+  --diff              cached unified diff
+  --file PATH         file contents at the PR head
+  --new-since DATE    only comments at or after DATE
+  --ci-only           with listen REF, wake only for CI changes or current failure
+  --comments-only     with listen REF, wake only for comment changes or current open comments
+  -h, --help          show this help
+
+Default output is Markdown for agents and humans. Use --json only for automation.
+EOF
+  exit "$status"
+}
+
+command="read"
+if [[ "${1:-}" = "listen" || "${1:-}" = "resolve" ]]; then
+  command="$1"
+  shift
+fi
+
+ref=""
+mode="summary"
+file_path=""
+since=""
+comments="1"
+listen_scope="all"
+thread_handle=""
+while (($#)); do
+  case "$1" in
+    --json)
+      [[ "$mode" = "summary" ]] || usage
+      mode="json"
+      ;;
+    --diff)
+      [[ "$mode" = "summary" ]] || usage
+      mode="diff"
+      ;;
+    --file)
+      [[ "$mode" = "summary" && $# -gt 1 ]] || usage
+      mode="file"
+      shift
+      file_path="$1"
+      ;;
+    --new-since)
+      [[ $# -gt 1 ]] || usage
+      shift
+      since="$1"
+      ;;
+    --ci-only)
+      [[ "$command" = "listen" && "$listen_scope" = "all" ]] || usage
+      listen_scope="ci"
+      ;;
+    --comments-only)
+      [[ "$command" = "listen" && "$listen_scope" = "all" ]] || usage
+      listen_scope="comments"
+      ;;
+    --comments=0) comments="0" ;;
+    -h|--help) usage 0 ;;
+    -*) usage ;;
+    *)
+      if [[ -z "$ref" ]]; then
+        ref="$1"
+      elif [[ "$command" = "resolve" && -z "$thread_handle" ]]; then
+        thread_handle="$1"
+      else
+        usage
+      fi
+      ;;
+  esac
+  shift
+done
+[[ -z "$since" || "$mode" = "summary" || "$mode" = "json" ]] || usage
+[[ "$comments" = "1" || "$mode" = "summary" || "$mode" = "json" ]] || usage
+[[ -n "$ref" || "$command" != "resolve" ]] || usage
+[[ "$command" != "resolve" || ( "$mode" = "summary" && -z "$since" && "$comments" = "1" && "$thread_handle" =~ ^[0-9a-f]{10}$ ) ]] || usage
+
+config_file="$HOME/.config/pr-cockpit/config"
+env_port="${COCKPIT_PORT:-}"
+if [[ -f "$config_file" ]]; then
+  # shellcheck disable=SC1090
+  source "$config_file"
+fi
+port="${env_port:-${COCKPIT_PORT:-4820}}"
+bun_bin=$(command -v bun || true)
+[[ -n "$bun_bin" ]] || { echo "pr-cockpit: bun is required" >&2; exit 1; }
+
+json_transform() {
+  local operation=$1 argument=${2:-}
+  "$bun_bin" -e '
+const operation = process.argv[1];
+const argument = process.argv[2];
+const input = await Bun.stdin.json();
+const stable = (value) => {
+  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stable(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+};
+const prs = Array.isArray(input.prs) ? input.prs.filter((pr) => pr.repo === argument) : [];
+switch (operation) {
+  case "repo-index":
+    console.log(stable(prs));
+    break;
+  case "detail-batches": {
+    const keys = prs.filter((pr) => String(pr.state).toUpperCase() === "OPEN").map((pr) => `${pr.repo}#${pr.number}`);
+    const batches = [];
+    for (let index = 0; index < keys.length; index += 50) batches.push(keys.slice(index, index + 50).join(","));
+    process.stdout.write(batches.length ? `${batches.join("\n")}\n` : "");
+    break;
+  }
+  case "details":
+    console.log(stable(input.details));
+    break;
+  case "repo-count":
+    console.log(prs.length);
+    break;
+  case "repo-list":
+    for (const pr of prs) console.log(`- #${pr.number} [${pr.state}] ${pr.title} — @${pr.author} — ${pr.updatedAt}`);
+    break;
+  case "pr-fingerprint": {
+    if (argument === "ci") {
+      console.log(stable(input.ci ?? null));
+      break;
+    }
+    if (argument === "comments") {
+      console.log(stable({
+        openComments: input.openComments ?? [],
+        openCommentsComplete: input.openCommentsComplete ?? false,
+      }));
+      break;
+    }
+    delete input.snapshot;
+    delete input.quota;
+    delete input.newCommentsSince;
+    console.log(stable(input));
+    break;
+  }
+  case "pr-blocked": {
+    // a cancelled check never produced a verdict, so it blocks the same way a failure does
+    const failedCi = Number(input.ci?.failed) > 0 || Number(input.ci?.cancelled) > 0 || /^(FAILURE|ERROR)$/i.test(String(input.ci?.state ?? ""));
+    const openComments = Array.isArray(input.openComments) && input.openComments.length > 0;
+    console.log(argument === "ci" ? Number(failedCi) : argument === "comments" ? Number(openComments) : Number(failedCi || openComments));
+    break;
+  }
+  default:
+    process.exit(2);
+}
+' "$operation" "$argument"
+}
+
+
+current_repo() {
+  local remote candidate
+  remote=$(git config --get remote.origin.url 2>/dev/null || true)
+  case "$remote" in
+    git@github.com:*) candidate=${remote#git@github.com:} ;;
+    https://github.com/*) candidate=${remote#https://github.com/} ;;
+    *) candidate="${COCKPIT_DEFAULT_REPO:-}" ;;
+  esac
+  candidate=${candidate%.git}
+  [[ "$candidate" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] && printf '%s' "$candidate"
+}
+
+wait_for_change() {
+  local fingerprint=$1 interval=$2 previous current
+  previous=$("$fingerprint")
+  while sleep "$interval"; do
+    if ! current=$("$fingerprint" 2>/dev/null); then
+      continue
+    fi
+    [[ "$current" = "$previous" ]] || return 0
+  done
+}
+
+index_fingerprint() {
+  local index batch details
+  index=$(curl --noproxy '*' -sS --fail-with-body "http://127.0.0.1:$port/api/pr-index") || return
+  json_transform repo-index "$repo" <<<"$index"
+  while IFS= read -r batch; do
+    details=$(curl --noproxy '*' -sS --fail-with-body --get \
+      --data-urlencode "keys=$batch" \
+      "http://127.0.0.1:$port/api/pr-details" | json_transform details) || return
+    printf '%s\n' "$details"
+  done < <(
+    json_transform detail-batches "$repo" <<<"$index"
+  )
+}
+
+if [[ -z "$ref" ]]; then
+  [[ "$mode" = "summary" && -z "$since" && "$comments" = "1" ]] || usage
+  repo=$(current_repo || true)
+  [[ -n "$repo" ]] || { echo "pr-cockpit: current repository is unknown; use pr://owner/repo/N" >&2; exit 2; }
+  if [[ "$command" = "listen" ]]; then
+    wait_for_change index_fingerprint "${COCKPIT_LISTEN_INTERVAL:-5}"
+  fi
+  payload=$(curl --noproxy '*' -sS --fail-with-body "http://127.0.0.1:$port/api/pr-index")
+  count=$(json_transform repo-count "$repo" <<<"$payload")
+  printf '# Pull Requests in %s (cached, %s)\n\n' "$repo" "$count"
+  json_transform repo-list "$repo" <<<"$payload"
+  printf '\n---\nRead a specific item: `pr-cockpit pr://%s/<N>` (or `pr-cockpit pr://<N>` in this repo).\n' "$repo"
+  exit 0
+fi
+
+uri_comments=""
+case "$ref" in
+  pr://*)
+    raw=${ref#pr://}
+    if [[ "$raw" == *\?* ]]; then
+      query=${raw#*\?}
+      raw=${raw%%\?*}
+      [[ "$query" = "comments=0" || "$query" = "comments=1" ]] || usage
+      uri_comments=${query#comments=}
+    fi
+    if [[ "$raw" =~ ^([1-9][0-9]*)$ ]]; then
+      repo=$(current_repo || true)
+      number=${BASH_REMATCH[1]}
+      [[ -n "$repo" ]] || { echo "pr-cockpit: current repository is unknown; use pr://owner/repo/N" >&2; exit 2; }
+    elif [[ "$raw" =~ ^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/([1-9][0-9]*)$ ]]; then
+      repo=${BASH_REMATCH[1]}
+      number=${BASH_REMATCH[2]}
+    else
+      usage
+    fi
+    ;;
+  *)
+    if [[ "$ref" =~ ^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([1-9][0-9]*)$ ]]; then
+      repo=${BASH_REMATCH[1]}
+      number=${BASH_REMATCH[2]}
+    else
+      usage
+    fi
+    ;;
+esac
+[[ -z "$uri_comments" ]] || comments="$uri_comments"
+[[ "$command" != "resolve" || -z "$uri_comments" ]] || usage
+owner=${repo%/*}
+name=${repo#*/}
+base_url="http://127.0.0.1:$port/api/agent/pr/$owner/$name/$number"
+
+fetch_pr_json() {
+  curl --noproxy '*' -sS --fail-with-body --get \
+    --data-urlencode "format=json" \
+    --data-urlencode "comments=1" \
+    "$base_url"
+}
+
+wait_for_pr_change() {
+  local interval=$1 payload previous current
+  payload=$(fetch_pr_json) || return
+  if [[ "$(json_transform pr-blocked "$listen_scope" <<<"$payload")" = "1" ]]; then
+    return 0
+  fi
+  previous=$(json_transform pr-fingerprint "$listen_scope" <<<"$payload")
+  while sleep "$interval"; do
+    if ! payload=$(fetch_pr_json 2>/dev/null); then
+      continue
+    fi
+    if ! current=$(json_transform pr-fingerprint "$listen_scope" <<<"$payload" 2>/dev/null); then
+      continue
+    fi
+    [[ "$current" = "$previous" ]] || return 0
+  done
+}
+
+if [[ "$command" = "listen" ]]; then
+  wait_for_pr_change "${COCKPIT_LISTEN_INTERVAL:-1}"
+fi
+
+if [[ "$command" = "resolve" ]]; then
+  curl --noproxy '*' -sS --fail-with-body -X POST -H "X-PR-Cockpit-CLI: 1" "$base_url/threads/$thread_handle"
+  printf '\n'
+  exit 0
+fi
+
+case "$mode" in
+  summary)
+    args=(--get --data-urlencode "format=markdown" --data-urlencode "comments=$comments")
+    [[ -z "$since" ]] || args+=(--data-urlencode "since=$since")
+    curl --noproxy '*' -sS --fail-with-body "${args[@]}" "$base_url"
+    ;;
+  json)
+    args=(--get --data-urlencode "format=json" --data-urlencode "comments=$comments")
+    [[ -z "$since" ]] || args+=(--data-urlencode "since=$since")
+    curl --noproxy '*' -sS --fail-with-body "${args[@]}" "$base_url"
+    ;;
+  diff) curl --noproxy '*' -sS --fail-with-body "$base_url/diff" ;;
+  file) curl --noproxy '*' -sS --fail-with-body --get --data-urlencode "path=$file_path" "$base_url/file" ;;
+esac

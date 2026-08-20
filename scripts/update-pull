@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Fetch + fast-forward, treating up-to-date and local-ahead as a clean no-op. exit 0 = safe to restart
+# ("noop"/"updated" on stdout); exit 1 = do not restart, reason on stderr, working tree untouched.
+set -Eeuo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+branch="$(git rev-parse --abbrev-ref HEAD)"
+if [[ "$branch" == "HEAD" ]]; then
+  echo "detached HEAD — not on a branch" >&2
+  exit 1
+fi
+
+if ! fetch_err="$(git fetch --quiet origin "$branch" 2>&1)"; then
+  if [[ "$fetch_err" == *"couldn't find remote ref"* ]]; then
+    echo "branch '$branch' only exists locally — push it or switch to a tracked branch" >&2
+  else
+    echo "couldn't reach origin — check your network" >&2
+  fi
+  exit 1
+fi
+
+remote="origin/$branch"
+
+# origin is an ancestor of HEAD: we're up-to-date or ahead — nothing to pull, restart with current code
+if git merge-base --is-ancestor "$remote" HEAD; then
+  echo "noop"
+  exit 0
+fi
+
+# HEAD is an ancestor of origin: clean fast-forward
+if git merge-base --is-ancestor HEAD "$remote"; then
+  if git merge --ff-only --quiet "$remote"; then
+    echo "updated"
+    exit 0
+  fi
+  echo "fast-forward merge failed" >&2
+  exit 1
+fi
+
+echo "local history diverged from $remote — resolve manually" >&2
+exit 1

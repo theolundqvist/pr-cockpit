@@ -1,0 +1,296 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# The installed LaunchAgent runs a copy of this launcher outside ~/Documents,
+# while this remains the source of truth for builds, server code, and updates.
+root="${COCKPIT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+root="$(cd "$root" && pwd -P)"
+script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")"
+source_launcher="$(cd "$root/scripts" && pwd -P)/cockpit"
+bun="$(command -v bun || echo "$HOME/.bun/bin/bun")"
+gh_bin="${COCKPIT_GH_BIN:-}"
+if [[ -z "$gh_bin" || ! -x "$gh_bin" ]]; then
+  gh_bin="$(command -v gh 2>/dev/null || true)"
+fi
+if [[ -z "$gh_bin" || ! -x "$gh_bin" ]]; then
+  for candidate in /opt/homebrew/bin/gh /usr/local/bin/gh "$HOME/.local/bin/gh"; do
+    if [[ -x "$candidate" ]]; then
+      gh_bin="$candidate"
+      break
+    fi
+  done
+fi
+if [[ -n "$gh_bin" && -x "$gh_bin" ]]; then
+  export COCKPIT_GH_BIN="$gh_bin"
+  export PATH="$(dirname "$gh_bin"):$PATH"
+fi
+
+# env wins over ~/.config/pr-cockpit/config, which wins over these defaults
+env_port="${COCKPIT_PORT:-}"
+env_data_dir="${COCKPIT_DATA_DIR:-}"
+env_repos="${COCKPIT_REPOS:-}"
+env_default_repo="${COCKPIT_DEFAULT_REPO:-}"
+env_tmux_hosts="${COCKPIT_TMUX_HOSTS:-}"
+env_relay_url="${COCKPIT_RELAY_URL:-}"
+env_review_bots="${COCKPIT_REVIEW_BOTS:-}"
+
+config_file="$HOME/.config/pr-cockpit/config"
+if [[ -f "$config_file" ]]; then
+  # shellcheck disable=SC1090
+  source "$config_file"
+fi
+
+port="${env_port:-${COCKPIT_PORT:-4820}}"
+url="http://127.0.0.1:$port"
+data_dir="${env_data_dir:-${COCKPIT_DATA_DIR:-$HOME/.local/share/pr-cockpit}}"
+export COCKPIT_DATA_DIR="$data_dir"
+export COCKPIT_MANAGED=1
+export COCKPIT_REPOS="${env_repos:-${COCKPIT_REPOS:-}}"
+export COCKPIT_TMUX_HOSTS="${env_tmux_hosts:-${COCKPIT_TMUX_HOSTS:-}}"
+# The server treats these as unset only when absent, so an empty value must not be exported.
+relay_url="${env_relay_url:-${COCKPIT_RELAY_URL:-}}"
+review_bots="${env_review_bots:-${COCKPIT_REVIEW_BOTS:-}}"
+if [[ -n "$relay_url" ]]; then
+  export COCKPIT_RELAY_URL="$relay_url"
+fi
+if [[ -n "$review_bots" ]]; then
+  export COCKPIT_REVIEW_BOTS="$review_bots"
+fi
+default_repo="${env_default_repo:-${COCKPIT_DEFAULT_REPO:-}}"
+
+hidden_flag=""
+foreground_shell=0
+show_existing=0
+server_only=0
+managed_server=0
+pr_arg=""
+reconcile_failed=0
+for arg in "$@"; do
+  if [[ "$arg" == "--hidden" || "$arg" == "--cockpit-hidden" ]]; then
+    # Preserve the old launcher input without passing Chromium's --hidden flag.
+    hidden_flag="--cockpit-hidden"
+  elif [[ "$arg" == "--foreground-shell" ]]; then
+    foreground_shell=1
+  elif [[ "$arg" == "--show" ]]; then
+    show_existing=1
+  elif [[ "$arg" == "--server-only" ]]; then
+    server_only=1
+  elif [[ "$arg" == "--managed-server" ]]; then
+    managed_server=1
+  else
+    pr_arg="$arg"
+  fi
+done
+
+# A managed shell must ask launchd to restart its server, never race it with an unmanaged process.
+if [[ "$managed_server" -eq 0 && -n "${COCKPIT_LAUNCHER:-}" ]]; then
+  managed_server=1
+fi
+
+# The previous updater resumes its old body after pulling, but it always hands
+# off through the newly pulled source launcher. Reconcile once at that boundary.
+if [[ "${COCKPIT_SKIP_RECONCILE:-0}" != "1" && "$server_only" -eq 0 && "$foreground_shell" -eq 0 && "$script_path" == "$source_launcher" ]]; then
+  runtime_dir="$HOME/Library/Application Support/PR Cockpit"
+  current_rev="$(git -C "$root" rev-parse HEAD 2>/dev/null || true)"
+  installed_rev="$(cat "$runtime_dir/installed-rev" 2>/dev/null || true)"
+  if [[ -n "$current_rev" && "$installed_rev" != "$current_rev" ]]; then
+    echo "pr-cockpit: finishing installation for $current_rev..."
+    if ! "$root/scripts/install"; then
+      echo "pr-cockpit: installation reconciliation failed; continuing with the existing app" >&2
+      reconcile_failed=1
+    fi
+  fi
+fi
+
+pr_arg="$(echo "$pr_arg" | xargs)"
+target_url="$url"
+if [[ -n "$pr_arg" ]]; then
+  if [[ "$pr_arg" == */*#* ]]; then
+    repo="${pr_arg%#*}"
+  elif [[ -z "$default_repo" ]]; then
+    echo "pr-cockpit: no default repo configured; pass owner/repo#number" >&2
+    exit 1
+  elif [[ "$pr_arg" == *#* ]]; then
+    repo="${default_repo%/*}/${pr_arg%#*}"
+  else
+    repo="$default_repo"
+  fi
+  number="${pr_arg##*#}"
+  target_url="$url/#/pr/$repo/$number"
+fi
+
+if [[ "$server_only" -eq 1 ]]; then
+  cd "$root"
+  exec env COCKPIT_PORT="$port" "$bun" server/main.ts
+fi
+
+snapshot_dir="$data_dir/static-last-good"
+
+needs_build=0
+if [[ "${COCKPIT_NO_BUILD:-0}" != "1" ]]; then
+  if [[ ! -f "$root/static/index.html" ]]; then
+    needs_build=1
+  elif [[ -n "$(find "$root/ui/src" -newer "$root/static/index.html" -type f)" ]]; then
+    needs_build=1
+  fi
+fi
+
+if [[ "$needs_build" -eq 1 ]]; then
+  echo "pr-cockpit: building UI..."
+  if (cd "$root/ui" && "$bun" run build); then
+    mkdir -p "$data_dir"
+    snapshot_tmp="$snapshot_dir.tmp.$$"
+    rm -rf "$snapshot_tmp"
+    cp -R "$root/static" "$snapshot_tmp"
+    git -C "$root" rev-parse HEAD > "$snapshot_tmp/.rev" 2>/dev/null || true
+    rm -rf "$snapshot_dir"
+    mv "$snapshot_tmp" "$snapshot_dir"
+  elif [[ -d "$snapshot_dir" ]]; then
+    rev="$(cat "$snapshot_dir/.rev" 2>/dev/null || echo unknown)"
+    echo "pr-cockpit: build failed, restoring last-good build from $rev" >&2
+    mkdir -p "$data_dir"
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) build failed, serving last-good snapshot from $rev" >> "$data_dir/build-fallback.log" 2>/dev/null || true
+    rm -rf "$root/static"
+    cp -R "$snapshot_dir" "$root/static"
+  else
+    echo "pr-cockpit: build failed and no last-good snapshot exists — cannot start" >&2
+    exit 1
+  fi
+fi
+
+managed_server_owns_port() {
+  local agent="gui/$(id -u)/app.pr-cockpit.server"
+  local agent_pid
+  local listener_pid
+  agent_pid="$(launchctl print "$agent" 2>/dev/null | sed -n 's/^[[:space:]]*pid = //p' | head -n 1)" || return 1
+  [[ "$agent_pid" =~ ^[0-9]+$ ]] || return 1
+  while IFS= read -r listener_pid; do
+    [[ "$listener_pid" == "$agent_pid" ]] && return 0
+  done < <(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null)
+  return 1
+}
+
+server_is_ours() {
+  local health
+  health="$(curl --max-time 2 -fsS "$url/healthz" 2>/dev/null)" || return 1
+  [[ "$health" == *"\"root\":\"$root\""* ]] && return 0
+  [[ "$health" != *'"root":'* ]] && managed_server_owns_port
+}
+
+wait_for_server() {
+  for _ in $(seq 1 50); do
+    server_is_ours && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+ensure_managed_server() {
+  local agent="gui/$(id -u)/app.pr-cockpit.server"
+  local agent_plist="$HOME/Library/LaunchAgents/app.pr-cockpit.server.plist"
+
+  if ! launchctl print "$agent" >/dev/null 2>&1; then
+    [[ -f "$agent_plist" ]] || return 1
+    # A Finder launch and the app LaunchAgent can reach this simultaneously.
+    # If the other one wins the bootstrap race, its now-loaded agent is fine.
+    launchctl bootstrap "gui/$(id -u)" "$agent_plist" >/dev/null 2>&1 || launchctl print "$agent" >/dev/null 2>&1 || return 1
+  fi
+
+  local state
+  state="$(launchctl print "$agent" 2>/dev/null | sed -n 's/^[[:space:]]*state = //p' | head -n 1)"
+  if [[ "$state" == "not running" ]]; then
+    launchctl kickstart "$agent" >/dev/null 2>&1 || true
+  fi
+  wait_for_server
+}
+
+if ! server_is_ours; then
+  if curl --max-time 2 -fsS -o /dev/null "$url/healthz"; then
+    echo "pr-cockpit: port $port is serving a different instance; set COCKPIT_PORT to a free port" >&2
+    exit 1
+  fi
+  if [[ "$managed_server" -eq 1 ]]; then
+    echo "pr-cockpit: starting managed server on port $port..."
+    if ! ensure_managed_server; then
+      if [[ "$reconcile_failed" -eq 1 ]]; then
+        echo "pr-cockpit: managed server unavailable; falling back to the existing launcher" >&2
+        exec env -u COCKPIT_LAUNCHER COCKPIT_SKIP_RECONCILE=1 COCKPIT_ALLOW_UNMANAGED=1 "$source_launcher" --show
+      fi
+      echo "pr-cockpit: managed server failed to start — see $HOME/Library/Logs/PR Cockpit/server.err.log" >&2
+      exit 1
+    fi
+  else
+    echo "pr-cockpit: starting server on port $port..."
+    mkdir -p "$data_dir"
+    cd "$root"
+    COCKPIT_PORT="$port" nohup "$bun" server/main.ts < /dev/null > "$data_dir/server.log" 2>&1 &
+    disown
+    if ! wait_for_server; then
+      echo "pr-cockpit: server failed to start — see $data_dir/server.log" >&2
+      exit 1
+    fi
+  fi
+fi
+
+named_electron_bin="$root/shell/PR Cockpit.app/Contents/MacOS/PR Cockpit"
+plain_electron_bin="$root/shell/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
+if [[ -x "$named_electron_bin" ]]; then
+  electron_bin="$named_electron_bin"
+else
+  electron_bin="$plain_electron_bin"
+fi
+if [[ -x "$electron_bin" ]]; then
+  electron_args=("$root/shell" "--cockpit-url=$target_url")
+  [[ -n "$hidden_flag" ]] && electron_args+=("$hidden_flag")
+  if [[ "$foreground_shell" -eq 1 ]]; then
+    exec env COCKPIT_URL="$target_url" "$electron_bin" "${electron_args[@]}"
+  fi
+  if [[ "$show_existing" -eq 1 ]]; then
+    agent="gui/$(id -u)/app.pr-cockpit"
+    agent_plist="$HOME/Library/LaunchAgents/app.pr-cockpit.plist"
+    if ! launchctl print "$agent" >/dev/null 2>&1 && [[ -f "$agent_plist" ]]; then
+      for _ in $(seq 1 20); do
+        launchctl bootstrap "gui/$(id -u)" "$agent_plist" >/dev/null 2>&1 || launchctl print "$agent" >/dev/null 2>&1 || true
+        launchctl print "$agent" >/dev/null 2>&1 && break
+        sleep 0.1
+      done
+      if ! launchctl print "$agent" >/dev/null 2>&1; then
+        if [[ "${COCKPIT_ALLOW_UNMANAGED:-0}" != "1" ]]; then
+          echo "pr-cockpit: managed desktop app could not be loaded; see $HOME/Library/Logs/PR Cockpit/launch-agent.err.log" >&2
+          exit 1
+        fi
+        echo "pr-cockpit: managed desktop app unavailable; launching the existing app directly" >&2
+      fi
+    fi
+    if launchctl print "$agent" >/dev/null 2>&1; then
+      last_kick=-9
+      # A real Force Quit can leave Electron's single-instance resources in
+      # teardown briefly. Retry the one launchd-owned app instead of falling
+      # through to a second, unmanaged Electron process.
+      for attempt in $(seq 1 100); do
+        agent_state="$(launchctl print "$agent" 2>/dev/null | sed -n 's/^[[:space:]]*state = //p' | head -n 1)"
+        if [[ "$agent_state" == "not running" && $((attempt - last_kick)) -ge 10 ]]; then
+          launchctl kickstart "$agent" >/dev/null 2>&1 || true
+          last_kick="$attempt"
+        fi
+        agent_pid="$(launchctl print "$agent" 2>/dev/null | sed -n 's/^[[:space:]]*pid = //p' | head -n 1)"
+        ready_pid="$(sed -n '1p' "$data_dir/shell.pid" 2>/dev/null || true)"
+        if [[ -n "$agent_pid" && "$ready_pid" == "$agent_pid" ]] && kill -0 "$agent_pid" >/dev/null 2>&1; then
+          # SIGWINCH is ignored by default and handled by the Electron main
+          # process as a reveal request, so this never creates a second app.
+          kill -WINCH "$agent_pid" >/dev/null 2>&1 && exit 0
+        fi
+        sleep 0.1
+      done
+      if [[ "${COCKPIT_ALLOW_UNMANAGED:-0}" != "1" ]]; then
+        echo "pr-cockpit: managed desktop app failed to start; see $HOME/Library/Logs/PR Cockpit/launch-agent.err.log" >&2
+        exit 1
+      fi
+      echo "pr-cockpit: managed desktop app unavailable; launching the existing app directly" >&2
+    fi
+  fi
+  COCKPIT_URL="$target_url" nohup "$electron_bin" "${electron_args[@]}" < /dev/null > /dev/null 2>&1 &
+  disown
+else
+  open "$target_url"
+fi

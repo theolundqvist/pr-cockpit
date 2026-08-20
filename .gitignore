@@ -1,0 +1,14 @@
+data/
+data.pre-incident/
+node_modules/
+static/
+shell/PR Cockpit.app/
+artifacts/views/
+
+# Internal working documents — kept locally, never published.
+REQUESTS.md
+NOTES.md
+TODO.md
+PLAN.md
+specs/
+NEEDS.md

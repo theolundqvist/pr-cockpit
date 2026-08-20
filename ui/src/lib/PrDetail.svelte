@@ -1,0 +1,5031 @@
+<script>
+  import { tick } from "svelte";
+  import {
+    fetchPrDetail,
+    fetchPrDiff,
+    commitPrFileEdit,
+    fetchConflictFiles,
+    fetchMutations,
+    enqueueMutation,
+    retryMutation,
+    discardMutation,
+    fetchAgents,
+    killAgent,
+    fetchAgentLog,
+    fetchAgentRuns,
+    fetchAgentRunDetail,
+    promptAgent,
+    autofixAgent,
+    customAgent,
+    rescoreAgent,
+    fetchRepoUsers,
+    switchLocalBranch,
+    focusTmux,
+    tmuxFocusErrorMessage,
+  } from "./api.js";
+  import { parseDiff, anchorThreads, fileDiffFingerprint } from "./diff.js";
+  import { renderMarkdown } from "./markdown.js";
+  import { loadPrIndex, prSummary } from "./prIndex.svelte.js";
+  import { imageFallback, prKeyOwner, shouldCopyPrCockpitUrl, shouldCopyPrUrl } from "./dom.js";
+  import { readLastViewed, writeLastViewed } from "./lastViewed.js";
+  import { relativeTime } from "./time.js";
+  import { mermaidDiagrams } from "./mermaid.js";
+  import { theme } from "./theme.svelte.js";
+  import { setViewerLogin } from "./viewer.svelte.js";
+  import { scrollPage, scrollEdge, holdScrollStart, holdScrollRelease, cancelHoldScroll, scrollAnimating } from "./scroll.js";
+  import { testMatcher } from "./testPath.js";
+  import { prefs } from "./prefs.svelte.js";
+  import { timedFlag } from "./timedFlag.svelte.js";
+  import { showFlash } from "./flash.svelte.js";
+  import { greptileReviewMeta, greptileStatus, KNOWN_BOT_LOGINS } from "./greptileStatus.js";
+  import { prKeyOf } from "./prKey.js";
+  import { getDetail, cacheDetail } from "./detailCache.js";
+  import { buildChecks, countChecks, summarizeChecks, sectionizeChecks, ciFixPrompt } from "./checks.js";
+  import { mergeGate as evalMergeGate, forceMergeAvailable as evalForceMerge } from "./mergeGate.js";
+  import DiffView from "./DiffView.svelte";
+  import FileHistory from "./FileHistory.svelte";
+  import Telescope from "./Telescope.svelte";
+  import RangePicker from "./RangePicker.svelte";
+  import FileTree from "./FileTree.svelte";
+  import Thread from "./Thread.svelte";
+  import MutationBadge from "./MutationBadge.svelte";
+  import MutationFailure from "./MutationFailure.svelte";
+  import KeyBar from "./KeyBar.svelte";
+  import Avatar from "./Avatar.svelte";
+  import Reactions from "./Reactions.svelte";
+  import UserPicker from "./UserPicker.svelte";
+  import CurrentBranchBadge from "./CurrentBranchBadge.svelte";
+
+  let { repo, number, tab, historyPath = null, historySymbol = null } = $props();
+
+  loadPrIndex();
+
+  let lastG = 0;
+  const copied = timedFlag(1200);
+  const branchCopied = timedFlag(1200);
+  const ciCopied = timedFlag(1200);
+  const conflictCopied = timedFlag(1200);
+
+  let pr = $state(null);
+  let files = $state([]);
+  let error = $state(null);
+  let showLoading = $state(false);
+  let loadingSummary = $derived(prSummary(repo, number));
+  let mutations = $state([]);
+  let rangeKey = $state("all");
+  let sinceAnchor = $state(null);
+  let rewriteFallback = $state(false);
+  let churnBaseRef = $state(null);
+  let diffState = $state("ready");
+  let diffNonce = $state(0);
+  let pendingCommit = $state(null);
+  let localBranchBusy = $state(false);
+  let conflictFiles = $state([]);
+  let conflictFilesState = $state("idle");
+  let conflictFilesError = $state(null);
+  let loadedConflictKey = "";
+
+  const TREE_WIDTH_KEY = "pr-cockpit:file-tree-width";
+  const VIEWED_FILES_KEY_PREFIX = "pr-cockpit:viewed-files:";
+  const TREE_MIN_WIDTH = 160;
+  const TREE_DEFAULT_WIDTH = 250;
+  let treeDesiredWidth = $state(Number(localStorage.getItem(TREE_WIDTH_KEY)) || TREE_DEFAULT_WIDTH);
+  let treeMaxWidth = $state(600);
+  let treeWidth = $derived(Math.min(treeDesiredWidth, treeMaxWidth));
+
+  let activeFetch;
+  let loadedKey = null;
+
+  $effect(() => {
+    const key = prKeyOf(repo, number);
+    if (key === loadedKey) return;
+    loadedKey = key;
+    const token = {};
+    activeFetch = token;
+    const cachedDetail = getDetail(key);
+    pendingCommit = null;
+    pr = cachedDetail;
+    if (cachedDetail) setViewerLogin(cachedDetail.viewerLogin);
+    showLoading = false;
+    const loadingTimer = cachedDetail ? null : setTimeout(() => {
+      if (activeFetch === token && !pr && !error) showLoading = true;
+    }, 250);
+    files = [];
+    error = null;
+    mutations = [];
+    fileIndex = 0;
+    collapsedFiles = new Set();
+    viewedFiles = new Set();
+    rangeKey = "all";
+    diffState = "ready";
+    rewriteFallback = false;
+    churnBaseRef = null;
+    mergeConfirm = false;
+    forceMergeConfirm = false;
+    closeConfirm = false;
+    mergeMenuOpen = false;
+    editingTitle = false;
+    editingBody = false;
+    localBranchBusy = false;
+    conflictFiles = [];
+    conflictFilesState = "idle";
+    conflictFilesError = null;
+    loadedConflictKey = "";
+    sinceAnchor = readLastViewed(repo, number);
+    fetchRepoUsers(repo)
+      .then((u) => {
+        if (activeFetch === token) repoUsers = u;
+      })
+      .catch(() => {});
+    const detailPending = pendingCommit;
+    fetchPrDetail(repo, number).then(
+      (detail) => {
+        if (activeFetch !== token) return;
+        if (loadingTimer) clearTimeout(loadingTimer);
+        showLoading = false;
+        if (!applyAsyncPrDetail(detail, detailPending)) return;
+        cacheDetail(key, detail);
+        setViewerLogin(pr.viewerLogin);
+      },
+      (reason) => {
+        if (activeFetch !== token) return;
+        if (loadingTimer) clearTimeout(loadingTimer);
+        showLoading = false;
+        if (!pr) error = String(reason);
+      },
+    );
+    fetchMutations(repo, number)
+      .then((next) => {
+        if (activeFetch === token) mutations = next;
+      })
+      .catch(() => {});
+    return () => {
+      if (loadingTimer) clearTimeout(loadingTimer);
+    };
+  });
+
+  let commits = $derived(
+    (pr?.commitList.nodes ?? [])
+      .map((n) => n.commit)
+      .filter((c) => c.oid && c.parents?.nodes?.[0]?.oid),
+  );
+
+  let anchorDiffers = $derived(!!pr && !!sinceAnchor && sinceAnchor.headSha !== pr.headRefOid);
+  let anchorInList = $derived(
+    anchorDiffers && (pr.commitList.nodes ?? []).some((n) => n.commit.oid === sinceAnchor.headSha),
+  );
+  let anchorRewritten = $derived(anchorDiffers && !anchorInList);
+  let sinceAvailable = $derived(anchorDiffers && !rewriteFallback);
+
+  let range = $derived.by(() => {
+    if (!pr) return null;
+    if (rangeKey === "all") return pendingCommit ? { head: pendingCommit.committed } : null;
+    if (rangeKey === "since") {
+      return sinceAvailable ? { base: sinceAnchor.headSha, head: pr.headRefOid } : null;
+    }
+    if (rangeKey.startsWith("r")) {
+      const [base, head] = rangeKey.slice(1).split(":");
+      return base && head ? { base, head } : null;
+    }
+    const c = commits.find((x) => x.oid === rangeKey.slice(1));
+    return c ? { base: c.parents.nodes[0].oid, head: c.oid } : null;
+  });
+
+  let commentable = $derived(rangeKey === "all");
+  let fileEditable = $derived(!!pr && !pendingCommit && rangeKey === "all" && commentable && pr.state.toUpperCase() === "OPEN");
+
+  function applyAsyncPrDetail(detail, pending) {
+    if (pending !== pendingCommit) return false;
+    if (pending) {
+      if (detail.headRefOid === pending.before) return false;
+      pendingCommit = null;
+      pr = detail;
+      diffNonce++;
+      return true;
+    }
+    pr = detail;
+    return true;
+  }
+
+  let diffFetch;
+  let loadedDiffKey = null;
+  let buildingKey = "";
+  let buildingDeadline = 0;
+  const BUILD_CAP_MS = 120_000;
+  $effect(() => {
+    if (!pr) return;
+    const r = range;
+    const rewrittenSince = rangeKey === "since" && anchorRewritten;
+    const head = pr.headRefOid;
+    const baseKey = `${repo}#${number}#${r?.base ?? head}#${r?.head ?? head}`;
+    const dkey = `${baseKey}#${diffNonce}`;
+    if (dkey === loadedDiffKey) return;
+    loadedDiffKey = dkey;
+    const token = {};
+    diffFetch = token;
+    let retryTimer;
+    const isSince = rangeKey === "since" && r;
+    Promise.all([
+      fetchPrDiff(repo, number, r),
+      isSince ? fetchPrDiff(repo, number, null) : Promise.resolve(null),
+    ]).then(([res, prRes]) => {
+      if (diffFetch !== token) return;
+      if (res.ok) {
+        let parsed = res.text ? parseDiff(res.text) : [];
+        if (isSince && prRes?.ok) {
+          const ownPaths = new Set((prRes.text ? parseDiff(prRes.text) : []).map((f) => f.path));
+          const own = parsed.filter((f) => ownPaths.has(f.path));
+          churnBaseRef = own.length < parsed.length ? pr.baseRefName : null;
+          parsed = own;
+        } else {
+          churnBaseRef = null;
+        }
+        syncViewedFiles(parsed);
+        files = parsed;
+        fileIndex = 0;
+        diffState = "ready";
+        buildingKey = "";
+      } else if (res.building) {
+        if (buildingKey !== baseKey) {
+          buildingKey = baseKey;
+          buildingDeadline = Date.now() + BUILD_CAP_MS;
+        }
+        if (Date.now() >= buildingDeadline) {
+          diffState = "error";
+          buildingKey = "";
+        } else {
+          diffState = "building";
+          retryTimer = setTimeout(() => diffNonce++, res.retryAfterMs);
+        }
+      } else if (rewrittenSince) {
+        rangeKey = "all";
+        rewriteFallback = true;
+      } else {
+        files = [];
+        diffState = "error";
+        buildingKey = "";
+      }
+    });
+    return () => clearTimeout(retryTimer);
+  });
+
+  function retryDiff() {
+    diffState = "building";
+    buildingKey = "";
+    diffNonce++;
+  }
+
+  $effect(() => {
+    if (!pr) return;
+    const head = pr.headRefOid;
+    const timer = setTimeout(() => writeLastViewed(repo, number, head), 4000);
+    return () => clearTimeout(timer);
+  });
+
+  let newCommitCount = $derived.by(() => {
+    if (!anchorInList) return 0;
+    const oids = (pr.commitList.nodes ?? []).map((n) => n.commit.oid);
+    return oids.length - 1 - oids.indexOf(sinceAnchor.headSha);
+  });
+
+  function selectCommit(oid) {
+    rangeKey = `c${oid}`;
+    goToTab("files");
+  }
+
+  function viewSinceChanges() {
+    rangeKey = "since";
+    goToTab("files");
+  }
+
+
+  async function refreshMutations() {
+    mutations = await fetchMutations(repo, number);
+    return mutations;
+  }
+
+  async function waitForMutation(kind, detailSettled = null) {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const current = await refreshMutations();
+      const mutation = current.find((item) => item.kind === kind);
+      if (!mutation) {
+        for (let detailAttempt = 0; detailAttempt < 20; detailAttempt++) {
+          await reloadPr();
+          if (!detailSettled || detailSettled()) return;
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+        showFlash("GitHub updated, but the refreshed PR state is delayed.");
+        return;
+      }
+      if (mutation.state === "failed") return;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    await refreshMutations();
+    showFlash("GitHub auto-merge is still queued; refresh the PR to check its state.");
+  }
+
+  async function reloadPr() {
+    const token = activeFetch;
+    const pending = pendingCommit;
+    let detail;
+    try {
+      detail = await fetchPrDetail(repo, number);
+    } catch {
+      if (token === activeFetch && pending === pendingCommit) location.hash = "#/";
+      return;
+    }
+    if (token !== activeFetch) return;
+    applyAsyncPrDetail(detail, pending);
+  }
+
+  async function commitFileEdit(path, expectedHeadOid, content, message) {
+    if (!pr) throw new Error("PR is unavailable.");
+    const token = activeFetch;
+    const result = await commitPrFileEdit(repo, number, path, expectedHeadOid, content, message.trim());
+    if (token !== activeFetch || !pr) return result;
+    const pending = { before: expectedHeadOid, committed: result.commitOid };
+    pendingCommit = pending;
+    pr = { ...pr, headRefOid: result.commitOid };
+    diffNonce++;
+    fetchPrDetail(repo, number).then(
+      (detail) => {
+        if (token !== activeFetch) return;
+        applyAsyncPrDetail(detail, pending);
+      },
+      () => {
+        if (token === activeFetch && pending === pendingCommit) showFlash("File committed, but the PR refresh failed.");
+      },
+    );
+    return result;
+  }
+
+  async function pollDetail() {
+    if (!pr) return;
+    const token = activeFetch;
+    const pending = pendingCommit;
+    let next;
+    try {
+      next = await fetchPrDetail(repo, number);
+    } catch {
+      return;
+    }
+    if (token !== activeFetch) return;
+    if (pending !== pendingCommit) return;
+    if (!pending && JSON.stringify(next) === JSON.stringify(pr)) return;
+    if (!applyAsyncPrDetail(next, pending)) return;
+    cacheDetail(prKeyOf(repo, number), next);
+  }
+
+  $effect(() => {
+    if (!pr) return;
+    const timer = setInterval(pollDetail, 12000);
+    return () => clearInterval(timer);
+  });
+
+  $effect(() => {
+    function onVisible() {
+      if (document.visibilityState === "visible") pollDetail();
+    }
+    window.addEventListener("focus", pollDetail);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", pollDetail);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  });
+
+  $effect(() => {
+    if (!mutations.some((m) => m.state === "pending")) return;
+    const pendingBefore = new Set(mutations.filter((m) => m.state === "pending").map((m) => m.id));
+    const timer = setTimeout(async () => {
+      const rows = await fetchMutations(repo, number);
+      const stillPresent = new Set(rows.map((m) => m.id));
+      const anyCompleted = [...pendingBefore].some((id) => !stillPresent.has(id));
+      if (anyCompleted) await reloadPr();
+      mutations = rows;
+    }, 2000);
+    return () => clearTimeout(timer);
+  });
+
+  async function handleRetry(id) {
+    await retryMutation(id);
+    await refreshMutations();
+  }
+
+  async function handleDiscard(id) {
+    await discardMutation(id);
+    await refreshMutations();
+  }
+
+  let commentDraft = $state("");
+  let commentSubmitting = $state(false);
+  let pendingComments = $derived(mutations.filter((m) => m.kind === "comment"));
+  let pendingInline = $derived(mutations.filter((m) => m.kind === "inline-comment"));
+
+  async function submitInlineComment(path, line, side, body) {
+    await enqueueMutation(repo, number, { kind: "inline-comment", path, line, side, body });
+    await refreshMutations();
+  }
+
+  async function submitComment() {
+    if (!commentDraft.trim()) return;
+    commentSubmitting = true;
+    try {
+      await enqueueMutation(repo, number, { kind: "comment", body: commentDraft });
+      commentDraft = "";
+      await refreshMutations();
+    } finally {
+      commentSubmitting = false;
+    }
+  }
+
+  async function submitReply(rootCommentId, body) {
+    await enqueueMutation(repo, number, { kind: "reply-to-thread", rootCommentId, body });
+    await refreshMutations();
+  }
+
+  async function submitResolve(threadId, currentlyResolved) {
+    await enqueueMutation(repo, number, { kind: "resolve-thread", threadId, resolved: !currentlyResolved });
+    await refreshMutations();
+  }
+
+  let mutationsByThread = $derived.by(() => {
+    const map = new Map();
+    if (!pr) return map;
+    const commentIdToThreadId = new Map();
+    for (const t of pr.reviewThreads.nodes) {
+      for (const c of t.comments.nodes) {
+        if (c.databaseId) commentIdToThreadId.set(c.databaseId, t.id);
+      }
+    }
+    const add = (threadId, m) => {
+      if (!map.has(threadId)) map.set(threadId, []);
+      map.get(threadId).push(m);
+    };
+    for (const m of mutations) {
+      if (m.kind === "reply-to-thread") {
+        const threadId = commentIdToThreadId.get(m.payload.rootCommentId);
+        if (threadId) add(threadId, m);
+      } else if (m.kind === "resolve-thread") {
+        add(m.payload.threadId, m);
+      }
+    }
+    return map;
+  });
+
+  function threadProps(thread) {
+    return {
+      pending: mutationsByThread.get(thread.id) ?? [],
+      onReply: (rootCommentId, body) => submitReply(rootCommentId, body),
+      onToggleResolve: () => submitResolve(thread.id, thread.isResolved),
+      onRetry: handleRetry,
+      onDiscard: handleDiscard,
+    };
+  }
+
+  let editingBody = $state(false);
+  let bodyDraft = $state("");
+  let editBodyMutation = $derived(mutations.find((m) => m.kind === "edit-body"));
+  let displayBody = $derived(editBodyMutation ? editBodyMutation.payload.body : pr?.body);
+
+  function startEditBody() {
+    bodyDraft = pr.body;
+    editingBody = true;
+  }
+
+  async function saveBody() {
+    if (!bodyDraft.trim()) return;
+    if (bodyDraft === pr.body) {
+      editingBody = false;
+      return;
+    }
+    const body = bodyDraft;
+    editingBody = false;
+    await enqueueMutation(repo, number, { kind: "edit-body", body });
+    await refreshMutations();
+  }
+
+  function onBodyEditKey(e) {
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      e.preventDefault();
+      editingBody = false;
+    } else if (e.metaKey && e.key === "Enter") {
+      e.preventDefault();
+      saveBody();
+    }
+  }
+
+  let editingTitle = $state(false);
+  let titleDraft = $state("");
+  let editTitleMutation = $derived(mutations.find((m) => m.kind === "edit-title"));
+  let displayTitle = $derived(editTitleMutation ? editTitleMutation.payload.title : pr?.title);
+
+  function startEditTitle() {
+    titleDraft = displayTitle;
+    editingTitle = true;
+  }
+
+  function cancelEditTitle() {
+    editingTitle = false;
+    titleDraft = "";
+  }
+
+  async function saveTitle() {
+    const title = titleDraft.trim();
+    if (!title || editTitleMutation) return;
+    if (title === displayTitle) {
+      cancelEditTitle();
+      return;
+    }
+    editingTitle = false;
+    await enqueueMutation(repo, number, { kind: "edit-title", title });
+    await refreshMutations();
+  }
+
+  function onTitleEditKey(e) {
+    e.stopPropagation();
+    if (e.key === "Escape") {
+      e.preventDefault();
+      cancelEditTitle();
+    }
+  }
+
+  function focusAndSelect(node) {
+    node.focus();
+    node.select();
+  }
+
+  let verdictEvent = $state("APPROVE");
+  let verdictBody = $state("");
+  let verdictSubmitting = $state(false);
+  let verdictMutation = $derived(mutations.find((m) => m.kind === "review-verdict"));
+
+  async function submitVerdict() {
+    verdictSubmitting = true;
+    try {
+      await enqueueMutation(repo, number, { kind: "review-verdict", event: verdictEvent, body: verdictBody });
+      verdictBody = "";
+      await refreshMutations();
+    } finally {
+      verdictSubmitting = false;
+    }
+  }
+
+  let mergeMutation = $derived(mutations.find((m) => m.kind === "merge"));
+  let mergeMethodLabel = $derived(pr.mergeMethod === "merge" ? "merge commit" : pr.mergeMethod ?? "squash");
+  let mergeConfirm = $state(false);
+  let forceMergeConfirm = $state(false);
+  let closeConfirm = $state(false);
+  let mergeMenuOpen = $state(false);
+  let mergeMethodBusy = $state(false);
+  const mergeMethods = [
+    { value: "squash", label: "Squash and merge" },
+    { value: "merge", label: "Create a merge commit" },
+    { value: "rebase", label: "Rebase and merge" },
+  ];
+
+  async function chooseMergeMethod(method) {
+    mergeMethodBusy = true;
+    try {
+      const res = await fetch(`/api/pr/${repo}/${number}/merge-method`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ method }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "Couldn't save merge method.");
+      pr = { ...pr, mergeMethod: body.method, mergeMethodSource: body.source };
+      mergeMenuOpen = false;
+    } catch (err) {
+      mergeFlash.show(err instanceof Error ? err.message : "Couldn't save merge method.");
+    } finally {
+      mergeMethodBusy = false;
+    }
+  }
+
+  async function submitMerge(force = false) {
+    await enqueueMutation(repo, number, {
+      kind: "merge",
+      force,
+      baseRef: pr.baseRefName,
+      method: pr.mergeMethod ?? "squash",
+      source: pr.mergeMethodSource ?? "default",
+    });
+    await refreshMutations();
+  }
+
+  let autoMergeMutation = $derived(mutations.find((m) => m.kind === "auto-merge"));
+  let githubAutoMergeMutation = $derived(mutations.find((m) => m.kind === "github-auto-merge"));
+  let githubAutoMergeEnabled = $derived(Boolean(pr.autoMergeRequest));
+  let autoMergeConfirm = $state(false);
+  let autofixConfirm = $state(false);
+  let customConfirm = $state(null);
+
+  let keybindAgents = $derived(prefs.agents.filter((a) => a.trigger === "keybind" && a.enabled && a.keybind));
+  const runLabel = (run) => (run.agent_id && prefs.agents.find((a) => a.id === run.agent_id)?.name) || run.kind;
+
+  async function submitAutoMerge(enable) {
+    await enqueueMutation(repo, number, { kind: "auto-merge", enable });
+    await refreshMutations();
+    await reloadPr();
+    await loadAgent();
+  }
+
+  async function submitGithubAutoMerge(enable) {
+    const payload = enable
+      ? { kind: "github-auto-merge", enable: true, method: pr.mergeMethod ?? "squash" }
+      : { kind: "github-auto-merge", enable: false };
+    await enqueueMutation(repo, number, payload);
+    mergeMenuOpen = false;
+    await refreshMutations();
+    await waitForMutation("github-auto-merge", () => Boolean(pr.autoMergeRequest) === enable);
+  }
+
+  let agent = $state(null);
+  let agentLog = $state(null);
+  let showAgentLog = $state(false);
+  let killConfirm = $state(false);
+
+  async function loadAgent() {
+    try {
+      const agents = await fetchAgents();
+      agent = agents.find((a) => a.repo === repo && a.number === number) ?? null;
+    } catch {
+      agent = null;
+    }
+  }
+
+  async function toggleAgentLog() {
+    showAgentLog = !showAgentLog;
+    if (showAgentLog) agentLog = await fetchAgentLog(repo, number);
+  }
+
+  async function confirmKillAgent() {
+    await killAgent(repo, number);
+    killConfirm = false;
+    await loadAgent();
+    if (tab === "agents") await loadAgentRuns();
+  }
+
+  let agentRuns = $state([]);
+  let selectedRunId = $state(null);
+  let runDetail = $state(null);
+  let runDetailLoading = $state(false);
+  let showRawLog = $state(false);
+  let expandedTurns = $state(new Set());
+
+  async function loadAgentRuns() {
+    try {
+      agentRuns = await fetchAgentRuns(repo, number);
+    } catch {
+      agentRuns = [];
+    }
+  }
+
+  async function selectRun(id) {
+    selectedRunId = id;
+    runDetail = null;
+    showRawLog = false;
+    expandedTurns = new Set();
+    runDetailLoading = true;
+    try {
+      runDetail = await fetchAgentRunDetail(id);
+    } finally {
+      runDetailLoading = false;
+    }
+  }
+
+  // refreshes the open run in place - keeps expanded turns and raw-log toggle, follows the tail only if the user is already there
+  async function refreshRunDetail() {
+    const id = selectedRunId;
+    let detail;
+    try {
+      detail = await fetchAgentRunDetail(id);
+    } catch {
+      return;
+    }
+    if (id !== selectedRunId || tab !== "agents") return;
+    const page = document.querySelector(".page");
+    const atBottom = page.scrollHeight - page.scrollTop - page.clientHeight < 40;
+    runDetail = detail;
+    if (atBottom) {
+      await tick();
+      page.scrollTop = page.scrollHeight;
+    }
+  }
+
+  function toggleTurnExpanded(i) {
+    const next = new Set(expandedTurns);
+    if (next.has(i)) next.delete(i);
+    else next.add(i);
+    expandedTurns = next;
+  }
+
+  const TOOL_PRIMARY_KEYS = ["command", "file_path", "content", "pattern", "query", "url", "prompt"];
+
+  function toolPrimaryArg(input) {
+    if (!input || typeof input !== "object") return null;
+    for (const key of TOOL_PRIMARY_KEYS) {
+      if (typeof input[key] === "string" && input[key]) return [key, input[key]];
+    }
+    return Object.entries(input).find(([, v]) => typeof v === "string" && v) ?? null;
+  }
+
+  function toolLabel(turn, primary) {
+    let summary = "";
+    if (typeof turn.toolInput?.description === "string" && turn.toolInput.description) {
+      summary = turn.toolInput.description;
+    } else if (primary) {
+      const flat = primary[1].replace(/\s+/g, " ").trim();
+      summary = flat.length > 80 ? `${flat.slice(0, 80)}…` : flat;
+    }
+    return summary ? `→ ${turn.toolName} — ${summary}` : `→ ${turn.toolName}`;
+  }
+
+  function durationText(startedAt, endedAt) {
+    const ms = new Date(endedAt) - new Date(startedAt);
+    const mins = Math.round(ms / 60000);
+    return mins < 1 ? "<1m" : `${mins}m`;
+  }
+
+  function runHealth(run) {
+    if (run.state === "running") return "running";
+    if (run.state === "killed" || run.state === "died" || run.exit_reason === "gave-up") return "failed";
+    if (run.exit_reason === "green" || run.exit_reason === "merged" || run.exit_reason === "done") return "succeeded";
+    return "idle";
+  }
+
+  function runStateLabel(run) {
+    return run.state === "running" ? "running" : (run.exit_reason || run.state);
+  }
+
+  const RUN_TONES = { running: "review", failed: "fail", succeeded: "ready", idle: "wait" };
+
+  function runTone(run) {
+    return RUN_TONES[runHealth(run)];
+  }
+
+  function runTime(run) {
+    if (run.state === "running") return relativeTime(run.started_at);
+    return run.ended_at ? `${relativeTime(run.ended_at)} · ${durationText(run.started_at, run.ended_at)}` : relativeTime(run.started_at);
+  }
+
+  $effect(() => {
+    if (tab !== "agents" || !pr) return;
+    loadAgentRuns();
+    const timer = setInterval(() => {
+      loadAgentRuns();
+      if (selectedRunId && runDetail?.run.state === "running") refreshRunDetail();
+    }, 5000);
+    return () => clearInterval(timer);
+  });
+
+  let promptOpen = $state(false);
+  let promptText = $state("");
+  let promptError = $state(null);
+  let promptBusy = $state(false);
+
+  async function submitPrompt() {
+    const instruction = promptText.trim();
+    if (!instruction || promptBusy) return;
+    promptBusy = true;
+    promptError = null;
+    try {
+      await promptAgent(repo, number, instruction);
+      promptOpen = false;
+      promptText = "";
+      await loadAgent();
+    } catch (e) {
+      promptError = e instanceof Error ? e.message : String(e);
+    } finally {
+      promptBusy = false;
+    }
+  }
+
+  let autofixBusy = $state(false);
+  let autofixError = $state(null);
+  let conflictResolveBusy = $state(false);
+  let conflictResolveError = $state(null);
+  let conflictResolveConfirm = $state(false);
+  let ciFixBusy = $state(false);
+  let ciFixError = $state(null);
+  let ciFixConfirm = $state(false);
+
+  async function submitAutofix() {
+    if (autofixBusy || agent?.state === "running" || prIsGreen) return;
+    autofixBusy = true;
+    autofixError = null;
+    try {
+      await autofixAgent(repo, number);
+      await loadAgent();
+    } catch (e) {
+      autofixError = e instanceof Error ? e.message : String(e);
+    } finally {
+      autofixBusy = false;
+    }
+  }
+
+  async function submitConflictResolution() {
+    if (conflictResolveBusy || agent?.state === "running" || !hasConflicts) return;
+    conflictResolveBusy = true;
+    conflictResolveError = null;
+    const instruction = conflictFixPrompt();
+    try {
+      await promptAgent(repo, number, instruction);
+      await loadAgent();
+      await loadAgentRuns();
+    } catch (e) {
+      conflictResolveError = e instanceof Error ? e.message : String(e);
+    } finally {
+      conflictResolveBusy = false;
+    }
+  }
+
+  async function submitCiFix() {
+    if (ciFixBusy || agent?.state === "running" || !pr || !failingChecks.length) return;
+    ciFixBusy = true;
+    ciFixError = null;
+    const instruction = ciFixPrompt({ repo, number, branch: pr.headRefName, checks: failingChecks });
+    try {
+      await promptAgent(repo, number, instruction);
+      await loadAgent();
+      await loadAgentRuns();
+    } catch (e) {
+      ciFixError = e instanceof Error ? e.message : String(e);
+    } finally {
+      ciFixBusy = false;
+    }
+  }
+
+  let customBusy = $state(false);
+  let customError = $state(null);
+
+  async function submitCustom(agentDef) {
+    if (customBusy || (agentDef.id !== "rescorer" && agent?.state === "running")) return;
+    customBusy = true;
+    customError = null;
+    try {
+      if (agentDef.id === "rescorer") {
+        await rescoreAgent(repo, number);
+      } else {
+        await customAgent(repo, number, agentDef.id);
+        await loadAgent();
+      }
+    } catch (e) {
+      customError = e instanceof Error ? e.message : String(e);
+    } finally {
+      customBusy = false;
+    }
+  }
+
+  function onPromptKey(e) {
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      e.preventDefault();
+      promptOpen = false;
+    } else if (e.key === "Enter" && !e.shiftKey) {
+      e.stopPropagation();
+      e.preventDefault();
+      submitPrompt();
+    }
+  }
+
+  const focusOnMount = (node) => node.focus();
+
+  const sizeToTextOnMount = (node) => {
+    node.focus();
+    requestAnimationFrame(() => {
+      const cap = Math.round(window.innerHeight * 0.7);
+      node.style.height = "auto";
+      node.style.height = Math.min(cap, Math.max(160, node.scrollHeight)) + "px";
+    });
+  };
+
+  $effect(() => {
+    if (!pr) return;
+    loadAgent();
+    loadAgentRuns();
+  });
+
+  $effect(() => {
+    if (!pr?.autoMergeEnabled && agent?.state !== "running") return;
+    const timer = setInterval(() => {
+      loadAgent();
+      if (tab !== "agents") loadAgentRuns();
+    }, 5000);
+    return () => clearInterval(timer);
+  });
+
+  let stateChip = $derived.by(() => {
+    if (!pr) return { label: "", tone: "wait" };
+    if (pr.isDraft) return { label: "draft", tone: "wait" };
+    const s = pr.state.toUpperCase();
+    if (s === "MERGED") return { label: "merged", tone: "merged" };
+    if (s === "CLOSED") return { label: "closed", tone: "closed" };
+    return { label: "open", tone: "ready" };
+  });
+
+  let liveState = $derived(!!pr && pr.state.toUpperCase() === "OPEN");
+  let onLocalBranch = $derived(!!pr && pr.localBranch === pr.headRefName);
+  let hasConflicts = $derived(!!pr && (pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "DIRTY"));
+
+  async function loadConflictFiles(key) {
+    conflictFilesState = "loading";
+    conflictFilesError = null;
+    try {
+      const next = await fetchConflictFiles(repo, number);
+      if (key !== loadedConflictKey) return;
+      conflictFiles = next;
+      conflictFilesState = "ready";
+    } catch (e) {
+      if (key !== loadedConflictKey) return;
+      conflictFiles = [];
+      conflictFilesState = "error";
+      conflictFilesError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  $effect(() => {
+    const key = hasConflicts ? `${repo}#${number}#${pr.headRefOid}#${pr.baseRefOid ?? pr.baseRefName}` : "";
+    if (!key) {
+      loadedConflictKey = "";
+      conflictFiles = [];
+      conflictFilesState = "idle";
+      conflictFilesError = null;
+      return;
+    }
+    if (key === loadedConflictKey) return;
+    loadedConflictKey = key;
+    loadConflictFiles(key);
+  });
+
+  let rollup = $derived(pr?.lastCommit.nodes[0]?.commit.statusCheckRollup ?? null);
+
+  let checks = $derived.by(() => buildChecks(rollup));
+  let failingChecks = $derived(checks.filter((check) => check.bucket === "failing"));
+  let checkCounts = $derived.by(() => countChecks(checks));
+  let checkSummary = $derived(summarizeChecks(checkCounts));
+  let checkSections = $derived.by(() => sectionizeChecks(checks));
+
+  let hasFailing = $derived((checkCounts.failing ?? 0) > 0);
+  let showSuccessful = $state(false);
+
+  let ci = $derived.by(() => {
+    const s = rollup?.state;
+    if (s === "SUCCESS") return { sym: "✓", tone: "ready", text: "CI passing" };
+    if (s === "FAILURE" || s === "ERROR") return { sym: "✗", tone: "fail", text: "CI failing" };
+    if (s === "PENDING") return { sym: "◷", tone: "wait", text: "CI running" };
+    return { sym: "·", tone: "wait", text: "no CI" };
+  });
+
+  let ciDetail = $derived.by(() => {
+    const total = checks.length;
+    const passed = checkCounts.success ?? 0;
+    const failing = checkCounts.failing ?? 0;
+    const pending = (checkCounts.queued ?? 0) + (checkCounts.expected ?? 0) + (checkCounts.in_progress ?? 0);
+    if (rollup?.state === "SUCCESS") return total ? `${passed} of ${total} checks passed` : "All reported checks passed";
+    if (rollup?.state === "FAILURE" || rollup?.state === "ERROR") {
+      return `${failing || 1} failing${passed ? ` · ${passed} passed` : ""}`;
+    }
+    if (rollup?.state === "PENDING") return `${pending || total} check${(pending || total) === 1 ? "" : "s"} still running`;
+    return "No checks have been reported";
+  });
+
+  function copyCiFixPrompt() {
+    if (!pr || !failingChecks.length) return;
+    const prompt = ciFixPrompt({ repo, number, branch: pr.headRefName, checks: failingChecks });
+    navigator.clipboard.writeText(prompt).then(
+      () => ciCopied.show(),
+      () => showFlash("Couldn't copy the CI fix prompt."),
+    );
+  }
+
+  function conflictFixPrompt() {
+    if (!pr) return "";
+    const paths = conflictFiles.length
+      ? conflictFiles.map((path) => `- ${path}`).join("\n")
+      : "- Git reported a repository-level conflict without individual file paths";
+    return `Resolve the merge conflicts on ${repo} PR #${number}.\n\nPR: https://github.com/${repo}/pull/${number}\nBranch: ${pr.headRefName}\nBase: ${pr.baseRefName}\n\nConflicting files:\n${paths}\n\nFetch origin/${pr.baseRefName} and merge it into ${pr.headRefName}. Resolve every conflict faithfully, preserving the intent of both sides. Do not change unrelated code. Run the narrowest relevant validation, commit the merge resolution, and push only to ${pr.headRefName}.`;
+  }
+
+  function copyConflictFixPrompt() {
+    if (!pr || conflictFilesState !== "ready") return;
+    navigator.clipboard.writeText(conflictFixPrompt()).then(
+      () => conflictCopied.show(),
+      () => showFlash("Couldn't copy the conflict fix prompt."),
+    );
+  }
+
+  let mergeGate = $derived.by(() => evalMergeGate(pr, rollup?.state ?? null));
+
+  let forceMergeAvailable = $derived.by(() => evalForceMerge(pr, mergeGate));
+
+  async function submitForceMerge() {
+    await submitMerge(true);
+  }
+
+  let updateMutation = $derived(mutations.find((m) => m.kind === "update-branch"));
+
+  async function submitUpdateBranch() {
+    await enqueueMutation(repo, number, { kind: "update-branch" });
+    await refreshMutations();
+  }
+
+  async function switchToLocalBranch() {
+    if (!pr?.localCheckoutPath || localBranchBusy) return;
+    localBranchBusy = true;
+    try {
+      const result = await switchLocalBranch(repo, pr.headRefName);
+      pr = { ...pr, localBranch: result.branch };
+      showFlash(result.alreadyOnBranch ? `Already on ${pr.headRefName}.` : `Switched ${result.checkoutPath} to ${pr.headRefName}.`);
+    } catch (err) {
+      showFlash(err instanceof Error ? err.message : "Couldn't switch branches.");
+    } finally {
+      localBranchBusy = false;
+    }
+  }
+
+  async function focusTerminal() {
+    if (!pr) return;
+    try {
+      await focusTmux(repo, number);
+    } catch (err) {
+      showFlash(tmuxFocusErrorMessage(err));
+    }
+  }
+
+  function editorTargetFromDiff() {
+    if (tab !== "files" || files.length === 0) return null;
+    const pane = document.querySelector(".diff-pane");
+    if (!pane) return null;
+    const paneRect = pane.getBoundingClientRect();
+    const centerY = paneRect.top + paneRect.height / 2;
+    let section = document.querySelector('[id^="diff-file-"]:hover');
+    let index = section ? Number(section.id.slice("diff-file-".length)) : -1;
+    if (!files[index]) {
+      let distance = Infinity;
+      for (let i = 0; i < files.length; i++) {
+        const candidate = document.getElementById(`diff-file-${i}`);
+        if (!candidate) continue;
+        const rect = candidate.getBoundingClientRect();
+        const candidateDistance = centerY < rect.top ? rect.top - centerY : centerY > rect.bottom ? centerY - rect.bottom : 0;
+        if (candidateDistance < distance) {
+          section = candidate;
+          index = i;
+          distance = candidateDistance;
+        }
+      }
+    }
+    if (!section || !files[index]) return null;
+    let lineElement = section.querySelector(".line[data-new-line]:hover");
+    if (!lineElement) {
+      let distance = Infinity;
+      for (const candidate of section.querySelectorAll(".line[data-new-line]")) {
+        const rect = candidate.getBoundingClientRect();
+        const candidateDistance = Math.abs(rect.top + rect.height / 2 - centerY);
+        if (candidateDistance < distance) {
+          lineElement = candidate;
+          distance = candidateDistance;
+        }
+      }
+    }
+    const line = Number(lineElement?.dataset.newLine);
+    return { path: files[index].path, line: Number.isInteger(line) && line > 0 ? line : null };
+  }
+
+  async function openEditor() {
+    if (!pr) return;
+    if (!window.cockpitShell?.openEditor) {
+      showFlash("Opening an editor needs the desktop app.");
+      return;
+    }
+    try {
+      const result = await window.cockpitShell.openEditor(repo, number, editorTargetFromDiff());
+      if (result?.error) showFlash(result.error);
+      else if (result?.warning) showFlash(result.warning);
+    } catch (err) {
+      showFlash(err instanceof Error ? err.message : "Couldn't open the editor.");
+    }
+  }
+
+  function copyBranchName() {
+    if (!pr?.headRefName) return;
+    navigator.clipboard.writeText(pr.headRefName).then(
+      () => branchCopied.show(),
+      () => showFlash("Couldn't copy the branch name."),
+    );
+  }
+
+  let readyMutation = $derived(mutations.find((m) => m.kind === "ready-for-review"));
+
+  async function submitReadyForReview() {
+    await enqueueMutation(repo, number, { kind: "ready-for-review" });
+    await refreshMutations();
+  }
+
+  let closeMutation = $derived(mutations.find((m) => m.kind === "close"));
+
+  async function submitClose() {
+    await enqueueMutation(repo, number, { kind: "close" });
+    await refreshMutations();
+  }
+
+  const mergeFlash = timedFlag(2400);
+
+  let reviewers = $derived.by(() => {
+    if (!pr) return [];
+    const latest = new Map();
+    for (const r of pr.reviews.nodes) {
+      if (!r.author) continue;
+      if (r.state === "COMMENTED" && latest.has(r.author.login)) continue;
+      latest.set(r.author.login, { state: r.state, avatarUrl: r.author.avatarUrl });
+    }
+    for (const c of pr.comments.nodes) {
+      const who = c.author?.login;
+      if (who && KNOWN_BOT_LOGINS.has(who) && !latest.has(who)) latest.set(who, { state: "COMMENTED", avatarUrl: c.author.avatarUrl });
+    }
+    for (const req of pr.reviewRequests.nodes) {
+      const who = req.requestedReviewer?.login ?? req.requestedReviewer?.name;
+      if (who && !latest.has(who)) latest.set(who, { state: "PENDING", avatarUrl: req.requestedReviewer?.avatarUrl });
+    }
+    return [...latest.entries()].map(([login, v]) => ({ login, state: v.state, avatarUrl: v.avatarUrl }));
+  });
+
+  let greptileMeta = $derived(pr ? greptileReviewMeta(pr) : { confidence: null, reviewedSha: null, unresolvedCount: 0 });
+  let greptileState = $derived(pr ? greptileStatus(greptileMeta, pr.headRefOid) : null);
+  let greptileRescore = $derived(pr?.greptileRescore ?? null);
+
+  function greptileTitle(status) {
+    if (greptileRescore) return `original ${greptileMeta.confidence}/5 by greptile-apps → ${greptileRescore.score}/5 re-scored after fixes`;
+    if (status === "stale") return "reviewed before recent pushes - the score may no longer reflect the current state";
+    if (status === "addressed") return "reviewed before recent pushes, but every thread that reviewer left is resolved";
+    return "Greptile confidence";
+  }
+
+  let repoUsers = $state([]);
+  let pickerMode = $state(null);
+  let rangeOpen = $state(false);
+  const peopleFlash = timedFlag(2000);
+
+  let pendingAssign = $derived(mutations.filter((m) => m.kind === "assign"));
+  let pendingUnassign = $derived(mutations.filter((m) => m.kind === "unassign"));
+  let pendingReviewers = $derived(mutations.filter((m) => m.kind === "request-reviewers"));
+  let pendingUnreviewers = $derived(mutations.filter((m) => m.kind === "unrequest-reviewers"));
+  let assignedByServer = $derived(new Set((pr?.assignees.nodes ?? []).map((a) => a.login)));
+  let requestedByServer = $derived(new Set(reviewers.map((r) => r.login)));
+  let assignedLogins = $derived.by(() => {
+    const s = new Set(assignedByServer);
+    for (const m of pendingAssign) if (m.state !== "failed") for (const login of m.payload.logins) s.add(login);
+    for (const m of pendingUnassign) if (m.state !== "failed") for (const login of m.payload.logins) s.delete(login);
+    return s;
+  });
+  let requestedLogins = $derived.by(() => {
+    const s = new Set(requestedByServer);
+    for (const m of pendingReviewers) if (m.state !== "failed") for (const login of m.payload.logins) s.add(login);
+    for (const m of pendingUnreviewers) if (m.state !== "failed") for (const login of m.payload.logins) s.delete(login);
+    return s;
+  });
+
+  function avatarFor(login) {
+    return repoUsers.find((u) => u.login === login)?.avatarUrl ?? null;
+  }
+
+  async function submitAssign(login) {
+    const kind = assignedLogins.has(login) ? "unassign" : "assign";
+    await enqueueMutation(repo, number, { kind, logins: [login] });
+    await refreshMutations();
+  }
+
+  async function submitRequestReviewer(login) {
+    if (!requestedLogins.has(login) && login === pr.author?.login) {
+      peopleFlash.show("can't request review from the author");
+      return;
+    }
+    const kind = requestedLogins.has(login) ? "unrequest-reviewers" : "request-reviewers";
+    await enqueueMutation(repo, number, { kind, logins: [login] });
+    await refreshMutations();
+  }
+
+  let timeline = $derived.by(() => {
+    if (!pr) return [];
+    const events = [];
+    for (const c of pr.comments.nodes) {
+      events.push({ kind: "comment", id: `comment-${c.id}`, author: c.author?.login, avatarUrl: c.author?.avatarUrl, body: c.body, at: c.createdAt, state: null, reactions: c.reactions });
+    }
+    for (const r of pr.reviews.nodes) {
+      if (!r.submittedAt) continue;
+      if (!r.body && r.state === "COMMENTED") continue;
+      events.push({ kind: "review", id: `review-${r.id}`, author: r.author?.login, avatarUrl: r.author?.avatarUrl, body: r.body, at: r.submittedAt, state: r.state, reactions: r.reactions });
+    }
+    for (const t of pr.reviewThreads.nodes) {
+      const at = t.comments.nodes[0]?.createdAt;
+      if (!at) continue;
+      events.push({ kind: "thread", id: `thread-${t.id}`, thread: t, at });
+    }
+    for (const { commit } of pr.commitList.nodes) {
+      events.push({
+        kind: "commit",
+        id: `commit-${commit.oid}`,
+        author: commit.author?.user?.login ?? commit.author?.name ?? null,
+        avatarUrl: commit.author?.user?.avatarUrl,
+        headline: commit.messageHeadline,
+        sha: commit.abbreviatedOid,
+        oid: commit.oid,
+        parentOid: commit.parents?.nodes?.[0]?.oid ?? null,
+        ciState: commit.statusCheckRollup?.state ?? null,
+        at: commit.committedDate,
+      });
+    }
+    const orderedEvents = events.sort((a, b) => new Date(a.at) - new Date(b.at));
+    const pendingEvents = pendingComments.map((mutation) => ({ kind: "pending-comment", id: `pending-comment-${mutation.id}`, mutation }));
+    return prefs.newestCommentsFirst ? [...pendingEvents, ...orderedEvents.reverse()] : [...orderedEvents, ...pendingEvents];
+  });
+
+  let threadSplit = $derived(anchorThreads(files, pr?.reviewThreads.nodes ?? []));
+  let unresolvedTotal = $derived(
+    (pr?.reviewThreads.nodes ?? []).filter((t) => !t.isResolved).length,
+  );
+  let prIsGreen = $derived(mergeGate.action === "merge" && unresolvedTotal === 0);
+
+  const reviewTone = (state) =>
+    state === "APPROVED"
+      ? "ready"
+      : state === "CHANGES_REQUESTED"
+        ? "fail"
+        : state === "PENDING"
+          ? "wait"
+          : "review";
+  const stateLabel = (state) => state.toLowerCase().replace(/_/g, " ");
+
+  let firstUnresolved = $derived(
+    (pr?.reviewThreads.nodes ?? []).find((t) => !t.isResolved) ?? null,
+  );
+  let fileIndex = $state(0);
+  let collapsedFiles = $state(new Set());
+  let viewedFiles = $state(new Set());
+  let selectedPath = $derived(files[fileIndex]?.path ?? null);
+
+  let testPattern = $derived(testMatcher(prefs.testPathRegex));
+  let testFiles = $derived(files.filter((f) => testPattern.test(f.path)));
+  let nonTestFiles = $derived(files.filter((f) => !testPattern.test(f.path)));
+  let nonTestAdditions = $derived(nonTestFiles.reduce((sum, f) => sum + f.additions, 0));
+  let nonTestDeletions = $derived(nonTestFiles.reduce((sum, f) => sum + f.deletions, 0));
+  let testsHidden = $derived(testFiles.length > 0 && testFiles.every((f) => collapsedFiles.has(f.path)));
+  let treeFiles = $derived(testsHidden ? files.filter((f) => !testPattern.test(f.path)) : files);
+
+  $effect(() => {
+    if (tab !== "files" || diffState !== "ready" || treeFiles.length === 0) return;
+    requestAnimationFrame(() => {
+      const rows = document.querySelectorAll(".tree-pane .row");
+      if (!rows.length) return;
+      // .name flexes wider or narrower than its natural text width; probe outside flex to measure it
+      const probe = document.createElement("span");
+      probe.style.cssText = "position:absolute;visibility:hidden;white-space:nowrap;left:-9999px;top:-9999px;";
+      document.body.appendChild(probe);
+      let widest = TREE_MIN_WIDTH;
+      for (const row of rows) {
+        const name = row.querySelector(".name");
+        if (!name) continue;
+        probe.style.font = getComputedStyle(name).font;
+        probe.textContent = name.textContent;
+        const ideal = row.clientWidth - name.clientWidth + probe.offsetWidth;
+        widest = Math.max(widest, ideal);
+      }
+      probe.remove();
+      treeMaxWidth = widest + 16;
+    });
+  });
+
+  function startTreeResize(e) {
+    e.preventDefault();
+    const target = e.currentTarget;
+    target.setPointerCapture(e.pointerId);
+    const startX = e.clientX;
+    const startWidth = treeDesiredWidth;
+    function onMove(ev) {
+      treeDesiredWidth = Math.max(TREE_MIN_WIDTH, Math.min(treeMaxWidth, startWidth + (ev.clientX - startX)));
+    }
+    function onUp() {
+      target.removeEventListener("pointermove", onMove);
+      target.removeEventListener("pointerup", onUp);
+      localStorage.setItem(TREE_WIDTH_KEY, String(treeDesiredWidth));
+    }
+    target.addEventListener("pointermove", onMove);
+    target.addEventListener("pointerup", onUp);
+  }
+
+  let testDefaultAppliedFor = null;
+  $effect(() => {
+    const key = `${repo}/${number}`;
+    if (!prefs.loaded || files.length === 0 || testDefaultAppliedFor === key) return;
+    testDefaultAppliedFor = key;
+    if (prefs.hideTestsDefault) {
+      collapsedFiles = new Set([...collapsedFiles, ...testFiles.map((f) => f.path)]);
+    }
+  });
+
+  function toggleTests() {
+    if (testsHidden) {
+      updateViewedFiles(testFiles, false);
+    } else {
+      collapsedFiles = new Set([...collapsedFiles, ...testFiles.map((f) => f.path)]);
+    }
+  }
+
+  function viewedFileStorageKey() {
+    return `${VIEWED_FILES_KEY_PREFIX}${repo}#${number}`;
+  }
+
+  function loadViewedFileRecords() {
+    try {
+      const records = JSON.parse(localStorage.getItem(viewedFileStorageKey()) ?? "{}");
+      return records && typeof records === "object" && !Array.isArray(records) ? records : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function saveViewedFileRecords(records) {
+    try {
+      const key = viewedFileStorageKey();
+      if (Object.keys(records).length) localStorage.setItem(key, JSON.stringify(records));
+      else localStorage.removeItem(key);
+    } catch {
+    }
+  }
+
+  function syncViewedFiles(nextFiles) {
+    const nextCollapsed = new Set(collapsedFiles);
+    for (const path of viewedFiles) nextCollapsed.delete(path);
+    if (rangeKey !== "all") {
+      viewedFiles = new Set();
+      collapsedFiles = nextCollapsed;
+      return;
+    }
+
+    const records = loadViewedFileRecords();
+    const nextViewed = new Set();
+    const paths = new Set(nextFiles.map((file) => file.path));
+    for (const path of Object.keys(records)) {
+      if (!paths.has(path)) delete records[path];
+    }
+    for (const file of nextFiles) {
+      const fingerprint = fileDiffFingerprint(file);
+      if (records[file.path]?.fingerprint === fingerprint) {
+        nextViewed.add(file.path);
+        nextCollapsed.add(file.path);
+      } else {
+        delete records[file.path];
+      }
+    }
+    viewedFiles = nextViewed;
+    collapsedFiles = nextCollapsed;
+    saveViewedFileRecords(records);
+  }
+
+  function updateViewedFiles(targetFiles, viewed) {
+    const nextViewed = new Set(viewedFiles);
+    const nextCollapsed = new Set(collapsedFiles);
+    for (const file of targetFiles) {
+      if (viewed) {
+        nextViewed.add(file.path);
+        nextCollapsed.add(file.path);
+      } else {
+        nextViewed.delete(file.path);
+        nextCollapsed.delete(file.path);
+      }
+    }
+    viewedFiles = nextViewed;
+    collapsedFiles = nextCollapsed;
+
+    if (rangeKey !== "all") return;
+    const records = loadViewedFileRecords();
+    for (const file of targetFiles) {
+      if (viewed) records[file.path] = { fingerprint: fileDiffFingerprint(file) };
+      else delete records[file.path];
+    }
+    saveViewedFileRecords(records);
+  }
+
+  function setFileViewed(file, viewed) {
+    updateViewedFiles([file], viewed);
+  }
+
+  function toggleFileCollapse(file) {
+    setFileViewed(file, !collapsedFiles.has(file.path));
+  }
+
+  function focusTarget(selector) {
+    const el = document.querySelector(selector);
+    if (!el) return;
+    el.scrollIntoView({ block: "center" });
+    el.focus();
+  }
+
+  function focusWhenReady(selector, tries = 20) {
+    const el = document.querySelector(selector);
+    if (el) {
+      el.scrollIntoView({ block: "center" });
+      el.focus();
+    } else if (tries > 0) {
+      requestAnimationFrame(() => focusWhenReady(selector, tries - 1));
+    }
+  }
+
+  function revealAnchoredReply(path, replyId, tries = 20) {
+    const i = files.findIndex((f) => f.path === path);
+    const el = i >= 0 ? document.getElementById(`diff-file-${i}`) : null;
+    if (el) {
+      el.scrollIntoView({ block: "start" });
+      focusWhenReady(`[data-reply-for="${replyId}"]`);
+    } else if (tries > 0) {
+      requestAnimationFrame(() => revealAnchoredReply(path, replyId, tries - 1));
+    }
+  }
+
+  function revealReply() {
+    if (!firstUnresolved) return;
+    const anchored = !threadSplit.unanchored.some((t) => t.id === firstUnresolved.id);
+    if (anchored) {
+      if (tab !== "files") goToTab("files");
+      if (collapsedFiles.has(firstUnresolved.path)) {
+        const file = files.find((item) => item.path === firstUnresolved.path);
+        if (file) setFileViewed(file, false);
+      }
+      revealAnchoredReply(firstUnresolved.path, firstUnresolved.id);
+    } else {
+      if (tab !== "conversation") goToTab("conversation");
+      focusWhenReady(`[data-reply-for="${firstUnresolved.id}"]`);
+    }
+  }
+
+  function scrollToFile(i) {
+    const el = document.getElementById(`diff-file-${i}`);
+    if (!el) return;
+    spyHoldUntil = performance.now() + 400;
+    el.scrollIntoView({ block: "start" });
+    // estimated placeholder heights (content-visibility) shift as neighbors render; re-align for a few frames
+    let frames = 12;
+    const page = el.closest(".page");
+    const settle = () => {
+      if (scrollAnimating(page)) {
+        spyHoldUntil = 0;
+        return;
+      }
+      const target = document.getElementById(`diff-file-${i}`);
+      if (!target) return;
+      target.scrollIntoView({ block: "start" });
+      if (--frames > 0) requestAnimationFrame(settle);
+    };
+    requestAnimationFrame(settle);
+  }
+
+  let spyHoldUntil = 0;
+
+  function fileAtViewportTop(page) {
+    const probeY = page.getBoundingClientRect().top + 60;
+    let lo = 0;
+    let hi = files.length - 1;
+    let found = 0;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const el = document.getElementById(`diff-file-${mid}`);
+      if (!el) return -1;
+      if (el.getBoundingClientRect().top <= probeY) {
+        found = mid;
+        lo = mid + 1;
+      } else hi = mid - 1;
+    }
+    return found;
+  }
+
+  $effect(() => {
+    if (tab !== "files") return;
+    const page = document.querySelector(".page");
+    if (!page) return;
+    let raf = 0;
+    const onScroll = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        if (performance.now() < spyHoldUntil) return;
+        const i = fileAtViewportTop(page);
+        if (i >= 0 && i !== fileIndex) fileIndex = i;
+      });
+    };
+    page.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      page.removeEventListener("scroll", onScroll);
+      cancelAnimationFrame(raf);
+    };
+  });
+
+  function selectFile(i) {
+    fileIndex = i;
+    scrollToFile(i);
+  }
+
+  function selectFileByPath(path) {
+    const i = files.findIndex((f) => f.path === path);
+    if (i >= 0) selectFile(i);
+  }
+
+  function openChangedFile(path) {
+    const i = files.findIndex((f) => f.path === path);
+    if (i < 0) return;
+    fileIndex = i;
+    if (tab !== "files") goToTab("files");
+    let tries = 20;
+    const reveal = () => {
+      if (document.getElementById(`diff-file-${i}`)) scrollToFile(i);
+      else if (--tries > 0) requestAnimationFrame(reveal);
+    };
+    requestAnimationFrame(reveal);
+  }
+
+  function goToTab(next) {
+    location.hash = next === "conversation" ? `#/pr/${repo}/${number}` : `#/pr/${repo}/${number}/${next}`;
+  }
+
+  let telescope = $state(null);
+  let telescopeOpen = $state(false);
+  let historyOpen = $derived(historyPath !== null);
+  let historyFile = $derived(historyPath ? files.find((file) => file.path === historyPath) ?? null : null);
+  function openFileHistory(path, symbol = null) {
+    if (rangeKey !== "all") {
+      rangeKey = "all";
+      files = [];
+    }
+    const parent = `#/pr/${repo}/${number}/files`;
+    const query = symbol ? `?symbol=${encodeURIComponent(symbol)}` : "";
+    location.hash = `#/pr/${repo}/${number}/history/${encodeURIComponent(path)}${query}`;
+    history.replaceState({ ...history.state, fileHistoryParent: parent }, "");
+  }
+
+  function closeFileHistory() {
+    const parent = `#/pr/${repo}/${number}/files`;
+    if (history.state?.fileHistoryParent === parent) history.back();
+    else location.replace(parent);
+  }
+
+  $effect(() => {
+    let downPressed = false;
+    let upPressed = false;
+    function onKey(e) {
+      const keyOwner = prKeyOwner(e);
+      if (keyOwner === "blur") {
+        e.target.blur();
+        e.preventDefault();
+        return;
+      }
+      if (keyOwner === "typing") return;
+      if (e.metaKey && e.key === ",") {
+        location.hash = "#/settings";
+        e.preventDefault();
+        return;
+      }
+      if (e.metaKey && ["1", "2", "3"].includes(e.key)) {
+        if (!rangeOpen && !pickerMode && !telescopeOpen) {
+          goToTab(e.key === "1" ? "conversation" : e.key === "2" ? "files" : "agents");
+        }
+        e.preventDefault();
+        return;
+      }
+      if (shouldCopyPrUrl(e)) {
+        if (pr) {
+          navigator.clipboard.writeText(`https://github.com/${repo}/pull/${number}`).then(() => copied.show("copied GitHub PR URL"), () => {});
+        }
+        e.preventDefault();
+        return;
+      }
+      if (shouldCopyPrCockpitUrl(e)) {
+        if (pr) {
+          navigator.clipboard.writeText(`prcockpit://pr/${repo}/${number}`).then(() => copied.show("copied PR Cockpit deep link"), () => {});
+        }
+        e.preventDefault();
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+        scrollPage(document.querySelector(".page"), e.key === "ArrowDown" ? 1 : -1);
+        e.preventDefault();
+        return;
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (pickerMode) {
+        if (e.key === "Escape") {
+          pickerMode = null;
+          e.preventDefault();
+        }
+        return;
+      }
+      if (rangeOpen) return;
+      if (historyOpen) return;
+      if (mergeMenuOpen) {
+        if (e.key === "Escape") {
+          mergeMenuOpen = false;
+          e.preventDefault();
+        }
+        return;
+      }
+      if (mergeConfirm) {
+        if (e.key === "Enter") submitMerge();
+        mergeConfirm = false;
+        e.preventDefault();
+        return;
+      }
+      if (forceMergeConfirm) {
+        if (e.key === "Enter") submitForceMerge();
+        forceMergeConfirm = false;
+        e.preventDefault();
+        return;
+      }
+      if (closeConfirm) {
+        if (e.key === "Enter") submitClose();
+        closeConfirm = false;
+        e.preventDefault();
+        return;
+      }
+      if (autoMergeConfirm) {
+        if (e.key === "Enter") submitAutoMerge(!pr.autoMergeEnabled);
+        autoMergeConfirm = false;
+        e.preventDefault();
+        return;
+      }
+      if (autofixConfirm) {
+        if (e.key === "Enter") submitAutofix();
+        autofixConfirm = false;
+        e.preventDefault();
+        return;
+      }
+      if (ciFixConfirm) {
+        if (e.key === "Enter") submitCiFix();
+        ciFixConfirm = false;
+        e.preventDefault();
+        return;
+      }
+      if (conflictResolveConfirm) {
+        if (e.key === "Enter") submitConflictResolution();
+        conflictResolveConfirm = false;
+        e.preventDefault();
+        return;
+      }
+      if (customConfirm) {
+        if (e.key === "Enter") submitCustom(customConfirm);
+        customConfirm = null;
+        e.preventDefault();
+        return;
+      }
+      if (e.key === "Escape") {
+        if (tab === "files") goToTab("conversation");
+        else location.hash = "#/";
+        e.preventDefault();
+        return;
+      }
+      const page = document.querySelector(".page");
+      if (e.key === "g" && !e.shiftKey) {
+        const now = Date.now();
+        if (now - lastG < 400) {
+          scrollEdge(page, "top");
+          lastG = 0;
+          e.preventDefault();
+        } else lastG = now;
+        return;
+      }
+      if (e.key === "G") {
+        scrollEdge(page, "bottom");
+        e.preventDefault();
+        return;
+      }
+      if (e.key === "d") {
+        goToTab(tab === "files" ? "conversation" : "files");
+      } else if (tab === "files" && e.key === "J") {
+        selectFile(Math.min(files.length - 1, fileIndex + 1));
+      } else if (tab === "files" && e.key === "K") {
+        selectFile(Math.max(0, fileIndex - 1));
+      } else if (e.key === "j" || e.key === "ArrowDown") {
+        downPressed = true;
+        holdScrollStart(page, 1);
+      } else if (e.key === "k" || e.key === "ArrowUp") {
+        upPressed = true;
+        holdScrollStart(page, -1);
+      } else if (tab === "files" && e.key === "x") {
+        toggleTests();
+      } else if (tab === "files" && e.key === "h") {
+        if (files[fileIndex]) openFileHistory(files[fileIndex].path);
+      } else if (e.key === "x") {
+        if (liveState && !mergeMutation && !closeMutation) closeConfirm = true;
+      } else if (tab === "files" && e.key === "c") {
+        rangeOpen = true;
+      } else if (tab === "conversation" && e.key === "c") {
+        focusTarget("#composer-input");
+      } else if (tab === "conversation" && e.key === "v") {
+        if (pr.viewerIsAuthor) {
+          showFlash("Can't review your own PR — GitHub blocks self-approval.");
+        } else {
+          focusTarget("#verdict-control");
+        }
+      } else if (e.key === "r") {
+        revealReply();
+      } else if (e.key === "e") {
+        openEditor();
+      } else if (e.key === "m") {
+        if (mergeGate.action === "merge" && !mergeMutation) mergeConfirm = true;
+        else if (mergeGate.reason) mergeFlash.show(mergeGate.reason);
+      } else if (e.key === "M") {
+        if (forceMergeAvailable && !mergeMutation) forceMergeConfirm = true;
+      } else if (e.key === "u" && mergeGate.action === "update") {
+        if (!updateMutation) submitUpdateBranch();
+      } else if (e.key === "s") {
+        pickerMode = "assign";
+      } else if (e.key === "q") {
+        pickerMode = "review";
+      } else if (e.key === "o") {
+        if (pr) window.open(pr.url, "_blank", "noopener");
+      } else if (e.key === "T") {
+        focusTerminal();
+      } else if (e.key === "p") {
+        promptOpen = true;
+      } else if (tab === "conversation" && e.key === "E" && pr.body && !editingBody && !editBodyMutation) {
+        startEditBody();
+      } else if (keybindAgents.some((a) => a.keybind === e.key)) {
+        const def = keybindAgents.find((a) => a.keybind === e.key);
+        if (def.id === "fixer") {
+          if (!autoMergeMutation) autoMergeConfirm = true;
+        } else if (def.id === "autofix") {
+          if (!autofixBusy && agent?.state !== "running" && !prIsGreen) autofixConfirm = true;
+        } else if (def.id === "rescorer") {
+          if (!customBusy) customConfirm = def;
+        } else if (!customBusy && agent?.state !== "running") {
+          customConfirm = def;
+        }
+      } else {
+        return;
+      }
+      e.preventDefault();
+    }
+    function releaseHold() {
+      downPressed = false;
+      upPressed = false;
+      holdScrollRelease(document.querySelector(".page"));
+    }
+    function onPointerDown(e) {
+      if (!mergeMenuOpen) return;
+      if (e.target instanceof Element && e.target.closest(".merge-split")) return;
+      mergeMenuOpen = false;
+    }
+    function onKeyUp(e) {
+      if (e.code === "KeyJ" || e.code === "ArrowDown") {
+        downPressed = false;
+        if (upPressed) holdScrollStart(document.querySelector(".page"), -1);
+        else holdScrollRelease(document.querySelector(".page"));
+      } else if (e.code === "KeyK" || e.code === "ArrowUp") {
+        upPressed = false;
+        if (downPressed) holdScrollStart(document.querySelector(".page"), 1);
+        else holdScrollRelease(document.querySelector(".page"));
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", releaseHold);
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", releaseHold);
+      window.removeEventListener("pointerdown", onPointerDown);
+      cancelHoldScroll(document.querySelector(".page"));
+    };
+  });
+
+  let mergeKey = $derived(
+    mergeGate.action === "update" ? { key: "u", label: "update branch" } : { key: "m", label: "merge" },
+  );
+  let fixerDef = $derived(keybindAgents.find((a) => a.id === "fixer"));
+  let autoMergeKeys = $derived(fixerDef ? [{ key: fixerDef.keybind, label: pr?.autoMergeEnabled ? "disarm bot" : "auto-merge bot" }] : []);
+  let agentActionKeys = $derived(
+    keybindAgents.flatMap((a) => {
+      if (a.id === "fixer") return [];
+      if (a.id === "autofix") return agent?.state !== "running" && !prIsGreen ? [{ key: a.keybind, label: "auto-fix" }] : [];
+      if (a.id === "rescorer") return [{ key: a.keybind, label: "re-score" }];
+      return agent?.state !== "running" ? [{ key: a.keybind, label: a.name || "custom agent" }] : [];
+    }),
+  );
+  let conversationKeys = $derived([
+    { key: "d", label: "files" },
+    { key: "c", label: "comment" },
+    { key: "r", label: "reply" },
+    { key: "e", label: "editor" },
+    ...(pr?.body ? [{ key: "⇧E", label: "edit description" }] : []),
+    ...(pr?.viewerIsAuthor ? [] : [{ key: "v", label: "review" }]),
+    { key: "s", label: "assign" },
+    { key: "q", label: "request review" },
+    { key: "p", label: "prompt agent" },
+    ...agentActionKeys,
+    mergeKey,
+    { key: "x", label: "close" },
+    ...autoMergeKeys,
+    { key: "o", label: "github" },
+    ...(pr ? [{ key: "⇧T", label: "focus terminal" }] : []),
+    { key: "esc", label: "back" },
+  ]);
+  let filesKeys = $derived([
+    { key: "d", label: "conversation" },
+    { key: "J / K", label: "file" },
+    { key: "c", label: "changes range" },
+    { key: "x", label: "hide tests" },
+    { key: "h", label: "file history" },
+    { key: "r", label: "reply" },
+    { key: "e", label: "editor" },
+    { key: "s", label: "assign" },
+    { key: "q", label: "request review" },
+    mergeKey,
+    ...autoMergeKeys,
+    { key: "o", label: "github" },
+    ...(pr ? [{ key: "⇧T", label: "focus terminal" }] : []),
+    { key: "esc", label: "back" },
+  ]);
+  let agentsKeys = $derived([
+    { key: "⌘1 / ⌘2 / ⌘3", label: "switch tab" },
+    { key: "x", label: "close" },
+    { key: "o", label: "github" },
+    ...(pr ? [{ key: "⇧T", label: "focus terminal" }] : []),
+    { key: "esc", label: "back" },
+  ]);
+</script>
+
+<div class="page">
+  {#if error}
+    <div class="load">{error}</div>
+  {:else if !pr}
+    {#if showLoading}
+      <div class="detail loading-detail" aria-busy="true">
+        <a class="back mono" href="#/">← inbox</a>
+        <header class="pr-head loading-head">
+          <div class="pr-head-top">
+            <div class="pr-title-copy">
+              <span class="ui-eyebrow">Pull request #{number}</span>
+              {#if loadingSummary}
+                <div class="pr-title-row"><h1>{loadingSummary.title}</h1></div>
+                <div class="sub mono">
+                  <span class="chip badge wait">{loadingSummary.state}</span>
+                  <span>{loadingSummary.author}</span>
+                </div>
+              {:else}
+                <div class="loading-title-placeholder"></div>
+              {/if}
+            </div>
+          </div>
+        </header>
+        <div class="loading-status mono" role="status">
+          <span class="loading-spinner" aria-hidden="true"></span>
+          Fetching live GitHub details…
+        </div>
+        <div class="loading-card" aria-hidden="true">
+          <span class="loading-line wide"></span>
+          <span class="loading-line"></span>
+          <span class="loading-line medium"></span>
+        </div>
+      </div>
+    {/if}
+  {:else}
+    <div class="detail-frame" class:files-tab={tab === "files"}>
+    <div class="detail" style="--tree-width: {treeWidth}px">
+      <a class="back mono" href="#/">← inbox</a>
+
+      <header class="pr-head">
+        <div class="pr-head-top">
+          <div class="pr-title-copy">
+            <span class="ui-eyebrow">Pull request #{pr.number}</span>
+            {#if editingTitle}
+              <form class="pr-title-editor" onsubmit={(e) => { e.preventDefault(); saveTitle(); }}>
+                <input
+                  class="pr-title-input"
+                  aria-label="Pull request title"
+                  bind:value={titleDraft}
+                  onkeydown={onTitleEditKey}
+                  use:focusAndSelect
+                />
+                <button type="submit" class="title-editor-action title-save" disabled={!titleDraft.trim()} aria-label="Save pull request title" title="Save title">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="m5 12 4 4L19 6" />
+                  </svg>
+                </button>
+                <button type="button" class="title-editor-action" aria-label="Cancel renaming pull request" title="Cancel" onclick={cancelEditTitle}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                    <path d="M6 6l12 12M18 6 6 18" />
+                  </svg>
+                </button>
+              </form>
+            {:else}
+              <div class="pr-title-row">
+                <h1>{displayTitle}</h1>
+                {#if editTitleMutation}
+                  <div class="title-mutation mono">
+                    <MutationBadge state={editTitleMutation.state} pendingLabel="SAVING…" onRetry={() => handleRetry(editTitleMutation.id)} onDiscard={() => handleDiscard(editTitleMutation.id)} />
+                    {#if editTitleMutation.error}<span class="mut-error">{editTitleMutation.error}</span>{/if}
+                  </div>
+                {:else}
+                  <button type="button" class="title-rename" aria-label="Rename pull request" title="Rename pull request" onclick={startEditTitle}>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M12 20h9" />
+                      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z" />
+                    </svg>
+                  </button>
+                {/if}
+              </div>
+            {/if}
+            <div class="sub mono">
+              <span class="chip badge {stateChip.tone}">{stateChip.label}</span>
+              <div class="branch-context" aria-label="{pr.headRefName} merges into {pr.baseRefName}">
+                {#if pr.baseBranchPrNumber}
+                  <a class="branch-name branch-target base-pr-link" href="#/pr/{repo}/{pr.baseBranchPrNumber}">
+                    {pr.baseRefName} (#{pr.baseBranchPrNumber})
+                  </a>
+                {:else}
+                  <span class="branch-name branch-target">{pr.baseRefName}</span>
+                {/if}
+                <span class="branch-arrow" aria-hidden="true">←</span>
+                <span class="branch-name branch-source" title={pr.headRefName}>{pr.headRefName}</span>
+                {#if onLocalBranch}
+                  <CurrentBranchBadge />
+                {/if}
+                <button
+                  type="button"
+                  class="branch-action branch-copy"
+                  aria-label="Copy branch name"
+                  title="Copy branch name"
+                  onclick={copyBranchName}
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="9" y="9" width="10" height="10" rx="1.5" />
+                    <path d="M15 9V6.5A1.5 1.5 0 0 0 13.5 5h-7A1.5 1.5 0 0 0 5 6.5v7A1.5 1.5 0 0 0 6.5 15H9" />
+                  </svg>
+                </button>
+                {#if !onLocalBranch}
+                  <button
+                    type="button"
+                    class="branch-action branch-switch"
+                    disabled={!pr.localCheckoutPath || localBranchBusy}
+                    aria-label={localBranchBusy ? "Switching branch" : "Switch branch"}
+                    aria-busy={localBranchBusy}
+                    title={pr.localCheckoutPath ? `Switch ${pr.localCheckoutPath} to ${pr.headRefName}` : "No local checkout found for this repository"}
+                    onclick={switchToLocalBranch}
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <circle cx="6" cy="5" r="2" />
+                      <circle cx="18" cy="18" r="2" />
+                      <path d="M6 7v3a4 4 0 0 0 4 4h4a4 4 0 0 1 4 4" />
+                      <path d="M18 7v4a3 3 0 0 1-3 3h-1" />
+                    </svg>
+                  </button>
+                {/if}
+              </div>
+              {#if unresolvedTotal > 0}
+                <span class="sep">·</span>
+                <span class="unres">{unresolvedTotal} unresolved</span>
+              {/if}
+              {#if liveState && pr.autoMergeEnabled}
+                <span class="sep">·</span>
+                <span class="chip badge ready">auto-merge bot armed</span>
+              {/if}
+              {#if liveState && githubAutoMergeEnabled}
+                <span class="sep">·</span>
+                <span class="chip badge ready">GitHub auto-merge armed</span>
+              {/if}
+              <span class="sep">·</span>
+              <span>{relativeTime(pr.updatedAt)}</span>
+              {#if liveState && mergeGate.reason && !pr.isDraft && pr.mergeable !== "CONFLICTING" && pr.mergeStateStatus !== "DIRTY"}
+                <span class="sep">·</span>
+                <span class="chip badge wait">{mergeGate.reason}</span>
+              {/if}
+              {#if liveState && mergeGate.note && !pr.isDraft}
+                <span class="sep">·</span>
+                <span class="chip badge wait">{mergeGate.note}</span>
+              {/if}
+            </div>
+          </div>
+
+          <div class="pr-metrics" aria-label="Pull request change summary">
+            <div class="pr-metric">
+              <span>Changed</span>
+              {#if diffState === "ready"}
+                <strong><b class="add">+{nonTestAdditions}</b> <b class="del">−{nonTestDeletions}</b></strong>
+                <em><b class="add">+{pr.additions}</b> <b class="del">−{pr.deletions}</b></em>
+              {:else}
+                <strong><b class="add">+{pr.additions}</b> <b class="del">−{pr.deletions}</b></strong>
+              {/if}
+            </div>
+            <div class="pr-metric">
+              <span>Files</span>
+              <strong>{pr.changedFiles}</strong>
+            </div>
+            <div class="pr-metric">
+              <span>Commits</span>
+              <strong>{pr.commitCount.totalCount}</strong>
+            </div>
+          </div>
+        </div>
+
+        <div class="pr-head-foot">
+          <div class="pr-owner mono">
+            <Avatar login={pr.author?.login} url={pr.author?.avatarUrl} size={18} />
+            <span>{pr.author?.login ?? "ghost"}</span>
+          </div>
+          {#if pr.labels.nodes.length}
+            <div class="labels">
+              {#each pr.labels.nodes as label}
+                <span class="label mono">{label.name}</span>
+              {/each}
+            </div>
+          {/if}
+          {#if liveState}
+            <div class="ci-summary {ci.tone}" role="status" aria-label={`${ci.text}. ${ciDetail}`}>
+              <span class="ci-summary-icon" aria-hidden="true">{ci.sym}</span>
+              <strong>{ci.text}</strong>
+              <span class="ci-summary-detail mono">{ciDetail}</span>
+            </div>
+          {/if}
+        </div>
+
+        {#if liveState && failingChecks.length}
+          <section class="ci-failure-alert" aria-label="Failing CI checks">
+            <div class="ci-failure-head">
+              <span class="ci-failure-icon" aria-hidden="true">✕</span>
+              <div class="ci-failure-copy">
+                <strong>{failingChecks.length} failing check{failingChecks.length === 1 ? "" : "s"}</strong>
+                <span>Open the exact logs below or copy a ready-to-fix prompt.</span>
+              </div>
+              <div class="ci-failure-actions">
+                <button class="ci-copy-button" onclick={copyCiFixPrompt}>
+                  {ciCopied.value ? "Copied" : "Copy fix prompt"}
+                </button>
+                <button
+                  class="ci-agent-button"
+                  disabled={ciFixBusy || agent?.state === "running"}
+                  onclick={() => (ciFixConfirm = true)}
+                >
+                  {ciFixBusy ? "Starting…" : agent?.state === "running" ? "Agent running" : "Fix with agent"}
+                </button>
+              </div>
+            </div>
+            <ul class="ci-failure-list mono">
+              {#each failingChecks as check}
+                <li>
+                  <span class="ci-failure-check">
+                    <strong title={check.name}>{check.name}</strong>
+                    {#if check.required}<span class="ci-required">required</span>{/if}
+                    <span>{check.status}</span>
+                  </span>
+                  {#if check.url}
+                    <a href={check.url} target="_blank" rel="noreferrer">Open logs ↗</a>
+                  {:else}
+                    <span class="ci-location">PR checks · use copied command</span>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+            {#if ciFixError}<div class="ci-failure-error mono">{ciFixError}</div>{/if}
+          </section>
+        {/if}
+
+        {#if liveState && hasConflicts}
+          <section class="conflict-alert" aria-label="Merge conflicts">
+            <div class="conflict-alert-main">
+              <span class="conflict-alert-icon" aria-hidden="true">!</span>
+              <div class="conflict-alert-copy">
+                <strong>{conflictFilesState === "ready" && conflictFiles.length ? `Merge conflicts in ${conflictFiles.length} file${conflictFiles.length === 1 ? "" : "s"}` : "Merge conflicts"}</strong>
+                <span>This PR cannot merge until they are resolved.</span>
+              </div>
+              {#if conflictFilesState === "ready"}
+                <div class="conflict-actions">
+                  <button class="conflict-copy-button" onclick={copyConflictFixPrompt}>
+                    {conflictCopied.value ? "Copied" : "Copy fix prompt"}
+                  </button>
+                  <button
+                    class="conflict-primary"
+                    disabled={conflictResolveBusy || agent?.state === "running"}
+                    onclick={() => (conflictResolveConfirm = true)}
+                  >
+                    {conflictResolveBusy ? "Starting…" : agent?.state === "running" ? "Agent running" : "Fix with agent"}
+                  </button>
+                </div>
+              {/if}
+            </div>
+
+            {#if conflictFilesState === "loading"}
+              <div class="conflict-alert-note mono">Finding conflicting files…</div>
+            {:else if conflictFilesState === "error"}
+              <div class="conflict-alert-error mono">
+                <span>{conflictFilesError}</span>
+                <button class="link mono" onclick={() => loadConflictFiles(loadedConflictKey)}>retry</button>
+              </div>
+            {:else if conflictFilesState === "ready"}
+              {#if conflictFiles.length}
+                <ul class="conflict-file-list mono" aria-label="Conflicting files">
+                  {#each conflictFiles as path (path)}
+                    <li title={path}>{path}</li>
+                  {/each}
+                </ul>
+              {:else}
+                <div class="conflict-alert-note mono">Repository-level conflict · no individual paths reported</div>
+              {/if}
+            {/if}
+            {#if conflictResolveError}<div class="conflict-alert-error mono">{conflictResolveError}</div>{/if}
+          </section>
+        {/if}
+      </header>
+
+      {#if anchorInList}
+        <button class="since-banner mono" onclick={viewSinceChanges}>
+          {newCommitCount} new commit{newCommitCount === 1 ? "" : "s"} since your last visit — view changes
+        </button>
+      {:else if anchorRewritten}
+        {#if rewriteFallback}
+          <div class="since-banner rewritten note mono">
+            branch was rewritten since your last visit — your last-seen commit is no longer available, showing all changes
+          </div>
+        {:else if rangeKey === "since"}
+          <div class="since-banner rewritten note mono">
+            branch was rewritten since your last visit — comparing against your last-seen commit
+          </div>
+        {:else}
+          <button class="since-banner rewritten mono" onclick={viewSinceChanges}>
+            branch was rewritten since your last visit — compare against your last-seen commit
+          </button>
+        {/if}
+      {/if}
+
+      <nav class="tabs mono">
+        <a class="tab" class:active={tab === "conversation"} href="#/pr/{repo}/{number}">Conversation</a>
+        <a class="tab" class:active={tab === "files"} href="#/pr/{repo}/{number}/files">
+          Files {#if diffState === "ready"}<span class="tab-count">{files.length}</span>{/if}
+        </a>
+        <a class="tab" class:active={tab === "agents"} href="#/pr/{repo}/{number}/agents">
+          Agents {#if agent?.state === "running"}<span class="tab-count">1</span>{/if}
+        </a>
+      </nav>
+
+      {#if tab === "files"}
+        <div class="files-layout">
+          <aside class="tree-pane">
+            <FileTree files={treeFiles} {selectedPath} onSelect={selectFileByPath} />
+          </aside>
+          <div class="tree-resizer" role="separator" aria-orientation="vertical" onpointerdown={startTreeResize}></div>
+          <div class="diff-pane">
+            <div class="files-toolbar mono">
+              <div class="toolbar-left">
+                <RangePicker
+                  {commits}
+                  {rangeKey}
+                  showSince={sinceAvailable}
+                  sinceLabel="Changes since your last visit"
+                  onSelect={(key) => (rangeKey = key)}
+                  bind:open={rangeOpen}
+                />
+                {#if diffState === "ready"}<span class="fcount">{files.length} files</span>{/if}
+              </div>
+              {#if testFiles.length && diffState === "ready"}
+                <button class="toolbar-btn" onclick={toggleTests}>
+                  {testsHidden ? "show" : "hide"} {testFiles.length} test file{testFiles.length > 1 ? "s" : ""}
+                </button>
+              {/if}
+            </div>
+            {#if churnBaseRef && rangeKey === "since" && diffState === "ready"}
+              <div class="churn-note mono">merged in {churnBaseRef} since your visit — its churn is hidden, showing only this PR's changes</div>
+            {/if}
+            {#if diffState === "error"}
+              <div class="diff-status mono">
+                couldn't load this diff.
+                <button class="retry-btn" onclick={retryDiff}>retry</button>
+              </div>
+            {:else if diffState === "building"}
+              <div class="diff-status mono">preparing diff…</div>
+            {:else if files.length === 0}
+              <div class="diff-status mono">no changes in this range.</div>
+            {:else}
+              <DiffView
+                {files}
+                anchored={threadSplit.anchored}
+                {threadProps}
+                collapsed={collapsedFiles}
+                onToggleFile={toggleFileCollapse}
+                {repo}
+                viewed={viewedFiles}
+                onToggleViewed={(file) => setFileViewed(file, !viewedFiles.has(file.path))}
+                headSha={range?.head ?? pr.headRefOid}
+                {pendingInline}
+                {commentable}
+                onInlineComment={submitInlineComment}
+                onRetryMutation={handleRetry}
+                onDiscardMutation={handleDiscard}
+                base={pr.baseRefName}
+                onOpenHistory={openFileHistory}
+                onLookupDefinition={(symbol, fromPath, position) => telescope?.openDefinition(symbol, fromPath, position)}
+                editable={fileEditable}
+                onCommitFileEdit={commitFileEdit}
+                layout={prefs.diffLayout}
+              />
+            {/if}
+          </div>
+        </div>
+      {:else if tab === "agents"}
+        <div class="agents-layout">
+          <aside class="runs-pane">
+            {#each agentRuns as run (run.id)}
+              <button class="run-row" class:active={selectedRunId === run.id} onclick={() => selectRun(run.id)}>
+                <div class="run-row-top mono">
+                  <span class="badge {runTone(run)}">{runLabel(run)} {run.state}</span>
+                  <span class="run-time">{relativeTime(run.started_at)}</span>
+                </div>
+                <div class="run-brief mono">{run.brief}</div>
+              </button>
+            {:else}
+              <div class="side-empty mono">no agent runs yet</div>
+            {/each}
+          </aside>
+          <div class="run-detail">
+            {#if !selectedRunId}
+              <div class="side-empty mono">select a run</div>
+            {:else if runDetailLoading}
+              <div class="side-empty mono">loading…</div>
+            {:else if runDetail}
+              <div class="run-detail-head mono">
+                <span class="badge {runTone(runDetail.run)}">{runLabel(runDetail.run)} {runDetail.run.state}</span>
+                <span class="run-time">
+                  {relativeTime(runDetail.run.started_at)}
+                  {#if runDetail.run.ended_at} · ran {durationText(runDetail.run.started_at, runDetail.run.ended_at)}{/if}
+                </span>
+                {#if runDetail.run.exit_reason}<span class="run-exit">{runDetail.run.exit_reason}</span>{/if}
+                {#if runDetail.run.state === "running"}
+                  {#if killConfirm}
+                    <button class="link danger" onclick={confirmKillAgent}>confirm kill</button>
+                    <button class="link" onclick={() => (killConfirm = false)}>cancel</button>
+                  {:else}
+                    <button class="link" onclick={() => (killConfirm = true)}>kill agent</button>
+                  {/if}
+                {/if}
+                <button class="link" onclick={() => (showRawLog = !showRawLog)}>{showRawLog ? "hide raw log" : "raw log"}</button>
+              </div>
+              <div class="run-detail-brief mono">{runDetail.run.brief}</div>
+              {#if showRawLog}
+                <pre class="am-log mono">{runDetail.rawLog || "no log"}</pre>
+              {:else}
+                <div class="run-turns">
+                  {#each runDetail.turns as turn, i (i)}
+                    {#if turn.kind === "text"}
+                      <div class="turn turn-text mono">{turn.text}</div>
+                    {:else if turn.kind === "tool"}
+                      {@const primary = toolPrimaryArg(turn.toolInput)}
+                      <div class="turn turn-tool mono">
+                        <button class="turn-toggle" onclick={() => toggleTurnExpanded(i)}>
+                          <span class="turn-line">{toolLabel(turn, primary)}</span>
+                        </button>
+                        {#if expandedTurns.has(i)}
+                          {#if primary}<pre class="turn-tool-input">{primary[1]}</pre>{/if}
+                          {#each Object.entries(turn.toolInput ?? {}).filter(([k]) => k !== "description" && k !== primary?.[0]) as [key, value] (key)}
+                            <div class="turn-tool-arg">{key}: {typeof value === "string" ? value : JSON.stringify(value)}</div>
+                          {/each}
+                        {/if}
+                      </div>
+                    {:else}
+                      <div class="turn turn-result mono" class:err={turn.isError}>
+                        <button class="turn-toggle" onclick={() => toggleTurnExpanded(i)}>
+                          <span class="turn-line">← {turn.text}</span>
+                        </button>
+                        {#if expandedTurns.has(i)}
+                          <pre class="turn-result-full">{turn.text}</pre>
+                        {/if}
+                      </div>
+                    {/if}
+                  {/each}
+                </div>
+              {/if}
+            {:else}
+              <div class="side-empty mono">couldn't load this run</div>
+            {/if}
+          </div>
+        </div>
+      {:else}
+        <div class="cols">
+        <div class="left">
+          {#if pr.body}
+            <section class="card body-card">
+              {#if editingBody}
+                <div class="composer body-editor">
+                  <textarea class="mono" bind:value={bodyDraft} onkeydown={onBodyEditKey} use:sizeToTextOnMount></textarea>
+                  <div class="body-editor-actions mono">
+                    <span class="body-editor-hint">⌘⏎ to save</span>
+                    <button class="link" disabled={!bodyDraft.trim()} onclick={saveBody}>save</button>
+                    <span class="body-editor-dot">·</span>
+                    <button class="link" onclick={() => (editingBody = false)}>cancel</button>
+                  </div>
+                </div>
+              {:else}
+                <div class="md" use:imageFallback use:mermaidDiagrams={theme.name + "" + displayBody}>{@html renderMarkdown(displayBody)}</div>
+                {#if editBodyMutation}
+                  <div class="body-mut mono">
+                    <MutationBadge state={editBodyMutation.state} onRetry={() => handleRetry(editBodyMutation.id)} onDiscard={() => handleDiscard(editBodyMutation.id)} />
+                    {#if editBodyMutation.error}<span class="mut-error">{editBodyMutation.error}</span>{/if}
+                  </div>
+                {:else}
+                  <button class="link body-edit mono" onclick={startEditBody}>edit</button>
+                {/if}
+                <Reactions reactions={pr.reactions} />
+              {/if}
+            </section>
+          {/if}
+
+          {#snippet commentComposer(atTop = false)}
+            <div class="composer" class:composer-top={atTop}>
+              <textarea id="composer-input" class="mono" placeholder="Leave a comment…" bind:value={commentDraft}></textarea>
+              <button class="btn mono" disabled={!commentDraft.trim() || commentSubmitting} onclick={submitComment}>
+                {commentSubmitting ? "Posting…" : "Comment"}
+              </button>
+            </div>
+          {/snippet}
+
+          <section class="block">
+            <h2 class="block-title mono">Conversation</h2>
+            {#if prefs.newestCommentsFirst}
+              {@render commentComposer(true)}
+            {/if}
+            {#each timeline as event (event.id)}
+              {#if event.kind === "commit"}
+                <button
+                  class="commit-row mono"
+                  class:clickable={event.parentOid}
+                  disabled={!event.parentOid}
+                  title={event.parentOid ? "View this commit's changes" : ""}
+                  onclick={() => selectCommit(event.oid)}
+                >
+                  <span class="commit-glyph"></span>
+                  <Avatar login={event.author} url={event.avatarUrl} size={16} />
+                  <span class="commit-headline">{event.headline}</span>
+                  <span class="commit-sha">{event.sha}</span>
+                  {#if event.ciState === "SUCCESS"}
+                    <span class="commit-ci pass" aria-label="Checks passed" title="Checks passed">
+                      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5"></circle><path d="m4.8 8 2 2 4.4-4.4"></path></svg>
+                    </span>
+                  {:else if event.ciState === "FAILURE" || event.ciState === "ERROR"}
+                    <span class="commit-ci fail" aria-label="Checks failed" title="Checks failed">
+                      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5"></circle><path d="m5.5 5.5 5 5m0-5-5 5"></path></svg>
+                    </span>
+                  {/if}
+                  <span class="when">{relativeTime(event.at)}</span>
+                </button>
+              {:else if event.kind === "thread"}
+                <Thread thread={event.thread} {...threadProps(event.thread)} />
+              {:else if event.kind === "pending-comment"}
+                <div class="event">
+                  <div class="event-head mono">
+                    <span class="author">you</span>
+                    <MutationBadge state={event.mutation.state} onRetry={() => handleRetry(event.mutation.id)} onDiscard={() => handleDiscard(event.mutation.id)} />
+                  </div>
+                  <div class="event-body">
+                    <div class="md">{@html renderMarkdown(event.mutation.payload.body)}</div>
+                  </div>
+                </div>
+              {:else}
+                <div class="event">
+                  <div class="event-head mono">
+                    <Avatar login={event.author} url={event.avatarUrl} />
+                    <span class="author">{event.author ?? "ghost"}</span>
+                    {#if event.kind === "review"}
+                      <span class="verdict badge {reviewTone(event.state)}">{stateLabel(event.state)}</span>
+                    {/if}
+                    <span class="when">{relativeTime(event.at)}</span>
+                  </div>
+                  <div class="event-body">
+                    {#if event.body}
+                      <div class="md" use:imageFallback use:mermaidDiagrams={theme.name + " " + event.body}>{@html renderMarkdown(event.body)}</div>
+                    {/if}
+                    <Reactions reactions={event.reactions} />
+                  </div>
+                </div>
+              {/if}
+            {/each}
+            {#if !prefs.newestCommentsFirst}
+              {@render commentComposer()}
+            {/if}
+          </section>
+
+        </div>
+
+        <aside class="right">
+          {#if liveState}
+            <div class="side-block">
+              <h3 class="side-title mono">Actions</h3>
+              <div class="actions mono">
+                {#snippet mergeControl(enabled)}
+                  <div class="merge-split">
+                    <button class="merge-btn merge-main" disabled={!enabled} onclick={() => (mergeConfirm = true)}>merge ({mergeMethodLabel})</button>
+                    <button class="merge-btn merge-caret" aria-label="Merge options" aria-expanded={mergeMenuOpen} aria-haspopup="menu" onclick={() => (mergeMenuOpen = !mergeMenuOpen)}>⌄</button>
+                    {#if mergeMenuOpen}
+                      <div class="merge-menu" role="menu">
+                        {#each mergeMethods as method}
+                          <button
+                            role="menuitemradio"
+                            aria-checked={pr.mergeMethod === method.value}
+                            class:active={pr.mergeMethod === method.value}
+                            disabled={mergeMethodBusy}
+                            onclick={() => chooseMergeMethod(method.value)}
+                          >
+                            <span>{method.label}</span>
+                            {#if pr.mergeMethod === method.value}<span>✓</span>{/if}
+                          </button>
+                        {/each}
+                        <div class="merge-menu-separator"></div>
+                        {#if githubAutoMergeMutation?.state === "pending"}
+                          <button role="menuitem" disabled>
+                            {githubAutoMergeEnabled ? "Disabling GitHub auto-merge…" : "Enabling GitHub auto-merge…"}
+                          </button>
+                        {:else if githubAutoMergeMutation?.state !== "failed"}
+                          <button role="menuitem" onclick={() => submitGithubAutoMerge(!githubAutoMergeEnabled)}>
+                            <span>{githubAutoMergeEnabled ? "Disable GitHub auto-merge" : "Enable GitHub auto-merge"}</span>
+                          </button>
+                        {/if}
+                        {#if forceMergeAvailable && mergeGate.action !== "merge" && !mergeMutation}
+                          <div class="merge-menu-separator"></div>
+                          <button
+                            role="menuitem"
+                            class="danger"
+                            onclick={() => {
+                              mergeMenuOpen = false;
+                              forceMergeConfirm = true;
+                            }}
+                          >
+                            <span>Force merge now</span>
+                            <span>M</span>
+                          </button>
+                        {/if}
+                      </div>
+                    {/if}
+                  </div>
+                {/snippet}
+                {#if pr.isDraft}
+                  {#if readyMutation?.state === "pending"}
+                    <button class="merge-btn" disabled>marking ready…</button>
+                  {:else if readyMutation?.state === "failed"}
+                    <MutationFailure
+                      action="mark ready for review"
+                      error={readyMutation.error}
+                      onRetry={() => handleRetry(readyMutation.id)}
+                      onDiscard={() => handleDiscard(readyMutation.id)}
+                    />
+                  {:else}
+                    <button class="merge-btn" onclick={submitReadyForReview}>ready for review</button>
+                  {/if}
+                {:else if mergeGate.action === "merge" || mergeMutation}
+                  {#if mergeMutation?.state === "pending"}
+                    <button class="merge-btn" disabled>merging…</button>
+                  {:else if mergeMutation?.state === "failed"}
+                    <MutationFailure
+                      action="merge"
+                      error={mergeMutation.error}
+                      onRetry={() => handleRetry(mergeMutation.id)}
+                      onDiscard={() => handleDiscard(mergeMutation.id)}
+                    />
+                  {:else}
+                    {@render mergeControl(true)}
+                  {/if}
+                {:else if mergeGate.action === "update" || updateMutation}
+                  {#if updateMutation?.state === "pending"}
+                    <button class="merge-btn" disabled>updating…</button>
+                  {:else if updateMutation?.state === "failed"}
+                    <MutationFailure
+                      action="update branch"
+                      error={updateMutation.error}
+                      onRetry={() => handleRetry(updateMutation.id)}
+                      onDiscard={() => handleDiscard(updateMutation.id)}
+                    />
+                  {:else}
+                    <button class="merge-btn" onclick={submitUpdateBranch}>update branch</button>
+                  {/if}
+                {/if}
+                {#if !pr.isDraft && mergeGate.action !== "merge" && !mergeMutation}
+                  {@render mergeControl(false)}
+                {/if}
+                {#if !pr.isDraft && githubAutoMergeMutation?.state === "pending"}
+                  <span class="action-note">{githubAutoMergeEnabled ? "Disabling GitHub auto-merge…" : "Enabling GitHub auto-merge…"}</span>
+                {:else if !pr.isDraft && githubAutoMergeMutation?.state === "failed"}
+                  <MutationFailure
+                    action="GitHub auto-merge"
+                    error={githubAutoMergeMutation.error}
+                    onRetry={() => handleRetry(githubAutoMergeMutation.id)}
+                    onDiscard={() => handleDiscard(githubAutoMergeMutation.id)}
+                  />
+                {/if}
+                {#if !mergeMutation}
+                  {#if closeMutation?.state === "pending"}
+                    <button class="merge-btn" disabled>closing…</button>
+                  {:else if closeMutation?.state === "failed"}
+                    <MutationFailure
+                      action="close pull request"
+                      error={closeMutation.error}
+                      onRetry={() => handleRetry(closeMutation.id)}
+                      onDiscard={() => handleDiscard(closeMutation.id)}
+                    />
+                  {:else}
+                    <button class="merge-btn fail" onclick={() => (closeConfirm = true)}>close PR (x)</button>
+                  {/if}
+                {/if}
+              </div>
+            </div>
+          {/if}
+          {#if agentRuns.length || !prIsGreen}
+            <div class="side-block">
+              <h3 class="side-title mono">
+                Agents
+                {#if keybindAgents.some((a) => a.id === "autofix")}<kbd class="side-key">{keybindAgents.find((a) => a.id === "autofix").keybind}</kbd>{/if}
+              </h3>
+              {#if !prIsGreen}
+                <button class="btn wide mono" disabled={autofixBusy || agent?.state === "running"} onclick={() => (autofixConfirm = true)}>
+                  {autofixBusy ? "Starting…" : "Auto-fix"}
+                </button>
+              {/if}
+              {#if autofixError}<span class="mut-error">{autofixError}</span>{/if}
+              {#if customError}<span class="mut-error">{customError}</span>{/if}
+              {#if agentRuns.length}
+                <div class="agent-list">
+                  {#each agentRuns as run (run.id)}
+                    <a
+                      class="agent-item mono {runHealth(run)}"
+                      href="#/pr/{repo}/{number}/agents"
+                      title={run.brief}
+                      onclick={() => selectRun(run.id)}
+                    >
+                      <span class="agent-kind">{runLabel(run)}</span>
+                      <span class="agent-state">{runStateLabel(run)}</span>
+                      <span class="agent-time">{runTime(run)}</span>
+                    </a>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          {/if}
+          {#if pr.autoMergeEnabled || agent?.kind === "fixer" || autoMergeMutation || githubAutoMergeEnabled || githubAutoMergeMutation}
+            <div class="side-block">
+              <h3 class="side-title mono">Auto-merge</h3>
+              {#if githubAutoMergeEnabled || githubAutoMergeMutation}
+                <div class="am-row mono">
+                  <span class="badge {githubAutoMergeEnabled ? 'ready' : 'wait'}">GitHub {githubAutoMergeEnabled ? "armed" : "updating"}</span>
+                  {#if pr.autoMergeRequest?.mergeMethod}<span class="am-time">{pr.autoMergeRequest.mergeMethod.toLowerCase()}</span>{/if}
+                </div>
+              {/if}
+              {#if autoMergeMutation}
+                <div class="am-mut mono">
+                  <MutationBadge
+                    state={autoMergeMutation.state}
+                    onRetry={() => handleRetry(autoMergeMutation.id)}
+                    onDiscard={() => handleDiscard(autoMergeMutation.id)}
+                  />
+                  {#if autoMergeMutation.error}<span class="mut-error">{autoMergeMutation.error}</span>{/if}
+                </div>
+              {/if}
+              {#if pr.autoMergeEnabled || agent?.kind === "fixer"}
+              <div class="am-row mono">
+                <span class="badge {pr.autoMergeEnabled ? 'ready' : 'wait'}">bot {pr.autoMergeEnabled ? "armed" : "off"}</span>
+                {#if agent?.kind === "fixer"}
+                  <span class="badge {agent.state === 'running' ? 'review' : agent.state === 'killed' ? 'fail' : 'wait'}">
+                    agent {agent.state}
+                  </span>
+                  <span class="am-time">{relativeTime(agent.started_at)}</span>
+                {/if}
+              </div>
+              {#if agent?.kind === "fixer"}
+                <div class="am-actions mono">
+                  <button class="link" onclick={toggleAgentLog}>{showAgentLog ? "hide log" : "view log"}</button>
+                  {#if agent.state === "running"}
+                    {#if killConfirm}
+                      <button class="link danger" onclick={confirmKillAgent}>confirm kill</button>
+                      <button class="link" onclick={() => (killConfirm = false)}>cancel</button>
+                    {:else}
+                      <button class="link" onclick={() => (killConfirm = true)}>kill agent</button>
+                    {/if}
+                  {/if}
+                </div>
+                {#if showAgentLog}
+                  <pre class="am-log mono">{agentLog ?? "no log yet"}</pre>
+                {/if}
+              {:else}
+                <div class="side-empty mono">no fixer agent</div>
+              {/if}
+              {/if}
+            </div>
+          {/if}
+          <div class="side-block">
+            <h3 class="side-title mono">Review</h3>
+            {#if pr.viewerIsAuthor}
+              <div class="own-pr-note mono">Your PR — approve / request changes post as a comment.</div>
+            {/if}
+            {#if verdictMutation}
+              <div class="verdict-badge">
+                <MutationBadge
+                  state={verdictMutation.state}
+                  onRetry={() => handleRetry(verdictMutation.id)}
+                  onDiscard={() => handleDiscard(verdictMutation.id)}
+                />
+              </div>
+            {/if}
+            <select id="verdict-control" class="verdict-select mono" bind:value={verdictEvent}>
+              <option value="APPROVE">Approve</option>
+              <option value="REQUEST_CHANGES">Request changes</option>
+              <option value="COMMENT">Comment</option>
+            </select>
+            <textarea class="verdict-body mono" placeholder="Optional body…" bind:value={verdictBody}></textarea>
+            <button class="btn wide mono" disabled={verdictSubmitting} onclick={submitVerdict}>
+              {verdictSubmitting ? "Submitting…" : "Submit review"}
+            </button>
+          </div>
+
+          <div class="side-block">
+            <h3 class="side-title mono">Reviewers <kbd class="side-key">q</kbd></h3>
+            {#if reviewers.length || pendingReviewers.length}
+              {#each reviewers as reviewer}
+                <div class="reviewer mono">
+                  <Avatar login={reviewer.login} url={reviewer.avatarUrl} size={16} />
+                  <span class="badge {reviewTone(reviewer.state)}">{stateLabel(reviewer.state)}</span>
+                  <span class="reviewer-login" title={reviewer.login}>{reviewer.login}</span>
+                  {#if reviewer.login === "greptile-apps" && greptileMeta.confidence != null}
+                    <span
+                      class="greptile"
+                      class:stale={!greptileRescore && greptileState === "stale"}
+                      class:addressed={!greptileRescore && greptileState === "addressed"}
+                      class:rescored={!!greptileRescore}
+                      title={greptileTitle(greptileState)}
+                    >
+                      {greptileRescore ? greptileRescore.score : greptileMeta.confidence}/5{#if greptileRescore} · rescored{:else if greptileState} · {greptileState}{/if}
+                    </span>
+                  {:else if reviewer.login !== "greptile-apps" && pr.reviewerScores?.[reviewer.login]}
+                    {@const rs = pr.reviewerScores[reviewer.login]}
+                    {#if rs.score != null}
+                      <span
+                        class="greptile"
+                        class:stale={rs.stale}
+                        title={rs.stale ? "reviewed before recent pushes - the score may no longer reflect the current state" : (rs.basis ?? "parsed review score")}
+                      >{rs.score}/5{#if rs.stale} · stale{/if}</span>
+                    {:else}
+                      <span class="greptile unscored" title="no quality verdict found in this review">no verdict</span>
+                    {/if}
+                  {/if}
+                </div>
+              {/each}
+              {#each pendingReviewers as m}
+                {#each m.payload.logins.filter((l) => !requestedByServer.has(l)) as login (login)}
+                  <div class="reviewer mono pending-person">
+                    <Avatar {login} url={avatarFor(login)} size={16} />
+                    <span>{login}</span>
+                    <MutationBadge state={m.state} onRetry={() => handleRetry(m.id)} onDiscard={() => handleDiscard(m.id)} />
+                  </div>
+                {/each}
+              {/each}
+            {:else}
+              <div class="side-empty mono">none</div>
+            {/if}
+          </div>
+
+          <div class="side-block">
+            <h3 class="side-title mono">Assignees <kbd class="side-key">s</kbd></h3>
+            {#if pr.assignees.nodes.length || pendingAssign.length}
+              {#each pr.assignees.nodes as assignee}
+                <div class="reviewer mono">
+                  <Avatar login={assignee.login} url={avatarFor(assignee.login)} size={16} />
+                  <span>{assignee.login}</span>
+                </div>
+              {/each}
+              {#each pendingAssign as m}
+                {#each m.payload.logins.filter((l) => !assignedByServer.has(l)) as login (login)}
+                  <div class="reviewer mono pending-person">
+                    <Avatar {login} url={avatarFor(login)} size={16} />
+                    <span>{login}</span>
+                    <MutationBadge state={m.state} onRetry={() => handleRetry(m.id)} onDiscard={() => handleDiscard(m.id)} />
+                  </div>
+                {/each}
+              {/each}
+            {:else}
+              <div class="side-empty mono">none</div>
+            {/if}
+          </div>
+
+          <div class="side-block">
+            <h3 class="side-title mono">Checks <span class="dim">{checks.length}</span></h3>
+            {#if checks.length}
+              {#if checkSummary}
+                <div class="check-summary mono">{checkSummary}</div>
+              {/if}
+              {#each checkSections as { section, rows }}
+                {@const collapsible = section === "successful" && hasFailing}
+                {@const collapsed = collapsible && !showSuccessful}
+                {#if collapsible}
+                  <button class="check-sec-head mono" onclick={() => (showSuccessful = !showSuccessful)}>
+                    <span class="sec-caret">{showSuccessful ? "▾" : "▸"}</span>{rows.length} {section}
+                  </button>
+                {:else}
+                  <div class="check-sec-head mono static">{rows.length} {section}</div>
+                {/if}
+                {#if !collapsed}
+                  {#each rows as check}
+                    <svelte:element
+                      this={check.url ? "a" : "div"}
+                      href={check.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      class="check mono"
+                    >
+                      <span class="check-row">
+                        <span class="check-dot {check.dot}"></span>
+                        <span class="check-name">{check.name}</span>
+                        {#if check.required}<span class="check-req">required</span>{/if}
+                      </span>
+                      {#if check.status}<span class="check-status">{check.status}</span>{/if}
+                    </svelte:element>
+                  {/each}
+                {/if}
+              {/each}
+            {:else}
+              <div class="side-empty mono">none</div>
+            {/if}
+          </div>
+        </aside>
+        </div>
+      {/if}
+    </div>
+    </div>
+
+    {#if pickerMode}
+      <UserPicker
+        title={pickerMode === "assign" ? "Assign people" : "Request review from"}
+        users={repoUsers}
+        current={pickerMode === "assign" ? assignedLogins : requestedLogins}
+        onPick={pickerMode === "assign" ? submitAssign : submitRequestReviewer}
+        onClose={() => (pickerMode = null)}
+      />
+    {/if}
+
+    {#if promptOpen}
+      <div class="prompt-overlay" role="presentation" onclick={() => (promptOpen = false)}>
+        <div class="prompt-box mono" role="presentation" onclick={(e) => e.stopPropagation()}>
+          <div class="prompt-head">
+            <span class="prompt-title">prompt an agent on #{number}</span>
+            <span class="prompt-sub">runs opus in the PR worktree · does what you say · pushes</span>
+          </div>
+          <textarea
+            class="prompt-input mono"
+            bind:value={promptText}
+            onkeydown={onPromptKey}
+            use:focusOnMount
+            disabled={promptBusy}
+            placeholder="e.g. remove the comments you just added"
+            spellcheck="false"
+          ></textarea>
+          {#if promptError}<div class="prompt-error mono">{promptError}</div>{/if}
+          <div class="prompt-keys mono"><kbd>enter</kbd> launch · <kbd>shift+enter</kbd> newline · <kbd>esc</kbd> cancel</div>
+        </div>
+      </div>
+    {/if}
+
+    {#if mergeConfirm}
+      <div class="keybar merge-confirm mono">
+        <span>merge PR #{number} into <strong>{pr.baseRefName}</strong> ({mergeMethodLabel})?</span>
+        <span class="confirm-keys"><kbd>enter</kbd> confirm · <kbd>esc</kbd> cancel</span>
+      </div>
+    {:else if forceMergeConfirm}
+      <div class="keybar merge-confirm force-confirm mono">
+        <span>force-merge PR #{number} into <strong>{pr.baseRefName}</strong> ({mergeMethodLabel})? Required approvals will be bypassed.</span>
+        <span class="confirm-keys"><kbd>enter</kbd> confirm · <kbd>esc</kbd> cancel</span>
+      </div>
+    {:else if closeConfirm}
+      <div class="keybar merge-confirm close-confirm mono">
+        <span>close PR #{number}?</span>
+        <span class="confirm-keys"><kbd>enter</kbd> confirm · <kbd>esc</kbd> cancel</span>
+      </div>
+    {:else if peopleFlash.value}
+      <div class="keybar merge-flash mono">{peopleFlash.value}</div>
+    {:else if autoMergeConfirm}
+      <div class="keybar merge-confirm mono">
+        <span>
+          {pr.autoMergeEnabled
+            ? `disarm auto-merge bot for #${number}?`
+            : `arm auto-merge bot + fixer agent for #${number}?`}
+        </span>
+        <span class="confirm-keys"><kbd>enter</kbd> confirm · <kbd>esc</kbd> cancel</span>
+      </div>
+    {:else if autofixConfirm}
+      <div class="keybar merge-confirm mono">
+        <span>arm auto-fix agent for #{number}?</span>
+        <span class="confirm-keys"><kbd>enter</kbd> confirm · <kbd>esc</kbd> cancel</span>
+      </div>
+    {:else if ciFixConfirm}
+      <div class="keybar merge-confirm mono">
+        <span>launch an agent to fix {failingChecks.length} failing CI check{failingChecks.length === 1 ? "" : "s"} on {pr.headRefName}?</span>
+        <span class="confirm-keys"><kbd>enter</kbd> confirm · <kbd>esc</kbd> cancel</span>
+      </div>
+    {:else if conflictResolveConfirm}
+      <div class="keybar merge-confirm mono">
+        <span>{conflictFiles.length ? `resolve conflicts in ${conflictFiles.length} file${conflictFiles.length === 1 ? "" : "s"}` : "resolve repository-level conflict"} and push to {pr.headRefName}?</span>
+        <span class="confirm-keys"><kbd>enter</kbd> confirm · <kbd>esc</kbd> cancel</span>
+      </div>
+    {:else if customConfirm}
+      <div class="keybar merge-confirm mono">
+        <span>{customConfirm.id === "rescorer" ? `re-score #${number}?` : `arm "${customConfirm.name || "custom"}" agent for #${number}?`}</span>
+        <span class="confirm-keys"><kbd>enter</kbd> confirm · <kbd>esc</kbd> cancel</span>
+      </div>
+    {:else if mergeFlash.value}
+      <div class="keybar merge-flash mono">{mergeFlash.value}</div>
+    {:else if branchCopied.value}
+      <div class="keybar copied-flash mono">copied branch name</div>
+    {:else if copied.value}
+      <div class="keybar copied-flash mono">{copied.value}</div>
+    {:else}
+      <KeyBar keys={tab === "files" ? filesKeys : tab === "agents" ? agentsKeys : conversationKeys} />
+    {/if}
+
+    <Telescope bind:this={telescope} {repo} headSha={pr.headRefOid} headRef={pr.headRefName} {testsHidden} changedFiles={files} onOpenChangedFile={openChangedFile} onOpenHistory={openFileHistory} bind:open={telescopeOpen} />
+    <FileHistory
+      {repo}
+      path={historyPath}
+      symbol={historySymbol}
+      base={pr.baseRefName}
+      baseSha={pr.baseRefOid}
+      open={historyOpen}
+      currentFile={historyFile}
+      currentPr={{ number, title: pr.title, author: pr.author?.login ?? "ghost", date: pr.updatedAt, sha: pr.headRefOid }}
+      layout={prefs.diffLayout}
+      onClose={closeFileHistory}
+    />
+  {/if}
+</div>
+
+<style>
+  .page {
+    height: var(--general-height);
+    overflow-y: auto;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    padding: 0 24px 32px;
+  }
+  .detail-frame {
+    width: 100%;
+  }
+  .detail-frame > .detail {
+    margin-inline: auto;
+  }
+  .load {
+    color: var(--text-dim);
+    font-family: var(--mono);
+    padding-top: 80px;
+  }
+  .detail {
+    width: 100%;
+    max-width: 1120px;
+    padding: 32px 0 48px;
+  }
+  .merge-confirm {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 38px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 0 24px;
+    background: var(--overlay-bg);
+    border-top: 2px solid var(--ready);
+    backdrop-filter: blur(8px);
+    z-index: 20;
+    font-size: 12.5px;
+    color: var(--text);
+  }
+  .merge-confirm strong {
+    color: var(--ready);
+    font-weight: 600;
+  }
+  .merge-confirm .confirm-keys {
+    color: var(--text-dim);
+  }
+  .merge-confirm.close-confirm {
+    border-top-color: var(--fail);
+  }
+  .merge-confirm kbd {
+    font-size: 11px;
+    color: var(--text-dim);
+    background: var(--panel-raised);
+    border: 1px solid var(--border);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    padding: 1px 6px;
+    margin-right: 2px;
+  }
+  .prompt-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--overlay-bg);
+  }
+  .prompt-box {
+    width: min(640px, calc(var(--general-width) - 48px));
+    background: var(--panel-raised);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
+  }
+  .prompt-head {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin-bottom: 12px;
+  }
+  .prompt-title {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+  .prompt-sub {
+    font-size: 11.5px;
+    color: var(--text-faint);
+  }
+  .prompt-input {
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 96px;
+    resize: vertical;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.5;
+    padding: 10px 12px;
+  }
+  .prompt-input:focus {
+    outline: none;
+    border-color: var(--link);
+    box-shadow: 0 0 0 3px var(--link-bg);
+  }
+  .prompt-input:disabled {
+    opacity: 0.5;
+  }
+  .prompt-error {
+    color: var(--fail);
+    font-size: 12px;
+    margin-top: 8px;
+  }
+  .prompt-keys {
+    color: var(--text-faint);
+    font-size: 11px;
+    margin-top: 10px;
+  }
+  .prompt-keys kbd {
+    color: var(--text-dim);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    padding: 1px 6px;
+    margin-right: 2px;
+  }
+  .copied-flash {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 38px;
+    display: flex;
+    align-items: center;
+    padding: 0 24px;
+    background: var(--overlay-bg);
+    border-top: 2px solid var(--link);
+    backdrop-filter: blur(8px);
+    z-index: 20;
+    font-size: 12.5px;
+    color: var(--text);
+  }
+  .merge-flash {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 38px;
+    display: flex;
+    align-items: center;
+    padding: 0 24px;
+    background: var(--overlay-bg);
+    border-top: 2px solid var(--review);
+    backdrop-filter: blur(8px);
+    z-index: 20;
+    font-size: 12.5px;
+    color: var(--text);
+  }
+  .mut-error {
+    color: var(--fail);
+    font-size: 11.5px;
+    margin-left: 6px;
+  }
+  .own-pr-note {
+    font-size: 11.5px;
+    color: var(--text-faint);
+    margin-bottom: 10px;
+    line-height: 1.4;
+  }
+  .back {
+    display: inline-block;
+    color: var(--text-faint);
+    text-decoration: none;
+    font-size: 12.5px;
+    margin-bottom: 20px;
+  }
+  .back:hover {
+    color: var(--text-dim);
+  }
+  .pr-head {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 20px;
+    margin-bottom: 24px;
+  }
+  h1 {
+    font-size: 22px;
+    font-weight: 600;
+    margin: 0 0 12px;
+    letter-spacing: -0.01em;
+  }
+  .sub {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    font-size: 12.5px;
+    color: var(--text-dim);
+  }
+  .chip {
+    text-transform: uppercase;
+  }
+  .sub .num {
+    color: var(--text-dim);
+  }
+  .sub .sep {
+    color: var(--meta-sep);
+  }
+  .branch-arrow {
+    color: var(--text-faint);
+  }
+  .base-pr-link {
+    color: inherit;
+    text-decoration: none;
+  }
+  .base-pr-link:hover {
+    text-decoration: underline;
+  }
+  .ci.ready {
+    color: var(--ready);
+  }
+  .ci.fail {
+    color: var(--fail);
+  }
+  .ci.wait {
+    color: var(--text-faint);
+  }
+  .unres {
+    color: var(--review);
+  }
+  .merge-btn {
+    background: var(--ready-bg);
+    border: 1px solid var(--ready);
+    border-radius: 6px;
+    color: var(--ready);
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 3px 10px;
+    cursor: pointer;
+  }
+  .merge-btn:hover:not(:disabled) {
+    filter: brightness(1.15);
+  }
+  .merge-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+  .merge-btn.fail {
+    background: var(--fail-bg);
+    border-color: var(--fail);
+    color: var(--fail);
+  }
+  .actions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .actions .merge-btn {
+    width: 100%;
+    padding: 6px 12px;
+  }
+  .merge-split {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 34px;
+    position: relative;
+  }
+  .actions .merge-split .merge-main {
+    border-radius: 6px 0 0 6px;
+  }
+  .actions .merge-split .merge-caret {
+    width: 34px;
+    border-left: 0;
+    border-radius: 0 6px 6px 0;
+    padding: 6px;
+  }
+  .merge-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    z-index: 20;
+    min-width: 220px;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 28%);
+  }
+  .merge-menu button {
+    display: flex;
+    width: 100%;
+    justify-content: space-between;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    padding: 7px 8px;
+    cursor: pointer;
+    text-align: left;
+  }
+  .merge-menu button:hover,
+  .merge-menu button.active {
+    background: var(--panel-raised);
+  }
+  .merge-menu-separator {
+    height: 1px;
+    margin: 4px;
+    background: var(--border);
+  }
+  .merge-menu button.danger {
+    color: var(--fail);
+  }
+  .action-note {
+    color: var(--text-dim);
+    font-size: 11.5px;
+  }
+  .labels {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 12px;
+  }
+  .label {
+    font-size: 11px;
+    color: var(--text-dim);
+    background: var(--panel-raised);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 1px 9px;
+  }
+  .since-banner {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: var(--link-bg);
+    border: 1px solid var(--link);
+    border-radius: 8px;
+    color: var(--link);
+    font-size: 12.5px;
+    padding: 8px 14px;
+    margin-bottom: 20px;
+    cursor: pointer;
+  }
+  .since-banner:hover {
+    background: var(--link-bg-hover);
+  }
+  .since-banner.rewritten {
+    background: var(--panel-raised);
+    border-color: var(--border);
+    color: var(--text-dim);
+  }
+  .since-banner.rewritten:hover {
+    border-color: var(--text-faint);
+    color: var(--text);
+  }
+  .since-banner.note {
+    cursor: default;
+  }
+  .since-banner.note:hover {
+    border-color: var(--border);
+    color: var(--text-dim);
+  }
+  .churn-note {
+    font-size: 11.5px;
+    color: var(--text-faint);
+    padding: 6px 2px 10px;
+  }
+  .tabs {
+    display: flex;
+    gap: 4px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 24px;
+  }
+  .tab {
+    font-size: 12.5px;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    text-decoration: none;
+    padding: 8px 14px;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+  }
+  .tab:hover {
+    color: var(--text-dim);
+  }
+  .tab.active {
+    color: var(--text);
+    border-bottom-color: var(--review);
+  }
+  .tab-count {
+    color: var(--text-faint);
+    margin-left: 2px;
+  }
+  .files-layout {
+    display: grid;
+    grid-template-columns: minmax(160px, min(var(--tree-width), 35%)) 6px minmax(0, 1fr);
+    min-width: 0;
+    gap: 0;
+    align-items: start;
+  }
+  .tree-pane {
+    position: sticky;
+    top: 24px;
+    align-self: start;
+    min-width: 0;
+    max-width: 100%;
+    max-height: calc(var(--general-height) - 140px);
+    overflow-y: auto;
+    overflow-x: hidden;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--panel);
+    padding: 8px;
+  }
+  .tree-resizer {
+    align-self: stretch;
+    min-width: 6px;
+    width: 6px;
+    cursor: col-resize;
+  }
+  .tree-resizer:hover {
+    background: var(--panel-raised);
+  }
+  .diff-pane {
+    min-width: 0;
+    max-width: 100%;
+    padding-left: 12px;
+  }
+  .agents-layout {
+    display: grid;
+    grid-template-columns: minmax(0, min(280px, 45%)) minmax(0, 1fr);
+    gap: 20px;
+    align-items: start;
+  }
+  .runs-pane {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+  }
+  .run-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    text-align: left;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    cursor: pointer;
+  }
+  .run-row.active {
+    border-color: var(--text-dim);
+  }
+  .run-row-top {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+  }
+  .run-time {
+    color: var(--text-faint);
+    font-size: 11px;
+  }
+  .run-brief {
+    width: 100%;
+    min-width: 0;
+    font-size: 11px;
+    color: var(--text-dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .run-detail {
+    min-width: 0;
+  }
+  .run-detail-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .run-exit {
+    font-size: 11px;
+    color: var(--text-faint);
+  }
+  .run-detail-brief {
+    font-size: 12px;
+    color: var(--text);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    margin-bottom: 12px;
+  }
+  .run-turns {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .turn {
+    font-size: 12px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    min-width: 0;
+  }
+  .turn-text {
+    color: var(--text);
+    background: var(--panel);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .turn-line {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .turn-tool {
+    display: block;
+    width: calc(100% - 14px);
+    color: var(--text-dim);
+    background: var(--panel-raised);
+    border: 1px solid var(--border);
+    font-size: 11px;
+    margin-left: 14px;
+  }
+  .turn-toggle {
+    display: block;
+    width: 100%;
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .turn-tool-input {
+    margin: 6px 0 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: 11px;
+    color: var(--text);
+    user-select: text;
+  }
+  .turn-tool-arg {
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--text-faint);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    user-select: text;
+  }
+  .turn-result {
+    display: block;
+    width: calc(100% - 14px);
+    color: var(--text-dim);
+    background: var(--panel);
+    font-size: 11px;
+    margin-left: 14px;
+  }
+  .turn-result.err {
+    color: var(--fail);
+  }
+  .turn-result-full {
+    margin: 6px 0 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    user-select: text;
+  }
+  .files-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 14px;
+  }
+  .toolbar-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+  }
+  .diff-status {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 20px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    color: var(--text-dim);
+    font-size: 12.5px;
+  }
+  .retry-btn {
+    background: var(--panel-raised);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 4px 12px;
+    cursor: pointer;
+  }
+  .retry-btn:hover {
+    border-color: var(--text-faint);
+  }
+  .files-toolbar .fcount {
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+  .toolbar-btn {
+    background: var(--panel-raised);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-dim);
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 4px 10px;
+    cursor: pointer;
+  }
+  .toolbar-btn:hover {
+    color: var(--text);
+    border-color: var(--text-faint);
+  }
+  .cols {
+    display: grid;
+    grid-template-columns: minmax(0, 816px) 260px;
+    gap: 28px;
+    align-items: start;
+  }
+  .left {
+    min-width: 0;
+  }
+  .card {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--panel);
+    padding: 16px 18px;
+    margin-bottom: 28px;
+  }
+  .body-card {
+    position: relative;
+  }
+  .body-mut {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .body-edit {
+    position: absolute;
+    top: 12px;
+    right: 14px;
+    opacity: 0;
+    transition: opacity 0.12s ease;
+  }
+  .body-card:hover .body-edit,
+  .body-edit:focus-visible {
+    opacity: 1;
+  }
+  .body-edit,
+  .body-editor .link {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-family: var(--mono);
+    font-size: 11px;
+    cursor: pointer;
+    padding: 0;
+    text-decoration: underline;
+  }
+  .body-edit:hover,
+  .body-editor .link:hover {
+    color: var(--text);
+  }
+  .card .body-editor {
+    margin-top: 0;
+    flex-direction: column;
+    gap: 0;
+  }
+  .card .body-editor textarea {
+    flex: none;
+    min-height: 160px;
+  }
+  .body-editor-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .body-editor-hint {
+    color: var(--text-faint);
+    font-size: 11px;
+    margin-right: auto;
+  }
+  .body-editor-dot {
+    color: var(--text-faint);
+    font-size: 11px;
+  }
+  .body-editor .link:disabled {
+    opacity: 0.4;
+    cursor: default;
+    text-decoration: none;
+  }
+  .block {
+    margin-bottom: 30px;
+  }
+  .block-title {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin: 0 0 14px;
+  }
+  .side-title .dim {
+    color: var(--text-faint);
+    font-weight: 400;
+    margin-left: 4px;
+  }
+  .event {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    margin-bottom: 12px;
+    overflow: hidden;
+  }
+  .event-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12.5px;
+    padding: 7px 14px;
+    background: var(--panel-raised);
+    border-bottom: 1px solid var(--border);
+  }
+  .event-body {
+    padding: 12px 14px;
+  }
+  .commit-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 3px 14px;
+    margin-bottom: 4px;
+    font-size: 12px;
+    color: var(--text-dim);
+    background: none;
+    border: none;
+    text-align: left;
+    cursor: default;
+  }
+  .commit-row.clickable {
+    cursor: pointer;
+    border-radius: 6px;
+  }
+  .commit-row.clickable:hover {
+    background: var(--hunk-hover);
+  }
+  .commit-glyph {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    border: 2px solid var(--text-faint);
+    background: var(--panel);
+  }
+  .commit-headline {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text);
+  }
+  .commit-sha {
+    flex: none;
+    color: var(--text-faint);
+  }
+  .commit-ci {
+    display: inline-flex;
+    flex: none;
+    width: 15px;
+    height: 15px;
+  }
+  .commit-ci svg {
+    width: 100%;
+    height: 100%;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .commit-ci.pass {
+    color: var(--ready);
+  }
+  .commit-ci.fail {
+    color: var(--fail);
+  }
+  .commit-row .when {
+    flex: none;
+    color: var(--text-faint);
+    font-size: 11px;
+  }
+  .event-head .author {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .event-head .when {
+    color: var(--text-faint);
+  }
+  .composer {
+    display: flex;
+    gap: 10px;
+    margin-top: 20px;
+  }
+  .composer.composer-top {
+    margin-top: 0;
+    margin-bottom: 20px;
+  }
+  .composer textarea {
+    flex: 1;
+    min-width: 0;
+    resize: vertical;
+    min-height: 60px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 13px;
+    padding: 10px 12px;
+  }
+  .composer textarea:focus {
+    outline: none;
+    border-color: var(--text-faint);
+  }
+  .btn {
+    flex: none;
+    align-self: flex-end;
+    background: var(--panel-raised);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 12.5px;
+    padding: 8px 16px;
+    cursor: pointer;
+  }
+  .btn:hover:not(:disabled) {
+    border-color: var(--text-faint);
+  }
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .btn.wide {
+    align-self: stretch;
+    width: 100%;
+  }
+  .right {
+    position: sticky;
+    top: 32px;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+  .side-block {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--panel);
+    padding: 14px;
+  }
+  .side-title {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin: 0 0 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .side-key {
+    margin-left: auto;
+    font-family: inherit;
+    font-size: 10px;
+    letter-spacing: 0;
+    color: var(--text-faint);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0 5px;
+  }
+  .agent-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 8px;
+  }
+  .agent-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--wait);
+    border-radius: 6px;
+    background: var(--panel-raised);
+    font-size: 11px;
+    color: var(--text-dim);
+    text-decoration: none;
+  }
+  .agent-item:hover {
+    background: var(--panel);
+  }
+  .agent-item.running {
+    border-left-color: var(--review);
+  }
+  .agent-item.succeeded {
+    border-left-color: var(--ready);
+  }
+  .agent-item.failed {
+    border-left-color: var(--fail);
+  }
+  .agent-kind {
+    flex: none;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .agent-state {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .agent-item.running .agent-state {
+    color: var(--review);
+  }
+  .agent-item.succeeded .agent-state {
+    color: var(--ready);
+  }
+  .agent-item.failed .agent-state {
+    color: var(--fail);
+  }
+  .agent-time {
+    flex: none;
+    margin-left: auto;
+    color: var(--text-faint);
+  }
+  .reviewer {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12.5px;
+    color: var(--text-dim);
+    padding: 3px 0;
+    min-width: 0;
+  }
+  .reviewer.pending-person {
+    opacity: 0.7;
+  }
+  .reviewer-login {
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .greptile {
+    flex: none;
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    background: var(--panel-raised);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+  }
+  .greptile.stale {
+    color: var(--text-faint);
+    opacity: 0.6;
+  }
+  .greptile.addressed {
+    color: var(--ready);
+    border-color: var(--ready);
+    opacity: 0.85;
+  }
+  .greptile.rescored {
+    color: var(--ready);
+    border-color: var(--ready);
+    font-weight: 600;
+  }
+  .greptile.unscored {
+    color: var(--text-faint);
+    opacity: 0.6;
+  }
+  .check-summary {
+    font-size: 11.5px;
+    color: var(--text-dim);
+    line-height: 1.5;
+    margin-bottom: 8px;
+  }
+  .check-sec-head {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    width: 100%;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    background: none;
+    border: none;
+    text-align: left;
+    padding: 8px 0 3px;
+    cursor: pointer;
+  }
+  .check-sec-head.static {
+    cursor: default;
+  }
+  button.check-sec-head:hover {
+    color: var(--text-dim);
+  }
+  .sec-caret {
+    font-size: 8px;
+  }
+  .check {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    font-size: 12px;
+    color: var(--text-dim);
+    padding: 3px 0;
+    text-decoration: none;
+  }
+  .check-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  a.check:hover .check-name {
+    color: var(--text);
+    text-decoration: underline;
+  }
+  .check-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .check-req {
+    flex: none;
+    font-size: 9px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--review);
+    background: var(--review-bg);
+    border-radius: 3px;
+    padding: 0 4px;
+  }
+  .check-status {
+    margin-left: 15px;
+    font-size: 11px;
+    color: var(--text-faint);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .check-dot {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--wait);
+  }
+  .check-dot.ok {
+    background: var(--ready);
+  }
+  .check-dot.bad {
+    background: var(--fail);
+  }
+  .check-dot.run {
+    background: var(--review);
+  }
+  .side-empty {
+    color: var(--text-faint);
+    font-size: 12px;
+  }
+  .am-mut {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 10px;
+    font-size: 12px;
+  }
+  .am-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    font-size: 12px;
+  }
+  .am-time {
+    color: var(--text-faint);
+  }
+  .am-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 10px;
+  }
+  .am-actions .link {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-family: var(--mono);
+    font-size: 11px;
+    cursor: pointer;
+    padding: 0;
+    text-decoration: underline;
+  }
+  .am-actions .link:hover {
+    color: var(--text);
+  }
+  .am-actions .link.danger {
+    color: var(--fail);
+  }
+  .am-log {
+    margin: 10px 0 0;
+    padding: 8px;
+    max-height: 220px;
+    overflow: auto;
+    background: var(--panel-raised);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--text-dim);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .verdict-badge {
+    margin-bottom: 8px;
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+  .verdict-select {
+    width: 100%;
+    background: var(--panel-raised);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 12.5px;
+    padding: 6px 8px;
+    margin-bottom: 8px;
+  }
+  .verdict-body {
+    width: 100%;
+    resize: vertical;
+    min-height: 50px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 12.5px;
+    padding: 8px;
+    margin-bottom: 8px;
+  }
+  .verdict-body:focus,
+  .verdict-select:focus {
+    outline: none;
+    border-color: var(--text-faint);
+  }
+
+  /* Shared detail primitives: one strong header surface, then calm working space. */
+  .page {
+    height: 100%;
+    overflow-y: auto;
+    padding: 0 32px 88px;
+  }
+  .detail {
+    max-width: 1320px;
+    padding: 24px 0 64px;
+  }
+  .load {
+    padding-top: 104px;
+  }
+  .loading-detail {
+    max-width: 1320px;
+  }
+  .loading-head {
+    min-height: 158px;
+  }
+  .loading-title-placeholder {
+    width: min(620px, 72vw);
+    height: 34px;
+    margin-top: 10px;
+    border-radius: 8px;
+    background: var(--surface);
+  }
+  .loading-status {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 24px 0 14px;
+    color: var(--text-dim);
+    font-size: 12px;
+  }
+  .loading-spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--border);
+    border-top-color: var(--link);
+    border-radius: 50%;
+    animation: loading-spin 700ms linear infinite;
+  }
+  .loading-card {
+    display: grid;
+    gap: 12px;
+    padding: 24px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--panel);
+  }
+  .loading-line {
+    width: 48%;
+    height: 12px;
+    border-radius: 6px;
+    background: linear-gradient(90deg, var(--surface) 0%, var(--panel-raised) 50%, var(--surface) 100%);
+    background-size: 200% 100%;
+    animation: loading-shimmer 1.2s ease-in-out infinite;
+  }
+  .loading-line.wide {
+    width: 82%;
+  }
+  .loading-line.medium {
+    width: 64%;
+  }
+  @keyframes loading-spin {
+    to { transform: rotate(360deg); }
+  }
+  @keyframes loading-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .loading-spinner,
+    .loading-line {
+      animation: none;
+    }
+  }
+  .back {
+    display: inline-flex;
+    align-items: center;
+    min-height: 28px;
+    padding: 0 8px;
+    margin: 0 0 12px -8px;
+    border-radius: 7px;
+    color: var(--text-dim);
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .back:hover {
+      color: var(--text);
+      background: var(--surface);
+    }
+  }
+  .pr-head {
+    padding: 22px;
+    margin-bottom: 20px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    box-shadow: var(--shadow-xs);
+  }
+  .pr-head-top {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 24px;
+  }
+  .pr-title-copy {
+    min-width: 0;
+  }
+  .pr-title-copy .ui-eyebrow {
+    margin-bottom: 5px;
+  }
+  h1 {
+    font-family: var(--sans);
+    font-size: 28px;
+    font-weight: 650;
+    line-height: 1.15;
+    letter-spacing: -0.037em;
+    margin-bottom: 12px;
+  }
+  .pr-title-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    min-width: 0;
+  }
+  .pr-title-row h1 {
+    min-width: 0;
+  }
+  .title-rename,
+  .title-editor-action {
+    flex: 0 0 auto;
+    display: inline-grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-faint);
+  }
+  .title-rename {
+    margin-top: 1px;
+    opacity: 0;
+  }
+  .title-rename svg,
+  .title-editor-action svg {
+    width: 15px;
+    height: 15px;
+  }
+  .pr-title-row:hover .title-rename,
+  .title-rename:focus-visible {
+    opacity: 1;
+  }
+  .title-rename:hover,
+  .title-editor-action:hover {
+    background: var(--surface);
+    color: var(--text);
+  }
+  .pr-title-editor {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin: -4px 0 8px;
+  }
+  .pr-title-input {
+    min-width: 0;
+    flex: 1 1 auto;
+    height: 38px;
+    box-sizing: border-box;
+    padding: 5px 9px;
+    border: 1px solid var(--link);
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 22px;
+    font-weight: 650;
+    line-height: 1.15;
+    letter-spacing: -0.025em;
+  }
+  .pr-title-input:focus {
+    outline: 2px solid color-mix(in srgb, var(--link) 24%, transparent);
+    outline-offset: 1px;
+  }
+  .title-save {
+    color: var(--ready);
+  }
+  .title-mutation {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 28px;
+  }
+  .sub {
+    font-size: 12px;
+    column-gap: 8px;
+    row-gap: 12px;
+  }
+  .branch-context {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    max-width: 100%;
+    min-height: 28px;
+    padding: 0;
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--text-dim);
+  }
+  .branch-target,
+  .branch-source {
+    min-width: 0;
+    padding: 0;
+  }
+  .branch-target {
+    flex: 0 0 auto;
+    max-width: 20ch;
+    color: var(--text-dim);
+    font-weight: 500;
+  }
+  .branch-source {
+    flex: 0 1 auto;
+    max-width: 32ch;
+  }
+  .branch-name {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .branch-arrow {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: auto;
+    padding: 0 2px;
+    color: var(--text-faint);
+  }
+  .branch-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: background 120ms ease, color 120ms ease, transform 120ms ease;
+  }
+  .branch-action svg {
+    width: 15px;
+    height: 15px;
+  }
+  .branch-copy {
+    margin-left: 2px;
+  }
+  .branch-switch:disabled {
+    color: var(--text-faint);
+    cursor: default;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .branch-action:hover:not(:disabled) {
+      background: color-mix(in srgb, var(--text) 6%, transparent);
+      color: var(--text);
+    }
+  }
+  .branch-action:active:not(:disabled) {
+    transform: scale(0.98);
+  }
+  .pr-metrics {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(72px, auto));
+    gap: 7px;
+  }
+  .pr-metric {
+    min-width: 76px;
+    padding: 9px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--panel) 84%, transparent);
+  }
+  .pr-metric span {
+    display: block;
+    margin-bottom: 4px;
+    color: var(--text-faint);
+    font-size: 10px;
+    line-height: 1;
+  }
+  .pr-metric strong {
+    display: block;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.1;
+    white-space: nowrap;
+  }
+  .pr-metric em {
+    display: block;
+    margin-top: 2px;
+    color: var(--text-faint);
+    font-family: var(--mono);
+    font-size: 10px;
+    font-style: normal;
+    line-height: 1.2;
+    white-space: nowrap;
+  }
+  .pr-metric b {
+    font-weight: inherit;
+  }
+  .pr-metric .add { color: var(--ready); }
+  .pr-metric .del { color: var(--fail); }
+  .pr-head-foot {
+    display: flex;
+    align-items: center;
+    min-height: 28px;
+    gap: 12px;
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-soft);
+  }
+  .ci-summary {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 26px;
+    margin-left: auto;
+    padding: 0 9px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface);
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .ci-summary.ready {
+    color: var(--ready);
+    border-color: color-mix(in srgb, var(--ready) 35%, var(--border));
+    background: var(--ready-bg);
+  }
+  .ci-summary.fail {
+    color: var(--fail);
+    border-color: color-mix(in srgb, var(--fail) 40%, var(--border));
+    background: var(--fail-bg);
+  }
+  .ci-summary.wait {
+    color: var(--wait);
+    background: var(--wait-bg);
+  }
+  .ci-summary-icon {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .ci-summary strong {
+    font-weight: 650;
+  }
+  .ci-summary-detail {
+    color: var(--text-dim);
+    font-size: 9.5px;
+  }
+  .ci-failure-alert {
+    margin-top: 12px;
+    border: 1px solid color-mix(in srgb, var(--fail) 38%, var(--border));
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--fail-bg) 72%, var(--panel));
+    overflow: hidden;
+  }
+  .ci-failure-head {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    min-height: 42px;
+    padding: 6px 8px 6px 11px;
+  }
+  .ci-failure-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--fail);
+    color: var(--panel);
+    font-size: 9px;
+    font-weight: 700;
+  }
+  .ci-failure-copy {
+    display: flex;
+    align-items: baseline;
+    flex: 1 1 auto;
+    min-width: 0;
+    gap: 7px;
+  }
+  .ci-failure-copy strong {
+    flex: none;
+    color: var(--fail);
+    font-size: 12.5px;
+    font-weight: 650;
+  }
+  .ci-failure-copy span {
+    color: var(--text-dim);
+    font-size: 10.5px;
+  }
+  .ci-copy-button,
+  .conflict-copy-button {
+    flex: none;
+    min-height: 28px;
+    padding: 0 10px;
+    border: 1px solid color-mix(in srgb, var(--fail) 55%, var(--border));
+    border-radius: 7px;
+    background: var(--panel);
+    color: var(--fail);
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 650;
+    cursor: pointer;
+    transition: transform 120ms var(--ease-out), background 120ms ease;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .ci-copy-button:hover,
+    .conflict-copy-button:hover {
+      background: var(--panel-raised);
+    }
+  }
+  .ci-copy-button:active,
+  .conflict-copy-button:active {
+    transform: scale(0.97);
+  }
+  .ci-failure-actions {
+    display: flex;
+    flex: none;
+    gap: 6px;
+  }
+  .ci-agent-button {
+    min-height: 28px;
+    padding: 0 10px;
+    border: 1px solid var(--fail);
+    border-radius: 7px;
+    background: var(--fail);
+    color: var(--panel);
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 650;
+    cursor: pointer;
+    box-shadow: 0 1px 2px color-mix(in srgb, var(--fail) 25%, transparent);
+    transition: transform 120ms var(--ease-out), filter 120ms ease;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .ci-agent-button:hover:not(:disabled) {
+      filter: brightness(1.08);
+    }
+  }
+  .ci-agent-button:active:not(:disabled) {
+    transform: scale(0.97);
+  }
+  .ci-agent-button:disabled {
+    cursor: default;
+    opacity: 0.58;
+  }
+  .ci-failure-list {
+    display: flex;
+    flex-direction: column;
+    list-style: none;
+    margin: 0;
+    padding: 0 11px 7px 40px;
+  }
+  .ci-failure-list li {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    gap: 10px;
+    min-height: 27px;
+    border-top: 1px solid color-mix(in srgb, var(--fail) 16%, var(--border-soft));
+    font-size: 10px;
+  }
+  .ci-failure-check {
+    display: flex;
+    align-items: center;
+    flex: 1 1 auto;
+    min-width: 0;
+    gap: 6px;
+    color: var(--text-faint);
+  }
+  .ci-failure-check strong {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text);
+    font-size: 11px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ci-required {
+    flex: none;
+    padding: 0 4px;
+    border-radius: 3px;
+    background: var(--review-bg);
+    color: var(--review);
+    font-size: 8px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .ci-failure-list a,
+  .ci-location {
+    flex: none;
+    color: var(--fail);
+    font-size: 10px;
+    text-decoration: none;
+  }
+  .ci-failure-list a:hover {
+    text-decoration: underline;
+  }
+  .ci-failure-error {
+    padding: 0 11px 8px 40px;
+    color: var(--fail);
+    font-size: 10px;
+  }
+  .conflict-alert {
+    margin-top: 12px;
+    padding: 11px 12px;
+    border: 1px solid color-mix(in srgb, var(--fail) 42%, var(--border));
+    border-radius: 10px;
+    background: var(--fail-bg);
+  }
+  .conflict-alert-main {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  .conflict-alert-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 22px;
+    height: 22px;
+    border: 1px solid var(--fail);
+    border-radius: 50%;
+    color: var(--fail);
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .conflict-alert-copy {
+    display: flex;
+    align-items: baseline;
+    flex: 1 1 auto;
+    min-width: 0;
+    gap: 7px;
+  }
+  .conflict-alert-copy strong {
+    flex: none;
+    color: var(--fail);
+    font-size: 12.5px;
+    font-weight: 650;
+  }
+  .conflict-alert-copy span {
+    min-width: 0;
+    color: var(--text-dim);
+    font-size: 10.5px;
+  }
+  .conflict-actions {
+    display: flex;
+    flex: none;
+    gap: 6px;
+  }
+  .conflict-primary {
+    flex: none;
+    min-height: 28px;
+    padding: 0 11px;
+    border: 1px solid var(--fail);
+    border-radius: 7px;
+    background: var(--fail);
+    color: var(--panel);
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 650;
+    cursor: pointer;
+    box-shadow: 0 1px 2px color-mix(in srgb, var(--fail) 34%, transparent);
+    transition: transform 120ms var(--ease-out), filter 120ms ease;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .conflict-primary:hover:not(:disabled) {
+      filter: brightness(1.08);
+    }
+  }
+  .conflict-primary:active:not(:disabled) {
+    transform: scale(0.97);
+  }
+  .conflict-primary:disabled {
+    opacity: 0.58;
+    cursor: default;
+  }
+  .conflict-file-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    max-height: 74px;
+    overflow-y: auto;
+    list-style: none;
+    margin: 8px 0 0 31px;
+    padding: 0;
+  }
+  .conflict-file-list li {
+    max-width: 100%;
+    padding: 2px 6px;
+    border: 1px solid color-mix(in srgb, var(--fail) 22%, var(--border));
+    border-radius: 5px;
+    background: color-mix(in srgb, var(--panel) 82%, transparent);
+    color: var(--text-dim);
+    font-size: 9.5px;
+    line-height: 1.2;
+    overflow-wrap: anywhere;
+  }
+  .conflict-alert-note,
+  .conflict-alert-error {
+    margin: 7px 0 0 31px;
+    color: var(--text-dim);
+    font-size: 9.5px;
+    line-height: 1.4;
+  }
+  .conflict-alert-error {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--fail);
+  }
+  .pr-owner {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    flex: none;
+    color: var(--text-dim);
+    font-size: 11px;
+  }
+  .label {
+    padding: 3px 9px;
+    border-radius: 999px;
+    background: var(--surface);
+  }
+  .labels {
+    margin-top: 0;
+  }
+  .merge-btn {
+    min-height: 28px;
+    padding: 4px 11px;
+    background: var(--ready);
+    border-color: var(--ready);
+    border-radius: 7px;
+    color: #fff;
+    font-family: var(--sans);
+    font-weight: 600;
+    box-shadow: 0 1px 1px rgb(19 150 78 / 0.22);
+  }
+  .merge-btn.fail {
+    background: var(--fail-bg);
+    border-color: color-mix(in srgb, var(--fail) 45%, var(--border));
+    color: var(--fail);
+    box-shadow: none;
+  }
+  .merge-confirm.force-confirm {
+    border-top-color: var(--fail);
+  }
+  .since-banner {
+    min-height: 40px;
+    padding: 9px 14px;
+    border-color: transparent;
+    border-radius: 10px;
+    color: var(--link);
+    background: var(--link-bg);
+  }
+  .tabs {
+    display: inline-flex;
+    width: fit-content;
+    gap: 2px;
+    padding: 3px;
+    margin: 0 0 26px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+  .tab {
+    display: inline-flex;
+    align-items: center;
+    min-height: 28px;
+    margin: 0;
+    padding: 0 10px;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    color: var(--text-dim);
+    font-family: var(--sans);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: -0.005em;
+    text-transform: none;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .tab:hover {
+      color: var(--text);
+      background: var(--panel);
+    }
+  }
+  .tab.active {
+    color: var(--text);
+    background: var(--panel);
+    border-color: var(--border);
+    border-bottom-color: var(--border);
+    box-shadow: var(--shadow-xs);
+  }
+  .cols {
+    grid-template-columns: minmax(0, 816px) minmax(248px, 278px);
+    gap: 26px;
+  }
+  .right {
+    top: 28px;
+    gap: 16px;
+  }
+  .card,
+  .side-block,
+  .event,
+  .run-row,
+  .diff-status {
+    background: var(--panel);
+    border-radius: 12px;
+    box-shadow: var(--shadow-xs);
+  }
+  .card {
+    padding: 18px 20px;
+    margin-bottom: 24px;
+  }
+  .side-block {
+    padding: 16px;
+  }
+  .event {
+    border-radius: 10px;
+    margin-bottom: 10px;
+  }
+  .event-head {
+    padding: 9px 14px;
+    background: var(--surface);
+  }
+  .block {
+    margin-bottom: 26px;
+  }
+  .block-title,
+  .side-title {
+    font-family: var(--sans);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    text-transform: none;
+    color: var(--text-dim);
+  }
+  .composer textarea,
+  .prompt-input,
+  .verdict-body {
+    background: var(--panel);
+    border-color: var(--border);
+    border-radius: 8px;
+  }
+  .composer textarea:focus,
+  .prompt-input:focus,
+  .verdict-body:focus,
+  .verdict-select:focus {
+    border-color: var(--link);
+    box-shadow: 0 0 0 3px var(--focus-ring);
+  }
+  .btn,
+  .retry-btn,
+  .toolbar-btn,
+  .cbtn,
+  .resolve-btn {
+    min-height: 28px;
+    background: var(--panel);
+    border-color: var(--border);
+    border-radius: 7px;
+    color: var(--text);
+    box-shadow: var(--shadow-xs);
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .btn:hover:not(:disabled),
+    .retry-btn:hover,
+    .toolbar-btn:hover,
+    .cbtn:hover:not(:disabled),
+    .resolve-btn:hover:not(:disabled) {
+      background: var(--surface);
+      border-color: var(--border-hover);
+    }
+  }
+  .tree-pane {
+    background: var(--surface);
+    border-radius: 12px;
+  }
+  .prompt-overlay {
+    background: color-mix(in srgb, var(--text) 20%, transparent);
+    backdrop-filter: blur(4px);
+  }
+  .prompt-box {
+    background: var(--panel);
+    border-radius: 14px;
+    box-shadow: var(--shadow-dialog);
+  }
+  .merge-confirm,
+  .copied-flash,
+  .merge-flash {
+    left: var(--app-rail-width, 0px);
+    height: 44px;
+    padding-inline: max(
+      var(--app-content-gutter, 24px),
+      calc((100% - var(--app-content-max-width, 1320px)) / 2)
+    );
+    background: var(--overlay-bg);
+    border-top: 1px solid var(--border);
+    backdrop-filter: blur(18px) saturate(160%);
+  }
+  .detail-frame.files-tab > .detail {
+    max-width: none;
+    --files-content-left: calc(max(160px, min(var(--tree-width), 35%)) + 18px);
+  }
+  .detail-frame.files-tab .back {
+    margin-left: calc(var(--files-content-left) - 8px);
+  }
+  .detail-frame.files-tab .pr-head,
+  .detail-frame.files-tab .since-banner {
+    width: calc(100% - var(--files-content-left));
+    margin-left: var(--files-content-left);
+  }
+  .detail-frame.files-tab .tabs {
+    margin-left: var(--files-content-left);
+  }
+  @media (max-width: 820px) {
+    .detail-frame.files-tab > .detail {
+      --files-content-left: 0px;
+    }
+    .files-layout {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 12px;
+    }
+    .tree-pane {
+      position: static;
+      max-height: 220px;
+    }
+    .tree-resizer {
+      display: none;
+    }
+    .diff-pane {
+      padding-left: 0;
+    }
+  }
+  @media (max-width: 940px) {
+    .page {
+      padding-inline: 22px;
+    }
+    .pr-head-top {
+      grid-template-columns: 1fr;
+    }
+    .pr-metrics {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      width: 100%;
+    }
+    .cols {
+      grid-template-columns: 1fr;
+    }
+    .right {
+      position: static;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  @media (max-width: 660px) {
+    .page {
+      padding-inline: 14px;
+    }
+    .detail {
+      padding-top: 16px;
+    }
+    .pr-head {
+      padding: 18px;
+    }
+    h1 {
+      font-size: 24px;
+    }
+    .pr-head-foot {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+    .branch-context {
+      width: 100%;
+    }
+    .branch-source {
+      flex: 1 1 auto;
+    }
+    .branch-name {
+      max-width: none;
+    }
+    .branch-switch {
+      flex: none;
+    }
+    .ci-summary {
+      margin-left: 0;
+    }
+    .ci-summary-detail {
+      display: none;
+    }
+    .ci-failure-head {
+      align-items: flex-start;
+      flex-wrap: wrap;
+      padding: 9px 10px;
+    }
+    .ci-failure-copy {
+      align-items: flex-start;
+      flex-basis: calc(100% - 29px);
+      flex-direction: column;
+      gap: 1px;
+    }
+    .ci-failure-actions {
+      width: 100%;
+      margin-left: 29px;
+    }
+    .ci-copy-button,
+    .ci-agent-button {
+      flex: 1 1 0;
+    }
+    .ci-failure-list {
+      padding: 0 10px 8px 39px;
+    }
+    .ci-failure-error {
+      padding: 0 10px 8px 39px;
+    }
+    .ci-failure-list li {
+      align-items: flex-start;
+      flex-direction: column;
+      gap: 2px;
+      padding: 6px 0;
+    }
+    .ci-failure-check {
+      width: 100%;
+    }
+    .conflict-alert-main {
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+    .conflict-alert-copy {
+      align-items: flex-start;
+      flex-basis: calc(100% - 31px);
+      flex-direction: column;
+      gap: 1px;
+    }
+    .conflict-actions {
+      width: 100%;
+      margin-left: 31px;
+    }
+    .conflict-copy-button,
+    .conflict-primary {
+      flex: 1 1 0;
+    }
+    .conflict-file-list,
+    .conflict-alert-note,
+    .conflict-alert-error {
+      margin-left: 0;
+    }
+    .right {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

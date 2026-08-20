@@ -1,0 +1,1284 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="pr-cockpit makes GitHub PRs instant: detail, diffs, threads, and images are prefetched to disk before you open them.">
+  <title>pr-cockpit · GitHub PRs at local speed</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #111110;
+      --panel: #191918;
+      --panel-raised: #20201f;
+      --surface: #252524;
+      --border: #343432;
+      --border-strong: #4a4a47;
+      --text: #f4f4f1;
+      --text-dim: #b9b9b4;
+      --text-faint: #82827d;
+      --green: #5ed28d;
+      --green-soft: rgba(94, 210, 141, 0.13);
+      --blue: #70aeff;
+      --yellow: #f2be35;
+      --red: #ff806e;
+      --mono: "SFMono-Regular", "SF Mono", Menlo, Monaco, Consolas, monospace;
+      --sans: "SF Pro Display", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --page: 1160px;
+      --radius: 18px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      overflow-x: hidden;
+      background:
+        radial-gradient(circle at 50% -8%, rgba(94, 210, 141, 0.08), transparent 28rem),
+        var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 16px;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    button {
+      font: inherit;
+    }
+
+    img {
+      display: block;
+      max-width: 100%;
+    }
+
+    ::selection {
+      background: rgba(112, 174, 255, 0.28);
+    }
+
+    .wrap {
+      width: min(calc(100% - 40px), var(--page));
+      margin-inline: auto;
+    }
+
+    .nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 72px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-family: var(--mono);
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .brand-mark {
+      display: grid;
+      width: 25px;
+      height: 25px;
+      place-items: center;
+      border: 1px solid var(--border-strong);
+      border-radius: 7px;
+      background: var(--panel-raised);
+      color: var(--green);
+      font-size: 11px;
+      box-shadow: inset 0 1px rgba(255, 255, 255, 0.04);
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 22px;
+      color: var(--text-dim);
+      font-size: 14px;
+    }
+
+    .nav-links a:hover,
+    .footer a:hover {
+      color: var(--text);
+    }
+
+    .nav-install {
+      display: inline-flex;
+      align-items: center;
+      min-height: 34px;
+      padding: 0 13px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel-raised);
+      color: var(--text);
+    }
+
+    .hero {
+      padding: 112px 0 56px;
+      text-align: center;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      color: var(--text-dim);
+      font-family: var(--mono);
+      font-size: 12px;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+
+    .eyebrow::before {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 18px rgba(94, 210, 141, 0.7);
+      content: "";
+    }
+
+    h1 {
+      max-width: 900px;
+      margin: 24px auto 22px;
+      font-size: clamp(48px, 7.4vw, 88px);
+      font-weight: 650;
+      letter-spacing: -0.065em;
+      line-height: 0.98;
+    }
+
+    .hero-copy {
+      max-width: 680px;
+      margin: 0 auto;
+      color: var(--text-dim);
+      font-size: clamp(18px, 2.2vw, 23px);
+      letter-spacing: -0.018em;
+    }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 10px;
+      margin-top: 34px;
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      padding: 0 18px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--panel-raised);
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 600;
+      transition: transform 150ms ease, border-color 150ms ease, background 150ms ease;
+    }
+
+    .button:hover {
+      border-color: var(--border-strong);
+      background: var(--surface);
+      transform: translateY(-1px);
+    }
+
+    .button.primary {
+      border-color: rgba(94, 210, 141, 0.35);
+      background: var(--green);
+      color: #101c14;
+    }
+
+    .button.primary:hover {
+      background: #6ddd9a;
+    }
+
+    .requirements {
+      margin: 16px 0 0;
+      color: var(--text-faint);
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+
+    .bets {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      max-width: 1040px;
+      margin: 64px auto 0;
+      text-align: left;
+    }
+
+    .bet {
+      position: relative;
+      min-height: 184px;
+      overflow: hidden;
+      padding: 26px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: linear-gradient(145deg, rgba(255, 255, 255, 0.028), transparent), var(--panel);
+    }
+
+    .bet::after {
+      position: absolute;
+      right: -25px;
+      bottom: -68px;
+      width: 150px;
+      height: 150px;
+      border: 1px solid rgba(94, 210, 141, 0.15);
+      border-radius: 50%;
+      content: "";
+    }
+
+    .bet-label {
+      color: var(--green);
+      font-family: var(--mono);
+      font-size: 11px;
+      text-transform: uppercase;
+    }
+
+    .bet h2 {
+      margin: 25px 0 9px;
+      font-size: 21px;
+      letter-spacing: -0.025em;
+    }
+
+    .bet p {
+      max-width: 360px;
+      margin: 0;
+      color: var(--text-dim);
+      font-size: 14px;
+    }
+
+    .speed-proof {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 22px;
+      color: var(--green);
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+
+    .speed-proof::before {
+      width: 20px;
+      height: 1px;
+      background: currentColor;
+      content: "";
+    }
+
+    .shot-shell {
+      position: relative;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: 0 32px 100px rgba(0, 0, 0, 0.42);
+    }
+
+    .hero-shot {
+      margin-top: 36px;
+      padding: 7px;
+    }
+
+    .shot-button {
+      display: block;
+      width: 100%;
+      padding: 0;
+      overflow: hidden;
+      border: 0;
+      border-radius: calc(var(--radius) - 7px);
+      background: transparent;
+      cursor: zoom-in;
+    }
+
+    .shot-button img {
+      width: 100%;
+      height: auto;
+    }
+
+    .hero-shot::before,
+    .hero-shot::after {
+      position: absolute;
+      z-index: -1;
+      top: 20%;
+      width: 34%;
+      height: 60%;
+      border-radius: 50%;
+      filter: blur(80px);
+      opacity: 0.12;
+      content: "";
+    }
+
+    .hero-shot::before {
+      left: -8%;
+      background: var(--blue);
+    }
+
+    .hero-shot::after {
+      right: -8%;
+      background: var(--green);
+    }
+
+    .section {
+      padding: 112px 0;
+    }
+
+    .section-rule {
+      border-top: 1px solid rgba(255, 255, 255, 0.07);
+    }
+
+    .section-intro {
+      display: grid;
+      grid-template-columns: minmax(0, 0.72fr) minmax(300px, 0.48fr);
+      gap: 80px;
+      align-items: end;
+      margin-bottom: 50px;
+    }
+
+    .kicker {
+      display: block;
+      margin-bottom: 17px;
+      color: var(--text-faint);
+      font-family: var(--mono);
+      font-size: 12px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    h2.section-title {
+      margin: 0;
+      font-size: clamp(38px, 5vw, 62px);
+      font-weight: 620;
+      letter-spacing: -0.052em;
+      line-height: 1.02;
+    }
+
+    .section-copy {
+      margin: 0;
+      color: var(--text-dim);
+      font-size: 17px;
+    }
+
+    .section-copy strong {
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    .duo {
+      display: grid;
+      grid-template-columns: minmax(0, 1.55fr) minmax(260px, 0.45fr);
+      gap: 14px;
+      align-items: stretch;
+    }
+
+    .duo .shot-shell {
+      padding: 6px;
+    }
+
+    .duo .secondary-shot {
+      display: flex;
+      overflow: hidden;
+    }
+
+    .duo .secondary-shot .shot-button {
+      height: 100%;
+    }
+
+    .duo .secondary-shot img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: 66% center;
+    }
+
+    .files-stack {
+      position: relative;
+      padding-bottom: 15%;
+    }
+
+    .files-stack .shot-shell {
+      padding: 6px;
+    }
+
+    .history-shot {
+      position: absolute;
+      right: -2.5%;
+      bottom: 0;
+      width: 72%;
+      box-shadow: 0 28px 80px rgba(0, 0, 0, 0.66);
+    }
+
+    .palette-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 0.9fr) minmax(340px, 1.1fr);
+      gap: 60px;
+      align-items: center;
+    }
+
+    .palette-layout .shot-shell {
+      padding: 6px;
+    }
+
+    .feature-list {
+      display: grid;
+      gap: 28px;
+    }
+
+    .feature-item {
+      padding-top: 28px;
+      border-top: 1px solid var(--border);
+    }
+
+    .feature-item:first-child {
+      padding-top: 0;
+      border-top: 0;
+    }
+
+    .feature-item h3 {
+      margin: 0 0 8px;
+      font-size: 21px;
+      letter-spacing: -0.025em;
+    }
+
+    .feature-item p {
+      margin: 0;
+      color: var(--text-dim);
+      font-size: 15px;
+    }
+
+    .agents-panel {
+      display: grid;
+      grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--panel);
+    }
+
+    .agents-copy {
+      padding: clamp(34px, 6vw, 72px);
+    }
+
+    .agents-copy h2 {
+      margin: 0 0 18px;
+      font-size: clamp(36px, 4.6vw, 56px);
+      letter-spacing: -0.05em;
+      line-height: 1.02;
+    }
+
+    .agents-copy p {
+      margin: 0;
+      color: var(--text-dim);
+      font-size: 17px;
+    }
+
+    .agents-copy .small {
+      margin-top: 18px;
+      color: var(--text-faint);
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+
+    .agent-console {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      min-height: 420px;
+      padding: 40px;
+      border-left: 1px solid var(--border);
+      background: #141413;
+      font-family: var(--mono);
+      font-size: 13px;
+    }
+
+    .how-card {
+      padding: clamp(30px, 5vw, 58px);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background:
+        linear-gradient(145deg, rgba(112, 174, 255, 0.045), transparent 45%),
+        var(--panel);
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: minmax(130px, 0.75fr) 34px minmax(155px, 1fr) 34px minmax(155px, 1fr) 34px minmax(130px, 0.75fr);
+      align-items: stretch;
+      margin-top: 40px;
+    }
+
+    .flow-node {
+      display: flex;
+      min-height: 126px;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 19px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #151514;
+    }
+
+    .flow-node.primary {
+      border-color: rgba(94, 210, 141, 0.34);
+      background: var(--green-soft);
+    }
+
+    .flow-node strong {
+      font-size: 16px;
+      letter-spacing: -0.02em;
+    }
+
+    .flow-node span {
+      color: var(--text-faint);
+      font-family: var(--mono);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    .flow-arrow {
+      display: grid;
+      place-items: center;
+      color: var(--text-faint);
+      font-family: var(--mono);
+      font-size: 18px;
+    }
+
+    .flow-label {
+      margin: 32px 0 -24px;
+      color: var(--text-faint);
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .how-note {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 24px;
+      margin-top: 34px;
+      padding-top: 28px;
+      border-top: 1px solid var(--border);
+    }
+
+    .how-note p {
+      margin: 0;
+      color: var(--text-dim);
+      font-size: 14px;
+    }
+
+    .how-note strong {
+      color: var(--text);
+    }
+
+    .console-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 25px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text-faint);
+      font-size: 11px;
+      text-transform: uppercase;
+    }
+
+    .console-status {
+      color: var(--green);
+    }
+
+    .console-line {
+      display: grid;
+      grid-template-columns: 23px 1fr;
+      gap: 8px;
+      padding: 9px 0;
+      color: var(--text-dim);
+    }
+
+    .console-line span:first-child {
+      color: var(--text-faint);
+    }
+
+    .console-line.active {
+      color: var(--text);
+    }
+
+    .console-cursor {
+      display: inline-block;
+      width: 7px;
+      height: 14px;
+      margin-left: 5px;
+      vertical-align: -2px;
+      background: var(--green);
+      animation: blink 1.1s steps(1) infinite;
+    }
+
+    @keyframes blink {
+      50% { opacity: 0; }
+    }
+
+    .keys-section {
+      text-align: center;
+    }
+
+    .keys-section .section-copy {
+      max-width: 610px;
+      margin: 20px auto 44px;
+    }
+
+    .key-grid {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 9px;
+      max-width: 980px;
+      margin: auto;
+    }
+
+    .key-action {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 38px;
+      padding: 5px 11px 5px 6px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--text-dim);
+      font-size: 13px;
+    }
+
+    kbd {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 26px;
+      min-height: 26px;
+      padding: 2px 7px;
+      border: 1px solid var(--border-strong);
+      border-radius: 6px;
+      background: var(--surface);
+      box-shadow: inset 0 1px rgba(255, 255, 255, 0.05), 0 1px 0 #080808;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 11px;
+      line-height: 1;
+    }
+
+    .install-card {
+      display: grid;
+      grid-template-columns: minmax(0, 0.8fr) minmax(420px, 1.2fr);
+      gap: 80px;
+      align-items: center;
+      padding: clamp(34px, 6vw, 72px);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background:
+        linear-gradient(135deg, rgba(94, 210, 141, 0.065), transparent 42%),
+        var(--panel);
+    }
+
+    .install-card h2 {
+      margin: 0 0 15px;
+      font-size: clamp(38px, 5vw, 58px);
+      letter-spacing: -0.052em;
+      line-height: 1;
+    }
+
+    .install-card p {
+      margin: 0;
+      color: var(--text-dim);
+    }
+
+    .install-card .plain-note {
+      margin-top: 16px;
+      color: var(--yellow);
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+
+    .code-block {
+      overflow-x: auto;
+      padding: 23px 24px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #10100f;
+      color: var(--text-dim);
+      font-family: var(--mono);
+      font-size: 13px;
+      line-height: 1.8;
+      white-space: pre;
+    }
+
+    .prompt {
+      color: var(--green);
+      user-select: none;
+    }
+
+    .footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      min-height: 112px;
+      border-top: 1px solid rgba(255, 255, 255, 0.07);
+      color: var(--text-faint);
+      font-size: 13px;
+    }
+
+    .footer-links {
+      display: flex;
+      gap: 22px;
+    }
+
+    dialog {
+      width: min(96vw, 1500px);
+      max-width: none;
+      padding: 0;
+      border: 1px solid var(--border-strong);
+      border-radius: 12px;
+      background: #0b0b0a;
+      box-shadow: 0 40px 120px rgba(0, 0, 0, 0.75);
+    }
+
+    dialog::backdrop {
+      background: rgba(7, 7, 7, 0.87);
+      backdrop-filter: blur(8px);
+    }
+
+    .lightbox-close {
+      position: absolute;
+      z-index: 2;
+      top: 12px;
+      right: 12px;
+      width: 36px;
+      height: 36px;
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      background: rgba(17, 17, 16, 0.88);
+      color: var(--text);
+      cursor: pointer;
+    }
+
+    #lightbox-image {
+      width: 100%;
+      height: auto;
+    }
+
+    @media (max-width: 900px) {
+      .section {
+        padding: 84px 0;
+      }
+
+      .section-intro,
+      .palette-layout,
+      .agents-panel,
+      .install-card {
+        grid-template-columns: 1fr;
+        gap: 30px;
+      }
+
+      .section-intro {
+        margin-bottom: 36px;
+      }
+
+      .duo {
+        grid-template-columns: 1fr;
+      }
+
+      .duo .secondary-shot {
+        max-height: 440px;
+      }
+
+      .duo .secondary-shot img {
+        object-position: center;
+      }
+
+      .palette-layout .feature-list {
+        order: 2;
+      }
+
+      .agent-console {
+        min-height: 340px;
+        border-top: 1px solid var(--border);
+        border-left: 0;
+      }
+
+      .flow {
+        grid-template-columns: 1fr;
+      }
+
+      .flow-arrow {
+        min-height: 30px;
+        transform: rotate(90deg);
+      }
+
+      .flow-node {
+        min-height: 104px;
+      }
+
+      .install-card {
+        padding: 38px;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .wrap {
+        width: min(calc(100% - 24px), var(--page));
+      }
+
+      .nav {
+        height: 62px;
+      }
+
+      .nav-links > a:first-child {
+        display: none;
+      }
+
+      .hero {
+        padding-top: 74px;
+      }
+
+      h1 {
+        font-size: clamp(46px, 15vw, 68px);
+      }
+
+      .hero-copy {
+        font-size: 18px;
+      }
+
+      .hero-actions .button {
+        flex: 1 1 150px;
+      }
+
+      .bets {
+        grid-template-columns: 1fr;
+        margin-top: 48px;
+      }
+
+      .bet {
+        min-height: 0;
+      }
+
+      .hero-shot {
+        margin-top: 22px;
+        padding: 4px;
+        border-radius: 12px;
+      }
+
+      .hero-shot .shot-button {
+        border-radius: 8px;
+      }
+
+      .section {
+        padding: 72px 0;
+      }
+
+      h2.section-title,
+      .agents-copy h2,
+      .install-card h2 {
+        font-size: 39px;
+      }
+
+      .section-copy,
+      .agents-copy p {
+        font-size: 16px;
+      }
+
+      .files-stack {
+        padding-bottom: 22%;
+      }
+
+      .history-shot {
+        right: -3px;
+        width: 82%;
+      }
+
+      .agents-copy,
+      .agent-console,
+      .install-card {
+        padding: 28px;
+      }
+
+      .agent-console {
+        font-size: 11px;
+      }
+
+      .how-card {
+        padding: 28px;
+      }
+
+      .how-note {
+        grid-template-columns: 1fr;
+      }
+
+      .key-action {
+        font-size: 12px;
+      }
+
+      .install-card {
+        gap: 26px;
+      }
+
+      .code-block {
+        margin-inline: -12px;
+        padding: 18px;
+        font-size: 11px;
+      }
+
+      .footer {
+        align-items: flex-start;
+        flex-direction: column;
+        justify-content: center;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html {
+        scroll-behavior: auto;
+      }
+
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="wrap nav">
+    <a class="brand" href="#top" aria-label="pr-cockpit home">
+      <span class="brand-mark">PR</span>
+      <span>pr-cockpit</span>
+    </a>
+    <nav class="nav-links" aria-label="Primary navigation">
+      <a href="#how-it-works">How it works</a>
+      <a href="https://github.com/theolundqvist/pr-cockpit">GitHub</a>
+      <a class="nav-install" href="#install">Install</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="wrap hero">
+      <span class="eyebrow">Live GitHub reviews · zero refreshes</span>
+      <h1>GitHub PRs at local speed.</h1>
+      <p class="hero-copy">GitHub makes you wait 2–5 seconds per click. pr-cockpit keeps the repositories you care about in a local cache, then uses webhooks to bring every comment, review, and CI change to you live.</p>
+      <span class="speed-proof">No loading screens. No refreshes. Every action feels instant.</span>
+      <div class="hero-actions">
+        <a class="button primary" href="#install">Install pr-cockpit</a>
+        <a class="button" href="https://github.com/theolundqvist/pr-cockpit">View source</a>
+      </div>
+      <p class="requirements">macOS · bun · gh logged in</p>
+
+      <div class="bets" aria-label="How pr-cockpit works">
+        <article class="bet">
+          <span class="bet-label">Open instantly</span>
+          <h2>Everything is prefetched</h2>
+          <p>Detail, diffs, threads, and images are waiting on your disk. Opening a cached PR never waits on the network.</p>
+        </article>
+        <article class="bet">
+          <span class="bet-label">Stay current</span>
+          <h2>Webhook updates arrive live</h2>
+          <p>The relay brings GitHub events to your cockpit in seconds. The poller runs underneath for startup and reconciliation.</p>
+        </article>
+        <article class="bet">
+          <span class="bet-label">Jump anywhere</span>
+          <h2>Any PR, one chord</h2>
+          <p><kbd>⌘⌥K</kbd> opens the global palette from anywhere, searching a local index of recent PRs instantly.</p>
+        </article>
+      </div>
+    </section>
+
+    <div class="wrap shot-shell hero-shot">
+      <button class="shot-button" type="button" data-lightbox="screenshots/inbox.png" aria-label="Open inbox screenshot">
+        <img src="screenshots/inbox.png" alt="pr-cockpit inbox sorting open pull requests into ready to merge, your move, and waiting" width="1440" height="900">
+      </button>
+    </div>
+
+    <section class="section-rule">
+      <div class="wrap section palette-layout">
+        <div class="feature-list">
+          <article class="feature-item">
+            <span class="kicker">No navigation tax</span>
+            <h3>Any PR. One chord. Already indexed.</h3>
+            <p><kbd>⌘⌥K</kbd> opens the palette globally, from anywhere. It searches recent open, merged, and closed PRs across your tracked repositories locally, then falls back to live GitHub search only when needed.</p>
+          </article>
+          <article class="feature-item">
+            <h3>No loading cascade after the click.</h3>
+            <p>The PR, its diffs, review threads, and images are already cached. Even file-history diffs are prefetched before you step through them.</p>
+          </article>
+        </div>
+        <div class="shot-shell">
+          <button class="shot-button" type="button" data-lightbox="screenshots/palette.png" aria-label="Open command palette screenshot">
+            <img src="screenshots/palette.png" alt="Command palette searching recent pull requests across tracked repositories" width="1440" height="900" loading="lazy">
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-rule">
+      <div class="wrap section">
+        <div class="section-intro">
+          <div>
+            <span class="kicker">The inbox</span>
+            <h2 class="section-title">Built around your next decision.</h2>
+          </div>
+          <p class="section-copy">Open PRs are sorted into <strong>ready to merge</strong>, <strong>your move</strong>, and <strong>waiting</strong>. Stacks stay nested. Your checked-out branch stays marked.</p>
+        </div>
+        <div class="duo">
+          <div class="shot-shell">
+            <button class="shot-button" type="button" data-lightbox="screenshots/pr-detail.png" aria-label="Open PR detail screenshot">
+              <img src="screenshots/pr-detail.png" alt="Pull request detail with conversation, checks, actions, review controls, and reviewers" width="1440" height="900" loading="lazy">
+            </button>
+          </div>
+          <div class="shot-shell secondary-shot">
+            <button class="shot-button" type="button" data-lightbox="screenshots/merge-confirm.png" aria-label="Open merge confirmation screenshot">
+              <img src="screenshots/merge-confirm.png" alt="Force merge confirmation shown in pr-cockpit" width="1440" height="900" loading="lazy">
+            </button>
+          </div>
+        </div>
+        <div class="section-intro" style="margin-top: 34px; margin-bottom: 0;">
+          <p class="section-copy"><strong>Full read parity.</strong> Description, commits, comments, review threads, checks, reviewers, and labels live in one view.</p>
+          <p class="section-copy"><strong>The same merge gate.</strong> The action mirrors GitHub's real button verbatim. Merge, force merge, and close still ask before they fire.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-rule">
+      <div class="wrap section">
+        <div class="section-intro">
+          <div>
+            <span class="kicker">Less noise, more context</span>
+            <h2 class="section-title">Hide the tests. Keep the signal.</h2>
+          </div>
+          <p class="section-copy"><strong>Auto-hide test files</strong> with one toggle, expand only changed ranges, or open the whole file. Press <kbd>h</kbd> to walk that file's history on the base branch, with every diff already prefetched.</p>
+        </div>
+        <div class="files-stack">
+          <div class="shot-shell">
+            <button class="shot-button" type="button" data-lightbox="screenshots/files.png" aria-label="Open files screenshot">
+              <img src="screenshots/files.png" alt="Files tab with file tree, filters, and expanded diffs" width="1440" height="900" loading="lazy">
+            </button>
+          </div>
+          <div class="shot-shell history-shot">
+            <button class="shot-button" type="button" data-lightbox="screenshots/file-history.png" aria-label="Open file history screenshot">
+              <img src="screenshots/file-history.png" alt="File history with a vertical commit rail and prefetched diffs" width="1440" height="900" loading="lazy">
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-rule">
+      <div class="wrap section">
+        <div class="agents-panel">
+          <div class="agents-copy">
+            <span class="kicker">Agents</span>
+            <h2>Auto-fix. Auto-merge. Your rules.</h2>
+            <p>Run and stream local Claude agents against your own PRs. Auto-fix a blocked PR, auto-merge once CI is green and threads are resolved, re-score a Greptile review, or write a one-off prompt.</p>
+            <p class="small">Off by default. Each action is editable and keybindable.</p>
+          </div>
+          <div class="agent-console" aria-label="Example agent run">
+            <div class="console-head">
+              <span>Auto-fix · PR #109</span>
+              <span class="console-status">running</span>
+            </div>
+            <div class="console-line"><span>01</span><span>trigger · PR blocked</span></div>
+            <div class="console-line"><span>02</span><span>model · editable</span></div>
+            <div class="console-line"><span>03</span><span>prompt · Auto-fix this blocked PR</span></div>
+            <div class="console-line active"><span>04</span><span>transcript · following live<span class="console-cursor" aria-hidden="true"></span></span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-rule">
+      <div class="wrap section keys-section">
+        <span class="kicker">Keyboard first</span>
+        <h2 class="section-title">The mouse can take the day off.</h2>
+        <p class="section-copy">The important path is always under your fingers. The full cheatsheet is one <kbd>?</kbd> away.</p>
+        <div class="key-grid" aria-label="Keyboard shortcuts">
+          <span class="key-action"><kbd>j / k</kbd> move</span>
+          <span class="key-action"><kbd>enter</kbd> open</span>
+          <span class="key-action"><kbd>esc</kbd> back</span>
+          <span class="key-action"><kbd>d</kbd> files / conversation</span>
+          <span class="key-action"><kbd>c</kbd> comment</span>
+          <span class="key-action"><kbd>r</kbd> reply</span>
+          <span class="key-action"><kbd>e</kbd> resolve / archive</span>
+          <span class="key-action"><kbd>⇧E</kbd> edit description</span>
+          <span class="key-action"><kbd>v</kbd> review</span>
+          <span class="key-action"><kbd>s</kbd> assign</span>
+          <span class="key-action"><kbd>q</kbd> request review</span>
+          <span class="key-action"><kbd>m</kbd> merge</span>
+          <span class="key-action"><kbd>⇧M</kbd> force merge</span>
+          <span class="key-action"><kbd>u</kbd> update branch</span>
+          <span class="key-action"><kbd>x</kbd> close / toggle tests</span>
+          <span class="key-action"><kbd>h</kbd> file history</span>
+          <span class="key-action"><kbd>p</kbd> prompt agent</span>
+          <span class="key-action"><kbd>o</kbd> github.com</span>
+          <span class="key-action"><kbd>t</kbd> switch branch</span>
+          <span class="key-action"><kbd>⌘K</kbd> any PR in app</span>
+          <span class="key-action"><kbd>⌘⌥K</kbd> any PR globally</span>
+          <span class="key-action"><kbd>⌘,</kbd> settings</span>
+          <span class="key-action"><kbd>?</kbd> cheatsheet</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-rule" id="how-it-works">
+      <div class="wrap section">
+        <div class="section-intro">
+          <div>
+            <span class="kicker">How it works</span>
+            <h2 class="section-title">The network moves off the critical path.</h2>
+          </div>
+          <p class="section-copy">GitHub webhooks trigger targeted refreshes as changes happen. A local Bun server keeps the result on disk and echoes your writes immediately, so the interaction never blocks on GitHub.</p>
+        </div>
+
+        <div class="how-card" aria-label="How pr-cockpit reads, writes, and receives live updates">
+          <p class="flow-label">Freshness · webhook-driven</p>
+          <div class="flow">
+            <div class="flow-node">
+              <strong>GitHub webhooks</strong>
+              <span>comments, reviews, CI, PRs</span>
+            </div>
+            <div class="flow-arrow" aria-hidden="true">→</div>
+            <div class="flow-node">
+              <strong>Cloudflare relay</strong>
+              <span>small worker · deploy once</span>
+            </div>
+            <div class="flow-arrow" aria-hidden="true">→</div>
+            <div class="flow-node">
+              <strong>Local cockpit</strong>
+              <span>event triggers a targeted refresh</span>
+            </div>
+            <div class="flow-arrow" aria-hidden="true">→</div>
+            <div class="flow-node primary">
+              <strong>No refresh</strong>
+              <span>updates arrive live</span>
+            </div>
+          </div>
+
+          <p class="flow-label">Local cache · always ready</p>
+          <div class="flow">
+            <div class="flow-node">
+              <strong>GitHub GraphQL</strong>
+              <span>source of truth</span>
+            </div>
+            <div class="flow-arrow" aria-hidden="true">→</div>
+            <div class="flow-node">
+              <strong>Bun poller</strong>
+              <span>3-minute reconciliation · configurable</span>
+            </div>
+            <div class="flow-arrow" aria-hidden="true">→</div>
+            <div class="flow-node">
+              <strong>SQLite + disk images</strong>
+              <span>PRs, diffs, threads, warmed images</span>
+            </div>
+            <div class="flow-arrow" aria-hidden="true">→</div>
+            <div class="flow-node primary">
+              <strong>Local UI</strong>
+              <span>reads cache only · opens ~0 ms</span>
+            </div>
+          </div>
+
+          <p class="flow-label">Writes · echo first</p>
+          <div class="flow">
+            <div class="flow-node primary">
+              <strong>Local UI</strong>
+              <span>change appears instantly</span>
+            </div>
+            <div class="flow-arrow" aria-hidden="true">→</div>
+            <div class="flow-node">
+              <strong>Persisted queue</strong>
+              <span>posts in the background</span>
+            </div>
+            <div class="flow-arrow" aria-hidden="true">→</div>
+            <div class="flow-node">
+              <strong>Your <code>gh</code> auth</strong>
+              <span>no OAuth app</span>
+            </div>
+            <div class="flow-arrow" aria-hidden="true">→</div>
+            <div class="flow-node">
+              <strong>GitHub</strong>
+              <span>webhook or poll reconciles</span>
+            </div>
+          </div>
+
+          <div class="how-note">
+            <p><strong>The live experience:</strong> configure the relay whether you work solo or with a team. GitHub changes reach your cockpit in seconds instead of waiting for the next poll.</p>
+            <p><strong>The dependable base layer:</strong> the relay is off until configured. The 3-minute poll still handles cold starts, missed events, and reconciliation.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-rule" id="install">
+      <div class="wrap section">
+        <div class="install-card">
+          <div>
+            <span class="kicker">Install</span>
+            <h2>One command.</h2>
+            <p>The installer checks for bun and gh, asks before installing anything, clones to <code>~/.pr-cockpit</code>, builds the UI, creates <code>~/Applications/PR Cockpit.app</code>, registers deep links, and sets up launch at login.</p>
+            <p>On first run the app walks you through GitHub access, picking repos, and turning on live updates. Until the webhook relay is connected, the poller keeps the local cache correct.</p>
+            <p class="plain-note">macOS only. Rerun the same command to upgrade.</p>
+          </div>
+          <div class="code-block" role="region" aria-label="Install command" tabindex="0"><span class="prompt">$</span> curl -fsSL https://raw.githubusercontent.com/theolundqvist/pr-cockpit/main/scripts/bootstrap | bash</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="wrap footer">
+    <span>Built for one review queue. Yours, if you want it.</span>
+    <div class="footer-links">
+      <a href="https://github.com/theolundqvist/pr-cockpit">GitHub</a>
+      <a href="#top">Back to top ↑</a>
+    </div>
+  </footer>
+
+  <dialog id="lightbox" aria-label="Screenshot preview">
+    <button class="lightbox-close" type="button" aria-label="Close screenshot">×</button>
+    <img id="lightbox-image" alt="">
+  </dialog>
+
+  <script>
+    const lightbox = document.querySelector("#lightbox");
+    const lightboxImage = document.querySelector("#lightbox-image");
+
+    document.querySelectorAll("[data-lightbox]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const sourceImage = button.querySelector("img");
+        lightboxImage.src = button.dataset.lightbox;
+        lightboxImage.alt = sourceImage.alt;
+        lightbox.showModal();
+      });
+    });
+
+    lightbox.querySelector(".lightbox-close").addEventListener("click", () => lightbox.close());
+    lightbox.addEventListener("click", (event) => {
+      if (event.target === lightbox) lightbox.close();
+    });
+  </script>
+</body>
+</html>
