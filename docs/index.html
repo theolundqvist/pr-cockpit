@@ -1412,7 +1412,7 @@
           <div class="agents-copy">
             <span class="kicker">CLI</span>
             <h2>Listen, don’t poll.</h2>
-            <p>The installer adds the open-source <code>pr-cockpit</code> CLI. Reads come fast from the local cache: compact, agent-shaped output with no GitHub API quota spent.</p>
+            <p>The installer adds the open-source <code>pr-cockpit</code> CLI. Reads are served from the local cache, so they return fast in agent-shaped form and only touch GitHub when that cache has actually gone stale.</p>
             <p class="cli-why"><code>listen</code> blocks until substantive cached state changes, so agents skip the repeated <code>gh</code> polls that spend GitHub calls and tokens re-reading a quiet PR.</p>
             <ul class="cli-commands">
               <li><code>pr-cockpit owner/repo#N</code> · state, checks, unresolved threads</li>

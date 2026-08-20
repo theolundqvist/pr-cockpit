@@ -79,7 +79,7 @@ async function benchmarkPrOpen(page, repo, prs) {
       await new Promise((resolve, reject) => {
         const deadline = startedAt + 5_000;
         const check = () => {
-          if (location.hash === targetHref && document.querySelector(".detail")) return resolve();
+          if (location.hash === targetHref && document.querySelector(".detail .tabs")) return resolve();
           if (performance.now() > deadline) return reject(new Error("timed out opening PR"));
           requestAnimationFrame(check);
         };

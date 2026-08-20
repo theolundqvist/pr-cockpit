@@ -40,7 +40,7 @@ The cache, diffs, queued actions, and warmed images stay on your Mac. GitHub rem
 
 ## Agents: listen, don't poll.
 
-The installer adds the open-source `pr-cockpit` CLI. It reads the same local cache as the app, so ordinary reads return fast, compact, agent-shaped output without spending GitHub API quota rediscovering review state.
+The installer adds the open-source `pr-cockpit` CLI. It reads the same local cache as the app, so ordinary reads return fast, compact, agent-shaped output and only revalidate against GitHub when that cache has actually gone stale.
 
 ```sh
 pr-cockpit owner/repo#123                    # state, checks, unresolved threads

@@ -107,6 +107,10 @@ prepare_agent_instructions() {
 
 write_agent_instructions() {
   [[ "$install_agent_instructions" -eq 1 ]] || return 0
+  if [[ "$dry_run" == "1" ]]; then
+    say "would add assistant instructions to ${agent_instruction_targets[*]}"
+    return 0
+  fi
   local path
   for path in "${agent_instruction_targets[@]}"; do
     if {
@@ -236,7 +240,7 @@ replace_legacy_checkout() {
   legacy_backup="$previous"
 }
 uninstall_legacy_app() {
-  [[ "$legacy_migration" -eq 1 ]] || return
+  [[ "$legacy_migration" -eq 1 ]] || return 0
   say "uninstalling the legacy PR Cockpit app"
   if [[ "$dry_run" == "1" ]]; then
     say "would stop its background services and remove its app bundle"
@@ -248,14 +252,12 @@ uninstall_legacy_app() {
   rm -f \
     "$HOME/Library/LaunchAgents/app.pr-cockpit.server.plist" \
     "$HOME/Library/LaunchAgents/app.pr-cockpit.plist"
-  rm -rf \
-    "$HOME/Applications/PR Cockpit.app" \
-    "$HOME/Library/Application Support/PR Cockpit"
+  rm -rf "$HOME/Applications/PR Cockpit.app"
 }
 
 
 if [[ -e "$target" ]]; then
-  [[ -d "$target/.git" ]] || die "$target already exists and is not a git checkout — move it aside or set COCKPIT_HOME to another path"
+  [[ "$(git -C "$target" rev-parse --show-toplevel 2>/dev/null)" == "$(cd "$target" && pwd -P)" ]] || die "$target already exists and is not a git checkout — move it aside or set COCKPIT_HOME to another path"
   origin="$(git -C "$target" remote get-url origin 2>/dev/null || true)"
   origin_slug="$(remote_slug "$origin")"
   if [[ "$origin_slug" == "theolundqvist/pr-cockpit-private" ]]; then
