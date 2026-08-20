@@ -269,13 +269,10 @@
       line-height: 1.02;
     }
 
-
-    .benchmark-intro {
-      max-width: 760px;
-      margin: 0 auto 32px;
-      text-align: center;
+    .hero-benchmark {
+      margin-top: 32px;
+      text-align: left;
     }
-
 
     .benchmark-grid {
       display: grid;
@@ -528,6 +525,23 @@
       line-height: 1.02;
     }
 
+    .agent-prompt-media {
+      display: grid;
+      min-height: 300px;
+      place-items: center;
+      padding: 24px;
+      border: 0;
+      border-left: 1px solid var(--border);
+      background: #141413;
+      cursor: zoom-in;
+    }
+
+    .agent-prompt-media img {
+      width: 100%;
+      height: auto;
+      border-radius: 8px;
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.42);
+    }
 
     .agent-console {
       display: flex;
@@ -707,12 +721,55 @@
     }
 
     .cli-panel {
+      display: block;
       margin-top: 12px;
-      grid-template-columns: 1fr;
+      padding: 18px;
+    }
+
+    .terminal-window {
+      overflow: hidden;
+      border: 1px solid var(--border-strong);
+      border-radius: 9px;
+      background: #10100f;
+      box-shadow: 0 20px 48px rgba(0, 0, 0, 0.32);
+    }
+
+    .terminal-toolbar {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      min-height: 38px;
+      padding: 0 13px;
+      border-bottom: 1px solid var(--border);
+      background: #242422;
+      color: var(--text-faint);
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+
+    .terminal-lights {
+      display: flex;
+      gap: 7px;
+    }
+
+    .terminal-light {
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+    }
+
+    .terminal-light.close { background: #ff5f57; }
+    .terminal-light.minimize { background: #febc2e; }
+    .terminal-light.maximize { background: #28c840; }
+
+    .terminal-title {
+      grid-column: 2;
     }
 
     .cli-panel .agent-console {
+      min-height: 260px;
       border: 0;
+      background: #10100f;
     }
 
     .console-line .cli-prompt {
@@ -968,7 +1025,8 @@
         order: 2;
       }
 
-      .agent-console {
+      .agent-console,
+      .agent-prompt-media {
         min-height: 260px;
         border-top: 1px solid var(--border);
         border-left: 0;
@@ -1172,24 +1230,7 @@
   <main id="top">
     <section class="wrap hero">
       <h1>GitHub PRs at local speed.</h1>
-      <div class="hero-actions">
-        <a class="button primary" href="#install">Install pr-cockpit</a>
-        <a class="button" href="https://github.com/theolundqvist/pr-cockpit">View source</a>
-      </div>
-      <p class="requirements">macOS · open source</p>
-    </section>
-
-    <div class="wrap shot-shell hero-shot">
-      <button class="shot-button" type="button" data-lightbox="screenshots/inbox-dark.png" aria-label="Open inbox screenshot">
-        <img src="screenshots/inbox-dark.png" alt="pr-cockpit inbox sorting open pull requests into ready to merge, your move, and waiting" width="1120" height="1269">
-      </button>
-    </div>
-
-    <section class="section-rule" id="performance">
-      <div class="wrap section">
-        <div class="benchmark-intro">
-          <h2 class="section-title">PR Cockpit vs GitHub.</h2>
-        </div>
+      <div class="hero-benchmark" id="performance">
         <div class="benchmark-grid" aria-label="PR Cockpit and GitHub performance comparison">
           <article class="benchmark-card">
             <div class="benchmark-card-header">
@@ -1316,7 +1357,18 @@
           <a href="https://github.com/theolundqvist/pr-cockpit/blob/main/scripts/benchmark-ui.mjs">Reproduce benchmark</a>
         </p>
       </div>
+      <div class="hero-actions">
+        <a class="button primary" href="#install">Install pr-cockpit</a>
+        <a class="button" href="https://github.com/theolundqvist/pr-cockpit">View source</a>
+      </div>
+      <p class="requirements">macOS · open source</p>
     </section>
+
+    <div class="wrap shot-shell hero-shot">
+      <button class="shot-button" type="button" data-lightbox="screenshots/inbox-dark.png" aria-label="Open inbox screenshot">
+        <img src="screenshots/inbox-dark.png" alt="pr-cockpit inbox sorting open pull requests into ready to merge, your move, and waiting" width="1120" height="1269">
+      </button>
+    </div>
 
     <section class="section-rule">
       <div class="wrap section palette-layout">
@@ -1326,8 +1378,8 @@
           </article>
         </div>
         <div class="shot-shell">
-          <button class="shot-button" type="button" data-lightbox="screenshots/palette-light.png" aria-label="Open standalone pull request search screenshot">
-            <img src="screenshots/palette-light.png" alt="Standalone pull request search opened with Option-Command-K" width="860" height="672" loading="lazy">
+          <button class="shot-button" type="button" data-lightbox="screenshots/palette-macos.png" aria-label="Open standalone pull request search on a macOS desktop">
+            <img src="screenshots/palette-macos.png" alt="Standalone pull request search opened with Option-Command-K over a blue macOS wallpaper" width="1000" height="760" loading="lazy">
           </button>
         </div>
       </div>
@@ -1376,48 +1428,30 @@
           <div class="agents-copy">
             <h2>Press p. Put an agent on it.</h2>
           </div>
-          <div class="agent-console" aria-label="Example agent run">
-            <div class="console-head">
-              <span>Auto-fix · PR #109</span>
-              <span class="console-status">running</span>
-            </div>
-            <div class="console-line"><span>01</span><span>trigger · PR blocked</span></div>
-            <div class="console-line"><span>02</span><span>model · editable</span></div>
-            <div class="console-line"><span>03</span><span>prompt · Auto-fix this blocked PR</span></div>
-            <div class="console-line active"><span>04</span><span>transcript · following live<span class="console-cursor" aria-hidden="true"></span></span></div>
-          </div>
+          <button class="agent-prompt-media" type="button" data-lightbox="screenshots/agent-prompt.png" aria-label="Open agent prompt screenshot">
+            <img src="screenshots/agent-prompt.png" alt="Prompt an agent dialog opened with p on a pull request" width="660" height="250" loading="lazy">
+          </button>
         </div>
 
         <div class="agents-panel cli-panel">
-          <div class="agent-console" aria-label="Example pr-cockpit listen session">
-            <div class="console-head">
-              <span>pr-cockpit CLI · local cache</span>
-              <span class="console-status">listening</span>
+          <div class="terminal-window">
+            <div class="terminal-toolbar" aria-hidden="true">
+              <span class="terminal-lights">
+                <span class="terminal-light close"></span>
+                <span class="terminal-light minimize"></span>
+                <span class="terminal-light maximize"></span>
+              </span>
+              <span class="terminal-title">pr-cockpit — zsh</span>
             </div>
-            <div class="console-line"><span class="cli-prompt">$</span><span>pr-cockpit listen owner/repo#6278</span></div>
-            <div class="console-line"><span></span><span>blocked · waiting for the cached PR to change</span></div>
-            <div class="console-line wake"><span>→</span><span>woke · CI failed on the new push · 1 unresolved thread</span></div>
-            <div class="console-line active"><span class="cli-prompt">$</span><span>pr-cockpit owner/repo#6278<span class="console-cursor" aria-hidden="true"></span></span></div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section class="section-rule" id="visual-reviews">
-      <div class="wrap section">
-        <div class="agents-panel visual-pr-panel">
-          <div class="agents-copy">
-            <h2>The story lives in the PR.</h2>
-            <div class="visual-pr-links">
-              <a class="button primary" href="https://github.com/theolundqvist/justshowme/pull/1">See open-source PR #1</a>
-              <a class="button" href="https://github.com/theolundqvist/justshowme">Get JustShowMe</a>
-            </div>
-          </div>
-          <div class="visual-pr-media">
-            <div class="shot-shell">
-              <button class="shot-button" type="button" data-lightbox="screenshots/justshowme-gh-img.png" aria-label="Open JustShowMe and gh-img pairing slide">
-                <img src="screenshots/justshowme-gh-img.png" alt="A code change becomes a focused JustShowMe story, then gh-img places it inline in a pull request for review" width="1600" height="900" loading="lazy">
-              </button>
+            <div class="agent-console" aria-label="Example pr-cockpit listen session">
+              <div class="console-head">
+                <span>pr-cockpit CLI · local cache</span>
+                <span class="console-status">listening</span>
+              </div>
+              <div class="console-line"><span class="cli-prompt">$</span><span>pr-cockpit listen owner/repo#6278</span></div>
+              <div class="console-line"><span></span><span>blocked · waiting for the cached PR to change</span></div>
+              <div class="console-line wake"><span>→</span><span>woke · CI failed on the new push · 1 unresolved thread</span></div>
+              <div class="console-line active"><span class="cli-prompt">$</span><span>pr-cockpit owner/repo#6278<span class="console-cursor" aria-hidden="true"></span></span></div>
             </div>
           </div>
         </div>
@@ -1497,6 +1531,28 @@
             </div>
             <pre class="code-block" role="region" aria-labelledby="install-label" tabindex="0"><span class="prompt" aria-hidden="true">$ </span><code class="install-command">curl -fsSL https://raw.githubusercontent.com/theolundqvist/pr-cockpit/main/scripts/bootstrap | bash</code></pre>
             <span class="copy-status visually-hidden" role="status"></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-rule" id="visual-reviews">
+      <div class="wrap section">
+        <div class="agents-panel visual-pr-panel">
+          <div class="agents-copy">
+            <h2>The story lives in the PR.</h2>
+            <div class="visual-pr-links">
+              <a class="button primary" href="https://github.com/theolundqvist/justshowme/pull/1">See open-source PR #1</a>
+              <a class="button" href="https://github.com/theolundqvist/justshowme">Get JustShowMe</a>
+              <a class="button" href="https://github.com/theolundqvist/gh-img">Get gh-img</a>
+            </div>
+          </div>
+          <div class="visual-pr-media">
+            <div class="shot-shell">
+              <button class="shot-button" type="button" data-lightbox="screenshots/justshowme-gh-img.png" aria-label="Open JustShowMe and gh-img pairing slide">
+                <img src="screenshots/justshowme-gh-img.png" alt="A code change becomes a focused JustShowMe story, then gh-img places it inline in a pull request for review" width="1600" height="900" loading="lazy">
+              </button>
+            </div>
           </div>
         </div>
       </div>
