@@ -57,6 +57,12 @@ Stop it when you are done. `COCKPIT_MOCK=1` seeds a fixture database instead of 
 
 `bun test server/` runs the whole directory in one process and two tests flake there regardless of your change: `webhooks.test.ts` "migrates legacy window-keyed registrations" and `updateHandoff.test.ts` "new source launcher finishes an old updater's installation handoff once". Both pass when their file is run alone. Confirm a suspected regression by running the single file before believing the directory run.
 
+## Verifying the installer
+
+`scripts/bootstrap` and `scripts/install` run under `set -euo pipefail`, so a helper ending in `[[ cond ]] || return` propagates the failed test and aborts the whole install with no message. Always write `return 0`.
+
+Walk both install paths before trusting a change: `COCKPIT_BOOTSTRAP_DRY_RUN=1 COCKPIT_HOME=/tmp/some-path scripts/bootstrap` must reach stage `3/3`, and a fake `HOME`/`PATH` fixture covers the legacy migration. A silent exit before the last stage is the signature of the bug above.
+
 ## Durable lessons
 
 After a task needs non-obvious investigation, repeated failed attempts, or a recovery procedure, capture the lesson before handoff:
