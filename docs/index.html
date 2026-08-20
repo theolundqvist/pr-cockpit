@@ -310,6 +310,85 @@
       font-size: 17px;
     }
 
+    .benchmark-intro {
+      max-width: 760px;
+      margin: 0 auto 56px;
+      text-align: center;
+    }
+
+    .benchmark-intro .section-copy {
+      max-width: 650px;
+      margin: 18px auto 0;
+    }
+
+    .benchmark-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .benchmark-card {
+      padding: 30px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--panel);
+    }
+
+    .benchmark-value-line {
+      display: flex;
+      align-items: baseline;
+      gap: 7px;
+      color: var(--green);
+    }
+
+    .benchmark-value {
+      font-size: clamp(58px, 6.8vw, 84px);
+      font-weight: 650;
+      letter-spacing: -0.065em;
+      line-height: 0.9;
+    }
+
+    .benchmark-unit {
+      color: var(--text-dim);
+      font-family: var(--mono);
+      font-size: 13px;
+    }
+
+    .benchmark-label {
+      margin: 26px 0 7px;
+      font-size: 19px;
+      letter-spacing: -0.025em;
+    }
+
+    .benchmark-definition {
+      min-height: 42px;
+      margin: 0;
+      color: var(--text-dim);
+      font-size: 14px;
+    }
+
+    .benchmark-p95 {
+      margin: 22px 0 0;
+      color: var(--text-faint);
+      font-family: var(--mono);
+      font-size: 11px;
+      text-transform: uppercase;
+    }
+
+    .benchmark-method {
+      margin: 24px 0 0;
+      color: var(--text-faint);
+      font-family: var(--mono);
+      font-size: 11px;
+      text-align: center;
+    }
+
+    .benchmark-method a {
+      color: var(--text-dim);
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+
 
     .solo-shot {
       padding: 6px;
@@ -895,6 +974,18 @@
         font-size: 39px;
       }
 
+      .benchmark-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .benchmark-intro {
+        margin-bottom: 36px;
+      }
+
+      .benchmark-definition {
+        min-height: 0;
+      }
+
       .section-copy,
       .agents-copy p {
         font-size: 16px;
@@ -997,6 +1088,49 @@
         <img src="screenshots/inbox-dark.png" alt="pr-cockpit inbox sorting open pull requests into ready to merge, your move, and waiting" width="1100" height="800">
       </button>
     </div>
+
+    <section class="section-rule" id="performance">
+      <div class="wrap section">
+        <div class="benchmark-intro">
+          <span class="kicker">Performance</span>
+          <h2 class="section-title">Local speed, measured.</h2>
+          <p class="section-copy">Warm-cache user actions measured in the browser. GitHub is completely out of the loop.</p>
+        </div>
+        <div class="benchmark-grid" aria-label="PR Cockpit performance benchmarks">
+          <article class="benchmark-card">
+            <div class="benchmark-value-line">
+              <strong class="benchmark-value" data-benchmark-value="pr-open">—</strong>
+              <span class="benchmark-unit">ms p50</span>
+            </div>
+            <h3 class="benchmark-label">Open cached PR</h3>
+            <p class="benchmark-definition">Inbox click to painted PR detail.</p>
+            <p class="benchmark-p95"><span data-benchmark-p95="pr-open">—</span> ms p95</p>
+          </article>
+          <article class="benchmark-card">
+            <div class="benchmark-value-line">
+              <strong class="benchmark-value" data-benchmark-value="pr-search">—</strong>
+              <span class="benchmark-unit">ms p50</span>
+            </div>
+            <h3 class="benchmark-label">Search recent PRs</h3>
+            <p class="benchmark-definition">⌘K to painted local title match.</p>
+            <p class="benchmark-p95"><span data-benchmark-p95="pr-search">—</span> ms p95</p>
+          </article>
+          <article class="benchmark-card">
+            <div class="benchmark-value-line">
+              <strong class="benchmark-value" data-benchmark-value="diff-open">—</strong>
+              <span class="benchmark-unit">ms p50</span>
+            </div>
+            <h3 class="benchmark-label">Open cached diff</h3>
+            <p class="benchmark-definition">Files click to painted cached diff.</p>
+            <p class="benchmark-p95"><span data-benchmark-p95="diff-open">—</span> ms p95</p>
+          </article>
+        </div>
+        <p class="benchmark-method">
+          <span data-benchmark-status>Benchmark results unavailable.</span> ·
+          <a href="https://github.com/theolundqvist/pr-cockpit/blob/main/scripts/benchmark-ui.mjs">reproduce it</a>
+        </p>
+      </div>
+    </section>
 
     <section class="section-rule">
       <div class="wrap section palette-layout">
@@ -1176,9 +1310,22 @@
     <img id="lightbox-image" alt="">
   </dialog>
 
+  <script src="benchmark-results.js"></script>
   <script>
     const lightbox = document.querySelector("#lightbox");
     const lightboxImage = document.querySelector("#lightbox-image");
+    const benchmarkResults = window.PR_COCKPIT_BENCHMARKS;
+    if (benchmarkResults) {
+      for (const metric of benchmarkResults.metrics) {
+        document.querySelector(`[data-benchmark-value="${metric.id}"]`).textContent = metric.p50;
+        document.querySelector(`[data-benchmark-p95="${metric.id}"]`).textContent = metric.p95;
+      }
+      const environment = benchmarkResults.environment;
+      const browser = environment.browser.replace(/^Chromium ([0-9]+).*/, "Chromium $1");
+      const measuredDate = benchmarkResults.measuredAt.slice(0, 10);
+      document.querySelector("[data-benchmark-status]").textContent =
+        `${environment.runs} measured runs across ${environment.dataset} after ${environment.warmups} warmups · ${environment.machine} · ${browser} · measured ${measuredDate} UTC`;
+    }
 
     document.querySelectorAll("[data-lightbox]").forEach((button) => {
       button.addEventListener("click", () => {
