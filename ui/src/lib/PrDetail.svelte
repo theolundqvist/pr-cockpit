@@ -1909,7 +1909,7 @@
       </div>
     {/if}
   {:else}
-    <div class="detail-frame" class:files-tab={tab === "files"}>
+    <div class="detail-frame" class:conversation-tab={tab === "conversation"} class:files-tab={tab === "files"}>
     <div class="detail" style="--tree-width: {treeWidth}px">
       <a class="back mono" href="#/">← inbox</a>
 
@@ -4792,6 +4792,10 @@
     border-color: var(--border);
     border-bottom-color: var(--border);
     box-shadow: var(--shadow-xs);
+  }
+  .detail-frame.conversation-tab .pr-head,
+  .detail-frame.conversation-tab .cols {
+    max-width: 1120px;
   }
   .cols {
     grid-template-columns: minmax(0, 816px) minmax(248px, 278px);

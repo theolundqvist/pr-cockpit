@@ -201,6 +201,7 @@
 
     .hero-shot {
       margin-top: 24px;
+      max-width: 900px;
       padding: 4px;
       overflow: clip;
     }
@@ -268,13 +269,10 @@
       line-height: 1.02;
     }
 
-
-    .benchmark-intro {
-      max-width: 760px;
-      margin: 0 auto 32px;
-      text-align: center;
+    .hero-benchmark {
+      margin-top: 32px;
+      text-align: left;
     }
-
 
     .benchmark-grid {
       display: grid;
@@ -378,7 +376,6 @@
       font-weight: 650;
       letter-spacing: 0.05em;
       text-overflow: ellipsis;
-      text-transform: uppercase;
       white-space: nowrap;
     }
 
@@ -433,7 +430,6 @@
       color: var(--text-faint);
       font-family: var(--mono);
       font-size: 10px;
-      text-transform: uppercase;
       white-space: nowrap;
     }
 
@@ -482,8 +478,16 @@
       align-items: center;
     }
 
-    .palette-layout .shot-shell {
-      padding: 6px;
+    .palette-layout .palette-shot {
+      padding: 0;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+
+    .palette-shot .shot-button,
+    .palette-shot img {
+      border-radius: var(--radius);
     }
 
     .feature-list {
@@ -528,6 +532,23 @@
       line-height: 1.02;
     }
 
+    .agent-prompt-media {
+      display: grid;
+      min-height: 300px;
+      place-items: center;
+      padding: 24px;
+      border: 0;
+      border-left: 1px solid var(--border);
+      background: #141413;
+      cursor: zoom-in;
+    }
+
+    .agent-prompt-media img {
+      width: 100%;
+      height: auto;
+      border-radius: 8px;
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.42);
+    }
 
     .agent-console {
       display: flex;
@@ -707,12 +728,55 @@
     }
 
     .cli-panel {
+      display: block;
       margin-top: 12px;
-      grid-template-columns: 1fr;
+      padding: 18px;
+    }
+
+    .terminal-window {
+      overflow: hidden;
+      border: 1px solid var(--border-strong);
+      border-radius: 9px;
+      background: #10100f;
+      box-shadow: 0 20px 48px rgba(0, 0, 0, 0.32);
+    }
+
+    .terminal-toolbar {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      min-height: 38px;
+      padding: 0 13px;
+      border-bottom: 1px solid var(--border);
+      background: #242422;
+      color: var(--text-faint);
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+
+    .terminal-lights {
+      display: flex;
+      gap: 7px;
+    }
+
+    .terminal-light {
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+    }
+
+    .terminal-light.close { background: #ff5f57; }
+    .terminal-light.minimize { background: #febc2e; }
+    .terminal-light.maximize { background: #28c840; }
+
+    .terminal-title {
+      grid-column: 2;
     }
 
     .cli-panel .agent-console {
+      min-height: 260px;
       border: 0;
+      background: #10100f;
     }
 
     .console-line .cli-prompt {
@@ -968,7 +1032,8 @@
         order: 2;
       }
 
-      .agent-console {
+      .agent-console,
+      .agent-prompt-media {
         min-height: 260px;
         border-top: 1px solid var(--border);
         border-left: 0;
@@ -1172,28 +1237,11 @@
   <main id="top">
     <section class="wrap hero">
       <h1>GitHub PRs at local speed.</h1>
-      <div class="hero-actions">
-        <a class="button primary" href="#install">Install pr-cockpit</a>
-        <a class="button" href="https://github.com/theolundqvist/pr-cockpit">View source</a>
-      </div>
-      <p class="requirements">macOS · open source</p>
-    </section>
-
-    <div class="wrap shot-shell hero-shot">
-      <button class="shot-button" type="button" data-lightbox="screenshots/inbox-dark.png" aria-label="Open inbox screenshot">
-        <img src="screenshots/inbox-dark.png" alt="pr-cockpit inbox sorting open pull requests into ready to merge, your move, and waiting" width="1100" height="800">
-      </button>
-    </div>
-
-    <section class="section-rule" id="performance">
-      <div class="wrap section">
-        <div class="benchmark-intro">
-          <h2 class="section-title">PR Cockpit vs GitHub.</h2>
-        </div>
+      <div class="hero-benchmark" id="performance">
         <div class="benchmark-grid" aria-label="PR Cockpit and GitHub performance comparison">
           <article class="benchmark-card">
             <div class="benchmark-card-header">
-              <h3 class="benchmark-label">Open a PR</h3>
+              <h2 class="benchmark-label">Open a PR</h2>
               <span class="benchmark-speedup" data-benchmark-speedup="pr-open">—× faster</span>
             </div>
             <div class="benchmark-products">
@@ -1201,39 +1249,39 @@
                 <div class="benchmark-bar">
                   <span class="benchmark-bar-fill" data-benchmark-bar="cockpit:pr-open"></span>
                   <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">PR Cockpit</span>
+                    <span class="benchmark-product-name">PR COCKPIT</span>
                     <div class="benchmark-value-line">
                       <strong class="benchmark-value" data-benchmark-value="cockpit:pr-open">—</strong>
-                      <span class="benchmark-unit">ms</span>
+                      <span class="benchmark-unit">s</span>
                     </div>
                   </div>
                 </div>
                 <div class="benchmark-meta">
                   <p class="benchmark-definition">Inbox row to painted PR detail.</p>
-                  <p class="benchmark-p95"><span data-benchmark-p95="cockpit:pr-open">—</span> ms p95</p>
+                  <p class="benchmark-p95"><span data-benchmark-p95="cockpit:pr-open">—</span> s p95</p>
                 </div>
               </div>
               <div class="benchmark-product">
                 <div class="benchmark-bar">
                   <span class="benchmark-bar-fill" data-benchmark-bar="github:pr-open"></span>
                   <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">GitHub</span>
+                    <span class="benchmark-product-name">GITHUB (healthy)</span>
                     <div class="benchmark-value-line">
                       <strong class="benchmark-value" data-benchmark-value="github:pr-open">—</strong>
-                      <span class="benchmark-unit">ms</span>
+                      <span class="benchmark-unit">s</span>
                     </div>
                   </div>
                 </div>
                 <div class="benchmark-meta">
                   <p class="benchmark-definition">Search result to painted PR detail.</p>
-                  <p class="benchmark-p95"><span data-benchmark-p95="github:pr-open">—</span> ms p95</p>
+                  <p class="benchmark-p95"><span data-benchmark-p95="github:pr-open">—</span> s p95</p>
                 </div>
               </div>
             </div>
           </article>
           <article class="benchmark-card">
             <div class="benchmark-card-header">
-              <h3 class="benchmark-label">Search PRs</h3>
+              <h2 class="benchmark-label">Search PRs</h2>
               <span class="benchmark-speedup" data-benchmark-speedup="pr-search">—× faster</span>
             </div>
             <div class="benchmark-products">
@@ -1241,39 +1289,39 @@
                 <div class="benchmark-bar">
                   <span class="benchmark-bar-fill" data-benchmark-bar="cockpit:pr-search"></span>
                   <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">PR Cockpit</span>
+                    <span class="benchmark-product-name">PR COCKPIT</span>
                     <div class="benchmark-value-line">
                       <strong class="benchmark-value" data-benchmark-value="cockpit:pr-search">—</strong>
-                      <span class="benchmark-unit">ms</span>
+                      <span class="benchmark-unit">s</span>
                     </div>
                   </div>
                 </div>
                 <div class="benchmark-meta">
                   <p class="benchmark-definition">⌘K number query to painted local result.</p>
-                  <p class="benchmark-p95"><span data-benchmark-p95="cockpit:pr-search">—</span> ms p95</p>
+                  <p class="benchmark-p95"><span data-benchmark-p95="cockpit:pr-search">—</span> s p95</p>
                 </div>
               </div>
               <div class="benchmark-product">
                 <div class="benchmark-bar">
                   <span class="benchmark-bar-fill" data-benchmark-bar="github:pr-search"></span>
                   <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">GitHub</span>
+                    <span class="benchmark-product-name">GITHUB (healthy)</span>
                     <div class="benchmark-value-line">
                       <strong class="benchmark-value" data-benchmark-value="github:pr-search">—</strong>
-                      <span class="benchmark-unit">ms</span>
+                      <span class="benchmark-unit">s</span>
                     </div>
                   </div>
                 </div>
                 <div class="benchmark-meta">
                   <p class="benchmark-definition">Number query submit to painted result.</p>
-                  <p class="benchmark-p95"><span data-benchmark-p95="github:pr-search">—</span> ms p95</p>
+                  <p class="benchmark-p95"><span data-benchmark-p95="github:pr-search">—</span> s p95</p>
                 </div>
               </div>
             </div>
           </article>
           <article class="benchmark-card">
             <div class="benchmark-card-header">
-              <h3 class="benchmark-label">Open a diff</h3>
+              <h2 class="benchmark-label">Open a diff</h2>
               <span class="benchmark-speedup" data-benchmark-speedup="diff-open">—× faster</span>
             </div>
             <div class="benchmark-products">
@@ -1281,32 +1329,32 @@
                 <div class="benchmark-bar">
                   <span class="benchmark-bar-fill" data-benchmark-bar="cockpit:diff-open"></span>
                   <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">PR Cockpit</span>
+                    <span class="benchmark-product-name">PR COCKPIT</span>
                     <div class="benchmark-value-line">
                       <strong class="benchmark-value" data-benchmark-value="cockpit:diff-open">—</strong>
-                      <span class="benchmark-unit">ms</span>
+                      <span class="benchmark-unit">s</span>
                     </div>
                   </div>
                 </div>
                 <div class="benchmark-meta">
                   <p class="benchmark-definition">Files click to painted cached diff.</p>
-                  <p class="benchmark-p95"><span data-benchmark-p95="cockpit:diff-open">—</span> ms p95</p>
+                  <p class="benchmark-p95"><span data-benchmark-p95="cockpit:diff-open">—</span> s p95</p>
                 </div>
               </div>
               <div class="benchmark-product">
                 <div class="benchmark-bar">
                   <span class="benchmark-bar-fill" data-benchmark-bar="github:diff-open"></span>
                   <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">GitHub</span>
+                    <span class="benchmark-product-name">GITHUB (healthy)</span>
                     <div class="benchmark-value-line">
                       <strong class="benchmark-value" data-benchmark-value="github:diff-open">—</strong>
-                      <span class="benchmark-unit">ms</span>
+                      <span class="benchmark-unit">s</span>
                     </div>
                   </div>
                 </div>
                 <div class="benchmark-meta">
                   <p class="benchmark-definition">Files changed click to painted diff.</p>
-                  <p class="benchmark-p95"><span data-benchmark-p95="github:diff-open">—</span> ms p95</p>
+                  <p class="benchmark-p95"><span data-benchmark-p95="github:diff-open">—</span> s p95</p>
                 </div>
               </div>
             </div>
@@ -1316,22 +1364,33 @@
           <a href="https://github.com/theolundqvist/pr-cockpit/blob/main/scripts/benchmark-ui.mjs">Reproduce benchmark</a>
         </p>
       </div>
+      <div class="hero-actions">
+        <a class="button primary" href="#install">Install pr-cockpit</a>
+        <a class="button" href="https://github.com/theolundqvist/pr-cockpit">View source</a>
+      </div>
+      <p class="requirements">macOS · open source</p>
     </section>
-
     <section class="section-rule">
       <div class="wrap section palette-layout">
         <div class="feature-list">
           <article class="feature-item">
-            <h2>⌘⌥K. Any PR.</h2>
+            <h2>⌥⌘K. Any PR.</h2>
           </article>
         </div>
-        <div class="shot-shell">
-          <button class="shot-button" type="button" data-lightbox="screenshots/palette-light.png" aria-label="Open command palette screenshot">
-            <img src="screenshots/palette-light.png" alt="Command palette searching recent pull requests across tracked repositories" width="1100" height="800" loading="lazy">
+        <div class="shot-shell palette-shot">
+          <button class="shot-button" type="button" data-lightbox="screenshots/palette-macos.png" aria-label="Open standalone pull request search on a macOS desktop">
+            <img src="screenshots/palette-macos.png" alt="Standalone pull request search opened with Option-Command-K over a blue macOS wallpaper" width="1000" height="760" loading="lazy">
           </button>
         </div>
       </div>
     </section>
+
+    <div class="wrap shot-shell hero-shot">
+      <button class="shot-button" type="button" data-lightbox="screenshots/inbox-dark.png" aria-label="Open inbox screenshot">
+        <img src="screenshots/inbox-dark.png" alt="pr-cockpit inbox sorting open pull requests into ready to merge, your move, and waiting" width="1120" height="1269">
+      </button>
+    </div>
+
 
     <section class="section-rule">
       <div class="wrap section">
@@ -1376,48 +1435,30 @@
           <div class="agents-copy">
             <h2>Press p. Put an agent on it.</h2>
           </div>
-          <div class="agent-console" aria-label="Example agent run">
-            <div class="console-head">
-              <span>Auto-fix · PR #109</span>
-              <span class="console-status">running</span>
-            </div>
-            <div class="console-line"><span>01</span><span>trigger · PR blocked</span></div>
-            <div class="console-line"><span>02</span><span>model · editable</span></div>
-            <div class="console-line"><span>03</span><span>prompt · Auto-fix this blocked PR</span></div>
-            <div class="console-line active"><span>04</span><span>transcript · following live<span class="console-cursor" aria-hidden="true"></span></span></div>
-          </div>
+          <button class="agent-prompt-media" type="button" data-lightbox="screenshots/agent-prompt.png" aria-label="Open agent prompt screenshot">
+            <img src="screenshots/agent-prompt.png" alt="Prompt an agent dialog opened with p on a pull request" width="660" height="250" loading="lazy">
+          </button>
         </div>
 
         <div class="agents-panel cli-panel">
-          <div class="agent-console" aria-label="Example pr-cockpit listen session">
-            <div class="console-head">
-              <span>pr-cockpit CLI · local cache</span>
-              <span class="console-status">listening</span>
+          <div class="terminal-window">
+            <div class="terminal-toolbar" aria-hidden="true">
+              <span class="terminal-lights">
+                <span class="terminal-light close"></span>
+                <span class="terminal-light minimize"></span>
+                <span class="terminal-light maximize"></span>
+              </span>
+              <span class="terminal-title">pr-cockpit — zsh</span>
             </div>
-            <div class="console-line"><span class="cli-prompt">$</span><span>pr-cockpit listen owner/repo#6278</span></div>
-            <div class="console-line"><span></span><span>blocked · waiting for the cached PR to change</span></div>
-            <div class="console-line wake"><span>→</span><span>woke · CI failed on the new push · 1 unresolved thread</span></div>
-            <div class="console-line active"><span class="cli-prompt">$</span><span>pr-cockpit owner/repo#6278<span class="console-cursor" aria-hidden="true"></span></span></div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section class="section-rule" id="visual-reviews">
-      <div class="wrap section">
-        <div class="agents-panel visual-pr-panel">
-          <div class="agents-copy">
-            <h2>The story lives in the PR.</h2>
-            <div class="visual-pr-links">
-              <a class="button primary" href="https://github.com/theolundqvist/justshowme/pull/1">See open-source PR #1</a>
-              <a class="button" href="https://github.com/theolundqvist/justshowme">Get JustShowMe</a>
-            </div>
-          </div>
-          <div class="visual-pr-media">
-            <div class="shot-shell">
-              <button class="shot-button" type="button" data-lightbox="screenshots/justshowme-gh-img.png" aria-label="Open JustShowMe and gh-img pairing slide">
-                <img src="screenshots/justshowme-gh-img.png" alt="A code change becomes a focused JustShowMe story, then gh-img places it inline in a pull request for review" width="1600" height="900" loading="lazy">
-              </button>
+            <div class="agent-console" aria-label="Example pr-cockpit listen session">
+              <div class="console-head">
+                <span>pr-cockpit CLI · local cache</span>
+                <span class="console-status">listening</span>
+              </div>
+              <div class="console-line"><span class="cli-prompt">$</span><span>pr-cockpit listen owner/repo#6278</span></div>
+              <div class="console-line"><span></span><span>blocked · waiting for the cached PR to change</span></div>
+              <div class="console-line wake"><span>→</span><span>woke · CI failed on the new push · 1 unresolved thread</span></div>
+              <div class="console-line active"><span class="cli-prompt">$</span><span>pr-cockpit owner/repo#6278<span class="console-cursor" aria-hidden="true"></span></span></div>
             </div>
           </div>
         </div>
@@ -1501,6 +1542,28 @@
         </div>
       </div>
     </section>
+
+    <section class="section-rule" id="visual-reviews">
+      <div class="wrap section">
+        <div class="agents-panel visual-pr-panel">
+          <div class="agents-copy">
+            <h2>The story lives in the PR.</h2>
+            <div class="visual-pr-links">
+              <a class="button primary" href="https://github.com/theolundqvist/justshowme/pull/1">See open-source PR #1</a>
+              <a class="button" href="https://github.com/theolundqvist/justshowme">Get JustShowMe</a>
+              <a class="button" href="https://github.com/theolundqvist/gh-img">Get gh-img</a>
+            </div>
+          </div>
+          <div class="visual-pr-media">
+            <div class="shot-shell">
+              <button class="shot-button" type="button" data-lightbox="screenshots/justshowme-gh-img.png" aria-label="Open JustShowMe and gh-img pairing slide">
+                <img src="screenshots/justshowme-gh-img.png" alt="A code change becomes a focused JustShowMe story, then gh-img places it inline in a pull request for review" width="1600" height="900" loading="lazy">
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
   </main>
 
   <footer class="wrap footer">
@@ -1521,12 +1584,16 @@
     const lightbox = document.querySelector("#lightbox");
     const lightboxImage = document.querySelector("#lightbox-image");
     const benchmarkResults = window.PR_COCKPIT_BENCHMARKS;
+    const formatSeconds = (milliseconds) => {
+      const seconds = milliseconds / 1000;
+      return seconds < 1 ? (Math.round(milliseconds) / 1000).toFixed(3) : seconds.toFixed(2);
+    };
     if (benchmarkResults) {
       for (const metric of benchmarkResults.metrics) {
         const maxP50 = Math.max(metric.cockpit.p50, metric.github.p50);
         for (const product of ["cockpit", "github"]) {
-          document.querySelector(`[data-benchmark-value="${product}:${metric.id}"]`).textContent = metric[product].p50;
-          document.querySelector(`[data-benchmark-p95="${product}:${metric.id}"]`).textContent = metric[product].p95;
+          document.querySelector(`[data-benchmark-value="${product}:${metric.id}"]`).textContent = formatSeconds(metric[product].p50);
+          document.querySelector(`[data-benchmark-p95="${product}:${metric.id}"]`).textContent = formatSeconds(metric[product].p95);
           document.querySelector(`[data-benchmark-bar="${product}:${metric.id}"]`).style.width = `${metric[product].p50 / maxP50 * 100}%`;
         }
         document.querySelector(`[data-benchmark-speedup="${metric.id}"]`).textContent = `${metric.speedup}× faster`;
@@ -1538,6 +1605,8 @@
         const sourceImage = button.querySelector("img");
         lightboxImage.src = button.dataset.lightbox;
         lightboxImage.alt = sourceImage.alt;
+        const lightboxWidth = sourceImage.naturalWidth || Number(sourceImage.getAttribute("width"));
+        lightbox.style.width = `min(96vw, ${lightboxWidth}px)`;
         lightbox.showModal();
       });
     });
