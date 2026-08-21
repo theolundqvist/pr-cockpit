@@ -38,8 +38,8 @@
   },
   "poster": {
     "path": "docs/screenshots/landing-search-poster.png",
-    "scene": "opening palette frame",
-    "bytes": 266883
+    "scene": "search palette before typing at 0.5 seconds",
+    "bytes": 441010
   },
   "paletteImage": {
     "path": "docs/screenshots/landing-search-palette.png",

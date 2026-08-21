@@ -207,7 +207,7 @@
       overflow: hidden;
       color: var(--green);
       font-family: var(--mono);
-      font-size: 9px;
+      font-size: 10px;
       font-weight: 650;
       line-height: 1.35;
       text-align: right;
@@ -235,7 +235,7 @@
     }
 
     .benchmark-product.unavailable .benchmark-value {
-      font-size: 9px;
+      font-size: 10px;
       letter-spacing: 0.04em;
       text-transform: uppercase;
     }
@@ -291,7 +291,7 @@
       overflow: hidden;
       color: var(--text-dim);
       font-family: var(--mono);
-      font-size: 8px;
+      font-size: 10px;
       font-weight: 650;
       letter-spacing: 0.04em;
       text-overflow: ellipsis;
@@ -322,7 +322,7 @@
     .benchmark-unit {
       color: var(--text-faint);
       font-family: var(--mono);
-      font-size: 8px;
+      font-size: 10px;
     }
 
     .benchmark-meta {
@@ -338,7 +338,7 @@
       margin: 0;
       color: var(--text-faint);
       font-family: var(--mono);
-      font-size: 8px;
+      font-size: 10px;
       white-space: nowrap;
     }
 
@@ -1279,7 +1279,7 @@
       }
 
       .benchmark-product-name {
-        font-size: 8px;
+        font-size: 10px;
       }
 
       .benchmark-value {
@@ -1639,7 +1639,7 @@
           </div>
         </div>
         <div class="video-mat">
-          <video id="search-demo-video" class="search-demo-video" poster="screenshots/landing-search-poster.png?v=20260821" width="1280" height="986" muted playsinline loop aria-label="Screen recording of PR Cockpit: Option-Command-K opens pull request search over the review queue, typing narrows the results to one pull request, and Enter opens its full detail from the local cache.">
+          <video id="search-demo-video" class="search-demo-video" poster="screenshots/landing-search-poster.png?v=20260821-palette" width="1280" height="986" muted playsinline loop aria-label="Screen recording of PR Cockpit: Option-Command-K opens pull request search over the review queue, typing narrows the results to one pull request, and Enter opens its full detail from the local cache.">
             <source src="screenshots/landing-search.webm?v=20260821" type="video/webm" />
             <source src="screenshots/landing-search.mp4?v=20260821" type="video/mp4" />
           </video>
@@ -1676,7 +1676,7 @@
         <div class="section-intro">
           <div>
             <h2 class="section-title">Hide tests. See the change.</h2>
-            <p class="section-lede">react/react#36134 fixes a <code>useDeferredValue</code> stall in one source file, backed by two regression-test files. Press <kbd>x</kbd> and the tests fold away — the product change is the only file left in view.</p>
+            <p class="section-lede">react/react#36134 fixes a <code>useDeferredValue</code> stall in one source file, backed by two regression-test files. Press <kbd>x</kbd> and the two test diffs fold closed — the product change stays open.</p>
           </div>
         </div>
         <div class="compare-grid">
@@ -1689,10 +1689,10 @@
             </div>
           </figure>
           <figure class="compare-side">
-            <figcaption class="compare-label">PR Cockpit · 2 test files hidden</figcaption>
+            <figcaption class="compare-label">PR Cockpit · 2 test diffs folded</figcaption>
             <div class="shot-shell">
-              <button class="shot-button" type="button" data-lightbox="screenshots/landing-hide-tests-cockpit.png?v=react-36134" aria-label="Open PR Cockpit hidden tests screenshot">
-                <img src="screenshots/landing-hide-tests-cockpit.png?v=react-36134" alt="PR Cockpit unified diff for react/react#36134 with the two regression-test files hidden and only ReactFiberWorkLoop.js left in view" width="1280" height="980" loading="lazy">
+              <button class="shot-button" type="button" data-lightbox="screenshots/landing-hide-tests-cockpit.png?v=react-36134" aria-label="Open PR Cockpit folded tests screenshot">
+                <img src="screenshots/landing-hide-tests-cockpit.png?v=react-36134" alt="PR Cockpit unified diff for react/react#36134 with both regression-test diffs folded and ReactFiberWorkLoop.js expanded" width="1280" height="980" loading="lazy">
               </button>
             </div>
           </figure>
@@ -2072,6 +2072,7 @@
       showcase.querySelector("[data-showcase-prev]").addEventListener("click", () => activateShowcase(showcaseIndex - 1, false));
       showcase.querySelector("[data-showcase-next]").addEventListener("click", () => activateShowcase(showcaseIndex + 1, false));
       const handleShowcaseKey = (event) => {
+        if (event.currentTarget === showcaseStage && event.target !== showcaseStage) return;
         const step = { ArrowLeft: -1, ArrowRight: 1 }[event.key];
         if (step) {
           event.preventDefault();
