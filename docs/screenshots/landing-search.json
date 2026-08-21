@@ -1,98 +1,49 @@
 {
-  "script": "scripts/record-landing-search.mjs",
-  "snapshot": "server/mockData/rust-lang-rust",
-  "capturedAt": "2026-08-21T14:02:37.671Z",
+  "source": "Screen Recording 2026-08-21 at 21.42.07.mov",
+  "capture": "manual macOS screen recording of the installed PR Cockpit app",
   "repo": "rust-lang/rust",
   "pr": 160859,
   "prTitle": "`core::num::f16b` Rust's 16bit Brain Float",
-  "query": "core num f16b",
-  "capture": "headless Electron surface capture composited over the wallpaper by ffmpeg; no OS screen recording, no pointer or cursor layer in any frame",
-  "canvasCss": {
-    "width": 1280,
-    "height": 960
+  "sourceVideo": {
+    "width": 3440,
+    "height": 1440,
+    "durationSeconds": 7.88
   },
-  "canvas": "every frame is composited on one fixed 1280x960 stage; no window or canvas is resized mid-video",
-  "renderScale": 1,
-  "zoomFactor": 1,
-  "detailRestsAt": "scroll top, never scrolled into the slide: the description image is cut by the fold",
-  "desktop": {
-    "source": "CSS gradient rendered at 1280x960 by this script",
-    "role": "stands in for the macOS desktop; the transparent palette panel and the app window are composited onto it, so no synthetic app plane sits behind the palette"
-  },
-  "shell": {
-    "runtime": "Electron",
-    "paletteWindow": {
-      "width": 680,
-      "height": 440,
-      "origin": {
-        "x": 300,
-        "y": 260
-      },
-      "fixed": "content size asserted at 680x440 before the shortcut, on show, and with the result rendered"
-    },
-    "mainWindow": {
-      "width": 1120,
-      "height": 840,
-      "origin": {
-        "x": 80,
-        "y": 60
-      },
-      "fixed": "content size asserted at 1120x840 when the detail opens; zoom factor left at 1"
-    },
-    "trigger": "The isolated recorder presents the same standalone BrowserWindow bound to Command+Option+K; OS global-shortcut registration is not exercised."
-  },
-  "flow": [
-    "macOS desktop, PR Cockpit window not shown",
-    "standalone 680x440 Electron search palette over the desktop",
-    "type word query at 55ms/char",
-    "Enter",
-    "hard cut to the 1120x840 app window on PR detail #/pr/rust-lang/rust/160859 at scroll top"
-  ],
-  "capturedPr": {
-    "changedLines": 1009,
-    "additions": 1002,
-    "deletions": 7,
-    "mergeable": "MERGEABLE",
-    "ci": "SUCCESS"
-  },
-  "fixtureAugmentation": {
-    "descriptionImage": {
-      "alt": "f16b compiler surface",
-      "source": "Generated from the captured PR body for the deterministic landing demo",
-      "originalBodySha256": "06746df39c8e968ccc229eb2bd8167c4e5ee9db6faa3258b5b2b388d5693900c"
-    }
-  },
-  "descriptionImageFraming": {
-    "topPx": 488,
-    "bottomPx": 1042,
-    "foldPx": 840
+  "crop": {
+    "width": 1476,
+    "height": 1138,
+    "x": 985,
+    "y": 91,
+    "windowEdgePaddingPixels": 100.5,
+    "note": "one fixed crop preserves the complete recording with equal source-pixel padding between the app window and every crop edge"
   },
   "encode": {
-    "mp4Crf": 18,
-    "webmCrf": 24,
+    "width": 1280,
+    "height": 986,
+    "frameRate": 30,
+    "durationSeconds": 7.866,
     "colorSpace": "bt709",
-    "note": "single filter pass feeds both encoders; the poster matches the opening desktop frame"
+    "mp4Crf": 20,
+    "webmCrf": 30
+  },
+  "video": {
+    "path": "docs/screenshots/landing-search.webm",
+    "codec": "vp9",
+    "bytes": 253742
+  },
+  "fallback": {
+    "path": "docs/screenshots/landing-search.mp4",
+    "codec": "h264",
+    "bytes": 467254
+  },
+  "poster": {
+    "path": "docs/screenshots/landing-search-poster.png",
+    "scene": "opening palette frame",
+    "bytes": 266883
   },
   "paletteImage": {
     "path": "docs/screenshots/landing-search-palette.png",
     "scene": "standalone Electron palette with word query over the desktop",
     "bytes": 577662
-  },
-  "video": {
-    "path": "docs/screenshots/landing-search.webm",
-    "codec": "vp9",
-    "durationSeconds": 6.44,
-    "bytes": 264973
-  },
-  "fallback": {
-    "path": "docs/screenshots/landing-search.mp4",
-    "codec": "h264",
-    "durationSeconds": 6.44,
-    "bytes": 322924
-  },
-  "poster": {
-    "path": "docs/screenshots/landing-search-poster.png",
-    "scene": "opening desktop frame before the palette appears",
-    "bytes": 596021
   }
 }

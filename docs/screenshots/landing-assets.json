@@ -60,11 +60,12 @@
       "width": 1280,
       "height": 980,
       "shotWidth": 1200,
-      "shotHeight": 900,
+      "shotHeight": 390,
       "padding": 40,
       "theme": "light",
-      "source": ".scratch/landing-real/hide-tests-light.png",
-      "scenario": "jestjs/jest#16366 unified diff after hiding 15 test files"
+      "treatment": "macOS wallpaper",
+      "source": ".scratch/landing-real/hide-tests-react-light.png",
+      "scenario": "react/react#36134 unified diff with 2 test files folded away"
     },
     {
       "path": "docs/screenshots/landing-hide-tests-github.png",
@@ -74,8 +75,9 @@
       "shotHeight": 900,
       "padding": 40,
       "theme": "light",
-      "source": ".scratch/landing-real/github-files-16366.webp",
-      "scenario": "real GitHub jestjs/jest#16366 files view at 85% zoom"
+      "treatment": "raw GitHub screenshot on white",
+      "source": ".scratch/landing-real/github-files-36134.png",
+      "scenario": "real GitHub react/react#36134 files view"
     }
   ]
 }

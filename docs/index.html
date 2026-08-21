@@ -73,62 +73,12 @@
       margin-inline: auto;
     }
 
-    .nav {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      height: 60px;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-    }
-
-    .brand {
-      display: inline-flex;
-      align-items: center;
-      gap: 10px;
-      font-family: var(--mono);
-      font-size: 14px;
-      font-weight: 700;
-      letter-spacing: -0.02em;
-    }
-
-    .brand-mark {
-      display: block;
-      width: 25px;
-      height: 25px;
-    }
-
-    .brand-mark img {
-      display: block;
-      width: 100%;
-      height: 100%;
-    }
-
-    .nav-links {
-      display: flex;
-      align-items: center;
-      gap: 22px;
-      color: var(--text-dim);
-      font-size: 14px;
-    }
-
-    .nav-links a:hover,
     .footer a:hover {
       color: var(--text);
     }
 
-    .nav-install {
-      display: inline-flex;
-      align-items: center;
-      min-height: 34px;
-      padding: 0 13px;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      background: var(--panel-raised);
-      color: var(--text);
-    }
-
     .hero {
-      padding: 134.4px 0 67.2px;
+      padding: 88px 0 56px;
       text-align: center;
     }
 
@@ -222,13 +172,13 @@
 
     .benchmark-grid {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 12px;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
     }
 
     .benchmark-card {
       min-width: 0;
-      padding: 16px;
+      padding: 11px;
       overflow: hidden;
       border: 1px solid var(--border);
       border-radius: var(--radius);
@@ -238,26 +188,29 @@
     .benchmark-card-header {
       display: flex;
       min-width: 0;
-      align-items: center;
+      align-items: flex-start;
       justify-content: space-between;
-      gap: 10px;
-      margin-bottom: 14px;
+      gap: 7px;
+      margin-bottom: 10px;
     }
 
     .benchmark-label {
       margin: 0;
-      font-size: 19px;
+      font-size: 15px;
       letter-spacing: -0.025em;
+      line-height: 1.2;
     }
 
     .benchmark-speedup {
       flex: none;
-      max-width: 100%;
+      max-width: 45%;
       overflow: hidden;
       color: var(--green);
       font-family: var(--mono);
-      font-size: 12px;
+      font-size: 9px;
       font-weight: 650;
+      line-height: 1.35;
+      text-align: right;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
@@ -265,7 +218,7 @@
     .benchmark-products {
       display: grid;
       min-width: 0;
-      gap: 10px;
+      gap: 7px;
     }
     .benchmark-product.origin .benchmark-bar {
       border-color: color-mix(in srgb, var(--blue) 36%, var(--border));
@@ -282,7 +235,7 @@
     }
 
     .benchmark-product.unavailable .benchmark-value {
-      font-size: 12px;
+      font-size: 9px;
       letter-spacing: 0.04em;
       text-transform: uppercase;
     }
@@ -294,7 +247,7 @@
 
     .benchmark-bar {
       position: relative;
-      height: 44px;
+      height: 35px;
       min-width: 0;
       overflow: hidden;
       border: 1px solid var(--border);
@@ -329,8 +282,8 @@
       min-width: 0;
       align-items: center;
       justify-content: space-between;
-      gap: 10px;
-      padding: 0 10px;
+      gap: 6px;
+      padding: 0 8px;
     }
 
     .benchmark-product-name {
@@ -338,9 +291,9 @@
       overflow: hidden;
       color: var(--text-dim);
       font-family: var(--mono);
-      font-size: 11px;
+      font-size: 8px;
       font-weight: 650;
-      letter-spacing: 0.05em;
+      letter-spacing: 0.04em;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
@@ -355,12 +308,12 @@
       min-width: 0;
       flex: none;
       align-items: baseline;
-      gap: 5px;
+      gap: 3px;
       white-space: nowrap;
     }
 
     .benchmark-value {
-      font-size: 22px;
+      font-size: 17px;
       font-weight: 650;
       letter-spacing: -0.05em;
       line-height: 1;
@@ -369,13 +322,13 @@
     .benchmark-unit {
       color: var(--text-faint);
       font-family: var(--mono);
-      font-size: 10px;
+      font-size: 8px;
     }
 
     .benchmark-meta {
       display: flex;
       justify-content: flex-end;
-      padding: 7px 2px 0;
+      padding: 4px 1px 0;
     }
     .benchmark-meta[hidden] { display: none; }
 
@@ -385,7 +338,7 @@
       margin: 0;
       color: var(--text-faint);
       font-family: var(--mono);
-      font-size: 10px;
+      font-size: 8px;
       white-space: nowrap;
     }
 
@@ -422,8 +375,9 @@
 
     .compare-grid {
       display: grid;
-      gap: 40px;
-      max-width: 1000px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 24px;
+      max-width: 1080px;
       margin: 40px auto 0;
     }
 
@@ -454,75 +408,122 @@
     }
 
 
+    .showcase {
+      max-width: 1080px;
+      margin-inline: auto;
+    }
+
+    .showcase-stage {
+      position: relative;
+      height: auto;
+      aspect-ratio: 1.65;
+      overflow: hidden;
+      touch-action: pan-y;
+    }
+
+    .showcase-panel {
+      position: absolute;
+      top: 20px;
+      left: 50%;
+      width: min(72%, 820px);
+      translate: -50% 0;
+      opacity: 0;
+      transform: scale(0.78);
+      transition: transform 380ms cubic-bezier(0.22, 1, 0.36, 1), opacity 260ms ease;
+      pointer-events: none;
+    }
+
+    .showcase-panel.is-active {
+      z-index: 2;
+      opacity: 1;
+      transform: translateX(0) scale(1);
+      pointer-events: auto;
+    }
+
+    .showcase-panel.is-prev {
+      z-index: 1;
+      opacity: 0.58;
+      transform: translateX(-98%) scale(0.86);
+    }
+
+    .showcase-panel.is-next {
+      z-index: 1;
+      opacity: 0.58;
+      transform: translateX(98%) scale(0.86);
+    }
+
     .showcase-controls {
       display: flex;
-      flex-wrap: wrap;
       align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      margin-bottom: 20px;
+      justify-content: center;
+      margin-top: 14px;
     }
 
     .showcase-tabs {
       display: flex;
       flex-wrap: wrap;
-      gap: 8px;
+      justify-content: center;
+      gap: 7px;
     }
 
     .showcase-tab {
       display: inline-flex;
       align-items: center;
-      gap: 8px;
-      min-height: 36px;
-      padding: 0 14px;
+      gap: 6px;
+      min-height: 31px;
+      padding: 0 10px;
       border: 1px solid var(--border);
-      border-radius: 8px;
-      background: var(--panel-raised);
-      color: var(--text-dim);
-      font-size: 13px;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--text-faint);
+      font-size: 11px;
       font-weight: 600;
       cursor: pointer;
     }
 
     .showcase-tab[aria-selected="true"] {
-      border-color: var(--border-strong);
-      background: var(--surface);
+      border-color: color-mix(in srgb, var(--green) 45%, var(--border));
+      background: var(--green-soft);
       color: var(--text);
-    }
-
-    .showcase-arrows {
-      display: flex;
-      gap: 8px;
     }
 
     .showcase-arrow {
-      width: 36px;
-      height: 36px;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      background: var(--panel-raised);
+      position: absolute;
+      z-index: 3;
+      top: 50%;
+      display: grid;
+      width: 38px;
+      height: 38px;
+      padding: 0;
+      place-items: center;
+      border: 1px solid var(--border-strong);
+      border-radius: 50%;
+      background: color-mix(in srgb, var(--panel) 88%, transparent);
       color: var(--text);
       cursor: pointer;
+      transform: translateY(-50%);
+      backdrop-filter: blur(10px);
+    }
+
+    .showcase-arrow[data-showcase-prev] {
+      left: 5%;
+    }
+
+    .showcase-arrow[data-showcase-next] {
+      right: 5%;
     }
 
     .showcase-tab:hover,
     .showcase-arrow:hover {
-      border-color: var(--border-strong);
+      border-color: var(--text-dim);
       color: var(--text);
     }
 
     .showcase-tab:focus-visible,
-    .showcase-arrow:focus-visible {
+    .showcase-arrow:focus-visible,
+    .showcase-stage:focus-visible {
       outline: 2px solid var(--green);
-      outline-offset: 2px;
-    }
-
-    .showcase-panel {
-      display: block;
-    }
-
-    .showcase-panel[hidden] {
-      display: none;
+      outline-offset: 3px;
     }
 
     .showcase-steps {
@@ -1147,6 +1148,12 @@
         height: 30px;
       }
     }
+    @media (max-width: 1100px) {
+      .benchmark-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
     @media (max-width: 900px) {
       .section {
         padding: 60px 0;
@@ -1169,7 +1176,7 @@
       }
 
       .benchmark-grid {
-        grid-template-columns: 1fr;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
       }
 
 
@@ -1187,9 +1194,8 @@
         padding: 28px;
       }
 
-      .compare-grid,
       .showcase-panel {
-        grid-template-columns: 1fr;
+        width: min(78%, 760px);
       }
     }
 
@@ -1198,20 +1204,46 @@
         width: min(calc(100% - 24px), var(--page));
       }
 
-      .nav {
-        height: 56px;
-      }
-
-      .nav-links > a:first-child {
-        display: none;
-      }
-
       .hero {
-        padding: 89.6px 0 44.8px;
+        padding: 64px 0 40px;
       }
 
       h1 {
         font-size: 44px;
+      }
+      .benchmark-grid,
+      .compare-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .showcase-stage {
+        aspect-ratio: 1.35;
+      }
+
+      .showcase-panel {
+        top: 12px;
+        width: 85%;
+      }
+
+      .showcase-panel.is-prev {
+        transform: translateX(-94%) scale(0.86);
+      }
+
+      .showcase-panel.is-next {
+        transform: translateX(94%) scale(0.86);
+      }
+
+      .showcase-arrow {
+        width: 34px;
+        height: 34px;
+      }
+
+      .showcase-arrow[data-showcase-prev] {
+        left: 2px;
+      }
+
+      .showcase-arrow[data-showcase-next] {
+        right: 2px;
       }
 
 
@@ -1234,26 +1266,24 @@
       }
 
       .benchmark-card {
-        padding: 14px;
+        padding: 11px;
       }
 
       .benchmark-card-header {
-        flex-direction: row;
-        align-items: center;
-        justify-content: space-between;
+        align-items: flex-start;
       }
 
       .benchmark-bar-content {
-        gap: 10px;
-        padding: 0 12px;
+        gap: 6px;
+        padding: 0 8px;
       }
 
       .benchmark-product-name {
-        font-size: 10px;
+        font-size: 8px;
       }
 
       .benchmark-value {
-        font-size: 22px;
+        font-size: 17px;
       }
 
       .benchmark-meta {
@@ -1317,9 +1347,9 @@
 
     /* Search-to-PR demo */
     .search-demo-intro { margin-bottom: 28px; }
-    .video-mat { position: relative; }
+    .video-mat { position: relative; width: min(100%, 920px); margin-inline: auto; }
     .search-demo-video { display: block; width: 100%; height: auto; border-radius: 8px; background: #f9f9f7; box-shadow: 0 10px 36px rgba(0, 10, 30, 0.35); }
-    .search-demo-decision { display: grid; grid-template-columns: 0.8fr 1.2fr; gap: 40px; align-items: start; margin-top: 30px; }
+    .search-demo-decision { display: grid; grid-template-columns: 0.8fr 1.2fr; gap: 40px; align-items: start; width: min(100%, 920px); margin: 30px auto 0; }
     .search-demo-decision h3 { margin: 0; font-size: clamp(25px, 3.2vw, 38px); letter-spacing: -0.04em; line-height: 1.04; }
     .search-demo-decision p { max-width: 620px; margin: 3px 0 0; color: var(--text-dim); font-size: 16px; line-height: 1.65; }
 
@@ -1380,17 +1410,6 @@
   </style>
 </head>
 <body>
-  <header class="wrap nav">
-    <a class="brand" href="#top" aria-label="pr-cockpit home">
-      <span class="brand-mark" aria-hidden="true"><img src="assets/icon.png" alt="" width="25" height="25"></span>
-      <span>pr-cockpit</span>
-    </a>
-    <nav class="nav-links" aria-label="Primary navigation">
-      <a href="#how-it-works">How it works</a>
-      <a href="https://github.com/theolundqvist/pr-cockpit">GitHub</a>
-      <a class="nav-install" href="#install">Install</a>
-    </nav>
-  </header>
 
   <main id="top">
     <section class="wrap hero">
@@ -1620,9 +1639,9 @@
           </div>
         </div>
         <div class="video-mat">
-          <video id="search-demo-video" class="search-demo-video" poster="screenshots/landing-search-poster.png" width="1280" height="960" muted playsinline loop aria-label="Screen recording of PR Cockpit: Option-Command-K opens pull request search over the review queue, typing narrows the results to one pull request, and Enter opens its full detail from the local cache.">
-            <source src="screenshots/landing-search.webm" type="video/webm" />
-            <source src="screenshots/landing-search.mp4" type="video/mp4" />
+          <video id="search-demo-video" class="search-demo-video" poster="screenshots/landing-search-poster.png?v=20260821" width="1280" height="986" muted playsinline loop aria-label="Screen recording of PR Cockpit: Option-Command-K opens pull request search over the review queue, typing narrows the results to one pull request, and Enter opens its full detail from the local cache.">
+            <source src="screenshots/landing-search.webm?v=20260821" type="video/webm" />
+            <source src="screenshots/landing-search.mp4?v=20260821" type="video/mp4" />
           </video>
           <button class="search-demo-toggle" type="button" aria-controls="search-demo-video" aria-pressed="false" data-search-demo-toggle>▶ Play</button>
         </div>
@@ -1657,23 +1676,23 @@
         <div class="section-intro">
           <div>
             <h2 class="section-title">Hide tests. See the change.</h2>
-            <p class="section-lede">jestjs/jest#16366: 15 test files among 20 changed. Press <kbd>x</kbd> and they fold away — 5 files remain, and the PR itself is untouched.</p>
+            <p class="section-lede">react/react#36134 fixes a <code>useDeferredValue</code> stall in one source file, backed by two regression-test files. Press <kbd>x</kbd> and the tests fold away — the product change is the only file left in view.</p>
           </div>
         </div>
         <div class="compare-grid">
           <figure class="compare-side">
-            <figcaption class="compare-label">GitHub · all 20 changed files</figcaption>
+            <figcaption class="compare-label">GitHub · all 3 changed files</figcaption>
             <div class="shot-shell">
-              <button class="shot-button" type="button" data-lightbox="screenshots/landing-hide-tests-github.png" aria-label="Open GitHub files changed screenshot">
-                <img src="screenshots/landing-hide-tests-github.png" alt="GitHub files changed view of jestjs/jest#16366 listing all 20 changed files at 85% zoom" width="1280" height="980" loading="lazy">
+              <button class="shot-button" type="button" data-lightbox="screenshots/landing-hide-tests-github.png?v=react-36134" aria-label="Open GitHub files changed screenshot">
+                <img src="screenshots/landing-hide-tests-github.png?v=react-36134" alt="GitHub files changed view of react/react#36134 showing one reconciler source file and two regression-test files" width="1280" height="980" loading="lazy">
               </button>
             </div>
           </figure>
           <figure class="compare-side">
-            <figcaption class="compare-label">PR Cockpit · 15 test files hidden</figcaption>
+            <figcaption class="compare-label">PR Cockpit · 2 test files hidden</figcaption>
             <div class="shot-shell">
-              <button class="shot-button" type="button" data-lightbox="screenshots/landing-hide-tests-cockpit.png" aria-label="Open PR Cockpit hidden tests screenshot">
-                <img src="screenshots/landing-hide-tests-cockpit.png" alt="PR Cockpit unified diff for jestjs/jest#16366 showing the All changes toolbar and 5 files after hiding 15 test files" width="1280" height="980" loading="lazy">
+              <button class="shot-button" type="button" data-lightbox="screenshots/landing-hide-tests-cockpit.png?v=react-36134" aria-label="Open PR Cockpit hidden tests screenshot">
+                <img src="screenshots/landing-hide-tests-cockpit.png?v=react-36134" alt="PR Cockpit unified diff for react/react#36134 with the two regression-test files hidden and only ReactFiberWorkLoop.js left in view" width="1280" height="980" loading="lazy">
               </button>
             </div>
           </figure>
@@ -1689,44 +1708,44 @@
           </div>
         </div>
         <div class="showcase">
+          <div class="showcase-stage" tabindex="0" aria-label="Review action carousel">
+            <div class="showcase-panel is-active" id="showcase-panel-agent" role="tabpanel" aria-labelledby="showcase-tab-agent">
+              <div class="shot-shell showcase-shot">
+                <button class="shot-button" type="button" data-lightbox="screenshots/landing-agent-prompt.png" aria-label="Open agent prompt screenshot">
+                  <img src="screenshots/landing-agent-prompt.png" alt="Prompt an agent dialog opened with p on a pull request" width="1280" height="980" loading="lazy">
+                </button>
+              </div>
+            </div>
+            <div class="showcase-panel is-next" id="showcase-panel-editor" role="tabpanel" aria-labelledby="showcase-tab-editor" aria-hidden="true" inert>
+              <div class="shot-shell showcase-shot">
+                <button class="shot-button" type="button" data-lightbox="screenshots/landing-editor.png" aria-label="Open inline editor screenshot">
+                  <img src="screenshots/landing-editor.png" alt="Full-file editor opened at a changed line of a pull request file, ready to commit back to the PR" width="1280" height="980" loading="lazy">
+                </button>
+              </div>
+            </div>
+            <div class="showcase-panel" id="showcase-panel-revert" role="tabpanel" aria-labelledby="showcase-tab-revert" aria-hidden="true" inert>
+              <div class="shot-shell showcase-shot">
+                <button class="shot-button" type="button" data-lightbox="screenshots/landing-revert-menu.png" aria-label="Open revert hunk context menu screenshot">
+                  <img src="screenshots/landing-revert-menu.png" alt="Right-click context menu on a unified diff hunk offering Revert hunk" width="1280" height="980" loading="lazy">
+                </button>
+              </div>
+            </div>
+            <div class="showcase-panel is-prev" id="showcase-panel-history" role="tabpanel" aria-labelledby="showcase-tab-history" aria-hidden="true" inert>
+              <div class="shot-shell showcase-shot">
+                <button class="shot-button" type="button" data-lightbox="screenshots/landing-file-history.png" aria-label="Open file history screenshot">
+                  <img src="screenshots/landing-file-history.png" alt="File history view listing earlier commits with the selected commit's diff" width="1280" height="980" loading="lazy">
+                </button>
+              </div>
+            </div>
+            <button class="showcase-arrow" type="button" data-showcase-prev aria-label="Previous feature">←</button>
+            <button class="showcase-arrow" type="button" data-showcase-next aria-label="Next feature">→</button>
+          </div>
           <div class="showcase-controls">
             <div class="showcase-tabs" role="tablist" aria-label="Review actions">
               <button class="showcase-tab" id="showcase-tab-agent" type="button" role="tab" aria-selected="true" aria-controls="showcase-panel-agent"><kbd>p</kbd>Agent</button>
               <button class="showcase-tab" id="showcase-tab-editor" type="button" role="tab" aria-selected="false" tabindex="-1" aria-controls="showcase-panel-editor"><kbd>e</kbd>Edit</button>
               <button class="showcase-tab" id="showcase-tab-revert" type="button" role="tab" aria-selected="false" tabindex="-1" aria-controls="showcase-panel-revert">Revert hunk</button>
               <button class="showcase-tab" id="showcase-tab-history" type="button" role="tab" aria-selected="false" tabindex="-1" aria-controls="showcase-panel-history"><kbd>h</kbd>History</button>
-            </div>
-            <div class="showcase-arrows">
-              <button class="showcase-arrow" type="button" data-showcase-prev aria-label="Previous feature">←</button>
-              <button class="showcase-arrow" type="button" data-showcase-next aria-label="Next feature">→</button>
-            </div>
-          </div>
-          <div class="showcase-panel" id="showcase-panel-agent" role="tabpanel" tabindex="0" aria-labelledby="showcase-tab-agent">
-            <div class="shot-shell showcase-shot">
-              <button class="shot-button" type="button" data-lightbox="screenshots/landing-agent-prompt.png" aria-label="Open agent prompt screenshot">
-                <img src="screenshots/landing-agent-prompt.png" alt="Prompt an agent dialog opened with p on a pull request" width="1280" height="980" loading="lazy">
-              </button>
-            </div>
-          </div>
-          <div class="showcase-panel" id="showcase-panel-editor" role="tabpanel" tabindex="0" aria-labelledby="showcase-tab-editor" hidden>
-            <div class="shot-shell showcase-shot">
-              <button class="shot-button" type="button" data-lightbox="screenshots/landing-editor.png" aria-label="Open inline editor screenshot">
-                <img src="screenshots/landing-editor.png" alt="Full-file editor opened at a changed line of a pull request file, ready to commit back to the PR" width="1280" height="980" loading="lazy">
-              </button>
-            </div>
-          </div>
-          <div class="showcase-panel" id="showcase-panel-revert" role="tabpanel" tabindex="0" aria-labelledby="showcase-tab-revert" hidden>
-            <div class="shot-shell showcase-shot">
-              <button class="shot-button" type="button" data-lightbox="screenshots/landing-revert-menu.png" aria-label="Open revert hunk context menu screenshot">
-                <img src="screenshots/landing-revert-menu.png" alt="Right-click context menu on a unified diff hunk offering Revert hunk" width="1280" height="980" loading="lazy">
-              </button>
-            </div>
-          </div>
-          <div class="showcase-panel" id="showcase-panel-history" role="tabpanel" tabindex="0" aria-labelledby="showcase-tab-history" hidden>
-            <div class="shot-shell showcase-shot">
-              <button class="shot-button" type="button" data-lightbox="screenshots/landing-file-history.png" aria-label="Open file history screenshot">
-                <img src="screenshots/landing-file-history.png" alt="File history view listing earlier commits with the selected commit's diff" width="1280" height="980" loading="lazy">
-              </button>
             </div>
           </div>
         </div>
@@ -2030,6 +2049,7 @@
   <script>
     {
       const showcase = document.querySelector(".showcase");
+      const showcaseStage = showcase.querySelector(".showcase-stage");
       const showcaseTabs = [...showcase.querySelectorAll("[role=tab]")];
       const showcasePanels = showcaseTabs.map((tab) => document.getElementById(tab.getAttribute("aria-controls")));
       let showcaseIndex = 0;
@@ -2037,25 +2057,39 @@
         showcaseIndex = (index + showcaseTabs.length) % showcaseTabs.length;
         showcaseTabs.forEach((tab, i) => {
           const selected = i === showcaseIndex;
+          const distance = (i - showcaseIndex + showcaseTabs.length) % showcaseTabs.length;
           tab.setAttribute("aria-selected", String(selected));
           tab.tabIndex = selected ? 0 : -1;
-          showcasePanels[i].hidden = !selected;
+          showcasePanels[i].classList.toggle("is-active", selected);
+          showcasePanels[i].classList.toggle("is-next", distance === 1);
+          showcasePanels[i].classList.toggle("is-prev", distance === showcaseTabs.length - 1);
+          showcasePanels[i].setAttribute("aria-hidden", String(!selected));
+          showcasePanels[i].inert = !selected;
         });
         if (focusTab) showcaseTabs[showcaseIndex].focus();
       };
       showcaseTabs.forEach((tab, i) => tab.addEventListener("click", () => activateShowcase(i, false)));
       showcase.querySelector("[data-showcase-prev]").addEventListener("click", () => activateShowcase(showcaseIndex - 1, false));
       showcase.querySelector("[data-showcase-next]").addEventListener("click", () => activateShowcase(showcaseIndex + 1, false));
-      showcase.querySelector("[role=tablist]").addEventListener("keydown", (event) => {
+      const handleShowcaseKey = (event) => {
         const step = { ArrowLeft: -1, ArrowRight: 1 }[event.key];
         if (step) {
           event.preventDefault();
-          activateShowcase(showcaseIndex + step, true);
+          activateShowcase(showcaseIndex + step, event.currentTarget !== showcaseStage);
         } else if (event.key === "Home" || event.key === "End") {
           event.preventDefault();
-          activateShowcase(event.key === "Home" ? 0 : showcaseTabs.length - 1, true);
+          activateShowcase(event.key === "Home" ? 0 : showcaseTabs.length - 1, event.currentTarget !== showcaseStage);
         }
-      });
+      };
+      showcase.querySelector("[role=tablist]").addEventListener("keydown", handleShowcaseKey);
+      showcaseStage.addEventListener("keydown", handleShowcaseKey);
+      let showcaseTouchStart = 0;
+      showcaseStage.addEventListener("touchstart", (event) => { showcaseTouchStart = event.changedTouches[0].clientX; }, { passive: true });
+      showcaseStage.addEventListener("touchend", (event) => {
+        const distance = event.changedTouches[0].clientX - showcaseTouchStart;
+        if (Math.abs(distance) >= 40) activateShowcase(showcaseIndex + (distance < 0 ? 1 : -1), false);
+      }, { passive: true });
+      activateShowcase(0, false);
     }
 
 
