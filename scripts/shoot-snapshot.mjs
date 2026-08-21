@@ -13,6 +13,8 @@ const QUEUE_VIEWPORT = { width: 1000, height: 750 };
 // The landing revert frame is cropped around the context menu so the menu spans about a quarter
 // of the frame width and the surrounding unified hunk stays visible.
 const REVERT_MENU_WIDTH_SHARE = 0.25;
+// The app topbar stays fixed while the files page scrolls; capture below it so “All changes” is the first row.
+const HIDE_TESTS_TOPBAR_HEIGHT = 48;
 const CONTENT_TYPE_BY_EXTENSION = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -265,12 +267,17 @@ function scenariosFor(snapshot, roles, profile, viewport) {
         name: "hide-tests",
         route: `#/pr/${repo}/${roles.hideTests.number}/files`,
         ready: ".files-layout .diff",
+        viewport: { width: viewport.width, height: viewport.height + HIDE_TESTS_TOPBAR_HEIGHT },
         interact: async (page) => {
           await page.getByRole("button", { name: /hide \d+ test files/ }).click();
           await page.getByRole("button", { name: /show \d+ test files/ }).waitFor();
           await positionFiles(page);
         },
         verify: (page) => verifyAligned(page, ".tree-pane", ".diff-pane"),
+        capture: () => ({
+          clip: { x: 0, y: HIDE_TESTS_TOPBAR_HEIGHT, width: viewport.width, height: viewport.height },
+          viewport,
+        }),
       },
       {
         name: "revert-menu",

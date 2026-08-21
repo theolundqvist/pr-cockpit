@@ -599,234 +599,222 @@
       margin: 26px 0 0;
     }
 
-    .architecture-stage {
-      position: relative;
-      overflow: hidden;
-      aspect-ratio: 1200 / 560;
-      border: 1px solid #343432;
-      border-radius: 16px;
-      background: #191918;
-      color: #f4f4f1;
-    }
-
-    .architecture-wires {
-      position: absolute;
-      inset: 0;
-      z-index: 1;
-      width: 100%;
-      height: 100%;
-      pointer-events: none;
-    }
-
-    .wires-mobile {
-      display: none;
-    }
-
-    .architecture-wire {
-      fill: none;
-      stroke: currentColor;
-      vector-effect: non-scaling-stroke;
-    }
-
-    .architecture-wire.marker {
-      color: var(--yellow);
-      stroke-width: 2;
-      stroke-dasharray: 5 7;
-    }
-
-    .architecture-wire.github {
-      color: var(--blue);
-      stroke-width: 2;
-    }
-
-    .architecture-wire.local {
-      color: var(--green);
-      stroke-width: 2;
-    }
-
-    .architecture-wire.actor {
-      color: #82827d;
-      stroke-width: 1.5;
-    }
-
-    .architecture-node {
-      position: absolute;
-      z-index: 3;
-      display: flex;
-      flex-direction: column;
+    .arch {
+      display: grid;
+      grid-template-columns: auto minmax(140px, 0.9fr) minmax(230px, 1.2fr) auto;
       align-items: center;
-      justify-content: center;
-      gap: 6px;
-      border: 1px solid #4a4a47;
-      background: #20201f;
-      text-align: center;
+      gap: 0 16px;
+      border: 1px solid #343432;
+      border-radius: 6px;
+      background: #191918;
+      padding: 30px 26px;
     }
 
-    .architecture-node strong {
-      color: #f4f4f1;
-      font-size: 14px;
-      font-weight: 650;
-      line-height: 1.25;
-      letter-spacing: -0.02em;
+    .arch-node {
+      display: grid;
+      gap: 3px;
+      border: 1px solid #343432;
+      border-left: 2px solid #565651;
+      border-radius: 3px;
+      background: #1d1d1c;
+      padding: 13px 14px;
     }
 
-    .architecture-node span,
-    .architecture-edge-label,
-    .boundary-label {
-      color: #b9b9b4;
-      font-family: var(--mono);
-      font-size: 10.5px;
-      font-weight: 600;
-      line-height: 1.35;
-    }
-
-    .node-github {
-      left: 3.667%;
-      top: 36.786%;
-      width: 12.333%;
-      height: 26.429%;
-      border-color: rgba(112, 174, 255, 0.62);
-      border-radius: 50%;
-      background: rgba(112, 174, 255, 0.12);
-    }
-
-    .node-github strong {
-      font-size: 18px;
-    }
-
-    .node-relay {
-      left: 20.333%;
-      top: 12.857%;
-      width: 11.333%;
-      height: 9.286%;
-      gap: 2px;
-      border-color: rgba(242, 190, 53, 0.62);
-      border-radius: 999px;
-      background: rgba(242, 190, 53, 0.1);
-    }
-
-    .node-relay strong {
-      font-size: 13px;
-    }
-
-    .local-runtime {
-      position: absolute;
-      z-index: 2;
-      left: 34.167%;
-      top: 7.143%;
-      width: 47.5%;
-      height: 85.714%;
-      border: 1px solid #4a4a47;
-      border-radius: 16px;
-      background: rgba(94, 210, 141, 0.03);
-    }
-
-    .boundary-label {
-      position: absolute;
-      top: 12px;
-      left: 16px;
-      color: #82827d;
-      font-size: 10px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-    }
-
-    .node-server {
-      left: 41.167%;
-      top: 27.5%;
-      width: 19.333%;
-      height: 41.429%;
-      border-color: rgba(94, 210, 141, 0.72);
-      border-radius: 50%;
-      background: rgba(94, 210, 141, 0.14);
-      box-shadow: 0 0 40px rgba(94, 210, 141, 0.1);
-    }
-
-    .node-server strong {
-      font-size: 22px;
-      line-height: 1.1;
-    }
-
-    .node-storage {
-      left: 42.917%;
-      top: 75%;
-      width: 15.833%;
-      height: 12.143%;
-      border-radius: 999px;
-    }
-
-    .node-ui {
-      left: 65.833%;
-      top: 31.429%;
-      width: 12.5%;
-      height: 15.714%;
-      border-radius: 999px;
-    }
-
-    .architecture-consumer {
-      position: absolute;
-      z-index: 3;
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      gap: 2px;
-      width: 12.667%;
-      height: 10.357%;
-      padding-left: 14px;
-      border-left: 2px solid #4a4a47;
-      background: transparent;
-    }
-
-    .architecture-consumer strong {
+    .arch-name {
       color: #f4f4f1;
       font-size: 13.5px;
       font-weight: 650;
-      line-height: 1.25;
+      line-height: 1.3;
+      letter-spacing: -0.01em;
     }
 
-    .architecture-consumer span {
-      color: #b9b9b4;
+    .arch-role,
+    .arch-wire-label,
+    .arch-boundary {
+      color: #8f8f8a;
       font-family: var(--mono);
       font-size: 10.5px;
       font-weight: 600;
       line-height: 1.35;
     }
 
-    .actor-human {
-      left: 84.833%;
-      top: 31.429%;
+    .arch-source {
+      align-content: center;
+      min-height: 96px;
+      border-left-color: var(--blue);
     }
 
-    .actor-agents {
-      left: 84.833%;
-      top: 69.643%;
+    .arch-source .arch-name {
+      font-size: 16px;
     }
 
-    .architecture-edge-label {
-      position: absolute;
-      z-index: 4;
-      padding: 2px 5px;
+    .arch-runtime {
+      display: grid;
+      gap: 12px;
+      border: 1px dashed #46463f;
       border-radius: 4px;
-      background: rgba(25, 25, 24, 0.9);
-      color: #b9b9b4;
-      white-space: nowrap;
+      background: rgba(94, 210, 141, 0.035);
+      padding: 13px 14px 15px;
     }
 
-    .architecture-edge-label[data-edge="marker"] { left: 26.5%; top: 7.5%; }
-    .architecture-edge-label[data-edge="fetch"] { left: 25%; top: 41%; }
-    .architecture-edge-label[data-edge="write"] { left: 21%; top: 69%; }
-    .architecture-edge-label[data-edge="storage"] { left: 47%; top: 70%; }
-    .architecture-edge-label[data-edge="ui"] { left: 61.5%; top: 34%; }
-    .architecture-edge-label[data-edge="human"] { left: 80.4%; top: 32%; }
-    .architecture-edge-label[data-edge="agents"] { left: 73%; top: 72%; }
+    .arch-boundary {
+      color: #6f6f6a;
+      font-size: 9.5px;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+    }
 
+    .arch-server {
+      border-left-color: var(--green);
+      background: rgba(94, 210, 141, 0.1);
+      padding: 16px 15px;
+    }
 
+    .arch-server .arch-name {
+      font-size: 15.5px;
+    }
 
+    .arch-local {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      align-items: start;
+    }
 
+    .arch-store,
+    .arch-ui {
+      border-left-color: rgba(94, 210, 141, 0.55);
+    }
 
+    .arch-vwire {
+      display: grid;
+      grid-template-columns: 1px auto;
+      gap: 9px;
+      align-items: center;
+      height: 34px;
+      margin-left: 18px;
+      color: var(--green);
+    }
 
+    .arch-vwire-line {
+      position: relative;
+      width: 1px;
+      height: 100%;
+      background: currentColor;
+    }
 
+    .arch-vwire-line::after {
+      content: "";
+      position: absolute;
+      bottom: -1px;
+      left: 50%;
+      width: 7px;
+      height: 6px;
+      transform: translateX(-50%);
+      background: currentColor;
+      clip-path: polygon(0 0, 100% 0, 50% 100%);
+    }
 
+    .arch-vwire--both .arch-vwire-line::before {
+      content: "";
+      position: absolute;
+      top: -1px;
+      left: 50%;
+      width: 7px;
+      height: 6px;
+      transform: translateX(-50%);
+      background: currentColor;
+      clip-path: polygon(50% 0, 100% 100%, 0 100%);
+    }
+
+    .arch-link {
+      display: grid;
+      gap: 22px;
+    }
+
+    .arch-wire {
+      display: grid;
+      gap: 6px;
+    }
+
+    .arch-wire-label {
+      text-align: center;
+    }
+
+    .arch-wire-line {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 1px;
+      background: currentColor;
+    }
+
+    .arch-wire--fwd .arch-wire-line::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      right: -1px;
+      width: 6px;
+      height: 7px;
+      transform: translateY(-50%);
+      background: currentColor;
+      clip-path: polygon(0 0, 100% 50%, 0 100%);
+    }
+
+    .arch-wire--back .arch-wire-line::before {
+      content: "";
+      position: absolute;
+      top: 50%;
+      left: -1px;
+      width: 6px;
+      height: 7px;
+      transform: translateY(-50%);
+      background: currentColor;
+      clip-path: polygon(100% 0, 100% 100%, 0 50%);
+    }
+
+    .arch-wire--signal {
+      color: var(--yellow);
+    }
+
+    .arch-wire--signal .arch-wire-line {
+      height: 22px;
+      background: repeating-linear-gradient(to right, currentColor 0 5px, transparent 5px 11px) center / 100% 1px no-repeat;
+    }
+
+    .arch-wire--data {
+      color: var(--blue);
+    }
+
+    .arch-wire--serve {
+      color: #6f6f6a;
+    }
+
+    .arch-relay {
+      border: 1px solid rgba(242, 190, 53, 0.55);
+      border-radius: 2px;
+      background: #1b1b19;
+      padding: 3px 8px;
+      color: var(--yellow);
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1.4;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .arch-serves {
+      display: grid;
+      grid-template-columns: minmax(64px, 1fr) auto;
+      gap: 26px 14px;
+      align-items: center;
+    }
+
+    .arch-actor {
+      border-left-color: #5f5f5a;
+    }
 
     .terminal-window {
       overflow: hidden;
@@ -1113,112 +1101,95 @@
     }
 
     @media (max-width: 819px) {
-      .architecture-stage {
-        width: min(360px, calc(100vw - 24px));
-        height: 680px;
+      .arch {
+        grid-template-columns: 1fr;
+        gap: 0;
+        padding: 20px 16px 22px;
+      }
+
+      .arch-source {
+        min-height: 0;
+      }
+
+      .arch-link,
+      .arch-serves {
+        grid-template-columns: 1fr;
+        gap: 0;
+      }
+
+      .arch-wire {
+        grid-template-columns: 1px auto;
+        gap: 10px;
+        align-items: center;
+        height: 42px;
+        margin-left: 18px;
+      }
+
+      .arch-wire-line {
+        order: 1;
+        width: 1px;
+        height: 100%;
+      }
+
+      .arch-wire-label {
+        order: 2;
+        text-align: left;
+      }
+
+      .arch-wire--signal {
+        grid-template-columns: 36px auto;
+        gap: 14px;
+        margin-left: 0;
+      }
+
+      .arch-wire--signal .arch-wire-line {
+        justify-self: center;
+        width: 1px;
+        height: 100%;
+        background: repeating-linear-gradient(to bottom, currentColor 0 5px, transparent 5px 11px) center / 1px 100% no-repeat;
+      }
+
+      .arch-wire--fwd .arch-wire-line::after {
+        top: auto;
+        right: auto;
+        bottom: -1px;
         left: 50%;
-        margin-inline: 0;
+        width: 7px;
+        height: 6px;
         transform: translateX(-50%);
-        aspect-ratio: auto;
+        clip-path: polygon(0 0, 100% 0, 50% 100%);
       }
 
-      .wires-desktop {
-        display: none;
+      .arch-wire--back .arch-wire-line::before {
+        top: -1px;
+        left: 50%;
+        width: 7px;
+        height: 6px;
+        transform: translateX(-50%);
+        clip-path: polygon(50% 0, 100% 100%, 0 100%);
       }
 
-      .wires-mobile {
-        display: block;
+      .arch-relay {
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 2px 6px;
+        font-size: 9.5px;
+        white-space: nowrap;
       }
 
-      .architecture-node strong {
-        font-size: 12px;
+      .arch-runtime {
+        gap: 10px;
+        margin-block: 2px;
       }
 
-      .architecture-node span,
-      .architecture-consumer span,
-      .architecture-edge-label {
-        font-size: 10px;
+      .arch-local {
+        grid-template-columns: 1fr;
       }
 
-      .node-github {
-        left: 33.333%;
-        top: 16px;
-        width: 33.333%;
-        height: min(120px, calc((100vw - 24px) * 0.33333));
+      .arch-vwire {
+        height: 30px;
       }
-
-      .node-github strong {
-        font-size: 16px;
-      }
-
-      .node-relay {
-        left: 69.444%;
-        top: 52px;
-        width: 26.667%;
-        height: 48px;
-      }
-
-      .local-runtime {
-        left: 4.444%;
-        top: 200px;
-        width: 91.111%;
-        height: 354px;
-      }
-
-      .boundary-label {
-        top: 10px;
-        left: 12px;
-        font-size: 10px;
-      }
-
-      .node-server {
-        left: 24.444%;
-        top: 236px;
-        width: 51.111%;
-        height: min(184px, calc((100vw - 24px) * 0.51111));
-      }
-
-      .node-server strong {
-        font-size: 18px;
-      }
-
-      .node-storage {
-        left: 10%;
-        top: 456px;
-        width: 36.111%;
-        height: 64px;
-      }
-
-      .node-ui {
-        left: 53.889%;
-        top: 456px;
-        width: 36.111%;
-        height: 64px;
-      }
-
-      .architecture-consumer {
-        width: 36.111%;
-        height: 54px;
-        padding-left: 10px;
-      }
-
-      .actor-agents {
-        left: 10%;
-        top: 598px;
-      }
-
-      .actor-human {
-        left: 53.889%;
-        top: 598px;
-      }
-
-      .architecture-edge-label[data-edge="marker"] { left: 69%; top: 132px; }
-      .architecture-edge-label[data-edge="fetch"] { left: 20%; top: 164px; white-space: normal; }
-      .architecture-edge-label[data-edge="write"] { left: 55%; top: 164px; white-space: normal; }
-      .architecture-edge-label[data-edge="storage"] { left: 24%; top: 430px; }
-      .architecture-edge-label[data-edge="ui"] { left: 67%; top: 422px; white-space: normal; }
-      .architecture-edge-label[data-edge="agents"] { left: 15%; top: 557px; }
-      .architecture-edge-label[data-edge="human"] { left: 69%; top: 559px; }
     }
     @media (max-width: 900px) {
       .section {
@@ -1765,7 +1736,7 @@
             <figcaption class="compare-label">PR Cockpit · 15 test files hidden</figcaption>
             <div class="shot-shell">
               <button class="shot-button" type="button" data-lightbox="screenshots/landing-hide-tests-cockpit.png" aria-label="Open PR Cockpit hidden tests screenshot">
-                <img src="screenshots/landing-hide-tests-cockpit.png" alt="PR Cockpit files tab for jestjs/jest#16366 showing 5 files after hiding 15 test files" width="1280" height="980" loading="lazy">
+                <img src="screenshots/landing-hide-tests-cockpit.png" alt="PR Cockpit unified diff for jestjs/jest#16366 showing the All changes toolbar and 5 files after hiding 15 test files" width="1280" height="980" loading="lazy">
               </button>
             </div>
           </figure>
@@ -1904,53 +1875,71 @@
 
         <div class="how-card">
           <figure class="system">
-            <figcaption class="visually-hidden">GitHub is authoritative. It sends a change marker through the relay. The PR Cockpit server then fetches the changed pull request directly from GitHub, sends authenticated writes directly to GitHub, reads and writes SQLite and images, invalidates the UI over WebSocket, serves agents over CLI and API, and the human uses the UI.</figcaption>
-            <div class="architecture-stage" aria-hidden="true">
-              <svg class="architecture-wires wires-desktop" viewBox="0 0 1200 560">
-                <defs>
-                  <marker id="arrow-yellow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#f2be35"/></marker>
-                  <marker id="arrow-blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#70aeff"/></marker>
-                  <marker id="arrow-green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#5ed28d"/></marker>
-                </defs>
-                <path class="architecture-wire marker" d="M166 221C205 156 214 98 244 98" marker-end="url(#arrow-yellow)"/>
-                <path class="architecture-wire marker" d="M380 98C450 98 452 154 525 180" marker-end="url(#arrow-yellow)"/>
-                <path class="architecture-wire github" d="M192 280C300 250 390 250 494 270" marker-end="url(#arrow-blue)"/>
-                <path class="architecture-wire github" d="M505 330C395 406 260 408 166 334" marker-end="url(#arrow-blue)"/>
-                <path class="architecture-wire local" d="M610 386L610 420" marker-start="url(#arrow-green)" marker-end="url(#arrow-green)"/>
-                <path class="architecture-wire local" d="M718 220C742 207 766 207 790 220" marker-end="url(#arrow-green)"/>
-                <path class="architecture-wire actor" d="M940 220L1018 205"/>
-                <path class="architecture-wire actor" d="M706 350C800 414 910 419 1018 419"/>
-              </svg>
-              <svg class="architecture-wires wires-mobile" viewBox="0 0 360 680">
-                <defs>
-                  <marker id="arrow-yellow-mobile" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#f2be35"/></marker>
-                  <marker id="arrow-blue-mobile" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#70aeff"/></marker>
-                  <marker id="arrow-green-mobile" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#5ed28d"/></marker>
-                </defs>
-                <path class="architecture-wire marker" d="M240 76L250 76" marker-end="url(#arrow-yellow-mobile)"/>
-                <path class="architecture-wire marker" d="M298 100C326 160 317 219 253 260" marker-end="url(#arrow-yellow-mobile)"/>
-                <path class="architecture-wire github" d="M166 136L166 236" marker-end="url(#arrow-blue-mobile)"/>
-                <path class="architecture-wire github" d="M194 236L194 136" marker-end="url(#arrow-blue-mobile)"/>
-                <path class="architecture-wire local" d="M140 411C130 432 113 442 101 456" marker-start="url(#arrow-green-mobile)" marker-end="url(#arrow-green-mobile)"/>
-                <path class="architecture-wire local" d="M244 385C276 407 276 432 259 456" marker-end="url(#arrow-green-mobile)"/>
-                <path class="architecture-wire actor" d="M106 377C34 410 20 544 101 598"/>
-                <path class="architecture-wire actor" d="M259 520L259 598"/>
-              </svg>
-              <div class="local-runtime"><span class="boundary-label">On your Mac · runtime</span></div>
-              <div class="architecture-node source node-github"><strong>GitHub</strong><span>source of truth</span></div>
-              <div class="architecture-node signal node-relay"><strong>Relay</strong><span>marker only</span></div>
-              <div class="architecture-node core node-server"><strong>PR Cockpit server</strong><span>targeted refresh · local API</span></div>
-              <div class="architecture-node satellite node-storage"><strong>SQLite + images</strong><span>local cache</span></div>
-              <div class="architecture-node satellite node-ui"><strong>UI</strong><span>reloads on invalidation</span></div>
-              <div class="architecture-consumer actor-agents"><strong>Agents</strong><span>CLI + API</span></div>
-              <div class="architecture-consumer actor-human"><strong>Human</strong><span>uses the UI</span></div>
-              <span class="architecture-edge-label" data-edge="marker">change marker</span>
-              <span class="architecture-edge-label" data-edge="fetch">targeted fetch</span>
-              <span class="architecture-edge-label" data-edge="write">authenticated write</span>
-              <span class="architecture-edge-label" data-edge="storage">read · write</span>
-              <span class="architecture-edge-label" data-edge="ui">WebSocket invalidation</span>
-              <span class="architecture-edge-label" data-edge="agents">CLI · API</span>
-              <span class="architecture-edge-label" data-edge="human">uses</span>
+            <figcaption class="visually-hidden">GitHub is the source of truth. A GitHub webhook reaches the relay, which forwards the change signal to the PR Cockpit server on your Mac for an instant update. The server fetches only the changed pull request from GitHub and sends authenticated writes back to GitHub. Locally it reads and writes SQLite and cached images, and invalidates the UI over WebSocket. Humans use the UI; agents use the CLI and local API.</figcaption>
+            <div class="arch" aria-hidden="true">
+              <div class="arch-node arch-source">
+                <span class="arch-name">GitHub</span>
+                <span class="arch-role">source of truth</span>
+              </div>
+
+              <div class="arch-link">
+                <div class="arch-wire arch-wire--signal arch-wire--fwd">
+                  <span class="arch-wire-label">webhook · instant update</span>
+                  <span class="arch-wire-line"><span class="arch-relay">Relay</span></span>
+                </div>
+                <div class="arch-wire arch-wire--data arch-wire--fwd">
+                  <span class="arch-wire-label">targeted fetch</span>
+                  <span class="arch-wire-line"></span>
+                </div>
+                <div class="arch-wire arch-wire--data arch-wire--back">
+                  <span class="arch-wire-label">authenticated write</span>
+                  <span class="arch-wire-line"></span>
+                </div>
+              </div>
+
+              <div class="arch-runtime">
+                <span class="arch-boundary">On your Mac</span>
+                <div class="arch-node arch-server">
+                  <span class="arch-name">PR Cockpit server</span>
+                </div>
+                <div class="arch-local">
+                  <div>
+                    <div class="arch-vwire arch-vwire--both">
+                      <span class="arch-vwire-line"></span>
+                      <span class="arch-wire-label">read · write</span>
+                    </div>
+                    <div class="arch-node arch-store">
+                      <span class="arch-name">SQLite + images</span>
+                    </div>
+                  </div>
+                  <div>
+                    <div class="arch-vwire">
+                      <span class="arch-vwire-line"></span>
+                      <span class="arch-wire-label">WebSocket invalidation</span>
+                    </div>
+                    <div class="arch-node arch-ui">
+                      <span class="arch-name">UI</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="arch-serves">
+                <div class="arch-wire arch-wire--serve arch-wire--fwd">
+                  <span class="arch-wire-label">UI</span>
+                  <span class="arch-wire-line"></span>
+                </div>
+                <div class="arch-node arch-actor">
+                  <span class="arch-name">Humans</span>
+                </div>
+                <div class="arch-wire arch-wire--serve arch-wire--fwd">
+                  <span class="arch-wire-label">CLI · API</span>
+                  <span class="arch-wire-line"></span>
+                </div>
+                <div class="arch-node arch-actor">
+                  <span class="arch-name">Agents</span>
+                </div>
+              </div>
             </div>
           </figure>
         </div>
