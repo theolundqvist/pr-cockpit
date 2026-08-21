@@ -272,10 +272,9 @@
     grid-column: 1 / -1;
   }
 
-  /* the banner takes over the top strip in the desktop shell: it stays draggable and
-     leaves room for the macOS traffic lights */
+  /* the desktop banner covers the titlebar while its content clears the traffic lights */
   .app-shell.shell .app-banner {
-    padding-left: 62px;
+    --quota-shell-inset: 62px;
     -webkit-app-region: drag;
   }
 
