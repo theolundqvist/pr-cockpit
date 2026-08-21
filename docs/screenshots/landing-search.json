@@ -1,0 +1,39 @@
+{
+  "script": "scripts/record-landing-search.mjs",
+  "snapshot": "server/mockData/microsoft-vscode",
+  "capturedAt": "2026-08-20T14:45:08.923Z",
+  "repo": "microsoft/vscode",
+  "pr": 331794,
+  "prTitle": "Chat input pills: chevron alignment and dropdown entry hovers",
+  "query": "Chat input pills",
+  "viewportCss": {
+    "width": 1280,
+    "height": 960
+  },
+  "renderScale": 2,
+  "trimSeconds": 0.46,
+  "flow": [
+    "inbox",
+    "Meta+K palette",
+    "type query at 95ms/char",
+    "Enter",
+    "PR detail #/pr/microsoft/vscode/331794"
+  ],
+  "video": {
+    "path": "docs/screenshots/landing-search.webm",
+    "codec": "vp9",
+    "durationSeconds": 9.56,
+    "bytes": 688427
+  },
+  "fallback": {
+    "path": "docs/screenshots/landing-search.mp4",
+    "codec": "h264",
+    "durationSeconds": 9.52,
+    "bytes": 692035
+  },
+  "poster": {
+    "path": "docs/screenshots/landing-search-poster.png",
+    "scene": "palette open with query over inbox",
+    "bytes": 598868
+  }
+}

@@ -112,11 +112,11 @@ function inspectPng(buffer, viewport) {
 
 function requireRoles(snapshot) {
   const roles = snapshot.roles;
-  for (const name of ["inbox", "conversation", "files", "editing", "history", "palette"]) {
+  for (const name of ["inbox", "conversation", "files", "editing", "history", "palette", "hideTests"]) {
     if (!roles?.[name]) throw new Error(`snapshot is missing ${name} role`);
   }
   const capturedNumbers = new Set(snapshot.details.map((detail) => detail.number));
-  for (const name of ["conversation", "files", "editing", "history", "palette"]) {
+  for (const name of ["conversation", "files", "editing", "history", "palette", "hideTests"]) {
     if (!capturedNumbers.has(roles[name].number)) throw new Error(`${name} role references uncaptured PR #${roles[name].number}`);
   }
   const editingKey = `${roles.editing.headSha}:${roles.editing.path}`;
@@ -243,17 +243,48 @@ function scenariosFor(snapshot, roles, profile) {
     },
   ];
   if (profile === "landing") {
-    scenarios.push({
-      name: "hide-tests",
-      route: `#/pr/${repo}/${roles.files.number}/files`,
-      ready: ".files-layout .diff",
-      interact: async (page) => {
-        await page.getByRole("button", { name: /hide 1 test file/ }).click();
-        await page.getByRole("button", { name: /show 1 test file/ }).waitFor();
-        await positionFiles(page);
+    scenarios.push(
+      {
+        name: "hide-tests-all",
+        route: `#/pr/${repo}/${roles.hideTests.number}/files`,
+        ready: ".files-layout .diff",
+        interact: async (page) => {
+          await page.getByRole("button", { name: /hide \d+ test files/ }).waitFor();
+          await positionFiles(page);
+        },
+        verify: (page) => verifyAligned(page, ".tree-pane", ".diff-pane"),
       },
-      verify: (page) => verifyAligned(page, ".tree-pane", ".diff-pane"),
-    });
+      {
+        name: "hide-tests",
+        route: `#/pr/${repo}/${roles.hideTests.number}/files`,
+        ready: ".files-layout .diff",
+        interact: async (page) => {
+          await page.getByRole("button", { name: /hide \d+ test files/ }).click();
+          await page.getByRole("button", { name: /show \d+ test files/ }).waitFor();
+          await positionFiles(page);
+        },
+        verify: (page) => verifyAligned(page, ".tree-pane", ".diff-pane"),
+      },
+      {
+        name: "revert-menu",
+        route: `#/pr/${repo}/${roles.editing.number}/files`,
+        ready: ".files-layout .diff",
+        interact: async (page) => {
+          await openFile(page, roles.editing.path);
+          await positionFiles(page);
+          const line = fileBlock(page, roles.editing.path)
+            .locator("[data-hunk-index]")
+            .filter({ hasText: "!Array.isArray(extensionGalleryManifest.resources)" })
+            .first();
+          await line.click({ button: "right" });
+          await page.getByRole("menuitem", { name: "Revert hunk" }).waitFor();
+        },
+        verify: async (page) => {
+          const menu = await page.locator(".edit-context-menu").boundingBox();
+          if (!menu) throw new Error("context menu not visible");
+        },
+      },
+    );
   }
   return scenarios;
 }

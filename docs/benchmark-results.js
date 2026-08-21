@@ -25,7 +25,36 @@ window.PR_COCKPIT_BENCHMARKS = {
         "p95": 1566,
         "definition": "Pull-request result to painted PR detail"
       },
-      "speedup": 61.3
+      "speedup": 61.3,
+      "cursorOrigin": {
+        "available": true,
+        "unit": "ms",
+        "p50": 1176.7,
+        "p95": 1502.7,
+        "definition": "Origin PR #8105 list row to first painted PR detail",
+        "samples": [
+          1126.4,
+          1207.5,
+          1094.9,
+          1290.5,
+          1166.8,
+          891,
+          1502.7,
+          1081.3,
+          1176.7,
+          1134.7,
+          1287.4,
+          1384.4,
+          1412.2,
+          1285.7,
+          1033.6,
+          1457.6,
+          1148.4,
+          1193.5,
+          1085.2,
+          1512.9
+        ]
+      }
     },
     {
       "id": "pr-search",
@@ -42,7 +71,11 @@ window.PR_COCKPIT_BENCHMARKS = {
         "p95": 683.6,
         "definition": "Pull-request number query submit to painted result"
       },
-      "speedup": 16
+      "speedup": 16,
+      "cursorOrigin": {
+        "available": false,
+        "reason": "Cursor Origin exposes PR filters but no comparable PR-number search interaction"
+      }
     },
     {
       "id": "diff-open",
@@ -59,150 +92,57 @@ window.PR_COCKPIT_BENCHMARKS = {
         "p95": 1887,
         "definition": "Files changed click to painted GitHub diff"
       },
-      "speedup": 39.2
-    }
-  ],
-  "cursorOrigin": {
-    "measuredAt": "2026-08-21T09:29:04.442Z",
-    "environment": {
-      "machine": "Apple M4 Max",
-      "browser": "Chrome/152.0.7929.0",
-      "viewport": "1100×800",
-      "runs": 20,
-      "warmups": 3,
-      "dataset": "Authenticated scape-app/scape staging; representative PR #8110",
-      "cache": "Warm authenticated browser profile and HTTP cache; cache is not cleared between warmups or measured runs",
-      "sourceURL": "https://cursor.com/codebase/scape/scape/tree/staging"
-    },
-    "selectors": {
-      "listStart": "visible a[href$=\"/pulls\"]",
-      "listFirstUseful": "[data-testid=\"cursor-review-pulls-page\"] plus first visible a[class*=\"rowTitleLink\"]",
-      "listFull": "rendered rowTitleLink count equals the visible Open count, with no visible progressbar or animate-spin",
-      "detailStart": "visible a[href$=\"/github/pull/8110\"]",
-      "detailFirstUseful": "[data-testid=\"cursor-review-pr-shell\"] plus visible h1 aria-label containing #8110",
-      "detailComplete": "[data-testid=\"timeline-activity-group\"] with content plus visible [data-testid=\"merge-box\"], with no visible progressbar or animate-spin"
-    },
-    "metrics": [
-      {
-        "id": "pr-list-first-useful",
-        "label": "PR list first useful paint",
-        "unit": "s",
-        "p50": 1.146,
-        "p95": 1.957,
-        "definition": "Pull Requests navigation to first painted PR row",
+      "speedup": 39.2,
+      "cursorOrigin": {
+        "available": true,
+        "unit": "ms",
+        "p50": 924.9,
+        "p95": 1384.3,
+        "definition": "Origin PR #8105 Changes tab to first painted diff line",
         "samples": [
-          1.083,
-          0.929,
-          1.016,
-          1.201,
-          1.146,
-          1.028,
-          1.075,
-          0.925,
-          1.257,
-          0.963,
-          1.628,
-          1.189,
-          1,
-          2.673,
-          1.32,
-          0.881,
-          1.957,
-          1.63,
-          1.531,
-          1.765
-        ]
-      },
-      {
-        "id": "pr-list-full",
-        "label": "PR list full render",
-        "unit": "s",
-        "p50": 1.146,
-        "p95": 1.957,
-        "definition": "Pull Requests navigation to all Open rows painted",
-        "samples": [
-          1.083,
-          0.929,
-          1.016,
-          1.201,
-          1.146,
-          1.029,
-          1.075,
-          0.925,
-          1.257,
-          0.963,
-          1.628,
-          1.189,
-          1,
-          2.673,
-          1.32,
-          0.881,
-          1.957,
-          1.631,
-          1.531,
-          1.766
-        ]
-      },
-      {
-        "id": "pr-detail-first-useful",
-        "label": "PR detail first useful paint",
-        "unit": "s",
-        "p50": 1.317,
-        "p95": 1.976,
-        "definition": "PR #8110 click to painted detail shell and heading",
-        "samples": [
-          1.373,
-          1.976,
-          1.158,
-          1.33,
-          1.377,
-          1.255,
-          1.32,
-          1.287,
-          1.704,
-          1.259,
-          1.318,
-          1.407,
-          1.241,
-          1.2,
-          1.308,
-          1.759,
-          2.141,
-          1.317,
-          1.048,
-          1.263
-        ]
-      },
-      {
-        "id": "pr-detail-complete",
-        "label": "PR detail complete render",
-        "unit": "s",
-        "p50": 1.317,
-        "p95": 1.976,
-        "definition": "PR #8110 click to painted activity timeline and merge box",
-        "samples": [
-          1.373,
-          1.976,
-          1.158,
-          1.33,
-          1.377,
-          1.255,
-          1.32,
-          1.287,
-          1.704,
-          1.259,
-          1.318,
-          1.407,
-          1.241,
-          1.2,
-          1.308,
-          1.759,
-          2.141,
-          1.317,
-          1.048,
-          1.263
+          589.8,
+          650.6,
+          634.3,
+          928.8,
+          978.5,
+          753.3,
+          924.9,
+          864.7,
+          789.7,
+          794.3,
+          923.8,
+          1245.2,
+          1480.4,
+          1108.3,
+          1090.3,
+          1309.2,
+          1384.3,
+          815.8,
+          1180.5,
+          1245
         ]
       }
-    ]
+    }
+  ],
+  "cursorOriginEnvironment": {
+    "measuredAt": "2026-08-21T10:33:01.925Z",
+    "machine": "Apple M4 Max",
+    "browser": "Chrome/152.0.7929.0",
+    "viewport": "1100×800",
+    "runs": 20,
+    "warmups": 3,
+    "auth": "Authenticated isolated Chromium profile",
+    "dataset": "scape-app/scape staging; representative open PR #8105",
+    "cache": "Warm authenticated browser profile and HTTP cache; cache is not cleared between warmups or measured runs",
+    "sourceURL": "https://cursor.com/codebase/scape/scape/tree/staging",
+    "cdp": "http://127.0.0.1:9334",
+    "paintBoundary": "Visible selector followed by two requestAnimationFrame callbacks",
+    "selectors": {
+      "openStart": "visible PR-list a[href$=\"/github/pull/8105\"]",
+      "openPainted": "[data-testid=\"cursor-review-pr-shell\"] plus visible h1 aria-label containing #8105",
+      "diffStart": "visible [role=\"tab\"] whose text starts with Changes",
+      "diffPath": "/codebase/scape/scape/pull/8105/changes",
+      "diffPainted": "visible [class*=\"changesTabPanel\"] plus first visible descendant [class*=\"lineContainer\"]"
+    }
   }
 };

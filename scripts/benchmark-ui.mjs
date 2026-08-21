@@ -4,6 +4,7 @@ import { cpus } from "node:os";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { chromium } from "playwright";
+// Run Cockpit/GitHub with Bun; run authenticated Origin with Node because Bun 1.3.14 hangs in Playwright connectOverCDP.
 
 const ROOT = resolve(import.meta.dirname, "..");
 const SNAPSHOT_DIR = resolve(ROOT, "server/mockData/microsoft-vscode");
@@ -56,8 +57,8 @@ function compare(id, label, cockpitDefinition, githubDefinition, cockpitSamples,
   return {
     id,
     label,
-    cockpit: { ...cockpit, definition: cockpitDefinition },
-    github: { ...github, definition: githubDefinition },
+    cockpit: { ...cockpit, definition: cockpitDefinition, samples: cockpitSamples.map((sample) => Math.round(sample * 10) / 10) },
+    github: { ...github, definition: githubDefinition, samples: githubSamples.map((sample) => Math.round(sample * 10) / 10) },
     speedup: Math.round((github.p50 / cockpit.p50) * 10) / 10,
   };
 }
@@ -247,123 +248,31 @@ async function benchmarkGithubDiffOpen(page, repo, prs) {
 }
 
 const CURSOR_ORIGIN_URL = "https://cursor.com/codebase/scape/scape/tree/staging";
-const CURSOR_PR_NUMBER = 8110;
+const CURSOR_PR_NUMBER = 8105;
 
-function cursorMetric(id, label, definition, samples) {
-  const seconds = samples.map((sample) => Math.round(sample) / 1000);
+function cursorMeasurement(definition, samples) {
   return {
-    id,
-    label,
-    unit: "s",
-    p50: percentile(seconds, 0.5),
-    p95: percentile(seconds, 0.95),
+    available: true,
+    ...summarizeSamples(samples),
     definition,
-    samples: seconds,
+    samples: samples.map((sample) => Math.round(sample * 10) / 10),
   };
 }
 
-class CursorCdpPage {
-  constructor(target) {
-    this.target = target;
-    this.nextId = 1;
-    this.pending = new Map();
-  }
-
-  async connect() {
-    this.socket = new WebSocket(this.target.webSocketDebuggerUrl);
-    await new Promise((resolveConnection, reject) => {
-      const timeout = setTimeout(() => reject(new Error("Cursor Origin CDP connection timed out")), 10_000);
-      this.socket.onopen = () => {
-        clearTimeout(timeout);
-        resolveConnection();
-      };
-      this.socket.onerror = () => {
-        clearTimeout(timeout);
-        reject(new Error("Cursor Origin CDP connection failed"));
-      };
-    });
-    this.socket.onmessage = (event) => {
-      const message = JSON.parse(event.data);
-      const pending = this.pending.get(message.id);
-      if (!pending) return;
-      this.pending.delete(message.id);
-      if (message.error) pending.reject(new Error(message.error.message));
-      else pending.resolve(message.result);
-    };
-    return this;
-  }
-
-  send(method, params = {}) {
-    const id = this.nextId++;
-    return new Promise((resolveCommand, reject) => {
-      const timeout = setTimeout(() => {
-        if (this.pending.delete(id)) reject(new Error(`${method} timed out`));
-      }, 90_000);
-      this.pending.set(id, {
-        resolve: (result) => {
-          clearTimeout(timeout);
-          resolveCommand(result);
-        },
-        reject: (error) => {
-          clearTimeout(timeout);
-          reject(error);
-        },
-      });
-      this.socket.send(JSON.stringify({ id, method, params }));
-    });
-  }
-
-  async evaluate(fn, argument) {
-    const expression = typeof fn === "function"
-      ? `(${fn.toString()})(${argument === undefined ? "" : JSON.stringify(argument)})`
-      : fn;
-    const response = await this.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
-    if (response.exceptionDetails) {
-      throw new Error(response.exceptionDetails.exception?.description ?? response.exceptionDetails.text);
-    }
-    return response.result.value;
-  }
-
-  async goto(url) {
-    await this.send("Page.navigate", { url });
-  }
-
-  async waitForFunction(fn, { timeout = 90_000 } = {}) {
-    const deadline = Date.now() + timeout;
-    while (Date.now() < deadline) {
-      try {
-        if (await this.evaluate(fn)) return;
-      } catch {}
-      await delay(50);
-    }
-    throw new Error("Cursor Origin render-state selector unavailable");
-  }
-
-  async bringToFront() {
-    await this.send("Page.bringToFront");
-  }
-
-  async setViewportSize(viewport) {
-    await this.send("Emulation.setDeviceMetricsOverride", { ...viewport, deviceScaleFactor: 1, mobile: false });
-  }
-
-  close() {
-    this.socket.close();
-  }
-}
-
 async function connectCursorPage(endpoint) {
-  const targets = await (await fetch(`${endpoint}/json/list`)).json();
-  const target = targets.find((candidate) => candidate.type === "page" && candidate.url.includes("cursor.com/codebase/scape/scape"));
-  if (!target) throw new Error(`Cursor Origin page unavailable at ${endpoint}; open ${CURSOR_ORIGIN_URL} in the authenticated browser`);
-  return new CursorCdpPage(target).connect();
+  const browser = await chromium.connectOverCDP(endpoint, { timeout: 90_000 });
+  const page = browser.contexts()
+    .flatMap((context) => context.pages())
+    .find((candidate) => candidate.url().includes("cursor.com/codebase/scape/scape"));
+  if (!page) throw new Error(`Cursor Origin page unavailable at ${endpoint}; open ${CURSOR_ORIGIN_URL} in the authenticated browser`);
+  return { browser, page };
 }
 
-
-async function waitForCursorCodePage(page) {
-  await page.goto(CURSOR_ORIGIN_URL);
+async function waitForCursorList(page) {
+  await page.goto("https://cursor.com/codebase/scape/scape/pulls");
   await page.waitForFunction(
-    () => document.readyState !== "loading" && location.pathname.endsWith("/tree/staging"),
+    () => document.readyState !== "loading" && location.pathname.endsWith("/pulls"),
+    undefined,
     { timeout: 90_000 },
   );
   const url = await page.evaluate(() => location.href);
@@ -371,13 +280,18 @@ async function waitForCursorCodePage(page) {
     throw new Error(`Cursor Origin authentication unavailable: ${url}`);
   }
   await page.waitForFunction(
-    () => [...document.querySelectorAll('a[href$="/pulls"]')].some((element) => element.getBoundingClientRect().width > 0),
+    (prNumber) => {
+      const shell = document.querySelector('[data-testid="cursor-review-pulls-page"]');
+      const row = [...document.querySelectorAll(`a[href$="/github/pull/${prNumber}"]`)]
+        .find((element) => element.getBoundingClientRect().width > 0);
+      return Boolean(shell && row);
+    },
+    CURSOR_PR_NUMBER,
     { timeout: 90_000 },
   );
 }
 
-
-async function measureCursorList(page) {
+async function measureCursorDiff(page) {
   return page.evaluate(async () => {
     const visible = (element) => {
       if (!element) return false;
@@ -385,42 +299,26 @@ async function measureCursorList(page) {
       const style = getComputedStyle(element);
       return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
     };
-    const link = [...document.querySelectorAll('a[href$="/pulls"]')].find(visible);
-    if (!link) throw new Error("Cursor Origin Pull Requests link selector unavailable");
+    const tab = [...document.querySelectorAll('[role="tab"]')]
+      .find((element) => element.innerText.trim().startsWith("Changes") && visible(element));
+    if (!tab) throw new Error("Cursor Origin Changes tab selector unavailable");
     const startedAt = performance.now();
-    const result = {};
-    let firstPending = false;
-    let fullPending = false;
-    const afterPaint = (key) => requestAnimationFrame(() => requestAnimationFrame(() => {
-      if (result[key] === undefined) result[key] = performance.now() - startedAt;
-    }));
-    link.click();
+    tab.click();
     const deadline = startedAt + 30_000;
-    while ((result.firstUseful === undefined || result.full === undefined) && performance.now() < deadline) {
-      const shell = document.querySelector('[data-testid="cursor-review-pulls-page"]');
-      const rows = [...document.querySelectorAll('a[class*="rowTitleLink"][href*="/github/pull/"]')];
-      if (result.firstUseful === undefined && !firstPending && visible(shell) && rows.some(visible)) {
-        firstPending = true;
-        afterPaint("firstUseful");
-      }
-      const openText = [...document.querySelectorAll("a,button")]
-        .map((element) => element.innerText?.trim())
-        .find((text) => /^Open\n\d+$/.test(text ?? ""));
-      const expectedRows = Number(openText?.split("\n")[1]);
-      const loading = [...document.querySelectorAll('[role="progressbar"],svg.animate-spin')].some(visible);
-      if (result.full === undefined && !fullPending && expectedRows > 0 && rows.length === expectedRows && !loading) {
-        fullPending = true;
-        afterPaint("full");
+    while (performance.now() < deadline) {
+      const panel = document.querySelector('[class*="changesTabPanel"]');
+      const line = [...document.querySelectorAll('[class*="changesTabPanel"] [class*="lineContainer"]')].find(visible);
+      if (location.pathname.endsWith("/changes") && visible(panel) && line) {
+        await new Promise((resolvePaint) => requestAnimationFrame(() => requestAnimationFrame(resolvePaint)));
+        return performance.now() - startedAt;
       }
       await new Promise(requestAnimationFrame);
     }
-    if (result.firstUseful === undefined) throw new Error("Cursor Origin PR-list first-useful selector unavailable");
-    if (result.full === undefined) throw new Error("Cursor Origin PR-list full-render selector unavailable");
-    return result;
+    throw new Error("Cursor Origin diff-painted selector unavailable");
   });
 }
 
-async function measureCursorDetail(page) {
+async function measureCursorOpen(page) {
   return page.evaluate(async (prNumber) => {
     const visible = (element) => {
       if (!element) return false;
@@ -474,26 +372,22 @@ async function mainCursorOrigin() {
   const warmups = smoke ? 0 : WARMUPS;
   const endpoint = process.env.CURSOR_CDP_URL ?? "http://127.0.0.1:9334";
   const version = await (await fetch(`${endpoint}/json/version`)).json();
-  const page = await connectCursorPage(endpoint);
+  const { browser, page } = await connectCursorPage(endpoint);
   try {
     await page.bringToFront();
     await page.setViewportSize(VIEWPORT);
     if (await page.evaluate(() => document.visibilityState) !== "visible") {
       throw new Error("Cursor Origin page is not visibly rendered");
     }
-    const listFirstUseful = [];
-    const listFull = [];
-    const detailFirstUseful = [];
-    const detailComplete = [];
+    const openSamples = [];
+    const diffSamples = [];
     for (let iteration = 0; iteration < runs + warmups; iteration++) {
-      await waitForCursorCodePage(page);
-      const list = await measureCursorList(page);
-      const detail = await measureCursorDetail(page);
+      await waitForCursorList(page);
+      const open = await measureCursorOpen(page);
+      const diff = await measureCursorDiff(page);
       if (iteration >= warmups) {
-        listFirstUseful.push(list.firstUseful);
-        listFull.push(list.full);
-        detailFirstUseful.push(detail.firstUseful);
-        detailComplete.push(detail.complete);
+        openSamples.push(open.firstUseful);
+        diffSamples.push(diff);
       }
     }
     const result = {
@@ -504,40 +398,48 @@ async function mainCursorOrigin() {
         viewport: `${VIEWPORT.width}×${VIEWPORT.height}`,
         runs,
         warmups,
-        dataset: `Authenticated scape-app/scape staging; representative PR #${CURSOR_PR_NUMBER}`,
+        auth: "Authenticated isolated Chromium profile",
+        dataset: `scape-app/scape staging; representative open PR #${CURSOR_PR_NUMBER}`,
         cache: "Warm authenticated browser profile and HTTP cache; cache is not cleared between warmups or measured runs",
         sourceURL: CURSOR_ORIGIN_URL,
+        cdp: endpoint,
+        paintBoundary: "Visible selector followed by two requestAnimationFrame callbacks",
       },
       selectors: {
-        listStart: 'visible a[href$="/pulls"]',
-        listFirstUseful: '[data-testid="cursor-review-pulls-page"] plus first visible a[class*="rowTitleLink"]',
-        listFull: 'rendered rowTitleLink count equals the visible Open count, with no visible progressbar or animate-spin',
-        detailStart: `visible a[href$="/github/pull/${CURSOR_PR_NUMBER}"]`,
-        detailFirstUseful: `[data-testid="cursor-review-pr-shell"] plus visible h1 aria-label containing #${CURSOR_PR_NUMBER}`,
-        detailComplete: '[data-testid="timeline-activity-group"] with content plus visible [data-testid="merge-box"], with no visible progressbar or animate-spin',
+        openStart: `visible PR-list a[href$="/github/pull/${CURSOR_PR_NUMBER}"]`,
+        openPainted: `[data-testid="cursor-review-pr-shell"] plus visible h1 aria-label containing #${CURSOR_PR_NUMBER}`,
+        diffStart: 'visible [role="tab"] whose text starts with Changes',
+        diffPath: `/codebase/scape/scape/pull/${CURSOR_PR_NUMBER}/changes`,
+        diffPainted: 'visible [class*="changesTabPanel"] plus first visible descendant [class*="lineContainer"]',
       },
-      metrics: [
-        cursorMetric("pr-list-first-useful", "PR list first useful paint", "Pull Requests navigation to first painted PR row", listFirstUseful),
-        cursorMetric("pr-list-full", "PR list full render", "Pull Requests navigation to all Open rows painted", listFull),
-        cursorMetric("pr-detail-first-useful", "PR detail first useful paint", `PR #${CURSOR_PR_NUMBER} click to painted detail shell and heading`, detailFirstUseful),
-        cursorMetric("pr-detail-complete", "PR detail complete render", `PR #${CURSOR_PR_NUMBER} click to painted activity timeline and merge box`, detailComplete),
-      ],
+      metrics: {
+        "pr-open": cursorMeasurement(`Origin PR #${CURSOR_PR_NUMBER} list row to first painted PR detail`, openSamples),
+        "pr-search": {
+          available: false,
+          reason: "Cursor Origin exposes PR filters but no comparable PR-number search interaction",
+        },
+        "diff-open": cursorMeasurement(`Origin PR #${CURSOR_PR_NUMBER} Changes tab to first painted diff line`, diffSamples),
+      },
     };
     console.log(JSON.stringify(result, null, 2));
     if (process.argv.includes("--write")) {
       const path = join(ROOT, "docs/benchmark-results.js");
       const existing = await readFile(path, "utf8");
       const shared = JSON.parse(existing.slice(existing.indexOf("=") + 1).trim().replace(/;$/, ""));
-      shared.cursorOrigin = result;
+      delete shared.cursorOrigin;
+      shared.cursorOriginEnvironment = {
+        measuredAt: result.measuredAt,
+        ...result.environment,
+        selectors: result.selectors,
+      };
+      for (const metric of shared.metrics) metric.cursorOrigin = result.metrics[metric.id];
       await writeFile(path, `window.PR_COCKPIT_BENCHMARKS = ${JSON.stringify(shared, null, 2)};\n`);
       console.log("wrote docs/benchmark-results.js");
     }
   } finally {
-    page.close();
+    await browser.close();
   }
 }
-
-
 
 async function main() {
   const snapshot = JSON.parse(await readFile(join(SNAPSHOT_DIR, "snapshot.json"), "utf8"));
