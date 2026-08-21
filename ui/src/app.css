@@ -29,7 +29,8 @@
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
   --general-scale: 1;
-  --general-height: 100vh;
+  --viewport-height: 100vh;
+  --general-height: var(--viewport-height);
   --general-width: 100vw;
   --diff-font-size: 12.5px;
 

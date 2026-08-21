@@ -9,9 +9,12 @@
   import FlashBar from "./lib/FlashBar.svelte";
   import Cheatsheet from "./lib/Cheatsheet.svelte";
   import Lightbox from "./lib/Lightbox.svelte";
-  import { fetchQuota, fetchSettings } from "./lib/api.js";
+  import QuotaBanner from "./lib/QuotaBanner.svelte";
+  import { fetchSettings } from "./lib/api.js";
   import { showFlash } from "./lib/flash.svelte.js";
   import { prefs } from "./lib/prefs.svelte.js";
+  import { quota } from "./lib/quota.svelte.js";
+  import { quotaImpact } from "./lib/quotaImpact.js";
 
   window.cockpitFlash = showFlash;
 
@@ -45,16 +48,13 @@
   let route = $state(parseRoute(location.hash));
   let reposConfigured = $state(null);
   let setupOpen = $state(false);
-  let quota = $state(null);
   let inboxRevision = $state(0);
   let detailRevision = $state(0);
   let pollCompletedAt = $state(null);
+  let bannerHeight = $state(0);
+  let impact = $derived(quotaImpact(quota.resources));
   let quotaTone = $derived(
-    quota?.graphql.remaining === 0
-      ? "critical"
-      : quota?.graphql.remaining <= quota?.graphql.limit * 0.2
-        ? "warning"
-        : "normal",
+    impact.level === "out" ? "critical" : impact.level === "reserved" ? "warning" : "normal",
   );
 
   $effect(() => {
@@ -69,22 +69,6 @@
       .catch(() => (reposConfigured = true));
   });
 
-  $effect(() => {
-    let active = true;
-    const load = () => {
-      fetchQuota()
-        .then((next) => {
-          if (active) quota = next;
-        })
-        .catch(() => {});
-    };
-    load();
-    const timer = setInterval(load, 60_000);
-    return () => {
-      active = false;
-      clearInterval(timer);
-    };
-  });
   $effect(() => {
     let socket = null;
     let reconnectTimer = null;
@@ -134,7 +118,6 @@
       socket?.close();
     };
   });
-
   // GitHub PR links in rendered markdown navigate in-app; modifier clicks keep the real href
   const GH_PR_URL = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)(?:$|[#?])/;
 
@@ -166,7 +149,16 @@
 {#if route.name === "palette"}
   <Palette standalone />
 {:else}
-  <div class="app-shell" class:shell={isShell} class:sidebar-hidden={prefs.hideSidebar} class:settingsRoute={route.name === "settings"}>
+  <div
+    class="app-shell"
+    class:shell={isShell}
+    class:sidebar-hidden={prefs.hideSidebar}
+    class:settingsRoute={route.name === "settings"}
+    style="--app-banner-height: {bannerHeight}px"
+  >
+    <div class="app-banner" bind:clientHeight={bannerHeight}>
+      <QuotaBanner />
+    </div>
     <div class="app-drag-region" aria-hidden="true"></div>
     <aside class="app-sidebar">
       <nav class="app-nav" aria-label="Cockpit navigation">
@@ -207,17 +199,18 @@
         </a>
       </nav>
 
-      {#if quota}
+      {#if quota.resources}
+        {@const graphql = quota.resources.graphql}
         <a
           class="quota-status {quotaTone}"
           href="#/settings"
-          title={`GitHub GraphQL: ${quota.graphql.remaining.toLocaleString()} of ${quota.graphql.limit.toLocaleString()} remaining. Resets ${new Date(quota.graphql.resetAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.`}
-          aria-label={`GitHub GraphQL quota: ${quota.graphql.remaining} of ${quota.graphql.limit} remaining`}
+          title={`GitHub GraphQL: ${graphql.remaining.toLocaleString()} of ${graphql.limit.toLocaleString()} remaining. Resets ${new Date(graphql.resetAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.`}
+          aria-label={`GitHub GraphQL quota: ${graphql.remaining} of ${graphql.limit} remaining`}
         >
           <span class="quota-dot" aria-hidden="true"></span>
           <span class="quota-copy">
             <strong>GraphQL</strong>
-            <small>{quota.graphql.remaining.toLocaleString()} / {quota.graphql.limit.toLocaleString()}</small>
+            <small>{graphql.remaining.toLocaleString()} / {graphql.limit.toLocaleString()}</small>
           </span>
         </a>
       {/if}
@@ -263,13 +256,27 @@
     --app-rail-width: 228px;
     --app-content-max-width: 1320px;
     --app-content-gutter: 32px;
+    /* views size themselves to --general-height, so the banner takes its height out of it */
+    --general-height: calc(var(--viewport-height) - var(--app-banner-height, 0px));
     display: grid;
     grid-template-columns: var(--app-rail-width) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
     width: 100%;
     height: 100%;
     min-width: 0;
     overflow: hidden;
     background: var(--bg);
+  }
+
+  .app-banner {
+    grid-column: 1 / -1;
+  }
+
+  /* the banner takes over the top strip in the desktop shell: it stays draggable and
+     leaves room for the macOS traffic lights */
+  .app-shell.shell .app-banner {
+    padding-left: 62px;
+    -webkit-app-region: drag;
   }
 
   .app-drag-region {

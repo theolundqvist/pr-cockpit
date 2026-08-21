@@ -42,6 +42,9 @@
   import { getDetail, cacheDetail } from "./detailCache.js";
   import { buildChecks, countChecks, summarizeChecks, sectionizeChecks, ciFixPrompt } from "./checks.js";
   import { mergeGate as evalMergeGate, forceMergeAvailable as evalForceMerge } from "./mergeGate.js";
+  import { quota } from "./quota.svelte.js";
+  import { quotaImpact } from "./quotaImpact.js";
+  import QuotaMergeModal from "./QuotaMergeModal.svelte";
   import DiffView from "./DiffView.svelte";
   import FileHistory from "./FileHistory.svelte";
   import Telescope from "./Telescope.svelte";
@@ -125,6 +128,7 @@
     rewriteFallback = false;
     churnBaseRef = null;
     mergeConfirm = false;
+    quotaMergeModal = false;
     forceMergeConfirm = false;
     closeConfirm = false;
     mergeMenuOpen = false;
@@ -603,6 +607,21 @@
   let closeConfirm = $state(false);
   let mergeMenuOpen = $state(false);
   let mergeMethodBusy = $state(false);
+  let quotaStatus = $derived(quotaImpact(quota.resources));
+  let mergeBlockedByQuota = $derived(quotaStatus.mergeBlocked);
+  let quotaMergeModal = $state(false);
+
+  // an empty GitHub pool makes the merge call fail, so ask for confirmation only when
+  // Cockpit can actually carry it out and offer GitHub's own merge button otherwise
+  function requestMerge(force = false) {
+    if (mergeBlockedByQuota) {
+      quotaMergeModal = true;
+      return;
+    }
+    if (force) forceMergeConfirm = true;
+    else mergeConfirm = true;
+  }
+
   const mergeMethods = [
     { value: "squash", label: "Squash and merge" },
     { value: "merge", label: "Create a merge commit" },
@@ -629,6 +648,10 @@
   }
 
   async function submitMerge(force = false) {
+    if (mergeBlockedByQuota) {
+      quotaMergeModal = true;
+      return;
+    }
     await enqueueMutation(repo, number, {
       kind: "merge",
       force,
@@ -1661,6 +1684,13 @@
         }
         return;
       }
+      if (quotaMergeModal) {
+        if (e.key === "Escape" || e.key === "Enter") {
+          quotaMergeModal = false;
+          e.preventDefault();
+        }
+        return;
+      }
       if (rangeOpen) return;
       if (historyOpen) return;
       if (mergeMenuOpen) {
@@ -1772,10 +1802,10 @@
       } else if (e.key === "e") {
         openEditor();
       } else if (e.key === "m") {
-        if (mergeGate.action === "merge" && !mergeMutation) mergeConfirm = true;
+        if (mergeGate.action === "merge" && !mergeMutation) requestMerge();
         else if (mergeGate.reason) mergeFlash.show(mergeGate.reason);
       } else if (e.key === "M") {
-        if (forceMergeAvailable && !mergeMutation) forceMergeConfirm = true;
+        if (forceMergeAvailable && !mergeMutation) requestMerge(true);
       } else if (e.key === "u" && mergeGate.action === "update") {
         if (!updateMutation) submitUpdateBranch();
       } else if (e.key === "s") {
@@ -2462,7 +2492,7 @@
               <div class="actions mono">
                 {#snippet mergeControl(enabled)}
                   <div class="merge-split">
-                    <button class="merge-btn merge-main" disabled={!enabled} onclick={() => (mergeConfirm = true)}>merge ({mergeMethodLabel})</button>
+                    <button class="merge-btn merge-main" class:blocked={enabled && mergeBlockedByQuota} disabled={!enabled} onclick={() => requestMerge()}>merge ({mergeMethodLabel})</button>
                     <button class="merge-btn merge-caret" aria-label="Merge options" aria-expanded={mergeMenuOpen} aria-haspopup="menu" onclick={() => (mergeMenuOpen = !mergeMenuOpen)}>⌄</button>
                     {#if mergeMenuOpen}
                       <div class="merge-menu" role="menu">
@@ -2495,7 +2525,7 @@
                             class="danger"
                             onclick={() => {
                               mergeMenuOpen = false;
-                              forceMergeConfirm = true;
+                              requestMerge(true);
                             }}
                           >
                             <span>Force merge now</span>
@@ -2804,6 +2834,10 @@
         onPick={pickerMode === "assign" ? submitAssign : submitRequestReviewer}
         onClose={() => (pickerMode = null)}
       />
+    {/if}
+
+    {#if quotaMergeModal}
+      <QuotaMergeModal {number} url={pr.url} impact={quotaStatus} onClose={() => (quotaMergeModal = false)} />
     {/if}
 
     {#if promptOpen}
@@ -3158,6 +3192,11 @@
   }
   .merge-btn.fail {
     background: var(--fail-bg);
+    border-color: var(--fail);
+    color: var(--fail);
+  }
+  .merge-btn.blocked {
+    background: var(--wait-bg);
     border-color: var(--fail);
     color: var(--fail);
   }
@@ -4771,6 +4810,12 @@
   .merge-btn.fail {
     background: var(--fail-bg);
     border-color: color-mix(in srgb, var(--fail) 45%, var(--border));
+    color: var(--fail);
+    box-shadow: none;
+  }
+  .merge-btn.blocked {
+    background: var(--fail-bg);
+    border-color: var(--fail);
     color: var(--fail);
     box-shadow: none;
   }

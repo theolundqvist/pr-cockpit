@@ -23,11 +23,12 @@ import { discoveredRepos, refreshWorktreeScan } from "./worktreeScan.ts";
 import { onPrActivity } from "./activity.ts";
 import { scoreReviewers } from "./reviewScore.ts";
 import { invalidateInbox, invalidatePr, publishPollCompleted } from "./rendererInvalidation.ts";
+import { GRAPHQL_BACKGROUND_RESERVE } from "../ui/src/lib/quotaImpact.js";
 
 const INDEX_SWEEP_MS = 1_800_000;
 
 export let lastPollAt: string | null = null;
-const GRAPHQL_BACKGROUND_RESERVE = 200;
+
 let quotaPauseResetAt: string | null = null;
 let openInboxKeys = new Set<string>();
 
@@ -87,12 +88,6 @@ export function greptileUnresolvedCount(detail: GreptileThreads): number {
   return detail.reviewThreads.nodes.filter((t) => !t.isResolved && !t.isOutdated && t.comments.nodes[0]?.author?.login === GREPTILE_LOGIN).length;
 }
 
-function notifyRankTransition(previous: PrRow | null, rank: number, title: string, url: string): void {
-  if (!previous || previous.needs_me_rank === rank) return;
-  if (rank === 0) spawnNotify(url, `${title}: CI failing`);
-  else if (rank === 2) spawnNotify(url, `${title}: ready to merge`);
-}
-
 function prefetchDetailImages(detail: PrDetail): void {
   const bodies = [detail.body];
   for (const review of detail.reviews.nodes) bodies.push(review.body);
@@ -101,17 +96,6 @@ function prefetchDetailImages(detail: PrDetail): void {
   const urls = [...new Set(bodies.flatMap(extractGithubImageUrls))];
   if (urls.length === 0) return;
   prefetchImages(urls).catch((err) => console.error(`image prefetch failed for ${detail.url}:`, err));
-}
-
-function spawnNotify(url: string, message: string): void {
-  try {
-    Bun.spawn([`${Bun.env.HOME}/.config/scripts/notify`, "--url", url, "--", message], {
-      stdout: "ignore",
-      stderr: "ignore",
-    });
-  } catch (err) {
-    console.error("notify spawn failed:", err);
-  }
 }
 
 async function refreshPrNow(repo: string, number: number): Promise<void> {
@@ -183,8 +167,6 @@ async function refreshPrNow(repo: string, number: number): Promise<void> {
 
   // keyed on the freshly observed state, not the pre-await `previous` snapshot - closed prs can't be re-armed
   if (detail.state === "MERGED" || detail.state === "CLOSED") setAutoMergeArmed(repo, number, false);
-
-  notifyRankTransition(previous, rank, detail.title, detail.url);
   invalidatePr(repo, number);
   invalidateInbox();
 }

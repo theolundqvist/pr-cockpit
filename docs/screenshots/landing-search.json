@@ -12,7 +12,7 @@
   },
   "renderScale": 1,
   "detailScale": 0.85,
-  "trimSeconds": 0.14,
+  "trimSeconds": 0.2,
   "shell": {
     "runtime": "Electron",
     "paletteWindow": {
@@ -46,17 +46,17 @@
     "path": "docs/screenshots/landing-search.webm",
     "codec": "vp9",
     "durationSeconds": 6.4,
-    "bytes": 192591
+    "bytes": 191488
   },
   "fallback": {
     "path": "docs/screenshots/landing-search.mp4",
     "codec": "h264",
     "durationSeconds": 6.4,
-    "bytes": 165482
+    "bytes": 167415
   },
   "poster": {
     "path": "docs/screenshots/landing-search-poster.png",
     "scene": "standalone Electron palette with word query",
-    "bytes": 28675
+    "bytes": 28098
   }
 }

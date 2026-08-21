@@ -469,6 +469,31 @@ const scenarios = [
   onboardingStep("onboarding-step-3-live-updates", 3, "Successful live-update coverage step."),
   onboardingStep("onboarding-step-4-ready", 4, "Successful initial inbox sync step."),
   {
+    name: "quota-exhausted",
+    route: "#/",
+    description: "Both GitHub quota pools empty, with the degradation banner above the inbox.",
+    beforeGoto: (page) => quotaRoutes(page, { graphql: 0, rest: 0 }),
+    ready: ".quota-banner",
+    verify: async (page) => page.getByText("GitHub GraphQL and REST quota exhausted", { exact: true }).waitFor(),
+  },
+  {
+    name: "quota-reserved",
+    route: "#/",
+    description: "GraphQL below the polling reserve, so only background refresh is degraded.",
+    beforeGoto: (page) => quotaRoutes(page, { graphql: 120, rest: 4800 }),
+    ready: ".quota-banner",
+    verify: async (page) => page.getByText("GitHub GraphQL quota nearly exhausted", { exact: true }).waitFor(),
+  },
+  {
+    ...detail("detail-merge-quota-blocked", 101, "Merge refused while the REST quota is empty, offering GitHub's own merge button."),
+    beforeGoto: (page) => quotaRoutes(page, { graphql: 4800, rest: 0 }),
+    interact: async (page) => {
+      await page.getByRole("button", { name: /^merge \(/ }).click();
+      await page.locator(".qm").waitFor();
+    },
+    verify: async (page) => page.getByRole("button", { name: "Merge on GitHub", exact: true }).waitFor(),
+  },
+  {
     name: "detail-not-found",
     route: `#/pr/${REPO}/999`,
     description: "Stable detail error for a PR absent from the fixture set.",
@@ -482,6 +507,13 @@ const scenarios = [
 
 function detail(name, number, description, repo = REPO) {
   return { name, route: `#/pr/${repo}/${number}`, description, ready: ".page .detail" };
+}
+
+function quotaRoutes(page, { graphql, rest }) {
+  const resetAt = new Date(FIXED_NOW + 41 * 60_000).toISOString();
+  const pool = (remaining) => ({ limit: 5000, used: 5000 - remaining, remaining, resetAt });
+  const body = JSON.stringify({ graphql: pool(graphql), rest: pool(rest), fetchedAt: new Date(FIXED_NOW).toISOString() });
+  return page.route("**/api/quota", (route) => route.fulfill({ status: 200, contentType: "application/json", body }));
 }
 
 function settings(name, description, tab) {
