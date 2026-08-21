@@ -22,11 +22,12 @@ import { pollIntervalMs, settingsRepos } from "./settings.ts";
 import { discoveredRepos, refreshWorktreeScan } from "./worktreeScan.ts";
 import { onPrActivity } from "./activity.ts";
 import { scoreReviewers } from "./reviewScore.ts";
+import { GRAPHQL_BACKGROUND_RESERVE } from "../ui/src/lib/quotaImpact.js";
 
 const INDEX_SWEEP_MS = 1_800_000;
 
 export let lastPollAt: string | null = null;
-const GRAPHQL_BACKGROUND_RESERVE = 200;
+
 let quotaPauseResetAt: string | null = null;
 let openInboxKeys = new Set<string>();
 

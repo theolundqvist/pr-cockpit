@@ -83,7 +83,7 @@ export function setScales(generalValue, diffValue) {
     const root = document.documentElement;
     root.style.setProperty("--general-scale", String(generalFactor));
     root.style.setProperty("--general-width", `${100 / generalFactor}vw`);
-    root.style.setProperty("--general-height", `${100 / generalFactor}vh`);
+    root.style.setProperty("--viewport-height", `${100 / generalFactor}vh`);
     root.style.setProperty("--diff-font-size", `${12.5 * diffRelativeScale}px`);
   }
 }
