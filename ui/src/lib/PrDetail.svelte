@@ -2188,29 +2188,29 @@
 
       {#if tab === "files"}
         <div class="files-layout">
+          <div class="files-toolbar mono">
+            <div class="toolbar-left">
+              <RangePicker
+                {commits}
+                {rangeKey}
+                showSince={sinceAvailable}
+                sinceLabel="Changes since your last visit"
+                onSelect={selectRange}
+                bind:open={rangeOpen}
+              />
+              {#if diffState === "ready"}<span class="fcount">{treeFiles.length} file{treeFiles.length === 1 ? "" : "s"}</span>{/if}
+            </div>
+            {#if testFiles.length && diffState === "ready"}
+              <button class="toolbar-btn" onclick={toggleTests}>
+                {testsHidden ? "show" : "hide"} {testFiles.length} test file{testFiles.length > 1 ? "s" : ""}
+              </button>
+            {/if}
+          </div>
           <aside class="tree-pane">
             <FileTree files={treeFiles} {selectedPath} onSelect={selectFileByPath} />
           </aside>
           <div class="tree-resizer" role="separator" aria-orientation="vertical" onpointerdown={startTreeResize}></div>
           <div class="diff-pane">
-            <div class="files-toolbar mono">
-              <div class="toolbar-left">
-                <RangePicker
-                  {commits}
-                  {rangeKey}
-                  showSince={sinceAvailable}
-                  sinceLabel="Changes since your last visit"
-                  onSelect={selectRange}
-                  bind:open={rangeOpen}
-                />
-                {#if diffState === "ready"}<span class="fcount">{treeFiles.length} file{treeFiles.length === 1 ? "" : "s"}</span>{/if}
-              </div>
-              {#if testFiles.length && diffState === "ready"}
-                <button class="toolbar-btn" onclick={toggleTests}>
-                  {testsHidden ? "show" : "hide"} {testFiles.length} test file{testFiles.length > 1 ? "s" : ""}
-                </button>
-              {/if}
-            </div>
             {#if churnBaseRef && rangeKey === "since" && diffState === "ready"}
               <div class="churn-note mono">merged in {churnBaseRef} since your visit — its churn is hidden, showing only this PR's changes</div>
             {/if}
@@ -3289,6 +3289,8 @@
     align-items: start;
   }
   .tree-pane {
+    grid-column: 1;
+    grid-row: 2;
     position: sticky;
     top: 24px;
     align-self: start;
@@ -3303,6 +3305,8 @@
     padding: 8px;
   }
   .tree-resizer {
+    grid-column: 2;
+    grid-row: 2;
     align-self: stretch;
     min-width: 6px;
     width: 6px;
@@ -3312,6 +3316,8 @@
     background: var(--panel-raised);
   }
   .diff-pane {
+    grid-column: 3;
+    grid-row: 2;
     min-width: 0;
     max-width: 100%;
     padding-left: 12px;
@@ -3460,10 +3466,12 @@
     user-select: text;
   }
   .files-toolbar {
+    grid-column: 3;
+    grid-row: 1;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 14px;
+    margin: 0 0 14px 12px;
   }
   .toolbar-left {
     display: flex;
@@ -4924,6 +4932,15 @@
     .files-layout {
       grid-template-columns: minmax(0, 1fr);
       gap: 12px;
+    }
+    .files-toolbar,
+    .tree-pane,
+    .diff-pane {
+      grid-column: 1;
+      grid-row: auto;
+    }
+    .files-toolbar {
+      margin-left: 0;
     }
     .tree-pane {
       position: static;
