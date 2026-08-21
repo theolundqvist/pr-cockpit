@@ -3437,6 +3437,1911 @@
       "viewerIsAuthor": false,
       "viewerReviewRequested": false,
       "viewerReviewState": null
+    },
+    {
+      "id": "PR_mock_160858",
+      "title": "Stabilize async closures in trait bounds",
+      "number": 160858,
+      "state": "OPEN",
+      "isDraft": false,
+      "mergedAt": null,
+      "closedAt": null,
+      "author": {
+        "login": "lcnr",
+        "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+      },
+      "baseRefName": "main",
+      "baseRefOid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769",
+      "headRefName": "mock/160858",
+      "headRefOid": "2745a2745a2745a2745a2745a2745a2745a2745a",
+      "body": "Focused Rust compiler change for the recording fixture: stabilize async closures in trait bounds.",
+      "additions": 24,
+      "deletions": 3,
+      "changedFiles": 1,
+      "files": {
+        "totalCount": 1,
+        "nodes": [
+          {
+            "path": "compiler/rustc_trait_selection/src/traits/mod.rs",
+            "additions": 24,
+            "deletions": 3
+          }
+        ]
+      },
+      "mergeable": "MERGEABLE",
+      "mergeStateStatus": "CLEAN",
+      "viewerCanMergeAsAdmin": false,
+      "autoMergeRequest": null,
+      "reviewDecision": "APPROVED",
+      "createdAt": "2026-08-21T14:00:37.671Z",
+      "updatedAt": "2026-08-21T14:00:37.671Z",
+      "url": "https://github.com/rust-lang/rust/pull/160858",
+      "commitCount": {
+        "totalCount": 1
+      },
+      "lastCommit": {
+        "nodes": [
+          {
+            "commit": {
+              "statusCheckRollup": {
+                "state": "SUCCESS",
+                "contexts": {
+                  "nodes": [
+                    {
+                      "__typename": "CheckRun",
+                      "name": "ci",
+                      "status": "COMPLETED",
+                      "conclusion": "SUCCESS",
+                      "detailsUrl": null,
+                      "startedAt": "2026-08-21T14:00:37.671Z",
+                      "completedAt": "2026-08-21T14:00:37.671Z",
+                      "isRequired": true,
+                      "checkSuite": null
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "commitList": {
+        "nodes": [
+          {
+            "commit": {
+              "oid": "2745a2745a2745a2745a2745a2745a2745a2745a",
+              "abbreviatedOid": "2745a27",
+              "messageHeadline": "Stabilize async closures in trait bounds",
+              "committedDate": "2026-08-21T14:00:37.671Z",
+              "statusCheckRollup": {
+                "state": "SUCCESS"
+              },
+              "author": {
+                "name": "lcnr",
+                "user": {
+                  "login": "lcnr",
+                  "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+                }
+              },
+              "parents": {
+                "nodes": [
+                  {
+                    "oid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "labels": {
+        "nodes": []
+      },
+      "assignees": {
+        "nodes": []
+      },
+      "reviewRequests": {
+        "nodes": []
+      },
+      "reviews": {
+        "nodes": []
+      },
+      "comments": {
+        "nodes": []
+      },
+      "reviewThreads": {
+        "nodes": []
+      },
+      "reactions": [],
+      "viewerLogin": "theolundqvist",
+      "viewerIsAuthor": false,
+      "viewerReviewRequested": false,
+      "viewerReviewState": null
+    },
+    {
+      "id": "PR_mock_160857",
+      "title": "Add wasm32 component model target",
+      "number": 160857,
+      "state": "OPEN",
+      "isDraft": false,
+      "mergedAt": null,
+      "closedAt": null,
+      "author": {
+        "login": "alexcrichton",
+        "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+      },
+      "baseRefName": "main",
+      "baseRefOid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769",
+      "headRefName": "mock/160857",
+      "headRefOid": "2745927459274592745927459274592745927459",
+      "body": "Focused Rust compiler change for the recording fixture: add wasm32 component model target.",
+      "additions": 33,
+      "deletions": 7,
+      "changedFiles": 2,
+      "files": {
+        "totalCount": 2,
+        "nodes": [
+          {
+            "path": "compiler/rustc_target/src/spec/targets/wasm32_wasip2.rs",
+            "additions": 33,
+            "deletions": 7
+          },
+          {
+            "path": "tests/ui/mock-160857-1.rs",
+            "additions": 5,
+            "deletions": 1
+          }
+        ]
+      },
+      "mergeable": "MERGEABLE",
+      "mergeStateStatus": "BEHIND",
+      "viewerCanMergeAsAdmin": false,
+      "autoMergeRequest": null,
+      "reviewDecision": "REVIEW_REQUIRED",
+      "createdAt": "2026-08-21T13:59:37.671Z",
+      "updatedAt": "2026-08-21T13:59:37.671Z",
+      "url": "https://github.com/rust-lang/rust/pull/160857",
+      "commitCount": {
+        "totalCount": 1
+      },
+      "lastCommit": {
+        "nodes": [
+          {
+            "commit": {
+              "statusCheckRollup": {
+                "state": "PENDING",
+                "contexts": {
+                  "nodes": [
+                    {
+                      "__typename": "CheckRun",
+                      "name": "ci",
+                      "status": "IN_PROGRESS",
+                      "conclusion": null,
+                      "detailsUrl": null,
+                      "startedAt": "2026-08-21T13:59:37.671Z",
+                      "completedAt": null,
+                      "isRequired": true,
+                      "checkSuite": null
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "commitList": {
+        "nodes": [
+          {
+            "commit": {
+              "oid": "2745927459274592745927459274592745927459",
+              "abbreviatedOid": "2745927",
+              "messageHeadline": "Add wasm32 component model target",
+              "committedDate": "2026-08-21T13:59:37.671Z",
+              "statusCheckRollup": {
+                "state": "PENDING"
+              },
+              "author": {
+                "name": "alexcrichton",
+                "user": {
+                  "login": "alexcrichton",
+                  "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+                }
+              },
+              "parents": {
+                "nodes": [
+                  {
+                    "oid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "labels": {
+        "nodes": []
+      },
+      "assignees": {
+        "nodes": []
+      },
+      "reviewRequests": {
+        "nodes": []
+      },
+      "reviews": {
+        "nodes": []
+      },
+      "comments": {
+        "nodes": []
+      },
+      "reviewThreads": {
+        "nodes": []
+      },
+      "reactions": [],
+      "viewerLogin": "theolundqvist",
+      "viewerIsAuthor": false,
+      "viewerReviewRequested": true,
+      "viewerReviewState": null
+    },
+    {
+      "id": "PR_mock_160856",
+      "title": "Improve cargo metadata diagnostics",
+      "number": 160856,
+      "state": "OPEN",
+      "isDraft": false,
+      "mergedAt": null,
+      "closedAt": null,
+      "author": {
+        "login": "ehuss",
+        "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+      },
+      "baseRefName": "main",
+      "baseRefOid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769",
+      "headRefName": "mock/160856",
+      "headRefOid": "2745827458274582745827458274582745827458",
+      "body": "Focused Rust compiler change for the recording fixture: improve cargo metadata diagnostics.",
+      "additions": 42,
+      "deletions": 11,
+      "changedFiles": 3,
+      "files": {
+        "totalCount": 3,
+        "nodes": [
+          {
+            "path": "src/tools/cargo/src/cargo/core/compiler/mod.rs",
+            "additions": 42,
+            "deletions": 11
+          },
+          {
+            "path": "tests/ui/mock-160856-1.rs",
+            "additions": 5,
+            "deletions": 1
+          },
+          {
+            "path": "tests/ui/mock-160856-2.rs",
+            "additions": 6,
+            "deletions": 2
+          }
+        ]
+      },
+      "mergeable": "MERGEABLE",
+      "mergeStateStatus": "CLEAN",
+      "viewerCanMergeAsAdmin": false,
+      "autoMergeRequest": null,
+      "reviewDecision": "APPROVED",
+      "createdAt": "2026-08-21T13:58:37.671Z",
+      "updatedAt": "2026-08-21T13:58:37.671Z",
+      "url": "https://github.com/rust-lang/rust/pull/160856",
+      "commitCount": {
+        "totalCount": 1
+      },
+      "lastCommit": {
+        "nodes": [
+          {
+            "commit": {
+              "statusCheckRollup": {
+                "state": "SUCCESS",
+                "contexts": {
+                  "nodes": [
+                    {
+                      "__typename": "CheckRun",
+                      "name": "ci",
+                      "status": "COMPLETED",
+                      "conclusion": "SUCCESS",
+                      "detailsUrl": null,
+                      "startedAt": "2026-08-21T13:58:37.671Z",
+                      "completedAt": "2026-08-21T13:58:37.671Z",
+                      "isRequired": true,
+                      "checkSuite": null
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "commitList": {
+        "nodes": [
+          {
+            "commit": {
+              "oid": "2745827458274582745827458274582745827458",
+              "abbreviatedOid": "2745827",
+              "messageHeadline": "Improve cargo metadata diagnostics",
+              "committedDate": "2026-08-21T13:58:37.671Z",
+              "statusCheckRollup": {
+                "state": "SUCCESS"
+              },
+              "author": {
+                "name": "ehuss",
+                "user": {
+                  "login": "ehuss",
+                  "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+                }
+              },
+              "parents": {
+                "nodes": [
+                  {
+                    "oid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "labels": {
+        "nodes": []
+      },
+      "assignees": {
+        "nodes": []
+      },
+      "reviewRequests": {
+        "nodes": []
+      },
+      "reviews": {
+        "nodes": []
+      },
+      "comments": {
+        "nodes": []
+      },
+      "reviewThreads": {
+        "nodes": []
+      },
+      "reactions": [],
+      "viewerLogin": "theolundqvist",
+      "viewerIsAuthor": false,
+      "viewerReviewRequested": false,
+      "viewerReviewState": null
+    },
+    {
+      "id": "PR_mock_160855",
+      "title": "Refactor borrow checker region graph",
+      "number": 160855,
+      "state": "OPEN",
+      "isDraft": false,
+      "mergedAt": null,
+      "closedAt": null,
+      "author": {
+        "login": "nikomatsakis",
+        "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+      },
+      "baseRefName": "main",
+      "baseRefOid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769",
+      "headRefName": "mock/160855",
+      "headRefOid": "2745727457274572745727457274572745727457",
+      "body": "Focused Rust compiler change for the recording fixture: refactor borrow checker region graph.",
+      "additions": 51,
+      "deletions": 15,
+      "changedFiles": 4,
+      "files": {
+        "totalCount": 4,
+        "nodes": [
+          {
+            "path": "compiler/rustc_borrowck/src/region_infer/mod.rs",
+            "additions": 51,
+            "deletions": 15
+          },
+          {
+            "path": "tests/ui/mock-160855-1.rs",
+            "additions": 5,
+            "deletions": 1
+          },
+          {
+            "path": "tests/ui/mock-160855-2.rs",
+            "additions": 6,
+            "deletions": 2
+          },
+          {
+            "path": "tests/ui/mock-160855-3.rs",
+            "additions": 7,
+            "deletions": 3
+          }
+        ]
+      },
+      "mergeable": "MERGEABLE",
+      "mergeStateStatus": "UNSTABLE",
+      "viewerCanMergeAsAdmin": false,
+      "autoMergeRequest": null,
+      "reviewDecision": "CHANGES_REQUESTED",
+      "createdAt": "2026-08-21T13:57:37.671Z",
+      "updatedAt": "2026-08-21T13:57:37.671Z",
+      "url": "https://github.com/rust-lang/rust/pull/160855",
+      "commitCount": {
+        "totalCount": 1
+      },
+      "lastCommit": {
+        "nodes": [
+          {
+            "commit": {
+              "statusCheckRollup": {
+                "state": "FAILURE",
+                "contexts": {
+                  "nodes": [
+                    {
+                      "__typename": "CheckRun",
+                      "name": "ci",
+                      "status": "COMPLETED",
+                      "conclusion": "FAILURE",
+                      "detailsUrl": null,
+                      "startedAt": "2026-08-21T13:57:37.671Z",
+                      "completedAt": "2026-08-21T13:57:37.671Z",
+                      "isRequired": true,
+                      "checkSuite": null
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "commitList": {
+        "nodes": [
+          {
+            "commit": {
+              "oid": "2745727457274572745727457274572745727457",
+              "abbreviatedOid": "2745727",
+              "messageHeadline": "Refactor borrow checker region graph",
+              "committedDate": "2026-08-21T13:57:37.671Z",
+              "statusCheckRollup": {
+                "state": "FAILURE"
+              },
+              "author": {
+                "name": "nikomatsakis",
+                "user": {
+                  "login": "nikomatsakis",
+                  "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+                }
+              },
+              "parents": {
+                "nodes": [
+                  {
+                    "oid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "labels": {
+        "nodes": []
+      },
+      "assignees": {
+        "nodes": []
+      },
+      "reviewRequests": {
+        "nodes": []
+      },
+      "reviews": {
+        "nodes": []
+      },
+      "comments": {
+        "nodes": []
+      },
+      "reviewThreads": {
+        "nodes": []
+      },
+      "reactions": [],
+      "viewerLogin": "theolundqvist",
+      "viewerIsAuthor": false,
+      "viewerReviewRequested": false,
+      "viewerReviewState": null
+    },
+    {
+      "id": "PR_mock_160854",
+      "title": "Document unsafe pointer provenance rules",
+      "number": 160854,
+      "state": "OPEN",
+      "isDraft": false,
+      "mergedAt": null,
+      "closedAt": null,
+      "author": {
+        "login": "RalfJung",
+        "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+      },
+      "baseRefName": "main",
+      "baseRefOid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769",
+      "headRefName": "mock/160854",
+      "headRefOid": "2745627456274562745627456274562745627456",
+      "body": "Focused Rust compiler change for the recording fixture: document unsafe pointer provenance rules.",
+      "additions": 60,
+      "deletions": 19,
+      "changedFiles": 1,
+      "files": {
+        "totalCount": 1,
+        "nodes": [
+          {
+            "path": "library/core/src/ptr/mod.rs",
+            "additions": 60,
+            "deletions": 19
+          }
+        ]
+      },
+      "mergeable": "MERGEABLE",
+      "mergeStateStatus": "CLEAN",
+      "viewerCanMergeAsAdmin": false,
+      "autoMergeRequest": null,
+      "reviewDecision": "APPROVED",
+      "createdAt": "2026-08-21T13:56:37.671Z",
+      "updatedAt": "2026-08-21T13:56:37.671Z",
+      "url": "https://github.com/rust-lang/rust/pull/160854",
+      "commitCount": {
+        "totalCount": 1
+      },
+      "lastCommit": {
+        "nodes": [
+          {
+            "commit": {
+              "statusCheckRollup": {
+                "state": "SUCCESS",
+                "contexts": {
+                  "nodes": [
+                    {
+                      "__typename": "CheckRun",
+                      "name": "ci",
+                      "status": "COMPLETED",
+                      "conclusion": "SUCCESS",
+                      "detailsUrl": null,
+                      "startedAt": "2026-08-21T13:56:37.671Z",
+                      "completedAt": "2026-08-21T13:56:37.671Z",
+                      "isRequired": true,
+                      "checkSuite": null
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "commitList": {
+        "nodes": [
+          {
+            "commit": {
+              "oid": "2745627456274562745627456274562745627456",
+              "abbreviatedOid": "2745627",
+              "messageHeadline": "Document unsafe pointer provenance rules",
+              "committedDate": "2026-08-21T13:56:37.671Z",
+              "statusCheckRollup": {
+                "state": "SUCCESS"
+              },
+              "author": {
+                "name": "RalfJung",
+                "user": {
+                  "login": "RalfJung",
+                  "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+                }
+              },
+              "parents": {
+                "nodes": [
+                  {
+                    "oid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "labels": {
+        "nodes": []
+      },
+      "assignees": {
+        "nodes": []
+      },
+      "reviewRequests": {
+        "nodes": []
+      },
+      "reviews": {
+        "nodes": []
+      },
+      "comments": {
+        "nodes": []
+      },
+      "reviewThreads": {
+        "nodes": []
+      },
+      "reactions": [],
+      "viewerLogin": "theolundqvist",
+      "viewerIsAuthor": false,
+      "viewerReviewRequested": false,
+      "viewerReviewState": null
+    },
+    {
+      "id": "PR_mock_160853",
+      "title": "Optimize incremental compilation hashing",
+      "number": 160853,
+      "state": "OPEN",
+      "isDraft": false,
+      "mergedAt": null,
+      "closedAt": null,
+      "author": {
+        "login": "wesleywiser",
+        "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+      },
+      "baseRefName": "main",
+      "baseRefOid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769",
+      "headRefName": "mock/160853",
+      "headRefOid": "2745527455274552745527455274552745527455",
+      "body": "Focused Rust compiler change for the recording fixture: optimize incremental compilation hashing.",
+      "additions": 69,
+      "deletions": 3,
+      "changedFiles": 2,
+      "files": {
+        "totalCount": 2,
+        "nodes": [
+          {
+            "path": "compiler/rustc_query_system/src/dep_graph/graph.rs",
+            "additions": 69,
+            "deletions": 3
+          },
+          {
+            "path": "tests/ui/mock-160853-1.rs",
+            "additions": 5,
+            "deletions": 1
+          }
+        ]
+      },
+      "mergeable": "MERGEABLE",
+      "mergeStateStatus": "CLEAN",
+      "viewerCanMergeAsAdmin": false,
+      "autoMergeRequest": null,
+      "reviewDecision": "REVIEW_REQUIRED",
+      "createdAt": "2026-08-21T13:55:37.671Z",
+      "updatedAt": "2026-08-21T13:55:37.671Z",
+      "url": "https://github.com/rust-lang/rust/pull/160853",
+      "commitCount": {
+        "totalCount": 1
+      },
+      "lastCommit": {
+        "nodes": [
+          {
+            "commit": {
+              "statusCheckRollup": {
+                "state": "SUCCESS",
+                "contexts": {
+                  "nodes": [
+                    {
+                      "__typename": "CheckRun",
+                      "name": "ci",
+                      "status": "COMPLETED",
+                      "conclusion": "SUCCESS",
+                      "detailsUrl": null,
+                      "startedAt": "2026-08-21T13:55:37.671Z",
+                      "completedAt": "2026-08-21T13:55:37.671Z",
+                      "isRequired": true,
+                      "checkSuite": null
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "commitList": {
+        "nodes": [
+          {
+            "commit": {
+              "oid": "2745527455274552745527455274552745527455",
+              "abbreviatedOid": "2745527",
+              "messageHeadline": "Optimize incremental compilation hashing",
+              "committedDate": "2026-08-21T13:55:37.671Z",
+              "statusCheckRollup": {
+                "state": "SUCCESS"
+              },
+              "author": {
+                "name": "wesleywiser",
+                "user": {
+                  "login": "wesleywiser",
+                  "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+                }
+              },
+              "parents": {
+                "nodes": [
+                  {
+                    "oid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "labels": {
+        "nodes": []
+      },
+      "assignees": {
+        "nodes": []
+      },
+      "reviewRequests": {
+        "nodes": []
+      },
+      "reviews": {
+        "nodes": []
+      },
+      "comments": {
+        "nodes": []
+      },
+      "reviewThreads": {
+        "nodes": []
+      },
+      "reactions": [],
+      "viewerLogin": "theolundqvist",
+      "viewerIsAuthor": false,
+      "viewerReviewRequested": true,
+      "viewerReviewState": null
+    },
+    {
+      "id": "PR_mock_160852",
+      "title": "Update aarch64 target feature detection",
+      "number": 160852,
+      "state": "OPEN",
+      "isDraft": true,
+      "mergedAt": null,
+      "closedAt": null,
+      "author": {
+        "login": "cuviper",
+        "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+      },
+      "baseRefName": "main",
+      "baseRefOid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769",
+      "headRefName": "mock/160852",
+      "headRefOid": "2745427454274542745427454274542745427454",
+      "body": "Focused Rust compiler change for the recording fixture: update aarch64 target feature detection.",
+      "additions": 78,
+      "deletions": 7,
+      "changedFiles": 3,
+      "files": {
+        "totalCount": 3,
+        "nodes": [
+          {
+            "path": "compiler/rustc_target/src/target_features.rs",
+            "additions": 78,
+            "deletions": 7
+          },
+          {
+            "path": "tests/ui/mock-160852-1.rs",
+            "additions": 5,
+            "deletions": 1
+          },
+          {
+            "path": "tests/ui/mock-160852-2.rs",
+            "additions": 6,
+            "deletions": 2
+          }
+        ]
+      },
+      "mergeable": "CONFLICTING",
+      "mergeStateStatus": "BLOCKED",
+      "viewerCanMergeAsAdmin": false,
+      "autoMergeRequest": null,
+      "reviewDecision": "REVIEW_REQUIRED",
+      "createdAt": "2026-08-21T13:54:37.671Z",
+      "updatedAt": "2026-08-21T13:54:37.671Z",
+      "url": "https://github.com/rust-lang/rust/pull/160852",
+      "commitCount": {
+        "totalCount": 1
+      },
+      "lastCommit": {
+        "nodes": [
+          {
+            "commit": {
+              "statusCheckRollup": {
+                "state": "PENDING",
+                "contexts": {
+                  "nodes": [
+                    {
+                      "__typename": "CheckRun",
+                      "name": "ci",
+                      "status": "IN_PROGRESS",
+                      "conclusion": null,
+                      "detailsUrl": null,
+                      "startedAt": "2026-08-21T13:54:37.671Z",
+                      "completedAt": null,
+                      "isRequired": true,
+                      "checkSuite": null
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "commitList": {
+        "nodes": [
+          {
+            "commit": {
+              "oid": "2745427454274542745427454274542745427454",
+              "abbreviatedOid": "2745427",
+              "messageHeadline": "Update aarch64 target feature detection",
+              "committedDate": "2026-08-21T13:54:37.671Z",
+              "statusCheckRollup": {
+                "state": "PENDING"
+              },
+              "author": {
+                "name": "cuviper",
+                "user": {
+                  "login": "cuviper",
+                  "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+                }
+              },
+              "parents": {
+                "nodes": [
+                  {
+                    "oid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "labels": {
+        "nodes": []
+      },
+      "assignees": {
+        "nodes": []
+      },
+      "reviewRequests": {
+        "nodes": []
+      },
+      "reviews": {
+        "nodes": []
+      },
+      "comments": {
+        "nodes": []
+      },
+      "reviewThreads": {
+        "nodes": []
+      },
+      "reactions": [],
+      "viewerLogin": "theolundqvist",
+      "viewerIsAuthor": false,
+      "viewerReviewRequested": true,
+      "viewerReviewState": null
+    },
+    {
+      "id": "PR_mock_160851",
+      "title": "Gate experimental SIMD intrinsics",
+      "number": 160851,
+      "state": "OPEN",
+      "isDraft": false,
+      "mergedAt": null,
+      "closedAt": null,
+      "author": {
+        "login": "Amanieu",
+        "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+      },
+      "baseRefName": "main",
+      "baseRefOid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769",
+      "headRefName": "mock/160851",
+      "headRefOid": "2745327453274532745327453274532745327453",
+      "body": "Focused Rust compiler change for the recording fixture: gate experimental simd intrinsics.",
+      "additions": 87,
+      "deletions": 11,
+      "changedFiles": 4,
+      "files": {
+        "totalCount": 4,
+        "nodes": [
+          {
+            "path": "library/core/src/intrinsics/simd.rs",
+            "additions": 87,
+            "deletions": 11
+          },
+          {
+            "path": "tests/ui/mock-160851-1.rs",
+            "additions": 5,
+            "deletions": 1
+          },
+          {
+            "path": "tests/ui/mock-160851-2.rs",
+            "additions": 6,
+            "deletions": 2
+          },
+          {
+            "path": "tests/ui/mock-160851-3.rs",
+            "additions": 7,
+            "deletions": 3
+          }
+        ]
+      },
+      "mergeable": "MERGEABLE",
+      "mergeStateStatus": "CLEAN",
+      "viewerCanMergeAsAdmin": false,
+      "autoMergeRequest": null,
+      "reviewDecision": "APPROVED",
+      "createdAt": "2026-08-21T13:53:37.671Z",
+      "updatedAt": "2026-08-21T13:53:37.671Z",
+      "url": "https://github.com/rust-lang/rust/pull/160851",
+      "commitCount": {
+        "totalCount": 1
+      },
+      "lastCommit": {
+        "nodes": [
+          {
+            "commit": {
+              "statusCheckRollup": {
+                "state": "SUCCESS",
+                "contexts": {
+                  "nodes": [
+                    {
+                      "__typename": "CheckRun",
+                      "name": "ci",
+                      "status": "COMPLETED",
+                      "conclusion": "SUCCESS",
+                      "detailsUrl": null,
+                      "startedAt": "2026-08-21T13:53:37.671Z",
+                      "completedAt": "2026-08-21T13:53:37.671Z",
+                      "isRequired": true,
+                      "checkSuite": null
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "commitList": {
+        "nodes": [
+          {
+            "commit": {
+              "oid": "2745327453274532745327453274532745327453",
+              "abbreviatedOid": "2745327",
+              "messageHeadline": "Gate experimental SIMD intrinsics",
+              "committedDate": "2026-08-21T13:53:37.671Z",
+              "statusCheckRollup": {
+                "state": "SUCCESS"
+              },
+              "author": {
+                "name": "Amanieu",
+                "user": {
+                  "login": "Amanieu",
+                  "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+                }
+              },
+              "parents": {
+                "nodes": [
+                  {
+                    "oid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "labels": {
+        "nodes": []
+      },
+      "assignees": {
+        "nodes": []
+      },
+      "reviewRequests": {
+        "nodes": []
+      },
+      "reviews": {
+        "nodes": []
+      },
+      "comments": {
+        "nodes": []
+      },
+      "reviewThreads": {
+        "nodes": []
+      },
+      "reactions": [],
+      "viewerLogin": "theolundqvist",
+      "viewerIsAuthor": false,
+      "viewerReviewRequested": false,
+      "viewerReviewState": null
+    },
+    {
+      "id": "PR_mock_160850",
+      "title": "Fix rustdoc links for associated types",
+      "number": 160850,
+      "state": "OPEN",
+      "isDraft": false,
+      "mergedAt": null,
+      "closedAt": null,
+      "author": {
+        "login": "GuillaumeGomez",
+        "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+      },
+      "baseRefName": "main",
+      "baseRefOid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769",
+      "headRefName": "mock/160850",
+      "headRefOid": "2745227452274522745227452274522745227452",
+      "body": "Focused Rust compiler change for the recording fixture: fix rustdoc links for associated types.",
+      "additions": 96,
+      "deletions": 15,
+      "changedFiles": 1,
+      "files": {
+        "totalCount": 1,
+        "nodes": [
+          {
+            "path": "src/librustdoc/html/render/mod.rs",
+            "additions": 96,
+            "deletions": 15
+          }
+        ]
+      },
+      "mergeable": "MERGEABLE",
+      "mergeStateStatus": "CLEAN",
+      "viewerCanMergeAsAdmin": false,
+      "autoMergeRequest": null,
+      "reviewDecision": "APPROVED",
+      "createdAt": "2026-08-21T13:52:37.671Z",
+      "updatedAt": "2026-08-21T13:52:37.671Z",
+      "url": "https://github.com/rust-lang/rust/pull/160850",
+      "commitCount": {
+        "totalCount": 1
+      },
+      "lastCommit": {
+        "nodes": [
+          {
+            "commit": {
+              "statusCheckRollup": {
+                "state": "SUCCESS",
+                "contexts": {
+                  "nodes": [
+                    {
+                      "__typename": "CheckRun",
+                      "name": "ci",
+                      "status": "COMPLETED",
+                      "conclusion": "SUCCESS",
+                      "detailsUrl": null,
+                      "startedAt": "2026-08-21T13:52:37.671Z",
+                      "completedAt": "2026-08-21T13:52:37.671Z",
+                      "isRequired": true,
+                      "checkSuite": null
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "commitList": {
+        "nodes": [
+          {
+            "commit": {
+              "oid": "2745227452274522745227452274522745227452",
+              "abbreviatedOid": "2745227",
+              "messageHeadline": "Fix rustdoc links for associated types",
+              "committedDate": "2026-08-21T13:52:37.671Z",
+              "statusCheckRollup": {
+                "state": "SUCCESS"
+              },
+              "author": {
+                "name": "GuillaumeGomez",
+                "user": {
+                  "login": "GuillaumeGomez",
+                  "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+                }
+              },
+              "parents": {
+                "nodes": [
+                  {
+                    "oid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "labels": {
+        "nodes": []
+      },
+      "assignees": {
+        "nodes": []
+      },
+      "reviewRequests": {
+        "nodes": []
+      },
+      "reviews": {
+        "nodes": []
+      },
+      "comments": {
+        "nodes": []
+      },
+      "reviewThreads": {
+        "nodes": []
+      },
+      "reactions": [],
+      "viewerLogin": "theolundqvist",
+      "viewerIsAuthor": false,
+      "viewerReviewRequested": false,
+      "viewerReviewState": null
+    },
+    {
+      "id": "PR_mock_160849",
+      "title": "Teach Clippy about let-else patterns",
+      "number": 160849,
+      "state": "OPEN",
+      "isDraft": false,
+      "mergedAt": null,
+      "closedAt": null,
+      "author": {
+        "login": "llogiq",
+        "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+      },
+      "baseRefName": "main",
+      "baseRefOid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769",
+      "headRefName": "mock/160849",
+      "headRefOid": "2745127451274512745127451274512745127451",
+      "body": "Focused Rust compiler change for the recording fixture: teach clippy about let-else patterns.",
+      "additions": 105,
+      "deletions": 19,
+      "changedFiles": 2,
+      "files": {
+        "totalCount": 2,
+        "nodes": [
+          {
+            "path": "src/tools/clippy/clippy_lints/src/let_if_seq.rs",
+            "additions": 105,
+            "deletions": 19
+          },
+          {
+            "path": "tests/ui/mock-160849-1.rs",
+            "additions": 5,
+            "deletions": 1
+          }
+        ]
+      },
+      "mergeable": "MERGEABLE",
+      "mergeStateStatus": "BEHIND",
+      "viewerCanMergeAsAdmin": false,
+      "autoMergeRequest": null,
+      "reviewDecision": "REVIEW_REQUIRED",
+      "createdAt": "2026-08-21T13:51:37.671Z",
+      "updatedAt": "2026-08-21T13:51:37.671Z",
+      "url": "https://github.com/rust-lang/rust/pull/160849",
+      "commitCount": {
+        "totalCount": 1
+      },
+      "lastCommit": {
+        "nodes": [
+          {
+            "commit": {
+              "statusCheckRollup": {
+                "state": "PENDING",
+                "contexts": {
+                  "nodes": [
+                    {
+                      "__typename": "CheckRun",
+                      "name": "ci",
+                      "status": "IN_PROGRESS",
+                      "conclusion": null,
+                      "detailsUrl": null,
+                      "startedAt": "2026-08-21T13:51:37.671Z",
+                      "completedAt": null,
+                      "isRequired": true,
+                      "checkSuite": null
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "commitList": {
+        "nodes": [
+          {
+            "commit": {
+              "oid": "2745127451274512745127451274512745127451",
+              "abbreviatedOid": "2745127",
+              "messageHeadline": "Teach Clippy about let-else patterns",
+              "committedDate": "2026-08-21T13:51:37.671Z",
+              "statusCheckRollup": {
+                "state": "PENDING"
+              },
+              "author": {
+                "name": "llogiq",
+                "user": {
+                  "login": "llogiq",
+                  "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+                }
+              },
+              "parents": {
+                "nodes": [
+                  {
+                    "oid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "labels": {
+        "nodes": []
+      },
+      "assignees": {
+        "nodes": []
+      },
+      "reviewRequests": {
+        "nodes": []
+      },
+      "reviews": {
+        "nodes": []
+      },
+      "comments": {
+        "nodes": []
+      },
+      "reviewThreads": {
+        "nodes": []
+      },
+      "reactions": [],
+      "viewerLogin": "theolundqvist",
+      "viewerIsAuthor": false,
+      "viewerReviewRequested": true,
+      "viewerReviewState": null
+    },
+    {
+      "id": "PR_mock_160848",
+      "title": "Reduce MIR inlining memory spikes",
+      "number": 160848,
+      "state": "OPEN",
+      "isDraft": false,
+      "mergedAt": null,
+      "closedAt": null,
+      "author": {
+        "login": "oli-obk",
+        "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+      },
+      "baseRefName": "main",
+      "baseRefOid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769",
+      "headRefName": "mock/160848",
+      "headRefOid": "2745027450274502745027450274502745027450",
+      "body": "Focused Rust compiler change for the recording fixture: reduce mir inlining memory spikes.",
+      "additions": 114,
+      "deletions": 3,
+      "changedFiles": 3,
+      "files": {
+        "totalCount": 3,
+        "nodes": [
+          {
+            "path": "compiler/rustc_mir_transform/src/inline.rs",
+            "additions": 114,
+            "deletions": 3
+          },
+          {
+            "path": "tests/ui/mock-160848-1.rs",
+            "additions": 5,
+            "deletions": 1
+          },
+          {
+            "path": "tests/ui/mock-160848-2.rs",
+            "additions": 6,
+            "deletions": 2
+          }
+        ]
+      },
+      "mergeable": "MERGEABLE",
+      "mergeStateStatus": "UNSTABLE",
+      "viewerCanMergeAsAdmin": false,
+      "autoMergeRequest": null,
+      "reviewDecision": "CHANGES_REQUESTED",
+      "createdAt": "2026-08-21T13:50:37.671Z",
+      "updatedAt": "2026-08-21T13:50:37.671Z",
+      "url": "https://github.com/rust-lang/rust/pull/160848",
+      "commitCount": {
+        "totalCount": 1
+      },
+      "lastCommit": {
+        "nodes": [
+          {
+            "commit": {
+              "statusCheckRollup": {
+                "state": "FAILURE",
+                "contexts": {
+                  "nodes": [
+                    {
+                      "__typename": "CheckRun",
+                      "name": "ci",
+                      "status": "COMPLETED",
+                      "conclusion": "FAILURE",
+                      "detailsUrl": null,
+                      "startedAt": "2026-08-21T13:50:37.671Z",
+                      "completedAt": "2026-08-21T13:50:37.671Z",
+                      "isRequired": true,
+                      "checkSuite": null
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "commitList": {
+        "nodes": [
+          {
+            "commit": {
+              "oid": "2745027450274502745027450274502745027450",
+              "abbreviatedOid": "2745027",
+              "messageHeadline": "Reduce MIR inlining memory spikes",
+              "committedDate": "2026-08-21T13:50:37.671Z",
+              "statusCheckRollup": {
+                "state": "FAILURE"
+              },
+              "author": {
+                "name": "oli-obk",
+                "user": {
+                  "login": "oli-obk",
+                  "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+                }
+              },
+              "parents": {
+                "nodes": [
+                  {
+                    "oid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "labels": {
+        "nodes": []
+      },
+      "assignees": {
+        "nodes": []
+      },
+      "reviewRequests": {
+        "nodes": []
+      },
+      "reviews": {
+        "nodes": []
+      },
+      "comments": {
+        "nodes": []
+      },
+      "reviewThreads": {
+        "nodes": []
+      },
+      "reactions": [],
+      "viewerLogin": "theolundqvist",
+      "viewerIsAuthor": false,
+      "viewerReviewRequested": false,
+      "viewerReviewState": null
+    },
+    {
+      "id": "PR_mock_160847",
+      "title": "Add LoongArch vector ABI support",
+      "number": 160847,
+      "state": "OPEN",
+      "isDraft": false,
+      "mergedAt": null,
+      "closedAt": null,
+      "author": {
+        "login": "jieyouxu",
+        "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+      },
+      "baseRefName": "main",
+      "baseRefOid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769",
+      "headRefName": "mock/160847",
+      "headRefOid": "2744f2744f2744f2744f2744f2744f2744f2744f",
+      "body": "Focused Rust compiler change for the recording fixture: add loongarch vector abi support.",
+      "additions": 123,
+      "deletions": 7,
+      "changedFiles": 4,
+      "files": {
+        "totalCount": 4,
+        "nodes": [
+          {
+            "path": "compiler/rustc_target/src/abi/call/loongarch.rs",
+            "additions": 123,
+            "deletions": 7
+          },
+          {
+            "path": "tests/ui/mock-160847-1.rs",
+            "additions": 5,
+            "deletions": 1
+          },
+          {
+            "path": "tests/ui/mock-160847-2.rs",
+            "additions": 6,
+            "deletions": 2
+          },
+          {
+            "path": "tests/ui/mock-160847-3.rs",
+            "additions": 7,
+            "deletions": 3
+          }
+        ]
+      },
+      "mergeable": "MERGEABLE",
+      "mergeStateStatus": "CLEAN",
+      "viewerCanMergeAsAdmin": false,
+      "autoMergeRequest": null,
+      "reviewDecision": "REVIEW_REQUIRED",
+      "createdAt": "2026-08-21T13:49:37.671Z",
+      "updatedAt": "2026-08-21T13:49:37.671Z",
+      "url": "https://github.com/rust-lang/rust/pull/160847",
+      "commitCount": {
+        "totalCount": 1
+      },
+      "lastCommit": {
+        "nodes": [
+          {
+            "commit": {
+              "statusCheckRollup": {
+                "state": "SUCCESS",
+                "contexts": {
+                  "nodes": [
+                    {
+                      "__typename": "CheckRun",
+                      "name": "ci",
+                      "status": "COMPLETED",
+                      "conclusion": "SUCCESS",
+                      "detailsUrl": null,
+                      "startedAt": "2026-08-21T13:49:37.671Z",
+                      "completedAt": "2026-08-21T13:49:37.671Z",
+                      "isRequired": true,
+                      "checkSuite": null
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "commitList": {
+        "nodes": [
+          {
+            "commit": {
+              "oid": "2744f2744f2744f2744f2744f2744f2744f2744f",
+              "abbreviatedOid": "2744f27",
+              "messageHeadline": "Add LoongArch vector ABI support",
+              "committedDate": "2026-08-21T13:49:37.671Z",
+              "statusCheckRollup": {
+                "state": "SUCCESS"
+              },
+              "author": {
+                "name": "jieyouxu",
+                "user": {
+                  "login": "jieyouxu",
+                  "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+                }
+              },
+              "parents": {
+                "nodes": [
+                  {
+                    "oid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "labels": {
+        "nodes": []
+      },
+      "assignees": {
+        "nodes": []
+      },
+      "reviewRequests": {
+        "nodes": []
+      },
+      "reviews": {
+        "nodes": []
+      },
+      "comments": {
+        "nodes": []
+      },
+      "reviewThreads": {
+        "nodes": []
+      },
+      "reactions": [],
+      "viewerLogin": "theolundqvist",
+      "viewerIsAuthor": false,
+      "viewerReviewRequested": true,
+      "viewerReviewState": null
+    },
+    {
+      "id": "PR_mock_160846",
+      "title": "Correct const evaluator overflow spans",
+      "number": 160846,
+      "state": "OPEN",
+      "isDraft": false,
+      "mergedAt": null,
+      "closedAt": null,
+      "author": {
+        "login": "fee1-dead",
+        "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+      },
+      "baseRefName": "main",
+      "baseRefOid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769",
+      "headRefName": "mock/160846",
+      "headRefOid": "2744e2744e2744e2744e2744e2744e2744e2744e",
+      "body": "Focused Rust compiler change for the recording fixture: correct const evaluator overflow spans.",
+      "additions": 132,
+      "deletions": 11,
+      "changedFiles": 1,
+      "files": {
+        "totalCount": 1,
+        "nodes": [
+          {
+            "path": "compiler/rustc_const_eval/src/interpret/operator.rs",
+            "additions": 132,
+            "deletions": 11
+          }
+        ]
+      },
+      "mergeable": "MERGEABLE",
+      "mergeStateStatus": "CLEAN",
+      "viewerCanMergeAsAdmin": false,
+      "autoMergeRequest": null,
+      "reviewDecision": "APPROVED",
+      "createdAt": "2026-08-21T13:48:37.671Z",
+      "updatedAt": "2026-08-21T13:48:37.671Z",
+      "url": "https://github.com/rust-lang/rust/pull/160846",
+      "commitCount": {
+        "totalCount": 1
+      },
+      "lastCommit": {
+        "nodes": [
+          {
+            "commit": {
+              "statusCheckRollup": {
+                "state": "SUCCESS",
+                "contexts": {
+                  "nodes": [
+                    {
+                      "__typename": "CheckRun",
+                      "name": "ci",
+                      "status": "COMPLETED",
+                      "conclusion": "SUCCESS",
+                      "detailsUrl": null,
+                      "startedAt": "2026-08-21T13:48:37.671Z",
+                      "completedAt": "2026-08-21T13:48:37.671Z",
+                      "isRequired": true,
+                      "checkSuite": null
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "commitList": {
+        "nodes": [
+          {
+            "commit": {
+              "oid": "2744e2744e2744e2744e2744e2744e2744e2744e",
+              "abbreviatedOid": "2744e27",
+              "messageHeadline": "Correct const evaluator overflow spans",
+              "committedDate": "2026-08-21T13:48:37.671Z",
+              "statusCheckRollup": {
+                "state": "SUCCESS"
+              },
+              "author": {
+                "name": "fee1-dead",
+                "user": {
+                  "login": "fee1-dead",
+                  "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+                }
+              },
+              "parents": {
+                "nodes": [
+                  {
+                    "oid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "labels": {
+        "nodes": []
+      },
+      "assignees": {
+        "nodes": []
+      },
+      "reviewRequests": {
+        "nodes": []
+      },
+      "reviews": {
+        "nodes": []
+      },
+      "comments": {
+        "nodes": []
+      },
+      "reviewThreads": {
+        "nodes": []
+      },
+      "reactions": [],
+      "viewerLogin": "theolundqvist",
+      "viewerIsAuthor": false,
+      "viewerReviewRequested": false,
+      "viewerReviewState": null
+    },
+    {
+      "id": "PR_mock_160845",
+      "title": "Support DWARF v5 split debug info",
+      "number": 160845,
+      "state": "OPEN",
+      "isDraft": false,
+      "mergedAt": null,
+      "closedAt": null,
+      "author": {
+        "login": "davidtwco",
+        "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+      },
+      "baseRefName": "main",
+      "baseRefOid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769",
+      "headRefName": "mock/160845",
+      "headRefOid": "2744d2744d2744d2744d2744d2744d2744d2744d",
+      "body": "Focused Rust compiler change for the recording fixture: support dwarf v5 split debug info.",
+      "additions": 141,
+      "deletions": 15,
+      "changedFiles": 2,
+      "files": {
+        "totalCount": 2,
+        "nodes": [
+          {
+            "path": "compiler/rustc_codegen_ssa/src/debuginfo/mod.rs",
+            "additions": 141,
+            "deletions": 15
+          },
+          {
+            "path": "tests/ui/mock-160845-1.rs",
+            "additions": 5,
+            "deletions": 1
+          }
+        ]
+      },
+      "mergeable": "MERGEABLE",
+      "mergeStateStatus": "BEHIND",
+      "viewerCanMergeAsAdmin": false,
+      "autoMergeRequest": null,
+      "reviewDecision": "REVIEW_REQUIRED",
+      "createdAt": "2026-08-21T13:47:37.671Z",
+      "updatedAt": "2026-08-21T13:47:37.671Z",
+      "url": "https://github.com/rust-lang/rust/pull/160845",
+      "commitCount": {
+        "totalCount": 1
+      },
+      "lastCommit": {
+        "nodes": [
+          {
+            "commit": {
+              "statusCheckRollup": {
+                "state": "PENDING",
+                "contexts": {
+                  "nodes": [
+                    {
+                      "__typename": "CheckRun",
+                      "name": "ci",
+                      "status": "IN_PROGRESS",
+                      "conclusion": null,
+                      "detailsUrl": null,
+                      "startedAt": "2026-08-21T13:47:37.671Z",
+                      "completedAt": null,
+                      "isRequired": true,
+                      "checkSuite": null
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "commitList": {
+        "nodes": [
+          {
+            "commit": {
+              "oid": "2744d2744d2744d2744d2744d2744d2744d2744d",
+              "abbreviatedOid": "2744d27",
+              "messageHeadline": "Support DWARF v5 split debug info",
+              "committedDate": "2026-08-21T13:47:37.671Z",
+              "statusCheckRollup": {
+                "state": "PENDING"
+              },
+              "author": {
+                "name": "davidtwco",
+                "user": {
+                  "login": "davidtwco",
+                  "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+                }
+              },
+              "parents": {
+                "nodes": [
+                  {
+                    "oid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "labels": {
+        "nodes": []
+      },
+      "assignees": {
+        "nodes": []
+      },
+      "reviewRequests": {
+        "nodes": []
+      },
+      "reviews": {
+        "nodes": []
+      },
+      "comments": {
+        "nodes": []
+      },
+      "reviewThreads": {
+        "nodes": []
+      },
+      "reactions": [],
+      "viewerLogin": "theolundqvist",
+      "viewerIsAuthor": false,
+      "viewerReviewRequested": true,
+      "viewerReviewState": null
+    },
+    {
+      "id": "PR_mock_160844",
+      "title": "Simplify bootstrap stage selection",
+      "number": 160844,
+      "state": "OPEN",
+      "isDraft": false,
+      "mergedAt": null,
+      "closedAt": null,
+      "author": {
+        "login": "Mark-Simulacrum",
+        "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+      },
+      "baseRefName": "main",
+      "baseRefOid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769",
+      "headRefName": "mock/160844",
+      "headRefOid": "2744c2744c2744c2744c2744c2744c2744c2744c",
+      "body": "Focused Rust compiler change for the recording fixture: simplify bootstrap stage selection.",
+      "additions": 150,
+      "deletions": 19,
+      "changedFiles": 3,
+      "files": {
+        "totalCount": 3,
+        "nodes": [
+          {
+            "path": "src/bootstrap/src/core/config/config.rs",
+            "additions": 150,
+            "deletions": 19
+          },
+          {
+            "path": "tests/ui/mock-160844-1.rs",
+            "additions": 5,
+            "deletions": 1
+          },
+          {
+            "path": "tests/ui/mock-160844-2.rs",
+            "additions": 6,
+            "deletions": 2
+          }
+        ]
+      },
+      "mergeable": "MERGEABLE",
+      "mergeStateStatus": "CLEAN",
+      "viewerCanMergeAsAdmin": false,
+      "autoMergeRequest": null,
+      "reviewDecision": "APPROVED",
+      "createdAt": "2026-08-21T13:46:37.671Z",
+      "updatedAt": "2026-08-21T13:46:37.671Z",
+      "url": "https://github.com/rust-lang/rust/pull/160844",
+      "commitCount": {
+        "totalCount": 1
+      },
+      "lastCommit": {
+        "nodes": [
+          {
+            "commit": {
+              "statusCheckRollup": {
+                "state": "SUCCESS",
+                "contexts": {
+                  "nodes": [
+                    {
+                      "__typename": "CheckRun",
+                      "name": "ci",
+                      "status": "COMPLETED",
+                      "conclusion": "SUCCESS",
+                      "detailsUrl": null,
+                      "startedAt": "2026-08-21T13:46:37.671Z",
+                      "completedAt": "2026-08-21T13:46:37.671Z",
+                      "isRequired": true,
+                      "checkSuite": null
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "commitList": {
+        "nodes": [
+          {
+            "commit": {
+              "oid": "2744c2744c2744c2744c2744c2744c2744c2744c",
+              "abbreviatedOid": "2744c27",
+              "messageHeadline": "Simplify bootstrap stage selection",
+              "committedDate": "2026-08-21T13:46:37.671Z",
+              "statusCheckRollup": {
+                "state": "SUCCESS"
+              },
+              "author": {
+                "name": "Mark-Simulacrum",
+                "user": {
+                  "login": "Mark-Simulacrum",
+                  "avatarUrl": "https://avatars.githubusercontent.com/u/29375815?u=f2ed8c9fb90010ace68e4a3a0a1b1f65af6dd181&v=4"
+                }
+              },
+              "parents": {
+                "nodes": [
+                  {
+                    "oid": "f7d782a3be46d6bb4b9792fe69a61db389ba1769"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "labels": {
+        "nodes": []
+      },
+      "assignees": {
+        "nodes": []
+      },
+      "reviewRequests": {
+        "nodes": []
+      },
+      "reviews": {
+        "nodes": []
+      },
+      "comments": {
+        "nodes": []
+      },
+      "reviewThreads": {
+        "nodes": []
+      },
+      "reactions": [],
+      "viewerLogin": "theolundqvist",
+      "viewerIsAuthor": false,
+      "viewerReviewRequested": false,
+      "viewerReviewState": null
     }
   ],
   "diffs": {

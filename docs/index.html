@@ -374,21 +374,11 @@
 
     .benchmark-meta {
       display: flex;
-      min-width: 0;
-      align-items: baseline;
-      justify-content: space-between;
-      gap: 16px;
+      justify-content: flex-end;
       padding: 7px 2px 0;
     }
+    .benchmark-meta[hidden] { display: none; }
 
-    .benchmark-definition {
-      min-width: 0;
-      margin: 0;
-      overflow-wrap: anywhere;
-      color: var(--text-dim);
-      font-size: 11px;
-      line-height: 1.4;
-    }
 
     .benchmark-p95 {
       flex: none;
@@ -399,40 +389,6 @@
       white-space: nowrap;
     }
 
-    .benchmark-method {
-      position: sticky;
-      bottom: 14px;
-      margin: 24px 0 0;
-      text-align: center;
-    }
-
-    .benchmark-method a {
-      display: inline-flex;
-      align-items: center;
-      min-height: 30px;
-      padding: 0 13px;
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      background: var(--panel-raised);
-      color: var(--text-dim);
-      font-family: var(--mono);
-      font-size: 11px;
-    }
-
-    .benchmark-method a:hover {
-      border-color: var(--border-strong);
-      color: var(--text);
-    }
-
-    .benchmark-environment-note {
-      margin: 14px auto 0;
-      max-width: 680px;
-      text-align: center;
-      color: var(--text-faint);
-      font-family: var(--mono);
-      font-size: 11px;
-      line-height: 1.6;
-    }
 
 
 
@@ -1215,9 +1171,6 @@
       .benchmark-grid {
         grid-template-columns: 1fr;
       }
-      .benchmark-method {
-        position: static;
-      }
 
 
 
@@ -1462,8 +1415,7 @@
                   </div>
                 </div>
                 <div class="benchmark-meta">
-                  <p class="benchmark-definition">Inbox row to fully painted scape#8132.</p>
-                  <p class="benchmark-p95" data-render-tail="cockpit">p50 — · p95 —</p>
+                  <p class="benchmark-p95" data-render-tail="cockpit">p95 —</p>
                 </div>
               </div>
               <div class="benchmark-product">
@@ -1478,8 +1430,7 @@
                   </div>
                 </div>
                 <div class="benchmark-meta">
-                  <p class="benchmark-definition">Pull-request list row to fully painted scape#8132.</p>
-                  <p class="benchmark-p95" data-render-tail="github">p50 — · p95 —</p>
+                  <p class="benchmark-p95" data-render-tail="github">p95 —</p>
                 </div>
               </div>
               <div class="benchmark-product origin">
@@ -1494,8 +1445,7 @@
                   </div>
                 </div>
                 <div class="benchmark-meta">
-                  <p class="benchmark-definition">Origin pull-request row to fully painted scape#8132.</p>
-                  <p class="benchmark-p95" data-render-tail="cursorOrigin">p50 — · p95 —</p>
+                  <p class="benchmark-p95" data-render-tail="cursorOrigin">p95 —</p>
                 </div>
               </div>
             </div>
@@ -1518,7 +1468,6 @@
                   </div>
                 </div>
                 <div class="benchmark-meta">
-                  <p class="benchmark-definition">Inbox row to painted PR detail.</p>
                   <p class="benchmark-p95"><span data-benchmark-p95="cockpit:pr-open">—</span> s p95</p>
                 </div>
               </div>
@@ -1534,7 +1483,6 @@
                   </div>
                 </div>
                 <div class="benchmark-meta">
-                  <p class="benchmark-definition">Search result to painted PR detail.</p>
                   <p class="benchmark-p95"><span data-benchmark-p95="github:pr-open">—</span> s p95</p>
                 </div>
               </div>
@@ -1550,7 +1498,6 @@
                   </div>
                 </div>
                 <div class="benchmark-meta">
-                  <p class="benchmark-definition" data-origin-definition="pr-open"></p>
                   <p class="benchmark-p95"><span data-origin-p95="pr-open">—</span> s p95</p>
                 </div>
               </div>
@@ -1574,7 +1521,6 @@
                   </div>
                 </div>
                 <div class="benchmark-meta">
-                  <p class="benchmark-definition">⌘K palette open, query applied, to painted scape#8133 result.</p>
                   <p class="benchmark-p95"><span data-benchmark-p95="cockpit:pr-search">—</span> s p95</p>
                 </div>
               </div>
@@ -1590,7 +1536,6 @@
                   </div>
                 </div>
                 <div class="benchmark-meta">
-                  <p class="benchmark-definition">Load the repo-scoped pull-request search URL for the same query to first painted result.</p>
                   <p class="benchmark-p95"><span data-benchmark-p95="github:pr-search">—</span> s p95</p>
                 </div>
               </div>
@@ -1606,7 +1551,6 @@
                   </div>
                 </div>
                 <div class="benchmark-meta">
-                  <p class="benchmark-definition" data-origin-definition="pr-search"></p>
                   <p class="benchmark-p95"><span data-origin-p95="pr-search">—</span> s p95</p>
                 </div>
               </div>
@@ -1630,7 +1574,6 @@
                   </div>
                 </div>
                 <div class="benchmark-meta">
-                  <p class="benchmark-definition">Files click to painted cached diff.</p>
                   <p class="benchmark-p95"><span data-benchmark-p95="cockpit:diff-open">—</span> s p95</p>
                 </div>
               </div>
@@ -1646,7 +1589,6 @@
                   </div>
                 </div>
                 <div class="benchmark-meta">
-                  <p class="benchmark-definition">Files changed click to painted diff.</p>
                   <p class="benchmark-p95"><span data-benchmark-p95="github:diff-open">—</span> s p95</p>
                 </div>
               </div>
@@ -1662,17 +1604,12 @@
                   </div>
                 </div>
                 <div class="benchmark-meta">
-                  <p class="benchmark-definition" data-origin-definition="diff-open"></p>
                   <p class="benchmark-p95"><span data-origin-p95="diff-open">—</span> s p95</p>
                 </div>
               </div>
             </div>
           </article>
         </div>
-        <p class="benchmark-method">
-          <a href="https://github.com/theolundqvist/pr-cockpit/blob/main/scripts/benchmark-ui.mjs">Source · reproduce this benchmark</a>
-        </p>
-        <p class="benchmark-environment-note" data-origin-environment hidden></p>
       </div>
     </section>
     <section class="section-rule search-demo-section" id="search-demo">
@@ -2027,16 +1964,14 @@
           document.querySelector(`[data-origin-value="${metric.id}"]`).textContent = formatSeconds(origin.p50);
           document.querySelector(`[data-origin-p95="${metric.id}"]`).textContent = formatSeconds(origin.p95);
           document.querySelector(`[data-origin-bar="${metric.id}"]`).style.width = `${origin.p50 / maxP50 * 100}%`;
-          document.querySelector(`[data-origin-definition="${metric.id}"]`).textContent = origin.definition;
         } else if (origin) {
           const product = document.querySelector(`[data-origin-product="${metric.id}"]`);
           product.hidden = false;
           product.classList.add("unavailable");
           product.querySelector(".benchmark-unit").hidden = true;
-          product.querySelector(".benchmark-p95").hidden = true;
+          product.querySelector(".benchmark-meta").hidden = true;
           document.querySelector(`[data-origin-value="${metric.id}"]`).textContent = "not available";
           document.querySelector(`[data-origin-bar="${metric.id}"]`).style.width = "0";
-          document.querySelector(`[data-origin-definition="${metric.id}"]`).textContent = origin.reason;
         }
       }
       const renderBenchmark = benchmarkResults.renderBenchmark;
@@ -2047,24 +1982,9 @@
           const measurement = renderBenchmark[product];
           document.querySelector(`[data-render-value="${product}"]`).textContent = formatSeconds(measurement.p99);
           document.querySelector(`[data-render-bar="${product}"]`).style.width = `${measurement.p99 / maxP99 * 100}%`;
-          document.querySelector(`[data-render-tail="${product}"]`).textContent = `p50 ${formatSeconds(measurement.p50)} · p95 ${formatSeconds(measurement.p95)}`;
+          document.querySelector(`[data-render-tail="${product}"]`).textContent = `${formatSeconds(measurement.p95)} s p95`;
         }
         document.querySelector("[data-render-speedup]").textContent = `${renderBenchmark.p99Speedup}× faster at p99`;
-      }
-      const environmentNotes = [];
-      if (renderBenchmark) environmentNotes.push("Render p99: 100 warm-cache opens of the same authenticated large private PR across all three products.");
-      const searchEnv = benchmarkResults.searchEnvironment;
-      if (searchEnv) environmentNotes.push(`Search: ${searchEnv.dataset}.`);
-      const baseEnv = benchmarkResults.environment;
-      if (baseEnv?.cache) environmentNotes.push(`Open and diff: ${baseEnv.cache}.`);
-      const originEnv = benchmarkResults.cursorOriginEnvironment;
-      if (originEnv && benchmarkResults.metrics.some((metric) => metric.cursorOrigin?.available)) {
-        environmentNotes.push("Cursor Origin open and diff: separate authenticated Chrome run on one scape PR.");
-      }
-      if (environmentNotes.length) {
-        const envNote = document.querySelector("[data-origin-environment]");
-        envNote.textContent = environmentNotes.join(" ");
-        envNote.hidden = false;
       }
     }
 
@@ -2156,6 +2076,8 @@
     const searchDemoVideo = document.querySelector(".search-demo-video");
     const searchDemoToggle = document.querySelector("[data-search-demo-toggle]");
     if (searchDemoVideo && searchDemoToggle) {
+      searchDemoVideo.defaultPlaybackRate = 0.7;
+      searchDemoVideo.playbackRate = 0.7;
       const syncSearchDemoToggle = () => {
         const playing = !searchDemoVideo.paused;
         searchDemoToggle.textContent = playing ? "Ⅱ Pause" : "▶ Play";

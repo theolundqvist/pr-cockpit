@@ -34,7 +34,7 @@ The open and diff sample rotates 15 public `microsoft/vscode` pull requests thro
 
 Press <kbd>⌥⌘K</kbd> from any app, type words from the title, branch, repository, or pull-request number, and press <kbd>enter</kbd>. The standalone palette opens the full pull request from the local cache.
 
-![Global pull request search opening a cached pull request](docs/screenshots/landing-search-poster.png)
+![Global pull request search opening a cached pull request](docs/screenshots/landing-search-palette.png)
 
 ## One queue. Three lanes.
 

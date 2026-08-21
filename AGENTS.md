@@ -19,6 +19,7 @@ This repository is worked on by humans and coding agents alike. Leave it easier 
 - Verify landing-page search queries against live GitHub results; captured PR titles can disappear from the search index while the fixture remains valid.
 - Match the surrounding style. Comments are for a non-obvious constraint, not for narration.
 - Do not perform Vercel or `forge.scape.app` infrastructure work from this repository.
+- For manual app recordings, launch `/Users/theo/dev/pr-cockpit`; this `pr-cockpit-v3` checkout is the legacy landing worktree.
 
 ## Pull requests
 

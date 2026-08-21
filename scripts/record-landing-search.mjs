@@ -299,8 +299,8 @@ async function main() {
     await assertPaletteSize("result rendered");
     await palettePage.waitForTimeout(HOLD.results);
     await assertNoCursorLayer(palettePage, "the palette surface");
-    // Lossless poster source: the window as recorded, before any video compression.
     const paletteFramePath = join(stageDir, "palette-frame.png");
+    const paletteImagePath = join(OUT_DIR, "landing-search-palette.png");
     await palettePage.screenshot({ path: paletteFramePath, animations: "disabled" });
 
     const enterAt = Date.now();
@@ -401,10 +401,13 @@ async function main() {
       "-map", "[webm-out]", "-c:v", "libvpx-vp9", "-crf", "24", "-b:v", "0", "-deadline", "good", "-cpu-used", "2", "-row-mt", "1", "-pix_fmt", "yuv420p", ...colorTags, "-an", webmOutPath,
     ], "ffmpeg compose");
     await run([
-      "ffmpeg", "-y", "-i", wallpaperPath, "-i", paletteFramePath,
-      "-filter_complex", `[0:v][1:v]overlay=${PALETTE_ORIGIN.x}:${PALETTE_ORIGIN.y}[poster]`,
-      "-map", "[poster]", "-frames:v", "1", posterPath,
+      "ffmpeg", "-y", "-i", mp4Path, "-frames:v", "1", posterPath,
     ], "ffmpeg poster");
+    await run([
+      "ffmpeg", "-y", "-i", wallpaperPath, "-i", paletteFramePath,
+      "-filter_complex", `[0:v][1:v]overlay=${PALETTE_ORIGIN.x}:${PALETTE_ORIGIN.y}[palette]`,
+      "-map", "[palette]", "-frames:v", "1", paletteImagePath,
+    ], "ffmpeg palette image");
 
     const stream = await probeVideo(mp4Path);
     if (stream.codec_name !== "h264" || stream.width !== VIEWPORT.width || stream.height !== VIEWPORT.height) {
@@ -421,6 +424,7 @@ async function main() {
     const mp4Bytes = (await stat(mp4Path)).size;
     const webmBytes = (await stat(webmOutPath)).size;
     const posterBytes = (await stat(posterPath)).size;
+    const paletteImageBytes = (await stat(paletteImagePath)).size;
     if (mp4Bytes < 100_000) throw new Error(`mp4 suspiciously small: ${mp4Bytes} bytes`);
     if (webmBytes < 100_000) throw new Error(`webm suspiciously small: ${webmBytes} bytes`);
 
@@ -458,10 +462,11 @@ async function main() {
       },
       fixtureAugmentation: snapshot.fixtureAugmentations[String(paletteNumber)],
       descriptionImageFraming: { topPx: Math.round(framing.top), bottomPx: Math.round(framing.bottom), foldPx: Math.round(framing.fold) },
-      encode: { mp4Crf: 18, webmCrf: 24, colorSpace: "bt709", note: "single filter pass feeds both encoders; the poster is composited from PNGs, never from a video frame" },
+      encode: { mp4Crf: 18, webmCrf: 24, colorSpace: "bt709", note: "single filter pass feeds both encoders; the poster matches the opening desktop frame" },
+      paletteImage: { path: "docs/screenshots/landing-search-palette.png", scene: "standalone Electron palette with word query over the desktop", bytes: paletteImageBytes },
       video: { path: "docs/screenshots/landing-search.webm", codec: webmStream.codec_name, durationSeconds: Number(webmStream.duration.toFixed(2)), bytes: webmBytes },
       fallback: { path: "docs/screenshots/landing-search.mp4", codec: stream.codec_name, durationSeconds: Number(stream.duration.toFixed(2)), bytes: mp4Bytes },
-      poster: { path: "docs/screenshots/landing-search-poster.png", scene: "standalone Electron palette with word query over the desktop", bytes: posterBytes },
+      poster: { path: "docs/screenshots/landing-search-poster.png", scene: "opening desktop frame before the palette appears", bytes: posterBytes },
     };
     await writeFile(join(OUT_DIR, "landing-search.json"), `${JSON.stringify(manifest, null, 2)}\n`);
     console.log(`RECORD_RESULT ${JSON.stringify(manifest)}`);

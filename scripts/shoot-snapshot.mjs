@@ -293,10 +293,34 @@ function scenariosFor(snapshot, roles, profile, viewport) {
           await cleanHunk.waitFor();
           await cleanHunk.click({ button: "right" });
           await page.getByRole("menuitem", { name: "Revert hunk" }).waitFor();
+          await page.locator(".edit-context-menu").evaluate((menu) => {
+            const pointer = document.createElement("div");
+            const rect = menu.getBoundingClientRect();
+            pointer.setAttribute("aria-hidden", "true");
+            pointer.dataset.capturePointer = "";
+            pointer.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 34" width="28" height="34"><path d="M2 1.5v25l6.2-5.8 4.6 10.8 5-2.2-4.6-10.6h8.6z" fill="#111" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg>';
+            Object.assign(pointer.style, {
+              position: "fixed",
+              left: `${Math.max(8, rect.left - 12)}px`,
+              top: `${rect.bottom + 4}px`,
+              width: "28px",
+              height: "34px",
+              zIndex: "2147483647",
+              pointerEvents: "none",
+            });
+            document.body.append(pointer);
+          });
         },
         verify: async (page) => {
-          const menu = await page.locator(".edit-context-menu").boundingBox();
+          const [menu, pointer] = await Promise.all([
+            page.locator(".edit-context-menu").boundingBox(),
+            page.locator("[data-capture-pointer]").boundingBox(),
+          ]);
           if (!menu) throw new Error("context menu not visible");
+          if (!pointer) throw new Error("capture pointer not visible");
+          if (pointer.x >= menu.x || pointer.y <= menu.y + menu.height) {
+            throw new Error(`capture pointer is not below-left of the menu: menu=${JSON.stringify(menu)} pointer=${JSON.stringify(pointer)}`);
+          }
         },
         capture: async (page) => {
           const menu = await page.locator(".edit-context-menu").boundingBox();

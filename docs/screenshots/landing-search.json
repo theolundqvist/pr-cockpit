@@ -71,7 +71,12 @@
     "mp4Crf": 18,
     "webmCrf": 24,
     "colorSpace": "bt709",
-    "note": "single filter pass feeds both encoders; the poster is composited from PNGs, never from a video frame"
+    "note": "single filter pass feeds both encoders; the poster matches the opening desktop frame"
+  },
+  "paletteImage": {
+    "path": "docs/screenshots/landing-search-palette.png",
+    "scene": "standalone Electron palette with word query over the desktop",
+    "bytes": 577662
   },
   "video": {
     "path": "docs/screenshots/landing-search.webm",
@@ -87,7 +92,7 @@
   },
   "poster": {
     "path": "docs/screenshots/landing-search-poster.png",
-    "scene": "standalone Electron palette with word query over the desktop",
-    "bytes": 577662
+    "scene": "opening desktop frame before the palette appears",
+    "bytes": 596021
   }
 }
