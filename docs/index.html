@@ -128,7 +128,7 @@
     }
 
     .hero {
-      padding: 96px 0 48px;
+      padding: 134.4px 0 67.2px;
       text-align: center;
     }
 
@@ -175,6 +175,10 @@
       border-top: 1px solid rgba(255, 255, 255, 0.07);
     }
 
+    .search-demo-section .section {
+      padding-top: 100.8px;
+    }
+
     .section-intro {
       display: grid;
       grid-template-columns: 1fr;
@@ -212,7 +216,7 @@
     }
 
     .hero-benchmark {
-      margin-top: 56px;
+      margin-top: 78.4px;
       text-align: left;
     }
 
@@ -277,12 +281,10 @@
       color: var(--blue);
     }
 
-    .benchmark-na {
-      margin: 0;
-      color: var(--text-faint);
-      font-family: var(--mono);
-      font-size: 11px;
-      line-height: 1.5;
+    .benchmark-product.unavailable .benchmark-value {
+      font-size: 12px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
     }
 
 
@@ -464,23 +466,13 @@
 
     .compare-grid {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 20px;
+      gap: 40px;
+      max-width: 1000px;
+      margin: 40px auto 0;
     }
 
     .compare-head {
-      padding-bottom: 0;
-    }
-
-    .compare-wide {
-      width: min(100% - 48px, 1400px);
-      margin: 28px auto 0;
       padding-bottom: 72px;
-    }
-
-    .github-frame {
-      max-width: 1000px;
-      margin: 40px auto 0;
     }
 
     .compare-side {
@@ -570,27 +562,11 @@
     }
 
     .showcase-panel {
-      display: grid;
-      grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
-      gap: 28px;
-      align-items: center;
+      display: block;
     }
 
     .showcase-panel[hidden] {
       display: none;
-    }
-
-
-
-    .showcase-copy h3 {
-      margin: 0 0 10px;
-      font-size: 21px;
-      letter-spacing: -0.025em;
-    }
-
-    .showcase-copy p {
-      margin: 0;
-      color: var(--text-dim);
     }
 
     .showcase-steps {
@@ -628,16 +604,18 @@
     .system-map {
       display: grid;
       grid-template-columns:
-        minmax(120px, 1fr) 44px minmax(110px, 0.85fr) 44px
-        14px minmax(0, 1.1fr) 44px minmax(0, 1.1fr) 44px minmax(0, 1.1fr) 14px;
-      grid-template-rows: 46px 36px auto 14px 54px 46px;
+        minmax(120px, 1fr) 42px minmax(105px, 0.8fr) 42px
+        minmax(120px, 1fr) 42px minmax(130px, 1.1fr) 42px minmax(110px, 0.9fr);
+      grid-template-rows: 38px auto 42px auto 42px;
+      align-items: stretch;
+      gap: 0;
     }
 
     .system-node {
       z-index: 2;
       display: flex;
       flex-direction: column;
-      grid-row: 3;
+      grid-row: 2;
       gap: 6px;
       padding: 15px 16px;
       border: 1px solid rgba(17, 17, 16, 0.16);
@@ -672,16 +650,16 @@
       font-size: 13px;
     }
 
-    .node-prc {
-      grid-column: 6;
+    .node-sqlite {
+      grid-column: 5;
     }
 
-    .node-sqlite {
-      grid-column: 8;
+    .node-prc {
+      grid-column: 7;
     }
 
     .node-ui {
-      grid-column: 10;
+      grid-column: 9;
       border-color: rgba(94, 210, 141, 0.5);
       box-shadow: 0 0 0 3px rgba(94, 210, 141, 0.18);
     }
@@ -689,194 +667,184 @@
     .system-zone {
       position: relative;
       z-index: 1;
-      grid-column: 5 / 12;
-      grid-row: 2 / 5;
+      grid-column: 4 / 10;
+      grid-row: 1 / 6;
       border: 1px dashed var(--border-strong);
       border-radius: 6px;
     }
 
     .system-zone-label {
       position: absolute;
-      top: 11px;
-      left: 15px;
+      top: 10px;
+      left: 14px;
       color: var(--text-faint);
       font-family: var(--mono);
-      font-size: 11px;
-      letter-spacing: 0.04em;
+      font-size: 10px;
+      letter-spacing: 0.05em;
       text-transform: uppercase;
     }
 
-    .step-n {
-      display: inline-flex;
-      flex: none;
+    .system-link {
+      z-index: 3;
+      display: flex;
       align-items: center;
       justify-content: center;
-      width: 18px;
-      height: 18px;
-      border: 1px solid var(--green);
-      border-radius: 50%;
-      background: var(--panel);
-      color: var(--green);
-      font-family: var(--mono);
-      font-size: 10px;
-      line-height: 1;
-    }
-
-    .system-edge {
-      z-index: 2;
-      display: grid;
-      grid-row: 3;
-      align-self: center;
-      justify-items: center;
-      gap: 7px;
       color: var(--blue);
     }
 
-    .edge-1 {
-      grid-column: 2;
-    }
-
-    .edge-2 {
-      grid-column: 4;
-    }
-
-    .edge-4 {
-      grid-column: 7;
-    }
-
-    .edge-5 {
-      grid-column: 9;
-    }
-
-    .edge-line {
-      position: relative;
+    .system-link::before {
       width: 100%;
       height: 1px;
       background: currentColor;
-      opacity: 0.6;
+      opacity: 0.68;
+      content: "";
     }
 
-    .edge-line::after {
-      position: absolute;
-      top: 50%;
-      right: -3px;
+    .system-link::after {
+      margin-left: -3px;
       font-size: 13px;
       line-height: 1;
-      transform: translateY(-50%);
       content: "→";
     }
 
-    .system-arc,
-    .system-return {
-      position: relative;
-      z-index: 3;
-      font-family: var(--mono);
-      font-size: 11px;
+    .link-webhook {
+      grid-column: 2;
+      grid-row: 2;
     }
 
-    .system-arc {
-      grid-column: 1 / 7;
-      grid-row: 1 / 3;
-      margin: 8px 90px 0 60px;
-      border: 1px solid rgba(112, 174, 255, 0.55);
-      border-bottom: 0;
-      border-radius: 10px 10px 0 0;
-      color: var(--blue);
-    }
-
-    .system-return {
-      grid-column: 1 / 11;
-      grid-row: 4 / 6;
-      margin: 0 60px 8px 30px;
-      border: 1px solid rgba(94, 210, 141, 0.5);
-      border-top: 0;
-      border-radius: 0 0 10px 10px;
+    .link-storage {
+      grid-column: 6;
+      grid-row: 2;
       color: var(--green);
     }
 
-    .system-return-edits {
-      grid-column: 1 / 12;
-      grid-row: 4 / 7;
-      margin: 0 20px 8px 10px;
-      border-color: rgba(112, 174, 255, 0.5);
+    .link-storage::after {
+      content: "↔";
+    }
+
+    .link-ui {
+      grid-column: 8;
+      grid-row: 2;
+      color: var(--green);
+    }
+
+    .system-path {
+      position: relative;
+      z-index: 3;
+      font-family: var(--mono);
+      font-size: 10px;
+    }
+
+    .path-marker {
+      grid-column: 3 / 8;
+      grid-row: 1 / 3;
+      margin: 7px 42px 0 50%;
+      border: 1px solid rgba(112, 174, 255, 0.55);
+      border-bottom: 0;
+      border-radius: 9px 9px 0 0;
       color: var(--blue);
     }
 
-    .system-return-edits .step-n {
-      border-color: var(--blue);
-      color: var(--blue);
-    }
-
-    .system-arc::before,
-    .system-return::before {
+    .path-marker::after {
       position: absolute;
-      left: -5px;
+      right: -5px;
+      bottom: -4px;
       font-size: 13px;
       line-height: 1;
-    }
-
-    .system-arc::before {
-      bottom: -4px;
       content: "↓";
     }
 
-    .system-return::before {
-      top: -6px;
-      content: "↑";
+    .path-refresh {
+      grid-column: 1 / 8;
+      grid-row: 2 / 6;
+      margin: 0 34px 8px 28px;
+      border: 1px solid rgba(112, 174, 255, 0.45);
+      border-top: 0;
+      border-radius: 0 0 9px 9px;
+      color: var(--blue);
     }
 
-    .arc-label,
-    .return-label {
+    .path-refresh::before {
+      position: absolute;
+      left: -5px;
+      bottom: 0;
+      font-size: 13px;
+      line-height: 1;
+      content: "←";
+    }
+
+    .path-label {
       position: absolute;
       left: 50%;
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 0 10px;
+      padding: 0 8px;
       background: var(--panel);
       transform: translateX(-50%);
       white-space: nowrap;
     }
 
-    .arc-label {
-      top: -9px;
+    .path-marker .path-label {
+      top: -8px;
     }
 
-    .return-label {
-      bottom: -9px;
+    .path-refresh .path-label {
+      bottom: -8px;
     }
 
-    .system-steps {
-      margin: 28px 0 0;
-    }
-
-    .system-steps ol {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 12px 32px;
-      margin: 0;
-      padding: 0;
-      list-style: none;
-    }
-
-    .system-steps li {
+    .system-consumer {
+      z-index: 2;
       display: flex;
-      gap: 10px;
-      color: var(--text-dim);
-      font-family: var(--mono);
-      font-size: 11.5px;
-      line-height: 1.6;
+      align-items: center;
+      justify-content: space-between;
+      grid-row: 4;
+      gap: 12px;
+      padding: 12px 14px;
+      border: 1px solid var(--border-strong);
+      border-radius: 6px;
+      background: var(--panel-raised);
     }
 
-    .system-steps li .step-n {
-      margin-top: 2px;
+    .system-consumer strong {
+      font-size: 13px;
     }
 
-    .system-note {
-      margin: 20px 0 0;
+    .system-consumer span {
       color: var(--text-faint);
       font-family: var(--mono);
-      font-size: 11px;
+      font-size: 10px;
+    }
+
+    .consumer-agents {
+      grid-column: 7;
+    }
+
+    .consumer-human {
+      grid-column: 9;
+    }
+
+    .consumer-link {
+      z-index: 2;
+      justify-self: center;
+      grid-row: 3;
+      width: 1px;
+      height: 100%;
+      background: var(--green);
+      opacity: 0.68;
+    }
+
+    .consumer-link::after {
+      position: absolute;
+      margin: 11px 0 0 -6px;
+      color: var(--green);
+      font-size: 13px;
+      content: "↕";
+    }
+
+    .consumer-link-agents {
+      grid-column: 7;
+    }
+
+    .consumer-link-human {
+      grid-column: 9;
     }
 
 
@@ -996,9 +964,7 @@
       max-width: 980px;
       margin: 28px auto 0;
     }
-    .key-grid-secondary[hidden] {
-      display: none;
-    }
+
 
 
     .key-action {
@@ -1014,20 +980,7 @@
       font-size: 13px;
     }
 
-    .key-more {
-      cursor: pointer;
-      padding: 5px 13px;
-    }
 
-    .key-more:hover,
-    .key-more[aria-expanded="true"] {
-      border-color: var(--border-strong);
-      color: var(--text);
-    }
-
-    .key-grid-secondary {
-      margin-top: 9px;
-    }
 
     kbd {
       display: inline-flex;
@@ -1111,14 +1064,15 @@
     }
 
     .code-block {
-      overflow-x: auto;
+      overflow-x: hidden;
       margin: 0;
       padding: 18px;
+      overflow-wrap: anywhere;
       color: var(--text-dim);
       font-family: var(--mono);
       font-size: 13px;
       line-height: 1.8;
-      white-space: pre;
+      white-space: pre-wrap;
     }
 
     .visually-hidden {
@@ -1221,131 +1175,138 @@
       }
 
       .system-map {
-        grid-template-columns: 1fr;
-        grid-template-rows: repeat(5, auto) 40px repeat(5, auto) 14px auto auto;
-      }
-
-      .system-node,
-      .system-edge,
-      .system-arc,
-      .system-return {
-        grid-column: 1;
+        grid-template-columns: minmax(0, 1fr) 34px minmax(0, 1fr);
+        grid-template-rows: auto 38px auto 38px auto 38px auto 34px;
+        gap: 0;
       }
 
       .node-github {
+        grid-column: 1;
         grid-row: 1;
       }
 
-      .edge-1 {
-        grid-row: 2;
-      }
-
       .node-relay {
-        grid-row: 3;
+        grid-column: 3;
+        grid-row: 1;
         align-self: stretch;
         padding: 15px 16px;
       }
 
-      .edge-2 {
-        grid-row: 4;
+      .link-webhook {
+        grid-column: 2;
+        grid-row: 1;
       }
 
-      .system-arc {
+      .node-prc {
+        grid-column: 1 / 4;
+        grid-row: 3;
+      }
+
+      .node-sqlite {
+        grid-column: 1;
+        grid-row: 5;
+      }
+
+      .node-ui {
+        grid-column: 3;
         grid-row: 5;
       }
 
       .system-zone {
-        grid-column: 1;
-        grid-row: 6 / 13;
+        grid-column: 1 / 4;
+        grid-row: 3 / 8;
       }
 
-      .node-prc {
-        grid-row: 7;
-      }
-
-      .edge-4 {
-        grid-row: 8;
-      }
-
-      .node-sqlite {
-        grid-row: 9;
-      }
-
-      .edge-5 {
-        grid-row: 10;
-      }
-
-      .node-ui {
-        grid-row: 11;
-      }
-
-      .system-return {
-        grid-row: 13;
-      }
-
-      .system-return-edits {
-        grid-row: 14;
-      }
-
-      .node-prc,
-      .node-sqlite,
-      .node-ui,
-      .edge-4,
-      .edge-5 {
-        margin-inline: 14px;
-      }
-
-      .system-edge {
+      .path-marker {
         display: flex;
         align-items: center;
         justify-content: center;
-        align-self: auto;
-        gap: 8px;
-        height: 44px;
+        grid-column: 3;
+        grid-row: 2;
+        margin: 0;
+        border: 0;
       }
 
-      .edge-line {
-        width: 1px;
-        height: 100%;
-      }
-
-      .edge-line::after {
-        top: auto;
-        right: auto;
-        bottom: -3px;
-        left: 50%;
-        transform: translateX(-50%);
+      .path-marker::after {
+        position: static;
+        margin-left: 7px;
         content: "↓";
       }
 
-      .system-arc,
-      .system-return {
+      .path-refresh {
         display: flex;
         align-items: center;
         justify-content: center;
-        gap: 8px;
+        grid-column: 1 / 4;
+        grid-row: 8;
         margin: 0;
-        padding: 12px 0;
         border: 0;
-        border-radius: 0;
       }
 
-      .system-arc::before,
-      .system-return::before {
+      .path-refresh::before {
         position: static;
-        content: "↑";
+        margin-right: 7px;
+        content: "←";
       }
 
-      .arc-label,
-      .return-label {
+      .path-label,
+      .path-marker .path-label,
+      .path-refresh .path-label {
         position: static;
         padding: 0;
+        background: transparent;
         transform: none;
         white-space: normal;
       }
 
-      .system-steps ol {
-        grid-template-columns: 1fr;
+      .link-storage,
+      .link-ui {
+        grid-row: 4;
+        justify-self: center;
+        width: 1px;
+        height: 100%;
+      }
+
+      .link-storage {
+        grid-column: 1;
+      }
+
+      .link-ui {
+        grid-column: 3;
+      }
+
+      .link-storage::before,
+      .link-ui::before {
+        width: 1px;
+        height: 100%;
+      }
+
+      .link-storage::after,
+      .link-ui::after {
+        margin: 0 0 -3px -1px;
+        content: "↓";
+      }
+
+      .consumer-agents {
+        grid-column: 1;
+        grid-row: 7;
+      }
+
+      .consumer-human {
+        grid-column: 3;
+        grid-row: 7;
+      }
+
+      .consumer-link {
+        grid-row: 6;
+      }
+
+      .consumer-link-agents {
+        grid-column: 1;
+      }
+
+      .consumer-link-human {
+        grid-column: 3;
       }
 
       .install-card {
@@ -1372,7 +1333,7 @@
       }
 
       .hero {
-        padding: 64px 0 32px;
+        padding: 89.6px 0 44.8px;
       }
 
       h1 {
@@ -1382,6 +1343,10 @@
 
       .section {
         padding: 52px 0;
+      }
+
+      .search-demo-section .section {
+        padding-top: 72.8px;
       }
 
       .keys-section {
@@ -1590,7 +1555,7 @@
                 <div class="benchmark-bar">
                   <span class="benchmark-bar-fill" data-benchmark-bar="github:pr-open"></span>
                   <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">GITHUB (current connection)</span>
+                    <span class="benchmark-product-name">GITHUB (when healthy)</span>
                     <div class="benchmark-value-line">
                       <strong class="benchmark-value" data-benchmark-value="github:pr-open">—</strong>
                       <span class="benchmark-unit">s</span>
@@ -1618,7 +1583,6 @@
                   <p class="benchmark-p95"><span data-origin-p95="pr-open">—</span> s p95</p>
                 </div>
               </div>
-              <p class="benchmark-na" data-origin-na="pr-open" hidden></p>
             </div>
           </article>
           <article class="benchmark-card">
@@ -1639,7 +1603,7 @@
                   </div>
                 </div>
                 <div class="benchmark-meta">
-                  <p class="benchmark-definition">⌘K number query to painted local result.</p>
+                  <p class="benchmark-definition">⌘K word query to painted local result.</p>
                   <p class="benchmark-p95"><span data-benchmark-p95="cockpit:pr-search">—</span> s p95</p>
                 </div>
               </div>
@@ -1647,7 +1611,7 @@
                 <div class="benchmark-bar">
                   <span class="benchmark-bar-fill" data-benchmark-bar="github:pr-search"></span>
                   <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">GITHUB (current connection)</span>
+                    <span class="benchmark-product-name">GITHUB (when healthy)</span>
                     <div class="benchmark-value-line">
                       <strong class="benchmark-value" data-benchmark-value="github:pr-search">—</strong>
                       <span class="benchmark-unit">s</span>
@@ -1655,7 +1619,7 @@
                   </div>
                 </div>
                 <div class="benchmark-meta">
-                  <p class="benchmark-definition">Number query submit to painted result.</p>
+                  <p class="benchmark-definition">Word query submit to painted result.</p>
                   <p class="benchmark-p95"><span data-benchmark-p95="github:pr-search">—</span> s p95</p>
                 </div>
               </div>
@@ -1675,7 +1639,6 @@
                   <p class="benchmark-p95"><span data-origin-p95="pr-search">—</span> s p95</p>
                 </div>
               </div>
-              <p class="benchmark-na" data-origin-na="pr-search" hidden></p>
             </div>
           </article>
           <article class="benchmark-card">
@@ -1704,7 +1667,7 @@
                 <div class="benchmark-bar">
                   <span class="benchmark-bar-fill" data-benchmark-bar="github:diff-open"></span>
                   <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">GITHUB (current connection)</span>
+                    <span class="benchmark-product-name">GITHUB (when healthy)</span>
                     <div class="benchmark-value-line">
                       <strong class="benchmark-value" data-benchmark-value="github:diff-open">—</strong>
                       <span class="benchmark-unit">s</span>
@@ -1732,7 +1695,6 @@
                   <p class="benchmark-p95"><span data-origin-p95="diff-open">—</span> s p95</p>
                 </div>
               </div>
-              <p class="benchmark-na" data-origin-na="diff-open" hidden></p>
             </div>
           </article>
         </div>
@@ -1762,7 +1724,7 @@
     <section class="section-rule">
       <div class="wrap section">
         <h2 class="section-title">Webhook-aware. Locally cached.</h2>
-        <p class="section-lede">A webhook marker for a cached PR triggers a targeted refresh; the open PR checks local state every 12 seconds, the queue every 30. Your own comments, reviews, and merges paint locally as pending and retry until GitHub confirms.</p>
+        <p class="section-lede">Webhook markers trigger targeted GitHub refreshes, then WebSocket invalidations reload the open PR or queue from the refreshed local cache. Your own comments, reviews, and merges paint locally as pending while GitHub confirmation follows.</p>
         <a class="cache-more" href="#how-it-works">See the full read/write loop ↓</a>
       </div>
     </section>
@@ -1789,30 +1751,20 @@
             <p class="section-lede">microsoft/vscode#331771: 9 test files among 75 changed. Press <kbd>x</kbd> and they fold away — a view filter on your machine, the PR itself is untouched.</p>
           </div>
         </div>
-        <figure class="compare-side github-frame">
-          <figcaption class="compare-label">GitHub · all 75 changed files</figcaption>
-          <div class="shot-shell">
-            <button class="shot-button" type="button" data-lightbox="screenshots/landing-hide-tests-github.png" aria-label="Open GitHub files changed screenshot">
-              <img src="screenshots/landing-hide-tests-github.png" alt="GitHub files changed view of microsoft/vscode#331771 listing 75 changed files" width="1280" height="980" loading="lazy">
-            </button>
-          </div>
-        </figure>
-      </div>
-      <div class="compare-wide">
         <div class="compare-grid">
           <figure class="compare-side">
-            <figcaption class="compare-label">PR Cockpit · the same 75 files</figcaption>
+            <figcaption class="compare-label">GitHub · all 75 changed files</figcaption>
             <div class="shot-shell">
-              <button class="shot-button" type="button" data-lightbox="screenshots/landing-hide-tests-before.png" aria-label="Open PR Cockpit all files screenshot">
-                <img src="screenshots/landing-hide-tests-before.png" alt="PR Cockpit files tab showing all 75 changed files with a hide 9 test files control" width="1280" height="980" loading="lazy">
+              <button class="shot-button" type="button" data-lightbox="screenshots/landing-hide-tests-github.png" aria-label="Open GitHub files changed screenshot">
+                <img src="screenshots/landing-hide-tests-github.png" alt="GitHub files changed view of microsoft/vscode#331771 listing 75 changed files" width="1280" height="980" loading="lazy">
               </button>
             </div>
           </figure>
           <figure class="compare-side">
-            <figcaption class="compare-label">Press x · 9 test files hidden</figcaption>
+            <figcaption class="compare-label">PR Cockpit · 9 test files hidden</figcaption>
             <div class="shot-shell">
               <button class="shot-button" type="button" data-lightbox="screenshots/landing-hide-tests-cockpit.png" aria-label="Open PR Cockpit hidden tests screenshot">
-                <img src="screenshots/landing-hide-tests-cockpit.png" alt="PR Cockpit files tab showing 66 files with the test files hidden and a show 9 test files control" width="1280" height="980" loading="lazy">
+                <img src="screenshots/landing-hide-tests-cockpit.png" alt="PR Cockpit files tab showing 66 files with 9 test files hidden" width="1280" height="980" loading="lazy">
               </button>
             </div>
           </figure>
@@ -1841,10 +1793,6 @@
             </div>
           </div>
           <div class="showcase-panel" id="showcase-panel-editor" role="tabpanel" tabindex="0" aria-labelledby="showcase-tab-editor">
-            <div class="showcase-copy">
-              <h3>Edit where you read.</h3>
-              <p>Press <kbd>e</kbd> on the open PR and the full file opens at the changed line — or right-click a line for Edit here. Leaving the editor shows your patch as a diff; Commit to PR writes it to the PR head.</p>
-            </div>
             <div class="shot-shell showcase-shot">
               <button class="shot-button" type="button" data-lightbox="screenshots/landing-editor.png" aria-label="Open inline editor screenshot">
                 <img src="screenshots/landing-editor.png" alt="Full-file editor opened at a changed line of a pull request file, ready to commit back to the PR" width="1280" height="980" loading="lazy">
@@ -1852,10 +1800,6 @@
             </div>
           </div>
           <div class="showcase-panel" id="showcase-panel-agent" role="tabpanel" tabindex="0" aria-labelledby="showcase-tab-agent" hidden>
-            <div class="showcase-copy">
-              <h3>One task, one agent.</h3>
-              <p>Press <kbd>p</kbd> and describe one task. PR Cockpit launches a one-shot agent in a dedicated PR workspace — it works, commits, and pushes to the PR head.</p>
-            </div>
             <div class="shot-shell showcase-shot">
               <button class="shot-button" type="button" data-lightbox="screenshots/landing-agent-prompt.png" aria-label="Open agent prompt screenshot">
                 <img src="screenshots/landing-agent-prompt.png" alt="Prompt an agent dialog opened with p on a pull request" width="1280" height="980" loading="lazy">
@@ -1863,21 +1807,13 @@
             </div>
           </div>
           <div class="showcase-panel" id="showcase-panel-revert" role="tabpanel" tabindex="0" aria-labelledby="showcase-tab-revert" hidden>
-            <div class="showcase-copy">
-              <h3>Roll back one hunk.</h3>
-              <p>Right-click inside a hunk and choose Revert hunk. PR Cockpit builds the inverse change and opens it for review with a prefilled message — nothing is pushed until you choose Commit to PR.</p>
-            </div>
             <div class="shot-shell showcase-shot">
               <button class="shot-button" type="button" data-lightbox="screenshots/landing-revert-menu.png" aria-label="Open revert hunk context menu screenshot">
-                <img src="screenshots/landing-revert-menu.png" alt="Right-click context menu on a diff hunk offering Edit here and Revert hunk" width="1280" height="980" loading="lazy">
+                <img src="screenshots/landing-revert-menu.png" alt="Right-click context menu on a unified diff hunk offering Edit here and Revert hunk" width="1280" height="980" loading="lazy">
               </button>
             </div>
           </div>
           <div class="showcase-panel" id="showcase-panel-history" role="tabpanel" tabindex="0" aria-labelledby="showcase-tab-history" hidden>
-            <div class="showcase-copy">
-              <h3>Trace the file. Or the symbol.</h3>
-              <p>Press <kbd>h</kbd> on a file to walk this PR and up to 30 earlier commits — author, linked PR or commit, and available diffs — without leaving the review.</p>
-            </div>
             <div class="shot-shell showcase-shot">
               <button class="shot-button" type="button" data-lightbox="screenshots/landing-file-history.png" aria-label="Open file history screenshot">
                 <img src="screenshots/landing-file-history.png" alt="File history view listing earlier commits with the selected commit's diff" width="1280" height="980" loading="lazy">
@@ -1892,8 +1828,8 @@
       <div class="wrap section">
         <div class="section-intro cli-flow-intro">
           <div>
-            <h2 class="section-title">Agents wait. The webhook wakes them.</h2>
-            <p class="section-lede"><code>pr-cockpit listen fixture/cockpit#101</code> blocks on the cached PR. A substantive review update triggers a targeted refresh, changes the local fingerprint, prints the refreshed PR, and exits — without repeatedly polling GitHub.</p>
+            <h2 class="section-title">Local GitHub cache. Faster agents. Fewer tokens.</h2>
+            <p class="section-lede"><code>pr-cockpit listen fixture/cockpit#101</code> blocks on local cached state and wakes after a webhook refresh, avoiding repeated GitHub reads so agents keep more context for the work.</p>
           </div>
         </div>
         <p class="visually-hidden">Animated flow: an agent starts pr-cockpit listen and blocks on local cached state. GitHub emits a review webhook. The relay forwards a change marker. PR Cockpit refreshes pull request 101 from GitHub. Listen wakes, prints the refreshed pull request, exits, and the agent continues.</p>
@@ -1947,13 +1883,10 @@
           <span class="key-action"><kbd>m</kbd> merge</span>
           <span class="key-action"><kbd>p</kbd> agent</span>
           <span class="key-action"><kbd>a</kbd> auto-merge</span>
-          <span class="key-action"><kbd>?</kbd> every shortcut</span>
-          <button class="key-action key-more" type="button" aria-expanded="false" aria-controls="key-more-grid">more</button>
-        </div>
-        <div class="key-grid key-grid-secondary" id="key-more-grid" hidden aria-label="More keyboard shortcuts">
           <span class="key-action"><kbd>x</kbd> hide tests</span>
           <span class="key-action"><kbd>e</kbd> edit file</span>
           <span class="key-action"><kbd>h</kbd> file history</span>
+          <span class="key-action"><kbd>?</kbd> every shortcut</span>
         </div>
       </div>
     </section>
@@ -1963,39 +1896,29 @@
         <div class="section-intro">
           <div>
             <h2 class="section-title">A local copy GitHub keeps fresh.</h2>
-            <p class="section-lede">GitHub stays the source of truth. A marker for a cached PR triggers a targeted refresh; repo-level markers fall back to a debounced poll. The app paints cached PRs, local search results, and warmed diffs from SQLite and disk, while cold or extended lookups fetch GitHub and populate the cache. Comments, reviews, and merges paint immediately while PR Cockpit writes them back to GitHub, with visible pending and retry states.</p>
+            <p class="section-lede">GitHub stays authoritative; one local server serves cached PRs directly to the UI and agents.</p>
           </div>
         </div>
 
         <div class="how-card">
-          <figure class="system">
+          <figure class="system" aria-label="GitHub sends change markers through a relay to the local PR Cockpit server. The server refreshes from GitHub, reads and writes SQLite and images, pushes WebSocket updates to the UI, and serves agents directly. A human uses the UI.">
             <div class="system-map" aria-hidden="true">
-              <div class="system-arc"><span class="arc-label"><span class="step-n">3</span>targeted refresh · content skips the relay</span></div>
               <div class="system-zone"><span class="system-zone-label">Your Mac</span></div>
               <div class="system-node node-github"><strong>GitHub</strong><span>source of truth</span></div>
-              <div class="system-edge edge-1"><span class="step-n">1</span><span class="edge-line"></span></div>
-              <div class="system-node node-relay"><strong>Relay</strong><span>Cloudflare Worker · stores what changed, never the content</span></div>
-              <div class="system-edge edge-2"><span class="step-n">2</span><span class="edge-line"></span></div>
-              <div class="system-node node-prc"><strong>PR Cockpit (local)</strong><span>fetches from GitHub · writes to disk</span></div>
-              <div class="system-edge edge-4"><span class="step-n">4</span><span class="edge-line"></span></div>
-              <div class="system-node node-sqlite"><strong>SQLite + images</strong><span>PRs, diffs, threads, checks · images warmed to disk</span></div>
-              <div class="system-edge edge-5"><span class="step-n">5</span><span class="edge-line"></span></div>
-              <div class="system-node node-ui"><strong>UI</strong><span>renders the local cache</span></div>
-              <div class="system-return"><span class="return-label"><span class="step-n">6</span>comment, review, merge · appear locally, then post with your gh auth</span></div>
-              <div class="system-return system-return-edits"><span class="return-label"><span class="step-n">7</span>file edits · Commit to PR pushes a real commit · webhook refresh converges the cache</span></div>
+              <div class="system-link link-webhook"></div>
+              <div class="system-node node-relay"><strong>Relay</strong><span>change marker only</span></div>
+              <div class="system-path path-marker"><span class="path-label">change marker</span></div>
+              <div class="system-node node-sqlite"><strong>SQLite + images</strong><span>local cache</span></div>
+              <div class="system-link link-storage"></div>
+              <div class="system-node node-prc"><strong>PR Cockpit server</strong><span>targeted refresh · local API</span></div>
+              <div class="system-link link-ui"></div>
+              <div class="system-node node-ui"><strong>UI</strong><span>WebSocket updates</span></div>
+              <div class="system-path path-refresh"><span class="path-label">targeted fetches · authenticated writes</span></div>
+              <div class="consumer-link consumer-link-agents"></div>
+              <div class="system-consumer consumer-agents"><strong>Agents</strong><span>CLI + API</span></div>
+              <div class="consumer-link consumer-link-human"></div>
+              <div class="system-consumer consumer-human"><strong>Human</strong><span>Mac UI</span></div>
             </div>
-            <figcaption class="system-steps">
-              <ol>
-                <li><span class="step-n">1</span>GitHub sends a signed webhook for every PR event.</li>
-                <li><span class="step-n">2</span>The relay extracts and stores only a change marker — repo, PR number, event — and PR Cockpit polls markers every 5 s; it does not persist or forward PR content.</li>
-                <li><span class="step-n">3</span>A marker for a cached PR triggers a targeted refresh from GitHub with your gh token; repo-level markers fall back to a debounced poll.</li>
-                <li><span class="step-n">4</span>Rows land in SQLite; images are warmed to disk.</li>
-                <li><span class="step-n">5</span>Cached PRs, local search results, and warmed diffs paint from disk; cold or extended lookups fetch GitHub and populate the cache.</li>
-                <li><span class="step-n">6</span>Comments, reviews, and merges appear locally with visible pending and failed states, then post to GitHub with your gh auth.</li>
-                <li><span class="step-n">7</span>File edits take the real path: Commit to PR pushes a commit to the PR head on GitHub, and the webhook-driven refresh converges the local cache.</li>
-              </ol>
-              <p class="system-note">After every write the PR is re-fetched from GitHub, so the cache converges to the source of truth.</p>
-            </figcaption>
           </figure>
         </div>
       </div>
@@ -2028,7 +1951,7 @@
               <li><a href="https://github.com/theolundqvist/justshowme">JustShowMe</a> turns a code change into a visual story worth reviewing.</li>
               <li><a href="https://github.com/theolundqvist/gh-img">gh-img</a> places it straight into the pull request description.</li>
             </ul>
-            <p class="package-note">Open source from the same workshop. <a href="https://github.com/theolundqvist/justshowme/pull/1">See them together in a real PR</a>.</p>
+            <p class="package-note">Open source. <a href="https://github.com/theolundqvist/justshowme/pull/1">See them together in a real PR</a>.</p>
           </div>
           <div class="visual-pr-media">
             <div class="shot-shell">
@@ -2084,9 +2007,14 @@
           document.querySelector(`[data-origin-bar="${metric.id}"]`).style.width = `${origin.p50 / maxP50 * 100}%`;
           document.querySelector(`[data-origin-definition="${metric.id}"]`).textContent = origin.definition;
         } else if (origin) {
-          const note = document.querySelector(`[data-origin-na="${metric.id}"]`);
-          note.textContent = "Cursor Origin · no comparable PR-number search.";
-          note.hidden = false;
+          const product = document.querySelector(`[data-origin-product="${metric.id}"]`);
+          product.hidden = false;
+          product.classList.add("unavailable");
+          product.querySelector(".benchmark-unit").hidden = true;
+          product.querySelector(".benchmark-p95").hidden = true;
+          document.querySelector(`[data-origin-value="${metric.id}"]`).textContent = "not available";
+          document.querySelector(`[data-origin-bar="${metric.id}"]`).style.width = "0";
+          document.querySelector(`[data-origin-definition="${metric.id}"]`).textContent = origin.reason;
         }
       }
       const originEnv = benchmarkResults.cursorOriginEnvironment;
@@ -2134,14 +2062,7 @@
       }, 2000);
     });
 
-    const keyMoreButton = document.querySelector(".key-more");
-    const keyMorePanel = document.querySelector("#key-more-grid");
-    keyMoreButton.addEventListener("click", () => {
-      const expand = keyMoreButton.getAttribute("aria-expanded") !== "true";
-      keyMoreButton.setAttribute("aria-expanded", String(expand));
-      keyMorePanel.hidden = !expand;
-      keyMoreButton.textContent = expand ? "less" : "more";
-    });
+
   </script>
   <script>
     {

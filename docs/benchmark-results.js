@@ -1,5 +1,5 @@
 window.PR_COCKPIT_BENCHMARKS = {
-  "measuredAt": "2026-08-20T17:22:53.295Z",
+  "measuredAt": "2026-08-21T14:08:54.460Z",
   "environment": {
     "machine": "Apple M4 Max",
     "browser": "Chromium 149.0.7827.55",
@@ -15,17 +15,61 @@ window.PR_COCKPIT_BENCHMARKS = {
       "label": "Open a PR",
       "cockpit": {
         "unit": "ms",
-        "p50": 18.9,
-        "p95": 27.3,
-        "definition": "Inbox row to painted PR detail"
+        "p50": 22.2,
+        "p95": 30.6,
+        "definition": "Inbox row to painted PR detail",
+        "samples": [
+          30.6,
+          26.1,
+          20.9,
+          24.7,
+          29.1,
+          22.2,
+          16,
+          80.9,
+          16.4,
+          29.3,
+          21.7,
+          17.8,
+          19.4,
+          22.7,
+          15.1,
+          24.3,
+          20.2,
+          23,
+          20.4,
+          24.6
+        ]
       },
       "github": {
         "unit": "ms",
-        "p50": 1158,
-        "p95": 1566,
-        "definition": "Pull-request result to painted PR detail"
+        "p50": 1142.3,
+        "p95": 1741.1,
+        "definition": "Pull-request result to painted PR detail",
+        "samples": [
+          1099.9,
+          1392.5,
+          1298.6,
+          1601.6,
+          1741.1,
+          1608.8,
+          1142.3,
+          1567.3,
+          1473.1,
+          2267.8,
+          1487.3,
+          1275.3,
+          253.9,
+          268.7,
+          370.9,
+          243.6,
+          346.6,
+          307.6,
+          249.6,
+          304.9
+        ]
       },
-      "speedup": 61.3,
+      "speedup": 51.5,
       "cursorOrigin": {
         "available": true,
         "unit": "ms",
@@ -61,20 +105,64 @@ window.PR_COCKPIT_BENCHMARKS = {
       "label": "Search PRs",
       "cockpit": {
         "unit": "ms",
-        "p50": 31.2,
-        "p95": 32.8,
-        "definition": "⌘K PR-number query to painted local result"
+        "p50": 30.5,
+        "p95": 33.4,
+        "definition": "⌘K title-word query to painted local result",
+        "samples": [
+          30.3,
+          30.4,
+          30.7,
+          30.8,
+          30.5,
+          30.6,
+          29.9,
+          29.1,
+          31.3,
+          29.8,
+          30.2,
+          33.4,
+          32.7,
+          31.8,
+          33.3,
+          29.7,
+          15.7,
+          31.6,
+          45.1,
+          28.5
+        ]
       },
       "github": {
         "unit": "ms",
-        "p50": 500.5,
-        "p95": 683.6,
-        "definition": "Pull-request number query submit to painted result"
+        "p50": 113.1,
+        "p95": 193.7,
+        "definition": "Title-word query submit to painted result",
+        "samples": [
+          113,
+          221.4,
+          119,
+          90.6,
+          115.3,
+          107.5,
+          112,
+          120.1,
+          193.7,
+          96.5,
+          108,
+          97.8,
+          112.7,
+          123.8,
+          113.1,
+          135.5,
+          115.6,
+          147.3,
+          93.5,
+          136.7
+        ]
       },
-      "speedup": 16,
+      "speedup": 3.7,
       "cursorOrigin": {
         "available": false,
-        "reason": "Cursor Origin exposes PR filters but no comparable PR-number search interaction"
+        "reason": "Cursor Origin exposes PR filters but no comparable PR word-search interaction"
       }
     },
     {
@@ -82,17 +170,61 @@ window.PR_COCKPIT_BENCHMARKS = {
       "label": "Open a diff",
       "cockpit": {
         "unit": "ms",
-        "p50": 36.2,
-        "p95": 83,
-        "definition": "Files click to painted cached diff"
+        "p50": 35.1,
+        "p95": 80.7,
+        "definition": "Files click to painted cached diff",
+        "samples": [
+          32.4,
+          49.5,
+          90.5,
+          47,
+          28,
+          26.9,
+          52.2,
+          50.3,
+          61.3,
+          76.1,
+          30.3,
+          51.3,
+          80.7,
+          29,
+          26.3,
+          27.5,
+          35,
+          35.1,
+          37.5,
+          28.2
+        ]
       },
       "github": {
         "unit": "ms",
-        "p50": 1417.6,
-        "p95": 1887,
-        "definition": "Files changed click to painted GitHub diff"
+        "p50": 1443.3,
+        "p95": 1616.1,
+        "definition": "Files changed click to painted GitHub diff",
+        "samples": [
+          1306.4,
+          1441.1,
+          1238.5,
+          1479.7,
+          1448.8,
+          1238,
+          1485.9,
+          1715.1,
+          1455.4,
+          1616.1,
+          1383.6,
+          1102.4,
+          1520.4,
+          1600.9,
+          1443.3,
+          1399.9,
+          1527.1,
+          1317.1,
+          1579.7,
+          1425.4
+        ]
       },
-      "speedup": 39.2,
+      "speedup": 41.1,
       "cursorOrigin": {
         "available": true,
         "unit": "ms",

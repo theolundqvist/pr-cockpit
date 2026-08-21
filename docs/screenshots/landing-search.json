@@ -1,39 +1,62 @@
 {
   "script": "scripts/record-landing-search.mjs",
-  "snapshot": "server/mockData/microsoft-vscode",
-  "capturedAt": "2026-08-20T14:45:08.923Z",
-  "repo": "microsoft/vscode",
-  "pr": 331794,
-  "prTitle": "Chat input pills: chevron alignment and dropdown entry hovers",
-  "query": "Chat input pills",
+  "snapshot": "server/mockData/rust-lang-rust",
+  "capturedAt": "2026-08-21T14:02:37.671Z",
+  "repo": "rust-lang/rust",
+  "pr": 160859,
+  "prTitle": "`core::num::f16b` Rust's 16bit Brain Float",
+  "query": "core num f16b",
   "viewportCss": {
     "width": 1280,
     "height": 960
   },
-  "renderScale": 2,
-  "trimSeconds": 0.46,
+  "renderScale": 1,
+  "detailScale": 0.85,
+  "trimSeconds": 0.14,
+  "shell": {
+    "runtime": "Electron",
+    "paletteWindow": {
+      "width": 680,
+      "height": 440
+    },
+    "trigger": "The isolated recorder presents the same standalone BrowserWindow bound to Command+Option+K; OS global-shortcut registration is not exercised."
+  },
   "flow": [
-    "inbox",
-    "Meta+K palette",
-    "type query at 95ms/char",
+    "blank PR Cockpit window",
+    "standalone Electron search palette",
+    "type word query at 55ms/char",
     "Enter",
-    "PR detail #/pr/microsoft/vscode/331794"
+    "PR detail #/pr/rust-lang/rust/160859"
   ],
+  "capturedPr": {
+    "changedLines": 1009,
+    "additions": 1002,
+    "deletions": 7,
+    "mergeable": "MERGEABLE",
+    "ci": "SUCCESS"
+  },
+  "fixtureAugmentation": {
+    "descriptionImage": {
+      "alt": "f16b compiler surface",
+      "source": "Generated from the captured PR body for the deterministic landing demo",
+      "originalBodySha256": "06746df39c8e968ccc229eb2bd8167c4e5ee9db6faa3258b5b2b388d5693900c"
+    }
+  },
   "video": {
     "path": "docs/screenshots/landing-search.webm",
     "codec": "vp9",
-    "durationSeconds": 9.56,
-    "bytes": 688427
+    "durationSeconds": 6.4,
+    "bytes": 192591
   },
   "fallback": {
     "path": "docs/screenshots/landing-search.mp4",
     "codec": "h264",
-    "durationSeconds": 9.52,
-    "bytes": 692035
+    "durationSeconds": 6.4,
+    "bytes": 165482
   },
   "poster": {
     "path": "docs/screenshots/landing-search-poster.png",
-    "scene": "palette open with query over inbox",
-    "bytes": 598868
+    "scene": "standalone Electron palette with word query",
+    "bytes": 28675
   }
 }

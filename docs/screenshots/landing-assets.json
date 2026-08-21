@@ -53,18 +53,7 @@
       "padding": 40,
       "theme": "light",
       "source": ".scratch/landing-real/revert-menu-light.png",
-      "scenario": "microsoft/vscode#331804 right-click Revert hunk context menu"
-    },
-    {
-      "path": "docs/screenshots/landing-hide-tests-before.png",
-      "width": 1280,
-      "height": 980,
-      "shotWidth": 1200,
-      "shotHeight": 900,
-      "padding": 40,
-      "theme": "light",
-      "source": ".scratch/landing-real/hide-tests-all-light.png",
-      "scenario": "microsoft/vscode#331771 all 75 changed files"
+      "scenario": "microsoft/vscode#331771 clean unified hunk context menu"
     },
     {
       "path": "docs/screenshots/landing-hide-tests-cockpit.png",
@@ -75,7 +64,7 @@
       "padding": 40,
       "theme": "light",
       "source": ".scratch/landing-real/hide-tests-light.png",
-      "scenario": "microsoft/vscode#331771 after hiding 9 test files"
+      "scenario": "microsoft/vscode#331771 unified diff after hiding 9 test files"
     },
     {
       "path": "docs/screenshots/landing-hide-tests-github.png",

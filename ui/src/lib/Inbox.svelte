@@ -4,6 +4,7 @@
 </script>
 
 <script>
+  import { untrack } from "svelte";
   import { fetchInbox, fetchRecentClosed, fetchPrDetails, setArchived, focusTmux, tmuxFocusErrorMessage, saveSettings, reorderPr, fetchSettings, fetchRelayStatus, fetchRelayCoverage, autofixAgent, customAgent, rescoreAgent } from "./api.js";
   import { cacheDetail, cachedHeadSha } from "./detailCache.js";
   import { filterPrs, countMatches, wantsHistory } from "./prFilter.js";
@@ -20,6 +21,9 @@
   import { prKey } from "./prKey.js";
   import { showFlash } from "./flash.svelte.js";
   import CurrentBranchBadge from "./CurrentBranchBadge.svelte";
+
+  let { refreshRevision = 0, pollCompletedAt = null } = $props();
+  let handledRefreshRevision = refreshRevision;
 
   let prs = $state([]);
   let viewerLogin = $state(null);
@@ -176,23 +180,16 @@
   });
 
   $effect(() => {
-    const interval = syncing ? 3000 : 30000;
-    const timer = setInterval(() => {
+    if (refreshRevision === handledRefreshRevision) return;
+    handledRefreshRevision = refreshRevision;
+    untrack(() => {
       loadInbox();
       loadRelayLive();
       if (view === "closed") loadClosed();
-    }, interval);
-    return () => clearInterval(timer);
+    });
   });
-
   $effect(() => {
-    function onVisible() {
-      if (document.visibilityState !== "visible") return;
-      loadInbox();
-      if (view === "closed") loadClosed();
-    }
-    document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
+    if (pollCompletedAt) lastPollAt = pollCompletedAt;
   });
 
   let now = $state(Date.now());

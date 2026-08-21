@@ -10,6 +10,8 @@ let statusLookupError: Error | null = null;
 let searchedRepos: string[][] = [];
 
 const refreshPr = mock(async (_repo: string, _number: number) => {});
+const invalidateInbox = mock(() => {});
+const publishPollCompleted = mock((_lastPollAt: string) => {});
 
 const deps: PollDeps = {
   backgroundPollAllowed: async () => true,
@@ -38,6 +40,8 @@ const deps: PollDeps = {
   evictReposNotIn: () => {},
   pruneMirrors: () => {},
   upsertPrIndex: () => {},
+  invalidateInbox,
+  publishPollCompleted,
 };
 
 function registration(repo: string, number: number): WebhookRegistrationRow {
@@ -60,6 +64,8 @@ describe("poll-loop registration lifecycle", () => {
     statusLookupError = null;
     searchedRepos = [];
     refreshPr.mockClear();
+    invalidateInbox.mockClear();
+    publishPollCompleted.mockClear();
   });
 
   test("refreshes local worktrees before skipping GitHub work when the quota gate is closed", async () => {
@@ -124,6 +130,7 @@ describe("poll-loop registration lifecycle", () => {
     await createPollOnce(deps)();
     expect(registeredKeys()).toEqual([]);
     expect(refreshPr).not.toHaveBeenCalled();
+    expect(invalidateInbox).toHaveBeenCalledTimes(1);
   });
 
   test("registration whose PR lookup finds nothing is dropped", async () => {

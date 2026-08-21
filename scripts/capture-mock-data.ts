@@ -122,7 +122,7 @@ async function editableFile(repo: string, detail: PrDetail, requestedPath: strin
   const candidates = requestedPath
     ? [requestedPath]
     : detail.files.nodes
-      .filter((file) => /\.(?:[cm]?[jt]sx?|css|svelte)$/.test(file.path) && !/(?:^|\/)(?:test|tests|fixtures)(?:\/|$)|\.(?:test|spec)\./i.test(file.path))
+      .filter((file) => /\.(?:[cm]?[jt]sx?|css|svelte|rs)$/.test(file.path) && !/(?:^|\/)(?:test|tests|fixtures)(?:\/|$)|\.(?:test|spec)\./i.test(file.path))
       .sort((left, right) => {
         const leftSource = left.path.includes("/src/") || left.path.startsWith("src/") ? 1 : 0;
         const rightSource = right.path.includes("/src/") || right.path.startsWith("src/") ? 1 : 0;

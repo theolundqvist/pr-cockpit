@@ -92,6 +92,7 @@ import { isMockGithub, mockGithub, MOCK_FIXTURE_CLOCK } from "./mockGithub.ts";
 import { createTmuxFocusHandler } from "./tmuxFocus.ts";
 import type { TmuxFocusHandler } from "./tmuxFocus.ts";
 import { needsMeRank } from "./rank.ts";
+import { invalidateInbox, invalidatePr } from "./rendererInvalidation.ts";
 const cockpitRoot = process.cwd();
 
 function json(data: unknown, status = 200): Response {
@@ -316,6 +317,7 @@ async function revalidateCachedPrDetail(
     detail_json: JSON.stringify(detail),
     fetched_at: snapshotCutoffAt,
   });
+  invalidatePr(repo, number);
 }
 
 function createPrDetailRevalidator(
@@ -858,6 +860,8 @@ function markReviewThreadResolved(repo: string, number: number, threadId: string
       ).length,
       detail_json: JSON.stringify(detail),
     });
+    invalidatePr(repo, number);
+    invalidateInbox();
     return;
   }
   const cached = getCachedPrDetail(repo, number);
@@ -867,6 +871,7 @@ function markReviewThreadResolved(repo: string, number: number, threadId: string
   if (!thread || thread.isResolved) return;
   thread.isResolved = true;
   upsertCachedPrDetail({ ...cached, detail_json: JSON.stringify(detail) });
+  invalidatePr(repo, number);
 }
 
 async function handleResolveReviewThread(
@@ -1659,6 +1664,7 @@ function handleDiscardMutation(id: string): Response {
 async function handleSetArchived(req: Request): Promise<Response> {
   const body = (await req.json()) as { repo: string; number: number; archived: boolean };
   setArchived(body.repo, body.number, body.archived);
+  invalidateInbox();
   return json({ ok: true });
 }
 
@@ -1669,6 +1675,7 @@ async function handleReorder(req: Request): Promise<Response> {
   } else {
     setRank(body.repo, body.number, body.position);
   }
+  invalidateInbox();
   return json({ ok: true });
 }
 
@@ -1946,6 +1953,8 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       }
       killFixerAgent(body.repo, body.number);
       setAutoMergeArmed(body.repo, body.number, false);
+      invalidatePr(body.repo, body.number);
+      invalidateInbox();
       return json({ ok: true });
     }
     if (req.method === "GET" && url.pathname === "/api/agents/log") {

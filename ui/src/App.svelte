@@ -46,6 +46,9 @@
   let reposConfigured = $state(null);
   let setupOpen = $state(false);
   let quota = $state(null);
+  let inboxRevision = $state(0);
+  let detailRevision = $state(0);
+  let pollCompletedAt = $state(null);
   let quotaTone = $derived(
     quota?.graphql.remaining === 0
       ? "critical"
@@ -80,6 +83,55 @@
     return () => {
       active = false;
       clearInterval(timer);
+    };
+  });
+  $effect(() => {
+    let socket = null;
+    let reconnectTimer = null;
+    let stopped = false;
+    function refreshRoute() {
+      if (route.name === "inbox") inboxRevision++;
+      else if (route.name === "detail") detailRevision++;
+    }
+
+    function connect() {
+      if (socket || stopped) return;
+
+      const url = new URL("/api/events", location.href);
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      socket = new WebSocket(url);
+      socket.addEventListener("open", refreshRoute);
+      socket.addEventListener("message", (message) => {
+        let invalidation;
+        try {
+          invalidation = JSON.parse(message.data);
+        } catch {
+          return;
+        }
+        if (invalidation.type === "poll-complete") {
+          pollCompletedAt = invalidation.lastPollAt;
+        } else if (invalidation.type === "inbox" && route.name === "inbox") {
+          inboxRevision++;
+        } else if (
+          invalidation.type === "pr" &&
+          route.name === "detail" &&
+          invalidation.repo === route.repo &&
+          invalidation.number === route.number
+        ) {
+          detailRevision++;
+        }
+      });
+      socket.addEventListener("close", () => {
+        socket = null;
+        if (!stopped) reconnectTimer = setTimeout(connect, 1000);
+      });
+    }
+
+    connect();
+    return () => {
+      stopped = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      socket?.close();
     };
   });
 
@@ -180,13 +232,13 @@
       {#if setupOpen}
         <Onboarding onDone={finishSetup} onCancel={() => (setupOpen = false)} />
       {:else if route.name === "detail"}
-        <PrDetail repo={route.repo} number={route.number} tab={route.tab} historyPath={route.historyPath} historySymbol={route.historySymbol} />
+        <PrDetail repo={route.repo} number={route.number} tab={route.tab} historyPath={route.historyPath} historySymbol={route.historySymbol} refreshRevision={detailRevision} />
       {:else if route.name === "settings"}
         <Settings onRunSetup={() => (setupOpen = true)} />
       {:else if reposConfigured === false}
         <Onboarding onDone={finishSetup} />
       {:else if reposConfigured}
-        <Inbox />
+        <Inbox refreshRevision={inboxRevision} {pollCompletedAt} />
       {:else}
         <div class="app-loading" role="status" aria-live="polite">
           <span class="app-loading-mark" aria-hidden="true"></span>

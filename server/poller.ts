@@ -22,6 +22,7 @@ import { pollIntervalMs, settingsRepos } from "./settings.ts";
 import { discoveredRepos, refreshWorktreeScan } from "./worktreeScan.ts";
 import { onPrActivity } from "./activity.ts";
 import { scoreReviewers } from "./reviewScore.ts";
+import { invalidateInbox, invalidatePr, publishPollCompleted } from "./rendererInvalidation.ts";
 
 const INDEX_SWEEP_MS = 1_800_000;
 
@@ -184,6 +185,8 @@ async function refreshPrNow(repo: string, number: number): Promise<void> {
   if (detail.state === "MERGED" || detail.state === "CLOSED") setAutoMergeArmed(repo, number, false);
 
   notifyRankTransition(previous, rank, detail.title, detail.url);
+  invalidatePr(repo, number);
+  invalidateInbox();
 }
 
 export const refreshPr = createPrRefreshScheduler(refreshPrNow);
@@ -205,6 +208,8 @@ export interface PollDeps {
   evictReposNotIn: typeof evictReposNotIn;
   pruneMirrors: typeof pruneMirrors;
   upsertPrIndex: typeof upsertPrIndex;
+  invalidateInbox: typeof invalidateInbox;
+  publishPollCompleted: typeof publishPollCompleted;
 }
 
 export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number; refreshed: number }> {
@@ -221,11 +226,15 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
     const searchRepos = [...new Set([...repos, ...registrations.map((r) => r.repo)])];
     if (searchRepos.length === 0) {
       lastPollAt = new Date().toISOString();
+      deps.publishPollCompleted(lastPollAt);
       return { checked: 0, refreshed: 0 };
     }
 
     const hits = await deps.searchOpenPrs(searchRepos);
-    openInboxKeys = new Set(hits.map((hit) => prKeyOf(hit.repo, hit.number)));
+    const nextOpenInboxKeys = new Set(hits.map((hit) => prKeyOf(hit.repo, hit.number)));
+    const openInboxChanged = nextOpenInboxKeys.size !== openInboxKeys.size
+      || [...nextOpenInboxKeys].some((key) => !openInboxKeys.has(key));
+    openInboxKeys = nextOpenInboxKeys;
     let refreshed = 0;
     for (const hit of hits) {
       if (!tracked.has(hit.repo) && !registered.has(prKeyOf(hit.repo, hit.number))) continue;
@@ -237,7 +246,7 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
       refreshed++;
     }
 
-    await reconcileRegistrations(registrations, new Set(hits.map((h) => prKeyOf(h.repo, h.number))));
+    const registrationMembershipChanged = await reconcileRegistrations(registrations, new Set(hits.map((h) => prKeyOf(h.repo, h.number))));
 
     for (const repo of repos) {
       const keepNumbers = hits.filter((h) => h.repo === repo).map((h) => h.number);
@@ -249,12 +258,14 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
 
     await sweepPrIndexIfDue(repos);
     lastPollAt = new Date().toISOString();
+    deps.publishPollCompleted(lastPollAt);
+    if (openInboxChanged || registrationMembershipChanged) deps.invalidateInbox();
     return { checked: hits.length, refreshed };
   }
 
   // searchOpenPrs scopes to involves:@me, so an open registered PR can be absent from hits;
   // confirm with a direct lookup before dropping, and refresh it here since nothing else will.
-  async function reconcileRegistrations(registrations: WebhookRegistrationRow[], openKeys: Set<string>): Promise<void> {
+  async function reconcileRegistrations(registrations: WebhookRegistrationRow[], openKeys: Set<string>): Promise<boolean> {
     let dropped = false;
     for (const reg of registrations) {
       if (openKeys.has(prKeyOf(reg.repo, reg.number))) continue;
@@ -272,6 +283,7 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
       }
     }
     if (dropped) deps.reconcileForwarders();
+    return dropped;
   }
 
   async function sweepPrIndexIfDue(repos: string[]): Promise<void> {
@@ -280,10 +292,18 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
       ...repos.map((repo) => deps.searchRecentPrs(repo)),
       deps.searchClosedPrs(repos),
     ]);
+    let changed = false;
     for (const sweep of sweeps) {
-      if (sweep.status === "fulfilled") deps.upsertPrIndex(sweep.value);
-      else console.error("pr-index sweep failed:", sweep.reason);
+      if (sweep.status === "fulfilled") {
+        if (sweep.value.length > 0) {
+          deps.upsertPrIndex(sweep.value);
+          changed = true;
+        }
+      } else {
+        console.error("pr-index sweep failed:", sweep.reason);
+      }
     }
+    if (changed) deps.invalidateInbox();
     lastIndexSweepAt = Date.now();
   }
 
@@ -313,6 +333,8 @@ export const pollOnce = createPollOnce({
   evictReposNotIn,
   pruneMirrors,
   upsertPrIndex,
+  invalidateInbox,
+  publishPollCompleted,
 });
 
 export function startPoller(): void {

@@ -1,5 +1,5 @@
 <script>
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
   import {
     fetchPrDetail,
     fetchPrDiff,
@@ -56,7 +56,8 @@
   import UserPicker from "./UserPicker.svelte";
   import CurrentBranchBadge from "./CurrentBranchBadge.svelte";
 
-  let { repo, number, tab, historyPath = null, historySymbol = null } = $props();
+  let { repo, number, tab, historyPath = null, historySymbol = null, refreshRevision = 0 } = $props();
+  let handledRefreshRevision = refreshRevision;
 
   loadPrIndex();
 
@@ -95,6 +96,9 @@
 
   let activeFetch;
   let loadedKey = null;
+  let detailLoadPromise = null;
+  let detailRefreshPromise = null;
+  let detailRefreshQueued = false;
 
   $effect(() => {
     const key = prKeyOf(repo, number);
@@ -138,7 +142,9 @@
       })
       .catch(() => {});
     const detailPending = pendingCommit;
-    fetchPrDetail(repo, number).then(
+    const detailRequest = fetchPrDetail(repo, number);
+    detailLoadPromise = detailRequest;
+    detailRequest.then(
       (detail) => {
         if (activeFetch !== token) return;
         if (loadingTimer) clearTimeout(loadingTimer);
@@ -153,7 +159,9 @@
         showLoading = false;
         if (!pr) error = String(reason);
       },
-    );
+    ).finally(() => {
+      if (detailLoadPromise === detailRequest) detailLoadPromise = null;
+    });
     fetchMutations(repo, number)
       .then((next) => {
         if (activeFetch === token) mutations = next;
@@ -361,9 +369,35 @@
     return result;
   }
 
-  async function pollDetail() {
-    if (!pr) return;
+  function refreshDetail() {
+    if (detailRefreshPromise) {
+      detailRefreshQueued = true;
+      return detailRefreshPromise;
+    }
+    const refreshPromise = (async () => {
+      do {
+        detailRefreshQueued = false;
+        await refreshDetailOnce();
+      } while (detailRefreshQueued);
+    })();
+    detailRefreshPromise = refreshPromise;
+    refreshPromise.finally(() => {
+      if (detailRefreshPromise === refreshPromise) detailRefreshPromise = null;
+    });
+    return refreshPromise;
+  }
+
+  async function refreshDetailOnce() {
     const token = activeFetch;
+    const initialLoad = detailLoadPromise;
+    if (initialLoad) {
+      try {
+        await initialLoad;
+      } catch {
+        // The catch-up request is also the retry when the initial detail load failed.
+      }
+    }
+    if (token !== activeFetch) return;
     const pending = pendingCommit;
     let next;
     try {
@@ -379,21 +413,9 @@
   }
 
   $effect(() => {
-    if (!pr) return;
-    const timer = setInterval(pollDetail, 12000);
-    return () => clearInterval(timer);
-  });
-
-  $effect(() => {
-    function onVisible() {
-      if (document.visibilityState === "visible") pollDetail();
-    }
-    window.addEventListener("focus", pollDetail);
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      window.removeEventListener("focus", pollDetail);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
+    if (refreshRevision === handledRefreshRevision) return;
+    handledRefreshRevision = refreshRevision;
+    untrack(() => refreshDetail());
   });
 
   $effect(() => {

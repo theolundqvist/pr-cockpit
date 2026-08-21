@@ -63,6 +63,9 @@ function compare(id, label, cockpitDefinition, githubDefinition, cockpitSamples,
   };
 }
 
+const SEARCH_QUERY = "agent merge";
+
+
 
 async function benchmarkPrOpen(page, repo, prs) {
   const samples = [];
@@ -94,15 +97,14 @@ async function benchmarkPrOpen(page, repo, prs) {
   return samples;
 }
 
-async function benchmarkPrSearch(page, prs) {
+async function benchmarkPrSearch(page) {
   const samples = [];
   await page.evaluate(() => {
     location.hash = "#/";
   });
   await page.locator(".inbox-layout .row").first().waitFor();
   for (let iteration = 0; iteration < RUNS + WARMUPS; iteration++) {
-    const pr = prs[iteration % prs.length];
-    const duration = await page.evaluate(async ({ searchQuery, title }) => {
+    const duration = await page.evaluate(async (searchQuery) => {
       const startedAt = performance.now();
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
       await new Promise((resolve, reject) => {
@@ -121,7 +123,11 @@ async function benchmarkPrSearch(page, prs) {
       await new Promise((resolve, reject) => {
         const deadline = startedAt + 5_000;
         const check = () => {
-          const result = [...document.querySelectorAll(".palette-result")].find((candidate) => candidate.textContent.includes(title));
+          const words = searchQuery.toLowerCase().split(/\s+/);
+          const result = [...document.querySelectorAll(".palette-result")].find((candidate) => {
+            const text = candidate.textContent.toLowerCase();
+            return words.every((word) => text.includes(word));
+          });
           if (result) return resolve();
           if (performance.now() > deadline) return reject(new Error("timed out searching PRs"));
           requestAnimationFrame(check);
@@ -130,7 +136,7 @@ async function benchmarkPrSearch(page, prs) {
       });
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       return performance.now() - startedAt;
-    }, { searchQuery: String(pr.number), title: pr.title });
+    }, SEARCH_QUERY);
     await page.keyboard.press("Escape");
     await page.locator(".palette").waitFor({ state: "detached" });
     if (iteration >= WARMUPS) samples.push(duration);
@@ -198,13 +204,10 @@ async function benchmarkGithubPrOpen(page, repo, prs) {
   return samples;
 }
 
-async function benchmarkGithubPrSearch(page, repo, prs) {
+async function benchmarkGithubPrSearch(page, repo) {
   const samples = [];
+  const expectedQuery = `is:pr in:title ${SEARCH_QUERY}`;
   for (let iteration = 0; iteration < RUNS + WARMUPS; iteration++) {
-    const pr = prs[iteration % prs.length];
-    const searchQuery = String(pr.number);
-    const expectedQuery = `is:pr ${searchQuery}`;
-    const href = `/${repo}/pull/${pr.number}`;
     await page.goto(`https://github.com/${repo}/pulls?q=is%3Apr`, { waitUntil: "domcontentloaded" });
     await page.locator('input[aria-label="Search all issues"]').waitFor();
     const startedAt = await page.evaluate((query) => {
@@ -217,7 +220,7 @@ async function benchmarkGithubPrSearch(page, repo, prs) {
       return started;
     }, expectedQuery);
     await page.waitForURL((url) => url.pathname === `/${repo}/pulls` && url.searchParams.get("q") === expectedQuery);
-    await page.locator(`a[href="${href}"]`).first().waitFor();
+    await page.locator(`a[href^="/${repo}/pull/"]`).first().waitFor();
     const duration = await afterPaint(page, startedAt);
     if (iteration >= WARMUPS) samples.push(duration);
   }
@@ -481,14 +484,14 @@ async function main() {
     await localPage.locator(".inbox-layout .row").first().waitFor();
 
     const cockpitOpenSamples = await benchmarkPrOpen(localPage, repo, prs);
-    const cockpitSearchSamples = await benchmarkPrSearch(localPage, prs);
+    const cockpitSearchSamples = await benchmarkPrSearch(localPage);
     const cockpitDiffSamples = await benchmarkDiffOpen(localPage, repo, diffPrs);
     await localContext.close();
 
     const githubContext = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1, reducedMotion: "reduce" });
     const githubPage = await githubContext.newPage();
     const githubOpenSamples = await benchmarkGithubPrOpen(githubPage, repo, prs);
-    const githubSearchSamples = await benchmarkGithubPrSearch(githubPage, repo, prs);
+    const githubSearchSamples = await benchmarkGithubPrSearch(githubPage, repo);
     const githubDiffSamples = await benchmarkGithubDiffOpen(githubPage, repo, diffPrs);
     await githubContext.close();
 
@@ -505,7 +508,7 @@ async function main() {
       },
       metrics: [
         compare("pr-open", "Open a PR", "Inbox row to painted PR detail", "Pull-request result to painted PR detail", cockpitOpenSamples, githubOpenSamples),
-        compare("pr-search", "Search PRs", "⌘K PR-number query to painted local result", "Pull-request number query submit to painted result", cockpitSearchSamples, githubSearchSamples),
+        compare("pr-search", "Search PRs", "⌘K title-word query to painted local result", "Title-word query submit to painted result", cockpitSearchSamples, githubSearchSamples),
         compare("diff-open", "Open a diff", "Files click to painted cached diff", "Files changed click to painted GitHub diff", cockpitDiffSamples, githubDiffSamples),
       ],
     };

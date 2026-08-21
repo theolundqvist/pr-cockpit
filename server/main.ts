@@ -10,6 +10,7 @@ import { startForwarders } from "./forwarders.ts";
 import { startWebhooks } from "./webhooks.ts";
 import { buildFetchHandler } from "./http.ts";
 import { installMockNetworkGuard, isMockGithub, seedMockDatabase } from "./mockGithub.ts";
+import { startCockpitServer } from "./cockpitServer.ts";
 
 const port = Number(Bun.env.COCKPIT_PORT ?? 4820);
 
@@ -24,13 +25,8 @@ try {
     await recoverRefreshingMutations();
   }
 
-  Bun.serve({
-    port,
-    hostname: "127.0.0.1",
-    fetch: buildFetchHandler(port),
-    // above Bun's 10s default - the range-diff route can wait out a bounded incremental mirror fetch
-    idleTimeout: 30,
-  });
+  const fetchHandler = buildFetchHandler(port);
+  startCockpitServer(port, fetchHandler);
 
   if (!isMockGithub) {
     startForwarders(port);

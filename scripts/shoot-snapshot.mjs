@@ -170,10 +170,14 @@ async function verifyRightEdgesAligned(page, leftSelector, rightSelector) {
 }
 
 
-function scenariosFor(snapshot, roles, profile) {
+function scenariosFor(snapshot, roles, profile, viewport) {
   const repo = snapshot.repo;
   const paletteTitle = snapshot.details.find((detail) => detail.number === roles.palette.number).title;
   const paletteQuery = paletteTitle.split(/\W+/).filter(Boolean).slice(0, 3).join(" ");
+  const revertDetail = snapshot.details.find((detail) => detail.number === roles.hideTests.number);
+  const threadedPaths = new Set(revertDetail.reviewThreads.nodes.map((thread) => thread.path));
+  const revertPath = revertDetail.files.nodes.find((file) => !threadedPaths.has(file.path))?.path;
+  if (!revertPath) throw new Error("captured snapshot has no comment-free diff file");
   const scenarios = [
     {
       name: "inbox",
@@ -245,16 +249,6 @@ function scenariosFor(snapshot, roles, profile) {
   if (profile === "landing") {
     scenarios.push(
       {
-        name: "hide-tests-all",
-        route: `#/pr/${repo}/${roles.hideTests.number}/files`,
-        ready: ".files-layout .diff",
-        interact: async (page) => {
-          await page.getByRole("button", { name: /hide \d+ test files/ }).waitFor();
-          await positionFiles(page);
-        },
-        verify: (page) => verifyAligned(page, ".tree-pane", ".diff-pane"),
-      },
-      {
         name: "hide-tests",
         route: `#/pr/${repo}/${roles.hideTests.number}/files`,
         ready: ".files-layout .diff",
@@ -267,21 +261,31 @@ function scenariosFor(snapshot, roles, profile) {
       },
       {
         name: "revert-menu",
-        route: `#/pr/${repo}/${roles.editing.number}/files`,
+        route: `#/pr/${repo}/${roles.hideTests.number}/files`,
         ready: ".files-layout .diff",
         interact: async (page) => {
-          await openFile(page, roles.editing.path);
+          await openFile(page, revertPath);
           await positionFiles(page);
-          const line = fileBlock(page, roles.editing.path)
+          const cleanHunk = fileBlock(page, revertPath)
             .locator("[data-hunk-index]")
-            .filter({ hasText: "!Array.isArray(extensionGalleryManifest.resources)" })
+            .filter({ hasNot: page.locator(".thread, .review-thread") })
             .first();
-          await line.click({ button: "right" });
+          await cleanHunk.waitFor();
+          await cleanHunk.click({ button: "right" });
           await page.getByRole("menuitem", { name: "Revert hunk" }).waitFor();
         },
         verify: async (page) => {
           const menu = await page.locator(".edit-context-menu").boundingBox();
           if (!menu) throw new Error("context menu not visible");
+        },
+        capture: async (page) => {
+          const menu = await page.locator(".edit-context-menu").boundingBox();
+          if (!menu) throw new Error("context menu not visible for capture");
+          const width = 540;
+          const height = 144;
+          const x = Math.max(0, Math.min(viewport.width - width, menu.x + menu.width / 2 - width / 2));
+          const y = Math.max(0, Math.min(viewport.height - height, menu.y + menu.height / 2 - height / 2));
+          return { clip: { x, y, width, height }, viewport: { width, height } };
         },
       },
     );
@@ -298,7 +302,7 @@ async function main() {
   const snapshot = JSON.parse(await readFile(join(snapshotDir, "snapshot.json"), "utf8"));
   const roles = requireRoles(snapshot);
   const assets = loadAssets(snapshotDir, snapshot);
-  const scenarios = scenariosFor(snapshot, roles, options.profile).filter((scenario) => scenario.name.includes(options.filter));
+  const scenarios = scenariosFor(snapshot, roles, options.profile, viewport).filter((scenario) => scenario.name.includes(options.filter));
   const outDir = resolve(ROOT, options.out);
   const dataDir = await mkdtemp(join(tmpdir(), "pr-cockpit-snapshot-"));
   const port = await availablePort();
@@ -331,6 +335,7 @@ async function main() {
         font_ui: "default",
         font_code: "default",
         font_comments: "default",
+        diff_layout: "unified",
       }),
     });
     if (!settingsResponse.ok) throw new Error(`settings update failed: ${settingsResponse.status}`);
@@ -340,9 +345,10 @@ async function main() {
     browser = await chromium.launch({ headless: true });
     await mkdir(outDir, { recursive: true });
     for (const theme of themes) {
+      const deviceScaleFactor = options.profile === "landing" ? 2 : 1;
       const context = await browser.newContext({
         viewport,
-        deviceScaleFactor: 1,
+        deviceScaleFactor,
         colorScheme: theme,
         reducedMotion: "reduce",
       });
@@ -379,8 +385,10 @@ async function main() {
           throw new Error(`${scenario.name}-${theme}: uncaptured external requests: ${[...blockedExternal].join(", ")}`);
         }
         if (pageErrors.length) throw new AggregateError(pageErrors, `${scenario.name}-${theme}: uncaught browser error`);
-        const png = await page.screenshot({ type: "png", animations: "disabled" });
-        inspectPng(png, viewport);
+        const capture = await scenario.capture?.(page);
+        const png = await page.screenshot({ type: "png", animations: "disabled", clip: capture?.clip });
+        const expected = capture?.viewport ?? viewport;
+        inspectPng(png, { width: expected.width * deviceScaleFactor, height: expected.height * deviceScaleFactor });
         const output = join(outDir, `${scenario.name}-${theme}.png`);
         await writeFile(output, png);
         console.log(`wrote ${output}`);
