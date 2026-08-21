@@ -13,7 +13,7 @@
 
   $effect(() => {
     poll();
-    const timer = setInterval(poll, 30 * 60 * 1000);
+    const timer = setInterval(poll, 5 * 60 * 1000);
     return () => clearInterval(timer);
   });
 
