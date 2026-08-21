@@ -4793,8 +4793,7 @@
     border-bottom-color: var(--border);
     box-shadow: var(--shadow-xs);
   }
-  .detail-frame.conversation-tab .pr-head,
-  .detail-frame.conversation-tab .cols {
+  .detail-frame.conversation-tab > .detail {
     max-width: 1120px;
   }
   .cols {
