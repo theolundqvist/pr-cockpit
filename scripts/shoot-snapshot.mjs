@@ -8,6 +8,11 @@ import { chromium } from "playwright";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const THEMES = ["light", "dark"];
+// The landing review-queue frame is captured narrow enough that the quick-actions sidecar reflows below the fold.
+const QUEUE_VIEWPORT = { width: 1000, height: 750 };
+// The landing revert frame is cropped around the context menu so the menu spans about a quarter
+// of the frame width and the surrounding unified hunk stays visible.
+const REVERT_MENU_WIDTH_SHARE = 0.25;
 const CONTENT_TYPE_BY_EXTENSION = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -146,14 +151,17 @@ async function positionFiles(page) {
 }
 
 async function verifyAligned(page, leftSelector, rightSelector) {
-  const [left, right] = await Promise.all([
+  const [left, right, scroller] = await Promise.all([
     page.locator(leftSelector).first().boundingBox(),
     page.locator(rightSelector).first().boundingBox(),
+    page.locator(".page").first().boundingBox(),
   ]);
-  if (!left || !right) throw new Error(`missing aligned capture columns: ${leftSelector}, ${rightSelector}`);
-  if (Math.abs(left.y - right.y) > 2 || left.y > 72 || right.y > 72) {
+  if (!left || !right || !scroller) throw new Error(`missing aligned capture columns: ${leftSelector}, ${rightSelector}`);
+  if (Math.abs(left.y - right.y) > 2) {
     throw new Error(`capture columns are not top-aligned: ${leftSelector} y=${left.y}, ${rightSelector} y=${right.y}`);
   }
+  const offset = Math.min(left.y, right.y) - scroller.y;
+  if (offset > 72) throw new Error(`capture columns are not scrolled to the top of the page: offset=${offset}`);
 }
 
 async function verifyRightEdgesAligned(page, leftSelector, rightSelector) {
@@ -183,8 +191,13 @@ function scenariosFor(snapshot, roles, profile, viewport) {
       name: "inbox",
       route: "#/",
       ready: ".inbox-layout .queue-group",
+      viewport: profile === "landing" ? QUEUE_VIEWPORT : null,
       verify: async (page) => {
         if (await page.locator(".app-sidebar").isVisible()) throw new Error("inbox sidebar is visible");
+        if (profile !== "landing") return;
+        const sidecar = await page.locator(".queue-sidecar").boundingBox();
+        if (!sidecar) throw new Error("quick actions sidecar is missing");
+        if (sidecar.y < QUEUE_VIEWPORT.height) throw new Error("quick actions is still inside the capture");
       },
     },
     {
@@ -281,8 +294,11 @@ function scenariosFor(snapshot, roles, profile, viewport) {
         capture: async (page) => {
           const menu = await page.locator(".edit-context-menu").boundingBox();
           if (!menu) throw new Error("context menu not visible for capture");
-          const width = 540;
-          const height = 144;
+          const aspect = viewport.width / viewport.height;
+          const width = Math.round(Math.min(viewport.width, menu.width / REVERT_MENU_WIDTH_SHARE));
+          const height = Math.round(Math.min(viewport.height, width / aspect));
+          const share = menu.width / width;
+          if (Math.abs(share - REVERT_MENU_WIDTH_SHARE) > 0.03) throw new Error(`context menu spans ${(share * 100).toFixed(1)}% of the capture width`);
           const x = Math.max(0, Math.min(viewport.width - width, menu.x + menu.width / 2 - width / 2));
           const y = Math.max(0, Math.min(viewport.height - height, menu.y + menu.height / 2 - height / 2));
           return { clip: { x, y, width, height }, viewport: { width, height } };
@@ -374,6 +390,7 @@ async function main() {
       for (const scenario of scenarios) {
         blockedExternal.clear();
         const page = await context.newPage();
+        if (scenario.viewport) await page.setViewportSize(scenario.viewport);
         const pageErrors = [];
         page.on("pageerror", (error) => pageErrors.push(error));
         await page.goto(`${baseURL}/${scenario.route}`, { waitUntil: "domcontentloaded" });
@@ -387,7 +404,7 @@ async function main() {
         if (pageErrors.length) throw new AggregateError(pageErrors, `${scenario.name}-${theme}: uncaught browser error`);
         const capture = await scenario.capture?.(page);
         const png = await page.screenshot({ type: "png", animations: "disabled", clip: capture?.clip });
-        const expected = capture?.viewport ?? viewport;
+        const expected = capture?.viewport ?? scenario.viewport ?? viewport;
         inspectPng(png, { width: expected.width * deviceScaleFactor, height: expected.height * deviceScaleFactor });
         const output = join(outDir, `${scenario.name}-${theme}.png`);
         await writeFile(output, png);

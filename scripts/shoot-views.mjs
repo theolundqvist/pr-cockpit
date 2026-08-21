@@ -391,7 +391,7 @@ const scenarios = [
     ...detail("detail-agent-prompt", 101, "Agent prompt dialog with a deterministic task instruction."),
     interact: async (page) => {
       await page.keyboard.press("p");
-      await page.getByPlaceholder("e.g. remove the comments you just added").fill("Explain the failing check and prepare the smallest safe fix.");
+      await page.getByPlaceholder("e.g. remove the comments you just added").fill("make it render images at 1080p and then merge it");
     },
     verify: async (page) => page.getByText("prompt an agent on #101", { exact: true }).waitFor(),
   },

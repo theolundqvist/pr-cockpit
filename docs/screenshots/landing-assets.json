@@ -64,7 +64,7 @@
       "padding": 40,
       "theme": "light",
       "source": ".scratch/landing-real/hide-tests-light.png",
-      "scenario": "microsoft/vscode#331771 unified diff after hiding 9 test files"
+      "scenario": "jestjs/jest#16366 unified diff after hiding 15 test files"
     },
     {
       "path": "docs/screenshots/landing-hide-tests-github.png",
@@ -74,8 +74,8 @@
       "shotHeight": 900,
       "padding": 40,
       "theme": "light",
-      "source": ".scratch/landing-real/github-files-331771.webp",
-      "scenario": "real GitHub microsoft/vscode#331771 files view"
+      "source": ".scratch/landing-real/github-files-16366.webp",
+      "scenario": "real GitHub jestjs/jest#16366 files view at 85% zoom"
     }
   ]
 }

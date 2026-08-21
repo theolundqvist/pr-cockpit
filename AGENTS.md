@@ -80,5 +80,6 @@ After a task needs non-obvious investigation, repeated failed attempts, or a rec
 - Record only evidence-backed, reusable guidance. No credentials, no transient PIDs, no diary of one-off failures.
 - The Forgejo host mounts `/run` with `noexec`; invoke migration helpers through `bash` or `python3` rather than executing files there directly.
 - Forgejo hides pull requests when `repository.is_mirror` is true even if the unit is enabled. Keep the `mirror` row, clear only `is_mirror`, limit its refspecs to heads and tags, and maintain each native PR's hidden `refs/pull/<N>/head`; create an ordinary fallback branch only for an active fork PR and write both refs as UID/GID `994:984`.
+- Long authenticated browser benchmarks run one measured process at a time. Retry and discard only transport-failed iterations, checkpoint each complete product sample set under `.scratch`, and publish only after every product reaches the declared successful sample count.
 
 Keep entries short and current. When a new procedure supersedes an old one, replace the old instruction rather than leaving conflicting advice.

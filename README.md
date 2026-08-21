@@ -1,12 +1,109 @@
 # PR Cockpit
 
-**GitHub pull request reviews at local speed.**
+**GitHub pull requests at local speed.**
 
-A keyboard-first macOS app that keeps PRs, diffs, threads, checks, and images warm on your Mac. Actions feel immediate and sync back through your existing `gh` login.
+PR Cockpit is a keyboard-first macOS app that keeps pull requests, diffs, threads, checks, and images warm on your Mac. Reads feel immediate, while comments, reviews, edits, and merges sync through your existing `gh` login. GitHub remains the source of truth.
 
-[Website](https://theolundqvist.github.io/pr-cockpit/) · [Install](#install) · [Shortcuts](#shortcuts)
+[Website](https://theolundqvist.github.io/pr-cockpit/) · [Install](#install) · [CLI](#agents-listen-dont-poll) · [Shortcuts](#shortcuts)
 
-![PR Cockpit review queue](docs/screenshots/inbox-dark.png)
+## GitHub PRs at local speed
+
+The local server serves the queue and open pull request from SQLite instead of rebuilding every screen from GitHub. Webhook markers trigger targeted refreshes, WebSocket invalidations update the UI, and a poller repairs missed events.
+
+For the large private pull request `scape-app/scape#8132`, 100 successful warm-cache opens after 3 warmups produced:
+
+| Product | p50 | p95 | p99 |
+| --- | ---: | ---: | ---: |
+| PR Cockpit | 0.093 s | 0.151 s | **0.395 s** |
+| Cursor Origin | 1.738 s | 3.702 s | 5.606 s |
+| GitHub | 3.381 s | 4.880 s | 5.678 s |
+
+At p99, PR Cockpit was **14.4× faster than GitHub** and **14.2× faster than Cursor Origin**. One signed-in Chrome session drove all three products from their own pull-request list to the same painted state: title, first conversation body, no loading indicator, then two animation frames. p99 is the observed 99th sample, not an interpolation. [Read or reproduce the benchmark](scripts/benchmark-ui.mjs).
+
+A separate 20-run comparison measured the common interactions:
+
+| Interaction | PR Cockpit p50 | GitHub p50 | Faster |
+| --- | ---: | ---: | ---: |
+| Open a PR | 0.019 s | 1.172 s | 63.4× |
+| Search PRs | 0.047 s | 0.845 s | 17.8× |
+| Open a diff | 0.034 s | 1.443 s | 42.1× |
+
+The open and diff sample rotates 15 public `microsoft/vscode` pull requests through 20 measured runs after 3 initial warmups, so it deliberately mixes first visits and revisits. The search sample uses the exact private `scape-app/scape#8133` result: PR Cockpit applies the query to its global local cache, while GitHub loads the repository-scoped search URL.
+
+## Search from anywhere
+
+Press <kbd>⌥⌘K</kbd> from any app, type words from the title, branch, repository, or pull-request number, and press <kbd>enter</kbd>. The standalone palette opens the full pull request from the local cache.
+
+![Global pull request search opening a cached pull request](docs/screenshots/landing-search-poster.png)
+
+## One queue. Three lanes.
+
+Ready to merge, your move, and waiting are separate lanes, already sorted by what needs attention. Stacked pull requests stay together. Checks, conflicts, unresolved threads, and review state are available without tab-hopping.
+
+![PR Cockpit review queue with ready, your move, and waiting lanes](docs/screenshots/landing-inbox.png)
+
+## Hide tests. See the change.
+
+Press <kbd>x</kbd> to fold test files out of a large diff without changing the pull request. In `jestjs/jest#16366`, 15 of 20 changed files are tests, leaving 5 files and 3 source files visible.
+
+| GitHub: all 20 changed files | PR Cockpit: 15 test files hidden |
+| --- | --- |
+| ![GitHub showing all 20 changed files in jestjs/jest pull request 16366](docs/screenshots/landing-hide-tests-github.png) | ![PR Cockpit showing five remaining files after hiding tests](docs/screenshots/landing-hide-tests-cockpit.png) |
+
+## One key from review to change
+
+The review stays in one context:
+
+- <kbd>p</kbd> opens the pull request in the configured coding agent with the current review context.
+- <kbd>e</kbd> edits the open file and commits the patch back to the pull request.
+- **Revert hunk** removes one focused change instead of rewriting the file.
+- <kbd>h</kbd> walks file history without leaving the review.
+
+| Agent | Edit |
+| --- | --- |
+| ![Agent prompt opened from PR Cockpit](docs/screenshots/landing-agent-prompt.png) | ![Editing a pull request file inside PR Cockpit](docs/screenshots/landing-editor.png) |
+
+| Revert hunk | History |
+| --- | --- |
+| ![Revert hunk menu inside a pull request diff](docs/screenshots/landing-revert-menu.png) | ![File history inside PR Cockpit](docs/screenshots/landing-file-history.png) |
+
+## Agents: listen, don't poll.
+
+The installer adds the open-source `pr-cockpit` CLI. It reads the same local cache as the app, returns compact agent-shaped output, and revalidates only when that cache is stale.
+
+```sh
+pr-cockpit owner/repo#123                    # state, checks, unresolved threads
+pr-cockpit owner/repo#123 --diff             # cached diff
+pr-cockpit owner/repo#123 --file src/app.ts  # full file at the PR head
+pr-cockpit resolve owner/repo#123 HANDLE     # resolve a review thread
+pr-cockpit update                            # fast-forward and rebuild
+```
+
+Waiting on CI, review, or a new comment? Block on the local fingerprint instead of polling GitHub:
+
+```sh
+pr-cockpit listen owner/repo#123
+```
+
+`listen` returns when substantive cached state changes, such as a push, check result, review, or comment. `--ci-only` and `--comments-only` narrow the wake signal.
+
+## Under the hood
+
+```mermaid
+flowchart LR
+    Human --> UI
+    Agent -->|CLI / API| Server
+    UI <-->|WebSocket invalidation| Server
+    Server <-->|read / write| Local["SQLite + images"]
+    GitHub -->|webhook| Relay
+    Relay -->|change marker only| Server
+    Server -->|targeted fetches and authenticated writes| GitHub
+```
+
+- **GitHub is authoritative.** The local database is a warm read model, not a fork of pull-request state.
+- **The relay carries markers, not pull-request payloads.** The local server fetches only what changed directly from GitHub.
+- **Writes stay authenticated.** Comments, reviews, edits, thread resolution, and merges use the existing GitHub CLI login.
+- **Humans and agents share one cache.** The app uses WebSocket invalidations; the CLI and API expose the same refreshed state.
 
 ## Install
 
@@ -14,49 +111,7 @@ A keyboard-first macOS app that keeps PRs, diffs, threads, checks, and images wa
 curl -fsSL https://raw.githubusercontent.com/theolundqvist/pr-cockpit/main/scripts/bootstrap | bash
 ```
 
-The installer checks macOS prerequisites, asks before installing anything, and opens a four-step setup. Run `pr-cockpit update` to upgrade. It replaces a legacy private PR Cockpit installation while preserving your local PR data and settings.
-
-## One queue. Every decision.
-
-Ready to merge, your move, and waiting. Stacked PRs stay together.
-
-![Pull request conversation, checks, and actions](docs/screenshots/conversation-dark.png)
-
-## Read, edit, ship.
-
-Inspect diffs, hide tests, walk file history, edit source, and commit the patch back to the pull request.
-
-![Editing a pull request file inside PR Cockpit](docs/screenshots/editing-dark.png)
-
-## Jump anywhere.
-
-Press <kbd>⌘⌥K</kbd> from any app to search recent open, merged, and closed PRs.
-
-![Global pull request search](docs/screenshots/palette-light.png)
-
-## Local by default.
-
-The cache, diffs, queued actions, and warmed images stay on your Mac. GitHub remains the source of truth; webhooks refresh changed PRs and a poller repairs missed events.
-
-## Agents: listen, don't poll.
-
-The installer adds the open-source `pr-cockpit` CLI. It reads the same local cache as the app, so ordinary reads return fast, compact, agent-shaped output and only revalidate against GitHub when that cache has actually gone stale.
-
-```sh
-pr-cockpit owner/repo#123                    # state, checks, unresolved threads
-pr-cockpit owner/repo#123 --diff             # the cached diff
-pr-cockpit owner/repo#123 --file src/app.ts  # a full file at the PR head
-pr-cockpit resolve owner/repo#123 HANDLE     # resolve a review thread
-pr-cockpit update                            # fast-forward and rebuild the installed app
-```
-
-Waiting on CI or review? Block instead of polling:
-
-```sh
-pr-cockpit listen owner/repo#123
-```
-
-`listen` returns when substantive cached state changes — a push, a check result, a review, a comment — so agents skip the repeated `gh` polls that spend GitHub calls and tokens re-reading a quiet PR.
+The installer checks macOS prerequisites, asks before installing anything, shows each stage, and opens the four-step setup. Only after installation succeeds does it optionally offer to teach local coding assistants to use the cache-aware CLI. Run `pr-cockpit update` to upgrade. A legacy private installation is replaced while local pull-request data and settings are preserved.
 
 ## Start in four steps
 
@@ -71,11 +126,14 @@ Run **Settings → Run setup again** whenever you want to change repositories or
 
 | Key | Action |
 | --- | --- |
+| <kbd>⌥⌘K</kbd> | Search pull requests from any app |
 | <kbd>j</kbd> / <kbd>k</kbd> | Move |
 | <kbd>enter</kbd> / <kbd>esc</kbd> | Open / back |
 | <kbd>d</kbd> | Conversation / Files |
 | <kbd>c</kbd> / <kbd>r</kbd> | Comment / reply |
+| <kbd>p</kbd> | Open in the configured agent |
 | <kbd>e</kbd> | Edit the open file |
+| <kbd>x</kbd> | Hide / show test files |
 | <kbd>h</kbd> | File history |
 | <kbd>m</kbd> | Merge |
 | <kbd>?</kbd> | Full cheatsheet |

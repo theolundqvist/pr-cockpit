@@ -222,7 +222,7 @@
 
     .benchmark-grid {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 12px;
     }
 
@@ -591,261 +591,234 @@
 
 
     .how-card {
-      padding: 32px;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      background: var(--panel);
+      border: 0;
+      background: transparent;
     }
 
     .system {
       margin: 26px 0 0;
     }
 
-    .system-map {
-      display: grid;
-      grid-template-columns:
-        minmax(120px, 1fr) 42px minmax(105px, 0.8fr) 42px
-        minmax(120px, 1fr) 42px minmax(130px, 1.1fr) 42px minmax(110px, 0.9fr);
-      grid-template-rows: 38px auto 42px auto 42px;
-      align-items: stretch;
-      gap: 0;
+    .architecture-stage {
+      position: relative;
+      overflow: hidden;
+      aspect-ratio: 1200 / 560;
+      border: 1px solid #343432;
+      border-radius: 16px;
+      background: #191918;
+      color: #f4f4f1;
     }
 
-    .system-node {
-      z-index: 2;
+    .architecture-wires {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    .wires-mobile {
+      display: none;
+    }
+
+    .architecture-wire {
+      fill: none;
+      stroke: currentColor;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .architecture-wire.marker {
+      color: var(--yellow);
+      stroke-width: 2;
+      stroke-dasharray: 5 7;
+    }
+
+    .architecture-wire.github {
+      color: var(--blue);
+      stroke-width: 2;
+    }
+
+    .architecture-wire.local {
+      color: var(--green);
+      stroke-width: 2;
+    }
+
+    .architecture-wire.actor {
+      color: #82827d;
+      stroke-width: 1.5;
+    }
+
+    .architecture-node {
+      position: absolute;
+      z-index: 3;
       display: flex;
       flex-direction: column;
-      grid-row: 2;
+      align-items: center;
+      justify-content: center;
       gap: 6px;
-      padding: 15px 16px;
-      border: 1px solid rgba(17, 17, 16, 0.16);
-      border-radius: 6px;
-      background: var(--text);
-      color: var(--bg);
+      border: 1px solid #4a4a47;
+      background: #20201f;
+      text-align: center;
     }
 
-    .system-node strong {
-      font-size: 15px;
+    .architecture-node strong {
+      color: #f4f4f1;
+      font-size: 14px;
+      font-weight: 650;
+      line-height: 1.25;
       letter-spacing: -0.02em;
     }
 
-    .system-node span {
-      color: rgba(17, 17, 16, 0.62);
+    .architecture-node span,
+    .architecture-edge-label,
+    .boundary-label {
+      color: #b9b9b4;
       font-family: var(--mono);
       font-size: 10.5px;
-      line-height: 1.5;
+      font-weight: 600;
+      line-height: 1.35;
     }
 
     .node-github {
-      grid-column: 1;
+      left: 3.667%;
+      top: 36.786%;
+      width: 12.333%;
+      height: 26.429%;
+      border-color: rgba(112, 174, 255, 0.62);
+      border-radius: 50%;
+      background: rgba(112, 174, 255, 0.12);
+    }
+
+    .node-github strong {
+      font-size: 18px;
     }
 
     .node-relay {
-      grid-column: 3;
-      align-self: center;
-      padding: 11px 13px;
+      left: 20.333%;
+      top: 12.857%;
+      width: 11.333%;
+      height: 9.286%;
+      gap: 2px;
+      border-color: rgba(242, 190, 53, 0.62);
+      border-radius: 999px;
+      background: rgba(242, 190, 53, 0.1);
     }
 
     .node-relay strong {
       font-size: 13px;
     }
 
-    .node-sqlite {
-      grid-column: 5;
-    }
-
-    .node-prc {
-      grid-column: 7;
-    }
-
-    .node-ui {
-      grid-column: 9;
-      border-color: rgba(94, 210, 141, 0.5);
-      box-shadow: 0 0 0 3px rgba(94, 210, 141, 0.18);
-    }
-
-    .system-zone {
-      position: relative;
-      z-index: 1;
-      grid-column: 4 / 10;
-      grid-row: 1 / 6;
-      border: 1px dashed var(--border-strong);
-      border-radius: 6px;
-    }
-
-    .system-zone-label {
+    .local-runtime {
       position: absolute;
-      top: 10px;
-      left: 14px;
-      color: var(--text-faint);
-      font-family: var(--mono);
+      z-index: 2;
+      left: 34.167%;
+      top: 7.143%;
+      width: 47.5%;
+      height: 85.714%;
+      border: 1px solid #4a4a47;
+      border-radius: 16px;
+      background: rgba(94, 210, 141, 0.03);
+    }
+
+    .boundary-label {
+      position: absolute;
+      top: 12px;
+      left: 16px;
+      color: #82827d;
       font-size: 10px;
-      letter-spacing: 0.05em;
+      letter-spacing: 0.08em;
       text-transform: uppercase;
     }
 
-    .system-link {
+    .node-server {
+      left: 41.167%;
+      top: 27.5%;
+      width: 19.333%;
+      height: 41.429%;
+      border-color: rgba(94, 210, 141, 0.72);
+      border-radius: 50%;
+      background: rgba(94, 210, 141, 0.14);
+      box-shadow: 0 0 40px rgba(94, 210, 141, 0.1);
+    }
+
+    .node-server strong {
+      font-size: 22px;
+      line-height: 1.1;
+    }
+
+    .node-storage {
+      left: 42.917%;
+      top: 75%;
+      width: 15.833%;
+      height: 12.143%;
+      border-radius: 999px;
+    }
+
+    .node-ui {
+      left: 65.833%;
+      top: 31.429%;
+      width: 12.5%;
+      height: 15.714%;
+      border-radius: 999px;
+    }
+
+    .architecture-consumer {
+      position: absolute;
       z-index: 3;
       display: flex;
-      align-items: center;
+      flex-direction: column;
       justify-content: center;
-      color: var(--blue);
+      gap: 2px;
+      width: 12.667%;
+      height: 10.357%;
+      padding-left: 14px;
+      border-left: 2px solid #4a4a47;
+      background: transparent;
     }
 
-    .system-link::before {
-      width: 100%;
-      height: 1px;
-      background: currentColor;
-      opacity: 0.68;
-      content: "";
+    .architecture-consumer strong {
+      color: #f4f4f1;
+      font-size: 13.5px;
+      font-weight: 650;
+      line-height: 1.25;
     }
 
-    .system-link::after {
-      margin-left: -3px;
-      font-size: 13px;
-      line-height: 1;
-      content: "→";
-    }
-
-    .link-webhook {
-      grid-column: 2;
-      grid-row: 2;
-    }
-
-    .link-storage {
-      grid-column: 6;
-      grid-row: 2;
-      color: var(--green);
-    }
-
-    .link-storage::after {
-      content: "↔";
-    }
-
-    .link-ui {
-      grid-column: 8;
-      grid-row: 2;
-      color: var(--green);
-    }
-
-    .system-path {
-      position: relative;
-      z-index: 3;
+    .architecture-consumer span {
+      color: #b9b9b4;
       font-family: var(--mono);
-      font-size: 10px;
+      font-size: 10.5px;
+      font-weight: 600;
+      line-height: 1.35;
     }
 
-    .path-marker {
-      grid-column: 3 / 8;
-      grid-row: 1 / 3;
-      margin: 7px 42px 0 50%;
-      border: 1px solid rgba(112, 174, 255, 0.55);
-      border-bottom: 0;
-      border-radius: 9px 9px 0 0;
-      color: var(--blue);
+    .actor-human {
+      left: 84.833%;
+      top: 31.429%;
     }
 
-    .path-marker::after {
+    .actor-agents {
+      left: 84.833%;
+      top: 69.643%;
+    }
+
+    .architecture-edge-label {
       position: absolute;
-      right: -5px;
-      bottom: -4px;
-      font-size: 13px;
-      line-height: 1;
-      content: "↓";
-    }
-
-    .path-refresh {
-      grid-column: 1 / 8;
-      grid-row: 2 / 6;
-      margin: 0 34px 8px 28px;
-      border: 1px solid rgba(112, 174, 255, 0.45);
-      border-top: 0;
-      border-radius: 0 0 9px 9px;
-      color: var(--blue);
-    }
-
-    .path-refresh::before {
-      position: absolute;
-      left: -5px;
-      bottom: 0;
-      font-size: 13px;
-      line-height: 1;
-      content: "←";
-    }
-
-    .path-label {
-      position: absolute;
-      left: 50%;
-      padding: 0 8px;
-      background: var(--panel);
-      transform: translateX(-50%);
+      z-index: 4;
+      padding: 2px 5px;
+      border-radius: 4px;
+      background: rgba(25, 25, 24, 0.9);
+      color: #b9b9b4;
       white-space: nowrap;
     }
 
-    .path-marker .path-label {
-      top: -8px;
-    }
-
-    .path-refresh .path-label {
-      bottom: -8px;
-    }
-
-    .system-consumer {
-      z-index: 2;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      grid-row: 4;
-      gap: 12px;
-      padding: 12px 14px;
-      border: 1px solid var(--border-strong);
-      border-radius: 6px;
-      background: var(--panel-raised);
-    }
-
-    .system-consumer strong {
-      font-size: 13px;
-    }
-
-    .system-consumer span {
-      color: var(--text-faint);
-      font-family: var(--mono);
-      font-size: 10px;
-    }
-
-    .consumer-agents {
-      grid-column: 7;
-    }
-
-    .consumer-human {
-      grid-column: 9;
-    }
-
-    .consumer-link {
-      z-index: 2;
-      justify-self: center;
-      grid-row: 3;
-      width: 1px;
-      height: 100%;
-      background: var(--green);
-      opacity: 0.68;
-    }
-
-    .consumer-link::after {
-      position: absolute;
-      margin: 11px 0 0 -6px;
-      color: var(--green);
-      font-size: 13px;
-      content: "↕";
-    }
-
-    .consumer-link-agents {
-      grid-column: 7;
-    }
-
-    .consumer-link-human {
-      grid-column: 9;
-    }
+    .architecture-edge-label[data-edge="marker"] { left: 26.5%; top: 7.5%; }
+    .architecture-edge-label[data-edge="fetch"] { left: 25%; top: 41%; }
+    .architecture-edge-label[data-edge="write"] { left: 21%; top: 69%; }
+    .architecture-edge-label[data-edge="storage"] { left: 47%; top: 70%; }
+    .architecture-edge-label[data-edge="ui"] { left: 61.5%; top: 34%; }
+    .architecture-edge-label[data-edge="human"] { left: 80.4%; top: 32%; }
+    .architecture-edge-label[data-edge="agents"] { left: 73%; top: 72%; }
 
 
 
@@ -1139,6 +1112,114 @@
       height: auto;
     }
 
+    @media (max-width: 819px) {
+      .architecture-stage {
+        width: min(360px, calc(100vw - 24px));
+        height: 680px;
+        left: 50%;
+        margin-inline: 0;
+        transform: translateX(-50%);
+        aspect-ratio: auto;
+      }
+
+      .wires-desktop {
+        display: none;
+      }
+
+      .wires-mobile {
+        display: block;
+      }
+
+      .architecture-node strong {
+        font-size: 12px;
+      }
+
+      .architecture-node span,
+      .architecture-consumer span,
+      .architecture-edge-label {
+        font-size: 10px;
+      }
+
+      .node-github {
+        left: 33.333%;
+        top: 16px;
+        width: 33.333%;
+        height: min(120px, calc((100vw - 24px) * 0.33333));
+      }
+
+      .node-github strong {
+        font-size: 16px;
+      }
+
+      .node-relay {
+        left: 69.444%;
+        top: 52px;
+        width: 26.667%;
+        height: 48px;
+      }
+
+      .local-runtime {
+        left: 4.444%;
+        top: 200px;
+        width: 91.111%;
+        height: 354px;
+      }
+
+      .boundary-label {
+        top: 10px;
+        left: 12px;
+        font-size: 10px;
+      }
+
+      .node-server {
+        left: 24.444%;
+        top: 236px;
+        width: 51.111%;
+        height: min(184px, calc((100vw - 24px) * 0.51111));
+      }
+
+      .node-server strong {
+        font-size: 18px;
+      }
+
+      .node-storage {
+        left: 10%;
+        top: 456px;
+        width: 36.111%;
+        height: 64px;
+      }
+
+      .node-ui {
+        left: 53.889%;
+        top: 456px;
+        width: 36.111%;
+        height: 64px;
+      }
+
+      .architecture-consumer {
+        width: 36.111%;
+        height: 54px;
+        padding-left: 10px;
+      }
+
+      .actor-agents {
+        left: 10%;
+        top: 598px;
+      }
+
+      .actor-human {
+        left: 53.889%;
+        top: 598px;
+      }
+
+      .architecture-edge-label[data-edge="marker"] { left: 69%; top: 132px; }
+      .architecture-edge-label[data-edge="fetch"] { left: 20%; top: 164px; white-space: normal; }
+      .architecture-edge-label[data-edge="write"] { left: 55%; top: 164px; white-space: normal; }
+      .architecture-edge-label[data-edge="storage"] { left: 24%; top: 430px; }
+      .architecture-edge-label[data-edge="ui"] { left: 67%; top: 422px; white-space: normal; }
+      .architecture-edge-label[data-edge="agents"] { left: 15%; top: 557px; }
+      .architecture-edge-label[data-edge="human"] { left: 69%; top: 559px; }
+    }
     @media (max-width: 900px) {
       .section {
         padding: 60px 0;
@@ -1163,6 +1244,9 @@
       .benchmark-grid {
         grid-template-columns: 1fr;
       }
+      .benchmark-method {
+        position: static;
+      }
 
 
 
@@ -1174,140 +1258,6 @@
         border-left: 0;
       }
 
-      .system-map {
-        grid-template-columns: minmax(0, 1fr) 34px minmax(0, 1fr);
-        grid-template-rows: auto 38px auto 38px auto 38px auto 34px;
-        gap: 0;
-      }
-
-      .node-github {
-        grid-column: 1;
-        grid-row: 1;
-      }
-
-      .node-relay {
-        grid-column: 3;
-        grid-row: 1;
-        align-self: stretch;
-        padding: 15px 16px;
-      }
-
-      .link-webhook {
-        grid-column: 2;
-        grid-row: 1;
-      }
-
-      .node-prc {
-        grid-column: 1 / 4;
-        grid-row: 3;
-      }
-
-      .node-sqlite {
-        grid-column: 1;
-        grid-row: 5;
-      }
-
-      .node-ui {
-        grid-column: 3;
-        grid-row: 5;
-      }
-
-      .system-zone {
-        grid-column: 1 / 4;
-        grid-row: 3 / 8;
-      }
-
-      .path-marker {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        grid-column: 3;
-        grid-row: 2;
-        margin: 0;
-        border: 0;
-      }
-
-      .path-marker::after {
-        position: static;
-        margin-left: 7px;
-        content: "↓";
-      }
-
-      .path-refresh {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        grid-column: 1 / 4;
-        grid-row: 8;
-        margin: 0;
-        border: 0;
-      }
-
-      .path-refresh::before {
-        position: static;
-        margin-right: 7px;
-        content: "←";
-      }
-
-      .path-label,
-      .path-marker .path-label,
-      .path-refresh .path-label {
-        position: static;
-        padding: 0;
-        background: transparent;
-        transform: none;
-        white-space: normal;
-      }
-
-      .link-storage,
-      .link-ui {
-        grid-row: 4;
-        justify-self: center;
-        width: 1px;
-        height: 100%;
-      }
-
-      .link-storage {
-        grid-column: 1;
-      }
-
-      .link-ui {
-        grid-column: 3;
-      }
-
-      .link-storage::before,
-      .link-ui::before {
-        width: 1px;
-        height: 100%;
-      }
-
-      .link-storage::after,
-      .link-ui::after {
-        margin: 0 0 -3px -1px;
-        content: "↓";
-      }
-
-      .consumer-agents {
-        grid-column: 1;
-        grid-row: 7;
-      }
-
-      .consumer-human {
-        grid-column: 3;
-        grid-row: 7;
-      }
-
-      .consumer-link {
-        grid-row: 6;
-      }
-
-      .consumer-link-agents {
-        grid-column: 1;
-      }
-
-      .consumer-link-human {
-        grid-column: 3;
-      }
 
       .install-card {
         padding: 28px;
@@ -1444,6 +1394,7 @@
     /* Search-to-PR demo */
     .search-demo-intro { margin-bottom: 28px; }
     .video-mat {
+      position: relative;
       padding: clamp(22px, 3vw, 44px);
       border-radius: 14px;
       background:
@@ -1482,12 +1433,12 @@
     .cli-flow-line { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 8px; min-height: 23px; color: var(--text); opacity: 1; transform: none; transition: opacity 180ms ease, transform 180ms ease; }
     .cli-flow-line.is-entering { opacity: 0; transform: translateY(5px); }
     .cli-flow-line span { color: var(--text-faint); }
-    .cli-flow-line b { overflow: hidden; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+    .cli-flow-line b { overflow: hidden; font-weight: 400; text-overflow: ellipsis; white-space: pre; }
     .cli-flow-line.is-command span, .cli-flow-line.is-result span, .cli-flow-line.is-result b { color: var(--green); }
     .cli-flow-caption { position: absolute; right: 42px; bottom: 24px; left: 42px; color: var(--text-faint); font: 11px var(--mono); text-align: center; }
-    .cli-flow-replay { position: absolute; z-index: 12; right: 18px; bottom: 18px; min-height: 39px; padding: 0 15px; border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 999px; background: rgba(15, 15, 14, 0.78); color: #fff; font: 600 11px var(--mono); cursor: pointer; backdrop-filter: blur(12px); }
-    .cli-flow-replay:hover { border-color: var(--green); background: rgba(15, 15, 14, 0.92); }
-    .cli-flow-replay:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
+    .cli-flow-replay, .search-demo-toggle { position: absolute; z-index: 12; right: 18px; bottom: 18px; min-height: 39px; padding: 0 15px; border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 999px; background: rgba(15, 15, 14, 0.78); color: #fff; font: 600 11px var(--mono); cursor: pointer; backdrop-filter: blur(12px); }
+    .cli-flow-replay:hover, .search-demo-toggle:hover { border-color: var(--green); background: rgba(15, 15, 14, 0.92); }
+    .cli-flow-replay:focus-visible, .search-demo-toggle:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
     .cli-flow-steps { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin: 18px 0 0; padding: 0; list-style: none; }
     .cli-flow-steps li { display: flex; gap: 8px; color: var(--text-faint); font: 10px/1.5 var(--mono); }
     .cli-flow-steps b { display: grid; flex: none; width: 19px; height: 19px; place-items: center; border: 1px solid var(--border-strong); border-radius: 50%; color: var(--green); font-size: 9px; }
@@ -1504,7 +1455,8 @@
       .cli-flow-terminal { width: 100%; margin-top: 26px; }
       .cli-flow-console { min-height: 218px; padding: 16px 14px; font-size: 9px; }
       .cli-flow-caption { right: 18px; bottom: 22px; left: 18px; padding-right: 82px; font-size: 9px; text-align: left; }
-      .cli-flow-replay { right: 10px; bottom: 10px; min-height: 36px; }
+      .cli-flow-replay, .search-demo-toggle { right: 10px; bottom: 10px; min-height: 36px; }
+      .search-demo-toggle { min-height: 44px; }
       .cli-flow-steps { grid-template-columns: 1fr; gap: 8px; }
     }
 
@@ -1529,6 +1481,62 @@
       <h1>GitHub PRs at local speed.</h1>
       <div class="hero-benchmark" id="performance">
         <div class="benchmark-grid" aria-label="PR Cockpit, GitHub, and Cursor Origin performance comparison">
+          <article class="benchmark-card">
+            <div class="benchmark-card-header">
+              <h2 class="benchmark-label">Render a huge PR · p99</h2>
+              <span class="benchmark-speedup" data-render-speedup>—× faster at p99</span>
+            </div>
+            <div class="benchmark-products">
+              <div class="benchmark-product cockpit">
+                <div class="benchmark-bar">
+                  <span class="benchmark-bar-fill" data-render-bar="cockpit"></span>
+                  <div class="benchmark-bar-content">
+                    <span class="benchmark-product-name">PR COCKPIT</span>
+                    <div class="benchmark-value-line">
+                      <strong class="benchmark-value" data-render-value="cockpit">—</strong>
+                      <span class="benchmark-unit">s</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="benchmark-meta">
+                  <p class="benchmark-definition">Inbox row to fully painted scape#8132.</p>
+                  <p class="benchmark-p95" data-render-tail="cockpit">p50 — · p95 —</p>
+                </div>
+              </div>
+              <div class="benchmark-product">
+                <div class="benchmark-bar">
+                  <span class="benchmark-bar-fill" data-render-bar="github"></span>
+                  <div class="benchmark-bar-content">
+                    <span class="benchmark-product-name">GITHUB (when healthy)</span>
+                    <div class="benchmark-value-line">
+                      <strong class="benchmark-value" data-render-value="github">—</strong>
+                      <span class="benchmark-unit">s</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="benchmark-meta">
+                  <p class="benchmark-definition">Pull-request list row to fully painted scape#8132.</p>
+                  <p class="benchmark-p95" data-render-tail="github">p50 — · p95 —</p>
+                </div>
+              </div>
+              <div class="benchmark-product origin">
+                <div class="benchmark-bar">
+                  <span class="benchmark-bar-fill" data-render-bar="cursorOrigin"></span>
+                  <div class="benchmark-bar-content">
+                    <span class="benchmark-product-name">CURSOR ORIGIN</span>
+                    <div class="benchmark-value-line">
+                      <strong class="benchmark-value" data-render-value="cursorOrigin">—</strong>
+                      <span class="benchmark-unit">s</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="benchmark-meta">
+                  <p class="benchmark-definition">Origin pull-request row to fully painted scape#8132.</p>
+                  <p class="benchmark-p95" data-render-tail="cursorOrigin">p50 — · p95 —</p>
+                </div>
+              </div>
+            </div>
+          </article>
           <article class="benchmark-card">
             <div class="benchmark-card-header">
               <h2 class="benchmark-label">Open a PR</h2>
@@ -1603,7 +1611,7 @@
                   </div>
                 </div>
                 <div class="benchmark-meta">
-                  <p class="benchmark-definition">⌘K word query to painted local result.</p>
+                  <p class="benchmark-definition">⌘K palette open, query applied, to painted scape#8133 result.</p>
                   <p class="benchmark-p95"><span data-benchmark-p95="cockpit:pr-search">—</span> s p95</p>
                 </div>
               </div>
@@ -1619,7 +1627,7 @@
                   </div>
                 </div>
                 <div class="benchmark-meta">
-                  <p class="benchmark-definition">Word query submit to painted result.</p>
+                  <p class="benchmark-definition">Load the repo-scoped pull-request search URL for the same query to first painted result.</p>
                   <p class="benchmark-p95"><span data-benchmark-p95="github:pr-search">—</span> s p95</p>
                 </div>
               </div>
@@ -1712,10 +1720,11 @@
           </div>
         </div>
         <div class="video-mat">
-          <video class="search-demo-video" poster="screenshots/landing-search-poster.png" width="1280" height="960" muted playsinline loop aria-label="Screen recording of PR Cockpit: Command K opens pull request search over the review queue, typing narrows the results to one pull request, and Enter opens its full detail from the local cache.">
+          <video id="search-demo-video" class="search-demo-video" poster="screenshots/landing-search-poster.png" width="1280" height="960" muted playsinline loop aria-label="Screen recording of PR Cockpit: Option-Command-K opens pull request search over the review queue, typing narrows the results to one pull request, and Enter opens its full detail from the local cache.">
             <source src="screenshots/landing-search.webm" type="video/webm" />
             <source src="screenshots/landing-search.mp4" type="video/mp4" />
           </video>
+          <button class="search-demo-toggle" type="button" aria-controls="search-demo-video" aria-pressed="false" data-search-demo-toggle>▶ Play</button>
         </div>
         <div class="search-demo-decision"><h3>Everything needed to decide.</h3><p>Failing checks with logs, merge conflicts, open threads, review state — one screen, painted from the local cache.</p></div>
       </div>
@@ -1748,23 +1757,23 @@
         <div class="section-intro">
           <div>
             <h2 class="section-title">Hide tests. See the change.</h2>
-            <p class="section-lede">microsoft/vscode#331771: 9 test files among 75 changed. Press <kbd>x</kbd> and they fold away — a view filter on your machine, the PR itself is untouched.</p>
+            <p class="section-lede">jestjs/jest#16366: 15 test files among 20 changed. Press <kbd>x</kbd> and they fold away — 5 files remain, and the PR itself is untouched.</p>
           </div>
         </div>
         <div class="compare-grid">
           <figure class="compare-side">
-            <figcaption class="compare-label">GitHub · all 75 changed files</figcaption>
+            <figcaption class="compare-label">GitHub · all 20 changed files</figcaption>
             <div class="shot-shell">
               <button class="shot-button" type="button" data-lightbox="screenshots/landing-hide-tests-github.png" aria-label="Open GitHub files changed screenshot">
-                <img src="screenshots/landing-hide-tests-github.png" alt="GitHub files changed view of microsoft/vscode#331771 listing 75 changed files" width="1280" height="980" loading="lazy">
+                <img src="screenshots/landing-hide-tests-github.png" alt="GitHub files changed view of jestjs/jest#16366 listing all 20 changed files at 85% zoom" width="1280" height="980" loading="lazy">
               </button>
             </div>
           </figure>
           <figure class="compare-side">
-            <figcaption class="compare-label">PR Cockpit · 9 test files hidden</figcaption>
+            <figcaption class="compare-label">PR Cockpit · 15 test files hidden</figcaption>
             <div class="shot-shell">
               <button class="shot-button" type="button" data-lightbox="screenshots/landing-hide-tests-cockpit.png" aria-label="Open PR Cockpit hidden tests screenshot">
-                <img src="screenshots/landing-hide-tests-cockpit.png" alt="PR Cockpit files tab showing 66 files with 9 test files hidden" width="1280" height="980" loading="lazy">
+                <img src="screenshots/landing-hide-tests-cockpit.png" alt="PR Cockpit files tab for jestjs/jest#16366 showing 5 files after hiding 15 test files" width="1280" height="980" loading="lazy">
               </button>
             </div>
           </figure>
@@ -1782,8 +1791,8 @@
         <div class="showcase">
           <div class="showcase-controls">
             <div class="showcase-tabs" role="tablist" aria-label="Review actions">
-              <button class="showcase-tab" id="showcase-tab-editor" type="button" role="tab" aria-selected="true" aria-controls="showcase-panel-editor"><kbd>e</kbd>Edit</button>
-              <button class="showcase-tab" id="showcase-tab-agent" type="button" role="tab" aria-selected="false" tabindex="-1" aria-controls="showcase-panel-agent"><kbd>p</kbd>Agent</button>
+              <button class="showcase-tab" id="showcase-tab-agent" type="button" role="tab" aria-selected="true" aria-controls="showcase-panel-agent"><kbd>p</kbd>Agent</button>
+              <button class="showcase-tab" id="showcase-tab-editor" type="button" role="tab" aria-selected="false" tabindex="-1" aria-controls="showcase-panel-editor"><kbd>e</kbd>Edit</button>
               <button class="showcase-tab" id="showcase-tab-revert" type="button" role="tab" aria-selected="false" tabindex="-1" aria-controls="showcase-panel-revert">Revert hunk</button>
               <button class="showcase-tab" id="showcase-tab-history" type="button" role="tab" aria-selected="false" tabindex="-1" aria-controls="showcase-panel-history"><kbd>h</kbd>History</button>
             </div>
@@ -1792,24 +1801,24 @@
               <button class="showcase-arrow" type="button" data-showcase-next aria-label="Next feature">→</button>
             </div>
           </div>
-          <div class="showcase-panel" id="showcase-panel-editor" role="tabpanel" tabindex="0" aria-labelledby="showcase-tab-editor">
-            <div class="shot-shell showcase-shot">
-              <button class="shot-button" type="button" data-lightbox="screenshots/landing-editor.png" aria-label="Open inline editor screenshot">
-                <img src="screenshots/landing-editor.png" alt="Full-file editor opened at a changed line of a pull request file, ready to commit back to the PR" width="1280" height="980" loading="lazy">
-              </button>
-            </div>
-          </div>
-          <div class="showcase-panel" id="showcase-panel-agent" role="tabpanel" tabindex="0" aria-labelledby="showcase-tab-agent" hidden>
+          <div class="showcase-panel" id="showcase-panel-agent" role="tabpanel" tabindex="0" aria-labelledby="showcase-tab-agent">
             <div class="shot-shell showcase-shot">
               <button class="shot-button" type="button" data-lightbox="screenshots/landing-agent-prompt.png" aria-label="Open agent prompt screenshot">
                 <img src="screenshots/landing-agent-prompt.png" alt="Prompt an agent dialog opened with p on a pull request" width="1280" height="980" loading="lazy">
               </button>
             </div>
           </div>
+          <div class="showcase-panel" id="showcase-panel-editor" role="tabpanel" tabindex="0" aria-labelledby="showcase-tab-editor" hidden>
+            <div class="shot-shell showcase-shot">
+              <button class="shot-button" type="button" data-lightbox="screenshots/landing-editor.png" aria-label="Open inline editor screenshot">
+                <img src="screenshots/landing-editor.png" alt="Full-file editor opened at a changed line of a pull request file, ready to commit back to the PR" width="1280" height="980" loading="lazy">
+              </button>
+            </div>
+          </div>
           <div class="showcase-panel" id="showcase-panel-revert" role="tabpanel" tabindex="0" aria-labelledby="showcase-tab-revert" hidden>
             <div class="shot-shell showcase-shot">
               <button class="shot-button" type="button" data-lightbox="screenshots/landing-revert-menu.png" aria-label="Open revert hunk context menu screenshot">
-                <img src="screenshots/landing-revert-menu.png" alt="Right-click context menu on a unified diff hunk offering Edit here and Revert hunk" width="1280" height="980" loading="lazy">
+                <img src="screenshots/landing-revert-menu.png" alt="Right-click context menu on a unified diff hunk offering Revert hunk" width="1280" height="980" loading="lazy">
               </button>
             </div>
           </div>
@@ -1829,16 +1838,16 @@
         <div class="section-intro cli-flow-intro">
           <div>
             <h2 class="section-title">Local GitHub cache. Faster agents. Fewer tokens.</h2>
-            <p class="section-lede"><code>pr-cockpit listen fixture/cockpit#101</code> blocks on local cached state and wakes after a webhook refresh, avoiding repeated GitHub reads so agents keep more context for the work.</p>
+            <p class="section-lede"><code>pr-cockpit listen fixture/cockpit#109</code> blocks on local cached state and wakes after a webhook refresh, avoiding repeated GitHub reads so agents keep more context for the work.</p>
           </div>
         </div>
-        <p class="visually-hidden">Animated flow: an agent starts pr-cockpit listen and blocks on local cached state. GitHub emits a review webhook. The relay forwards a change marker. PR Cockpit refreshes pull request 101 from GitHub. Listen wakes, prints the refreshed pull request, exits, and the agent continues.</p>
+        <p class="visually-hidden">Animated flow: an agent starts pr-cockpit listen and blocks on local cached state. A reviewer posts a comment and GitHub emits a webhook. The relay forwards a change marker. PR Cockpit refreshes pull request 109 from GitHub. Listen wakes, prints the refreshed pull request with the new review comment, exits, and the agent continues.</p>
         <div class="cli-flow-player" data-cli-flow-player>
           <div class="cli-flow-stage" id="cli-flow-stage" data-cli-flow-state="done" aria-hidden="true">
             <div class="cli-flow-map">
               <div class="cli-flow-node cli-flow-agent" data-cli-flow-node="agent"><span>1</span><b>Agent</b><small>blocked locally</small></div>
               <i class="cli-flow-link" data-cli-flow-link="webhook"></i>
-              <div class="cli-flow-node cli-flow-github" data-cli-flow-node="github"><span>2</span><b>GitHub</b><small>review submitted</small></div>
+              <div class="cli-flow-node cli-flow-github" data-cli-flow-node="github"><span>2</span><b>GitHub</b><small>comment posted</small></div>
               <i class="cli-flow-link" data-cli-flow-link="relay"></i>
               <div class="cli-flow-node cli-flow-relay" data-cli-flow-node="relay"><span>3</span><b>Relay</b><small>change marker</small></div>
               <i class="cli-flow-link" data-cli-flow-link="refresh"></i>
@@ -1849,14 +1858,15 @@
             <div class="terminal-window cli-flow-terminal">
               <div class="terminal-toolbar"><span class="terminal-lights"><span class="terminal-light close"></span><span class="terminal-light minimize"></span><span class="terminal-light maximize"></span></span><span class="terminal-title">agent — zsh</span></div>
               <div class="cli-flow-console" data-cli-flow-console>
-                <div class="cli-flow-line is-command"><span>$</span><b>pr-cockpit listen fixture/cockpit#101</b></div>
-                <div class="cli-flow-line"><span>#</span><b>Pull Request #101: Ship deterministic screenshot fixtures for every PR Cockpit view</b></div>
+                <div class="cli-flow-line is-command"><span>$</span><b>pr-cockpit listen fixture/cockpit#109</b></div>
+                <div class="cli-flow-line"><span>#</span><b>Pull Request #109: Show failed optimistic mutations with recovery controls</b></div>
                 <div class="cli-flow-line"><span></span><b>State: OPEN</b></div>
                 <div class="cli-flow-line"><span></span><b>Author: @theolundqvist</b></div>
                 <div class="cli-flow-line"><span></span><b>Base: main</b></div>
-                <div class="cli-flow-line"><span></span><b>Head: fixture/pr-101</b></div>
-                <div class="cli-flow-line is-result"><span></span><b>Review: APPROVED · CI: SUCCESS</b></div>
-                <div class="cli-flow-line"><span></span><b>Checks: 3 passed · 0 running · 0 failed · 0 cancelled · 0 skipped · 3 total</b></div>
+                <div class="cli-flow-line"><span></span><b>Head: fixture/pr-109</b></div>
+                <div class="cli-flow-line"><span>##</span><b>Open Review Comments</b></div>
+                <div class="cli-flow-line is-result"><span></span><b>- `1557531d2b` · `server/mutations.ts:72`</b></div>
+                <div class="cli-flow-line is-result"><span></span><b>  - @reviewer-one: Please make the retry path visible when the write fails.</b></div>
               </div>
             </div>
             <div class="cli-flow-caption" data-cli-flow-caption>Listen returned once. The agent continues with fresh local context.</div>
@@ -1864,7 +1874,7 @@
           <button class="cli-flow-replay" type="button" aria-controls="cli-flow-stage" data-cli-flow-replay>↻ Replay</button>
         </div>
         <ol class="cli-flow-steps">
-          <li><b>1</b><span>Block on the local PR fingerprint.</span></li><li><b>2</b><span>Receive a substantive GitHub event.</span></li><li><b>3</b><span>Relay only what changed.</span></li><li><b>4</b><span>Refresh PR #101 directly from GitHub.</span></li><li><b>5</b><span>Print the new snapshot, exit, continue.</span></li>
+          <li><b>1</b><span>Block on the local PR fingerprint.</span></li><li><b>2</b><span>Receive a new review comment from GitHub.</span></li><li><b>3</b><span>Relay only what changed.</span></li><li><b>4</b><span>Refresh PR #109 directly from GitHub.</span></li><li><b>5</b><span>Print the new snapshot, exit, continue.</span></li>
         </ol>
         <p class="cli-flow-footnote"><code>--ci-only</code> and <code>--comments-only</code> narrow the wake signal.</p>
       </div>
@@ -1895,29 +1905,60 @@
       <div class="wrap section">
         <div class="section-intro">
           <div>
-            <h2 class="section-title">A local copy GitHub keeps fresh.</h2>
-            <p class="section-lede">GitHub stays authoritative; one local server serves cached PRs directly to the UI and agents.</p>
+            <h2 class="section-title">Under the hood</h2>
+            <p class="section-lede">GitHub stays authoritative. PR Cockpit refreshes only what changed, serves it locally, and sends authenticated writes back to GitHub.</p>
           </div>
         </div>
 
         <div class="how-card">
-          <figure class="system" aria-label="GitHub sends change markers through a relay to the local PR Cockpit server. The server refreshes from GitHub, reads and writes SQLite and images, pushes WebSocket updates to the UI, and serves agents directly. A human uses the UI.">
-            <div class="system-map" aria-hidden="true">
-              <div class="system-zone"><span class="system-zone-label">Your Mac</span></div>
-              <div class="system-node node-github"><strong>GitHub</strong><span>source of truth</span></div>
-              <div class="system-link link-webhook"></div>
-              <div class="system-node node-relay"><strong>Relay</strong><span>change marker only</span></div>
-              <div class="system-path path-marker"><span class="path-label">change marker</span></div>
-              <div class="system-node node-sqlite"><strong>SQLite + images</strong><span>local cache</span></div>
-              <div class="system-link link-storage"></div>
-              <div class="system-node node-prc"><strong>PR Cockpit server</strong><span>targeted refresh · local API</span></div>
-              <div class="system-link link-ui"></div>
-              <div class="system-node node-ui"><strong>UI</strong><span>WebSocket updates</span></div>
-              <div class="system-path path-refresh"><span class="path-label">targeted fetches · authenticated writes</span></div>
-              <div class="consumer-link consumer-link-agents"></div>
-              <div class="system-consumer consumer-agents"><strong>Agents</strong><span>CLI + API</span></div>
-              <div class="consumer-link consumer-link-human"></div>
-              <div class="system-consumer consumer-human"><strong>Human</strong><span>Mac UI</span></div>
+          <figure class="system">
+            <figcaption class="visually-hidden">GitHub is authoritative. It sends a change marker through the relay. The PR Cockpit server then fetches the changed pull request directly from GitHub, sends authenticated writes directly to GitHub, reads and writes SQLite and images, invalidates the UI over WebSocket, serves agents over CLI and API, and the human uses the UI.</figcaption>
+            <div class="architecture-stage" aria-hidden="true">
+              <svg class="architecture-wires wires-desktop" viewBox="0 0 1200 560">
+                <defs>
+                  <marker id="arrow-yellow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#f2be35"/></marker>
+                  <marker id="arrow-blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#70aeff"/></marker>
+                  <marker id="arrow-green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#5ed28d"/></marker>
+                </defs>
+                <path class="architecture-wire marker" d="M166 221C205 156 214 98 244 98" marker-end="url(#arrow-yellow)"/>
+                <path class="architecture-wire marker" d="M380 98C450 98 452 154 525 180" marker-end="url(#arrow-yellow)"/>
+                <path class="architecture-wire github" d="M192 280C300 250 390 250 494 270" marker-end="url(#arrow-blue)"/>
+                <path class="architecture-wire github" d="M505 330C395 406 260 408 166 334" marker-end="url(#arrow-blue)"/>
+                <path class="architecture-wire local" d="M610 386L610 420" marker-start="url(#arrow-green)" marker-end="url(#arrow-green)"/>
+                <path class="architecture-wire local" d="M718 220C742 207 766 207 790 220" marker-end="url(#arrow-green)"/>
+                <path class="architecture-wire actor" d="M940 220L1018 205"/>
+                <path class="architecture-wire actor" d="M706 350C800 414 910 419 1018 419"/>
+              </svg>
+              <svg class="architecture-wires wires-mobile" viewBox="0 0 360 680">
+                <defs>
+                  <marker id="arrow-yellow-mobile" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#f2be35"/></marker>
+                  <marker id="arrow-blue-mobile" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#70aeff"/></marker>
+                  <marker id="arrow-green-mobile" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#5ed28d"/></marker>
+                </defs>
+                <path class="architecture-wire marker" d="M240 76L250 76" marker-end="url(#arrow-yellow-mobile)"/>
+                <path class="architecture-wire marker" d="M298 100C326 160 317 219 253 260" marker-end="url(#arrow-yellow-mobile)"/>
+                <path class="architecture-wire github" d="M166 136L166 236" marker-end="url(#arrow-blue-mobile)"/>
+                <path class="architecture-wire github" d="M194 236L194 136" marker-end="url(#arrow-blue-mobile)"/>
+                <path class="architecture-wire local" d="M140 411C130 432 113 442 101 456" marker-start="url(#arrow-green-mobile)" marker-end="url(#arrow-green-mobile)"/>
+                <path class="architecture-wire local" d="M244 385C276 407 276 432 259 456" marker-end="url(#arrow-green-mobile)"/>
+                <path class="architecture-wire actor" d="M106 377C34 410 20 544 101 598"/>
+                <path class="architecture-wire actor" d="M259 520L259 598"/>
+              </svg>
+              <div class="local-runtime"><span class="boundary-label">On your Mac · runtime</span></div>
+              <div class="architecture-node source node-github"><strong>GitHub</strong><span>source of truth</span></div>
+              <div class="architecture-node signal node-relay"><strong>Relay</strong><span>marker only</span></div>
+              <div class="architecture-node core node-server"><strong>PR Cockpit server</strong><span>targeted refresh · local API</span></div>
+              <div class="architecture-node satellite node-storage"><strong>SQLite + images</strong><span>local cache</span></div>
+              <div class="architecture-node satellite node-ui"><strong>UI</strong><span>reloads on invalidation</span></div>
+              <div class="architecture-consumer actor-agents"><strong>Agents</strong><span>CLI + API</span></div>
+              <div class="architecture-consumer actor-human"><strong>Human</strong><span>uses the UI</span></div>
+              <span class="architecture-edge-label" data-edge="marker">change marker</span>
+              <span class="architecture-edge-label" data-edge="fetch">targeted fetch</span>
+              <span class="architecture-edge-label" data-edge="write">authenticated write</span>
+              <span class="architecture-edge-label" data-edge="storage">read · write</span>
+              <span class="architecture-edge-label" data-edge="ui">WebSocket invalidation</span>
+              <span class="architecture-edge-label" data-edge="agents">CLI · API</span>
+              <span class="architecture-edge-label" data-edge="human">uses</span>
             </div>
           </figure>
         </div>
@@ -1979,7 +2020,7 @@
     <img id="lightbox-image" alt="">
   </dialog>
 
-  <script src="benchmark-results.js?v=2026-08-21-cursor-origin"></script>
+  <script src="benchmark-results.js?v=2026-08-21-render-p99"></script>
   <script>
     const lightbox = document.querySelector("#lightbox");
     const lightboxImage = document.querySelector("#lightbox-image");
@@ -2017,10 +2058,31 @@
           document.querySelector(`[data-origin-definition="${metric.id}"]`).textContent = origin.reason;
         }
       }
+      const renderBenchmark = benchmarkResults.renderBenchmark;
+      if (renderBenchmark) {
+        const products = ["cockpit", "github", "cursorOrigin"];
+        const maxP99 = Math.max(...products.map((product) => renderBenchmark[product].p99));
+        for (const product of products) {
+          const measurement = renderBenchmark[product];
+          document.querySelector(`[data-render-value="${product}"]`).textContent = formatSeconds(measurement.p99);
+          document.querySelector(`[data-render-bar="${product}"]`).style.width = `${measurement.p99 / maxP99 * 100}%`;
+          document.querySelector(`[data-render-tail="${product}"]`).textContent = `p50 ${formatSeconds(measurement.p50)} · p95 ${formatSeconds(measurement.p95)}`;
+        }
+        document.querySelector("[data-render-speedup]").textContent = `${renderBenchmark.p99Speedup}× faster at p99`;
+      }
+      const environmentNotes = [];
+      if (renderBenchmark) environmentNotes.push("Render p99: 100 warm-cache opens of the same authenticated large private PR across all three products.");
+      const searchEnv = benchmarkResults.searchEnvironment;
+      if (searchEnv) environmentNotes.push(`Search: ${searchEnv.dataset}.`);
+      const baseEnv = benchmarkResults.environment;
+      if (baseEnv?.cache) environmentNotes.push(`Open and diff: ${baseEnv.cache}.`);
       const originEnv = benchmarkResults.cursorOriginEnvironment;
       if (originEnv && benchmarkResults.metrics.some((metric) => metric.cursorOrigin?.available)) {
+        environmentNotes.push("Cursor Origin open and diff: separate authenticated Chrome run on one scape PR.");
+      }
+      if (environmentNotes.length) {
         const envNote = document.querySelector("[data-origin-environment]");
-        envNote.textContent = "Cursor Origin: separate Chrome run on one scape PR. PR Cockpit and GitHub: shared Chromium run across 15 vscode PRs. Same interaction boundary.";
+        envNote.textContent = environmentNotes.join(" ");
         envNote.hidden = false;
       }
     }
@@ -2111,10 +2173,21 @@
     };
 
     const searchDemoVideo = document.querySelector(".search-demo-video");
-    if (searchDemoVideo && !motionReduced) {
-      playOnceVisible(searchDemoVideo, () => {
-        searchDemoVideo.play().catch(() => {});
+    const searchDemoToggle = document.querySelector("[data-search-demo-toggle]");
+    if (searchDemoVideo && searchDemoToggle) {
+      const syncSearchDemoToggle = () => {
+        const playing = !searchDemoVideo.paused;
+        searchDemoToggle.textContent = playing ? "Ⅱ Pause" : "▶ Play";
+        searchDemoToggle.setAttribute("aria-pressed", String(playing));
+      };
+      searchDemoVideo.addEventListener("play", syncSearchDemoToggle);
+      searchDemoVideo.addEventListener("pause", syncSearchDemoToggle);
+      searchDemoToggle.addEventListener("click", () => {
+        if (searchDemoVideo.paused) searchDemoVideo.play().catch(() => {});
+        else searchDemoVideo.pause();
       });
+      syncSearchDemoToggle();
+      if (!motionReduced) playOnceVisible(searchDemoVideo, () => searchDemoVideo.play().catch(() => {}));
     }
 
     const cliFlowPlayer = document.querySelector("[data-cli-flow-player]");
@@ -2126,6 +2199,7 @@
       const links = [...cliFlowPlayer.querySelectorAll("[data-cli-flow-link]")];
       const replay = cliFlowPlayer.querySelector("[data-cli-flow-replay]");
       let timers = [];
+      let playbackActive = false;
 
       const line = (symbol, text, tone = "") => {
         const row = document.createElement("div");
@@ -2145,35 +2219,48 @@
       };
       const activate = (items, name) => items.find((item) => item.dataset.cliFlowNode === name || item.dataset.cliFlowLink === name)?.classList.add("is-active");
       const later = (delay, action) => timers.push(window.setTimeout(action, delay));
+      const finalLines = [
+        ["#", "Pull Request #109: Show failed optimistic mutations with recovery controls", ""],
+        ["", "State: OPEN", ""],
+        ["", "Author: @theolundqvist", ""],
+        ["", "Base: main", ""],
+        ["", "Head: fixture/pr-109", ""],
+        ["##", "Open Review Comments", ""],
+        ["", "- `1557531d2b` · `server/mutations.ts:72`", "is-result"],
+        ["", "  - @reviewer-one: Please make the retry path visible when the write fails.", "is-result"],
+      ];
+      const command = "pr-cockpit listen fixture/cockpit#109";
+      const doneCaption = "Listen returned once. The agent continues with fresh local context.";
       const showFinalCli = () => {
-        consoleBody.replaceChildren(
-          line("$", "pr-cockpit listen fixture/cockpit#101", "is-command"),
-          line("#", "Pull Request #101: Ship deterministic screenshot fixtures for every PR Cockpit view"),
-          line("", "State: OPEN"),
-          line("", "Author: @theolundqvist"),
-          line("", "Base: main"),
-          line("", "Head: fixture/pr-101"),
-          line("", "Review: APPROVED · CI: SUCCESS", "is-result"),
-          line("", "Checks: 3 passed · 0 running · 0 failed · 0 cancelled · 0 skipped · 3 total")
-        );
+        consoleBody.replaceChildren(line("$", command, "is-command"), ...finalLines.map((args) => line(...args)));
         [...nodes, ...links].forEach((item) => item.classList.add("is-active"));
         stage.dataset.cliFlowState = "done";
-        caption.textContent = "Listen returned once. The agent continues with fresh local context.";
+        caption.textContent = doneCaption;
+      };
+      const pauseCliFlow = () => {
+        timers.forEach(window.clearTimeout);
+        timers = [];
+        playbackActive = false;
+        showFinalCli();
+        replay.textContent = "↻ Replay";
+        replay.setAttribute("aria-pressed", "false");
       };
       const playCliFlow = () => {
         timers.forEach(window.clearTimeout);
         timers = [];
+        playbackActive = true;
+        replay.textContent = "Ⅱ Pause";
+        replay.setAttribute("aria-pressed", "true");
         [...nodes, ...links].forEach((item) => item.classList.remove("is-active"));
         cliFlowPlayer.dataset.cliFlowPlayed = "true";
         if (motionReduced) {
-          showFinalCli();
+          pauseCliFlow();
           return;
         }
         stage.dataset.cliFlowState = "listen";
         caption.textContent = "The agent starts a blocking local-cache wait.";
         consoleBody.replaceChildren(line("$", "", "is-command"));
         const commandBody = consoleBody.querySelector("b");
-        const command = "pr-cockpit listen fixture/cockpit#101";
         [...command].forEach((letter, index) => later(260 + index * 24, () => { commandBody.textContent += letter; }));
         later(1250, () => {
           activate(nodes, "agent");
@@ -2182,7 +2269,7 @@
         later(2250, () => {
           activate(nodes, "github");
           activate(links, "webhook");
-          caption.textContent = "GitHub reports a substantive review update.";
+          caption.textContent = "A reviewer posts a comment on the pull request.";
         });
         later(2920, () => {
           activate(nodes, "relay");
@@ -2192,27 +2279,30 @@
         later(3560, () => {
           activate(nodes, "cache");
           activate(links, "refresh");
-          caption.textContent = "PR Cockpit refreshes PR #101 directly from GitHub.";
+          caption.textContent = "PR Cockpit refreshes PR #109 directly from GitHub.";
         });
         later(4220, () => {
           activate(nodes, "wake");
           activate(links, "wake");
           caption.textContent = "The local fingerprint changes. Listen wakes.";
         });
-        later(4550, () => addLine("#", "Pull Request #101: Ship deterministic screenshot fixtures for every PR Cockpit view"));
-        later(4680, () => addLine("", "State: OPEN"));
-        later(4810, () => addLine("", "Author: @theolundqvist"));
-        later(4940, () => addLine("", "Base: main"));
-        later(5070, () => addLine("", "Head: fixture/pr-101"));
-        later(5330, () => addLine("", "Review: APPROVED · CI: SUCCESS", "is-result"));
-        later(5460, () => addLine("", "Checks: 3 passed · 0 running · 0 failed · 0 cancelled · 0 skipped · 3 total"));
-        later(5720, () => {
+        finalLines.forEach(([symbol, text, tone], index) => later(4550 + index * 140, () => addLine(symbol, text, tone)));
+        later(4550 + finalLines.length * 140 + 200, () => {
           stage.dataset.cliFlowState = "done";
-          caption.textContent = "Listen returned once. The agent continues with fresh local context.";
+          caption.textContent = doneCaption;
+          later(5000, () => {
+            if (!playbackActive) return;
+            const box = cliFlowPlayer.getBoundingClientRect();
+            if (box.bottom > 0 && box.top < window.innerHeight) playCliFlow();
+            else {
+              pauseCliFlow();
+              playOnceVisible(cliFlowPlayer, playCliFlow);
+            }
+          });
         });
       };
       stage.dataset.cliFlowState = motionReduced ? "done" : "idle";
-      replay.addEventListener("click", playCliFlow);
+      replay.addEventListener("click", () => playbackActive ? pauseCliFlow() : playCliFlow());
       playOnceVisible(cliFlowPlayer, playCliFlow);
     }
   </script>

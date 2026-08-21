@@ -1,6 +1,7 @@
-// Record the real app for the landing search demo: node scripts/record-landing-search.mjs [--trim seconds]
-// Boots the mock server on the captured Rust target snapshot, records blank app -> standalone
-// Electron palette -> word query -> Enter -> PR detail at 85% scale, then captures a search poster.
+// Record the real app for the landing search demo: node scripts/record-landing-search.mjs
+// Boots the mock server on the captured Rust target snapshot, then composites one fixed
+// 1280x960 canvas: macOS desktop -> real 680x440 standalone Electron palette -> word query ->
+// Enter -> real 1120x840 app window on the PR detail at scroll top. Poster comes from PNGs.
 // Deterministic: frozen clock, captured avatars/assets only, external requests aborted.
 import { createServer } from "node:net";
 import { execFile, spawn } from "node:child_process";
@@ -9,24 +10,38 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { _electron as electron } from "playwright";
+import { chromium, _electron as electron } from "playwright";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const SNAPSHOT_RELATIVE = "server/mockData/rust-lang-rust";
 const SNAPSHOT_DIR = resolve(ROOT, SNAPSHOT_RELATIVE);
 const OUT_DIR = resolve(ROOT, "docs/screenshots");
+// One canvas for every frame: the desktop, the palette panel, and the app window are all
+// composited at their real sizes onto this fixed 1280x960 stage. Nothing resizes mid-video.
 const VIEWPORT = { width: 1280, height: 960 };
+// The shell creates the palette as a transparent 680x440 panel; the recording keeps that exact
+// size from first keystroke to Enter, so nothing in the demo implies a resizing search window.
+const PALETTE_WINDOW = { width: 680, height: 440 };
+const MAIN_WINDOW = { width: 1120, height: 840 };
+const centerOn = (window) => ({ x: (VIEWPORT.width - window.width) / 2, y: (VIEWPORT.height - window.height) / 2 });
+const PALETTE_ORIGIN = centerOn(PALETTE_WINDOW);
+const MAIN_ORIGIN = centerOn(MAIN_WINDOW);
+const FPS = 25;
+// Saturated macOS-style desktop. The palette window is transparent, so the same pixels are
+// painted behind the card and under the composite: the palette never sits on an app backing.
+const WALLPAPER_BACKGROUND = `
+  radial-gradient(78% 82% at 6% 8%, rgba(255,42,120,.95), rgba(255,42,120,0) 62%),
+  radial-gradient(58% 62% at 97% 10%, rgba(255,150,32,.9), rgba(255,150,32,0) 60%),
+  radial-gradient(85% 75% at 74% 100%, rgba(0,224,255,.75), rgba(0,224,255,0) 62%),
+  linear-gradient(155deg,#2a0b62 0%,#0d2f8f 26%,#0b62c4 52%,#06356f 78%,#041c4a 100%)`;
+const SRGB_FLAG = "--force-color-profile=srgb";
 const TYPE_DELAY = 55;
-const HOLD = { blank: 1400, palette: 500, results: 450, detail: 3200 };
+const HOLD = { desktop: 1400, palette: 500, results: 450, detail: 3200 };
 const QUERY_STOP_WORDS = new Set(["a", "an", "and", "for", "from", "in", "of", "on", "the", "to", "with"]);
 const CONTENT_TYPE_BY_EXTENSION = { ".png": "image/png", ".jpg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp" };
 const ELECTRON_EXECUTABLE = process.env.COCKPIT_ELECTRON_PATH
   ?? resolve(ROOT, "shell/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron");
 const execFileAsync = promisify(execFile);
-
-const trimArgIndex = process.argv.indexOf("--trim");
-const TRIM_OVERRIDE = trimArgIndex === -1 ? null : Number(process.argv[trimArgIndex + 1]);
-if (TRIM_OVERRIDE !== null && (!Number.isFinite(TRIM_OVERRIDE) || TRIM_OVERRIDE < 0)) throw new Error(`invalid --trim: ${process.argv[trimArgIndex + 1]}`);
 
 function collectAuthors(detail) {
   const authors = [detail.author];
@@ -85,6 +100,16 @@ async function waitForServer(server, baseURL) {
   throw new Error("server did not become ready within 15s");
 }
 
+// Every surface is captured headlessly and the wallpaper is composited afterwards, so no OS screen
+// recording and no real pointer can reach the frame. This rejects a drawn stand-in cursor too.
+async function assertNoCursorLayer(page, label) {
+  const drawn = await page.evaluate(() => [...document.querySelectorAll("body *")]
+    .filter((node) => /cursor|pointer|mouse/i.test(`${node.id} ${node.className}`))
+    .map((node) => node.id || node.className)
+    .filter((name) => typeof name === "string"));
+  if (drawn.length > 0) throw new Error(`${label} draws a cursor layer: ${drawn.join(", ")}`);
+}
+
 async function settle(page) {
   await page.waitForFunction(() => document.documentElement.dataset.theme === "light" && document.fonts.status === "loaded");
   await page.waitForFunction(() => [...document.images].every((image) => image.complete && image.naturalWidth > 0));
@@ -107,6 +132,27 @@ async function run(command, label) {
   }
 }
 
+async function renderWallpaper(path) {
+  // Both renderers are pinned to sRGB: on a P3 display the app window would otherwise be captured
+  // in a wider profile than this PNG and the composited window would read as a tinted rectangle.
+  const browser = await chromium.launch({ headless: true, args: [SRGB_FLAG] });
+  try {
+    const page = await browser.newPage({ viewport: VIEWPORT, deviceScaleFactor: 1, colorScheme: "light" });
+    await page.setContent(`<!doctype html><html><body style="margin:0;width:${VIEWPORT.width}px;height:${VIEWPORT.height}px;background:${WALLPAPER_BACKGROUND}"></body></html>`, { waitUntil: "load" });
+    await page.screenshot({ path, type: "png", animations: "disabled" });
+  } finally {
+    await browser.close();
+  }
+}
+
+// One raw RGB pixel, used to prove the palette recording is the unscaled window content.
+async function samplePixel(path, x, y, second = 0) {
+  const args = ["-v", "error", ...(second ? ["-ss", second.toFixed(3)] : []), "-i", path, "-vf", `crop=1:1:${x}:${y},format=rgb24`, "-frames:v", "1", "-f", "rawvideo", "-"];
+  const { stdout } = await execFileAsync("ffmpeg", args, { encoding: "buffer", maxBuffer: 4096 });
+  if (stdout.length < 3) throw new Error(`pixel sample failed for ${path} at ${x},${y}`);
+  return [stdout[0], stdout[1], stdout[2]];
+}
+
 async function main() {
   const snapshot = JSON.parse(await readFile(join(SNAPSHOT_DIR, "snapshot.json"), "utf8"));
   const repo = snapshot.repo;
@@ -120,6 +166,10 @@ async function main() {
   const dataDir = await mkdtemp(join(tmpdir(), "pr-cockpit-record-"));
   const videoDir = await mkdtemp(join(tmpdir(), "pr-cockpit-video-"));
   const profileDir = await mkdtemp(join(tmpdir(), "pr-cockpit-electron-"));
+  const stageDir = await mkdtemp(join(tmpdir(), "pr-cockpit-stage-"));
+  const wallpaperPath = join(stageDir, "desktop.png");
+  await renderWallpaper(wallpaperPath);
+  const wallpaperDataUrl = `data:image/png;base64,${(await readFile(wallpaperPath)).toString("base64")}`;
   const port = await availablePort();
   const baseURL = `http://127.0.0.1:${port}`;
   const server = spawn("bun", ["server/main.ts"], {
@@ -164,6 +214,7 @@ async function main() {
         resolve(ROOT, "shell"),
         `--cockpit-url=${baseURL}`,
         "--cockpit-hidden",
+        SRGB_FLAG,
       ],
       env: {
         ...process.env,
@@ -183,32 +234,49 @@ async function main() {
     const recordErrors = [];
     palettePage.on("pageerror", (error) => recordErrors.push(error));
     recordPage.on("pageerror", (error) => recordErrors.push(error));
-    await electronApp.evaluate(({ BrowserWindow }, viewport) => {
-      for (const window of BrowserWindow.getAllWindows()) {
-        if (!window.webContents.getURL().includes("#/palette")) window.setBounds({ width: viewport.width, height: viewport.height });
-      }
-    }, VIEWPORT);
+    await electronApp.evaluate(({ BrowserWindow }, size) => {
+      const main = BrowserWindow.getAllWindows().find((window) => !window.webContents.getURL().includes("#/palette"));
+      if (!main) throw new Error("main PR window not found");
+      main.setContentSize(size.width, size.height);
+      main.setResizable(false);
+    }, MAIN_WINDOW);
     await Promise.all([
       palettePage.reload({ waitUntil: "domcontentloaded" }),
       recordPage.reload({ waitUntil: "domcontentloaded" }),
     ]);
-    await palettePage.evaluate(() => {
-      document.documentElement.style.background = "#f5f5f3";
-      document.body.style.background = "#f5f5f3";
-    });
+    // The palette panel is transparent in the shell, so painting the desktop slice that sits behind
+    // it reproduces the real global-shortcut view: card over wallpaper, no app window underneath.
+    await palettePage.evaluate(({ dataUrl, origin, viewport }) => {
+      const desktop = `url("${dataUrl}") -${origin.x}px -${origin.y}px / ${viewport.width}px ${viewport.height}px no-repeat`;
+      document.documentElement.style.background = desktop;
+      document.body.style.background = desktop;
+    }, { dataUrl: wallpaperDataUrl, origin: PALETTE_ORIGIN, viewport: VIEWPORT });
+    // The transparent panel has no page backdrop in the shell, so its scrim blur has nothing to
+    // frost; over the injected desktop it would stamp a lighter rectangle the product never shows.
+    await palettePage.addStyleTag({ content: ".scrim.standalone { backdrop-filter: none; }" });
+    await electronApp.evaluate(({ BrowserWindow }, size) => {
+      const palette = BrowserWindow.getAllWindows().find((window) => window.webContents.getURL().includes("#/palette"));
+      if (!palette) throw new Error("standalone palette window not found");
+      palette.setContentSize(size.width, size.height);
+      palette.setResizable(false);
+    }, PALETTE_WINDOW);
     await palettePage.locator(".palette-input").waitFor({ state: "visible", timeout: 15_000 });
     await recordPage.locator(".inbox-layout .queue-group").first().waitFor({ state: "visible", timeout: 15_000 });
     await Promise.all([settle(palettePage), settle(recordPage)]);
     await recordPage.evaluate(() => {
       document.documentElement.style.visibility = "hidden";
-      document.body.style.background = "#f5f5f3";
     });
+    const assertPaletteSize = async (stage) => {
+      const measured = await palettePage.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
+      if (measured.width !== PALETTE_WINDOW.width || measured.height !== PALETTE_WINDOW.height) {
+        throw new Error(`palette window changed size at ${stage}: ${measured.width}x${measured.height}`);
+      }
+    };
+    await assertPaletteSize("before the shortcut");
 
     const mainVideo = recordPage.video();
     const paletteVideo = palettePage.video();
     if (!mainVideo || !paletteVideo) throw new Error("Electron video recording did not start");
-    const blankStartedAt = Date.now();
-    await recordPage.waitForTimeout(HOLD.blank);
 
     const paletteStartedAt = Date.now();
     await palettePage.evaluate(() => window.dispatchEvent(new Event("cockpit:open-palette")));
@@ -221,30 +289,46 @@ async function main() {
       palette.webContents.focus();
     });
     const paletteInput = palettePage.locator(".palette-input");
+    await assertPaletteSize("palette shown");
     await palettePage.waitForTimeout(HOLD.palette);
     await paletteInput.pressSequentially(paletteQuery, { delay: TYPE_DELAY });
     const active = palettePage.locator(".palette-result.active");
     await active.waitFor({ state: "visible" });
     const activeText = await active.innerText();
     if (!activeText.includes(paletteQuery.split(" ")[0])) throw new Error(`active palette result mismatch: ${activeText}`);
+    await assertPaletteSize("result rendered");
     await palettePage.waitForTimeout(HOLD.results);
-    const paletteBox = await palettePage.locator(".palette.standalone").boundingBox();
-    if (!paletteBox) throw new Error("standalone palette bounds unavailable");
+    await assertNoCursorLayer(palettePage, "the palette surface");
+    // Lossless poster source: the window as recorded, before any video compression.
+    const paletteFramePath = join(stageDir, "palette-frame.png");
+    await palettePage.screenshot({ path: paletteFramePath, animations: "disabled" });
 
     const enterAt = Date.now();
     await paletteInput.press("Enter");
     await recordPage.waitForFunction((expected) => location.hash === expected, `#/pr/${repo}/${paletteNumber}`);
-    await electronApp.evaluate(({ BrowserWindow }) => {
-      const main = BrowserWindow.getAllWindows().find((window) => !window.webContents.getURL().includes("#/palette"));
-      if (!main) throw new Error("main PR window not found");
-      main.webContents.setZoomFactor(0.85);
-    });
+    const mainSize = await recordPage.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
+    if (mainSize.width !== MAIN_WINDOW.width || mainSize.height !== MAIN_WINDOW.height) {
+      throw new Error(`main window is not ${MAIN_WINDOW.width}x${MAIN_WINDOW.height}: ${JSON.stringify(mainSize)}`);
+    }
     await recordPage.locator(".page .detail").first().waitFor({ state: "attached", timeout: 15_000 });
     await settle(recordPage);
     const slide = recordPage.getByAltText(paletteSlideAlt, { exact: true });
     await slide.waitFor({ state: "attached", timeout: 15_000 });
-    await slide.evaluate((element) => element.scrollIntoView({ block: "center" }));
-    await settle(recordPage);
+    // The detail rests where a real Enter leaves it: scroll top, never scrolled into the slide, so
+    // the description image is only entering at the fold.
+    await recordPage.evaluate(() => {
+      document.querySelector(".page").scrollTop = 0;
+    });
+    await recordPage.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+    await assertNoCursorLayer(recordPage, "the app window surface");
+    const framing = await slide.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      return { scrollTop: element.closest(".page").scrollTop, top: rect.top, bottom: rect.bottom, fold: window.innerHeight };
+    });
+    if (framing.scrollTop !== 0) throw new Error(`detail did not rest at scroll top: ${JSON.stringify(framing)}`);
+    if (!(framing.top > 0 && framing.top < framing.fold && framing.bottom > framing.fold)) {
+      throw new Error(`description image is not cut by the fold: ${JSON.stringify(framing)}`);
+    }
     await recordPage.evaluate(() => {
       document.documentElement.style.visibility = "visible";
     });
@@ -263,42 +347,64 @@ async function main() {
       return { ...parsed.streams[0], duration: Number(parsed.format.duration) };
     };
     const [mainRaw, paletteRaw] = await Promise.all([probeVideo(mainVideoPath), probeVideo(paletteVideoPath)]);
-    const videoTime = (duration, wallTime) => Math.max(0, duration - (recordingEndedAt - wallTime) / 1000);
-    const blankStart = TRIM_OVERRIDE ?? videoTime(mainRaw.duration, blankStartedAt);
-    const paletteMainStart = videoTime(mainRaw.duration, paletteStartedAt);
-    const palettePanelStart = videoTime(paletteRaw.duration, paletteStartedAt);
-    const detailStart = videoTime(mainRaw.duration, detailVisibleAt);
-    const blankDuration = (paletteStartedAt - blankStartedAt) / 1000;
     const paletteDuration = (enterAt - paletteStartedAt) / 1000;
     const detailDuration = (recordingEndedAt - detailVisibleAt) / 1000;
-    const even = (value) => Math.max(2, Math.round(value / 2) * 2);
-    const panel = {
-      x: even(paletteBox.x),
-      y: even(paletteBox.y),
-      width: even(paletteBox.width),
-      height: even(paletteBox.height),
+    const desktopDuration = HOLD.desktop / 1000;
+    // Both recordings run until the app closes, so wall-clock offsets map onto the video tail.
+    const videoTime = (raw, wallTime, label) => {
+      const start = raw.duration - (recordingEndedAt - wallTime) / 1000;
+      if (start < 0) throw new Error(`${label} recording stopped early: ${raw.duration.toFixed(2)}s covers less than the ${((recordingEndedAt - wallTime) / 1000).toFixed(2)}s tail`);
+      return start;
     };
-    const fitMain = `scale=${VIEWPORT.width}:${VIEWPORT.height}:force_original_aspect_ratio=decrease,pad=${VIEWPORT.width}:${VIEWPORT.height}:(ow-iw)/2:(oh-ih)/2:color=0xf5f5f3`;
+    const palettePanelStart = videoTime(paletteRaw, paletteStartedAt, "palette");
+    const detailStart = videoTime(mainRaw, detailVisibleAt, "main window");
+    if (paletteRaw.width < PALETTE_WINDOW.width || paletteRaw.height < PALETTE_WINDOW.height) {
+      throw new Error(`palette recording smaller than the window: ${paletteRaw.width}x${paletteRaw.height}`);
+    }
+    if (mainRaw.width < MAIN_WINDOW.width || mainRaw.height < MAIN_WINDOW.height) {
+      throw new Error(`main recording smaller than the window: ${mainRaw.width}x${mainRaw.height}`);
+    }
+    // Playwright draws a smaller page unscaled at the frame origin; prove it before cropping, or a
+    // scaled/offset recording would silently ship a sliced palette.
+    const [videoCorner, wallpaperCorner] = await Promise.all([
+      samplePixel(paletteVideoPath, 6, 6, palettePanelStart + HOLD.palette / 2000),
+      samplePixel(wallpaperPath, PALETTE_ORIGIN.x + 6, PALETTE_ORIGIN.y + 6),
+    ]);
+    const cornerDrift = Math.max(...videoCorner.map((value, index) => Math.abs(value - wallpaperCorner[index])));
+    if (cornerDrift > 20) {
+      throw new Error(`palette recording is not the unscaled window content: corner ${videoCorner} vs desktop ${wallpaperCorner}`);
+    }
+    const stageDuration = desktopDuration + paletteDuration + detailDuration + 1;
     const filter = [
-      `[0:v]trim=start=${blankStart.toFixed(3)}:duration=${blankDuration.toFixed(3)},setpts=PTS-STARTPTS,${fitMain}[blank]`,
-      `[0:v]trim=start=${paletteMainStart.toFixed(3)}:duration=${paletteDuration.toFixed(3)},setpts=PTS-STARTPTS,${fitMain}[palette-bg]`,
-      `[1:v]trim=start=${palettePanelStart.toFixed(3)}:duration=${paletteDuration.toFixed(3)},setpts=PTS-STARTPTS,crop=${panel.width}:${panel.height}:${panel.x}:${panel.y}[palette-card]`,
-      `[palette-bg][palette-card]overlay=(W-w)/2:(H-h)/2[search]`,
-      `[0:v]trim=start=${detailStart.toFixed(3)}:duration=${detailDuration.toFixed(3)},setpts=PTS-STARTPTS,${fitMain}[detail]`,
-      "[blank][search][detail]concat=n=3:v=1:a=0,format=yuv420p[out]",
+      `[2:v]fps=${FPS},setsar=1,split=3[desk-a][desk-b][desk-c]`,
+      `[desk-a]trim=duration=${desktopDuration.toFixed(3)},setpts=PTS-STARTPTS[desktop]`,
+      `[desk-b]trim=duration=${paletteDuration.toFixed(3)},setpts=PTS-STARTPTS[palette-bg]`,
+      `[desk-c]trim=duration=${detailDuration.toFixed(3)},setpts=PTS-STARTPTS[detail-bg]`,
+      `[1:v]trim=start=${palettePanelStart.toFixed(3)}:duration=${paletteDuration.toFixed(3)},setpts=PTS-STARTPTS,crop=${PALETTE_WINDOW.width}:${PALETTE_WINDOW.height}:0:0,fps=${FPS},setsar=1[palette-window]`,
+      `[palette-bg][palette-window]overlay=${PALETTE_ORIGIN.x}:${PALETTE_ORIGIN.y}:shortest=1[search]`,
+      `[0:v]trim=start=${detailStart.toFixed(3)}:duration=${detailDuration.toFixed(3)},setpts=PTS-STARTPTS,crop=${MAIN_WINDOW.width}:${MAIN_WINDOW.height}:0:0,fps=${FPS},setsar=1[main-window]`,
+      `[detail-bg][main-window]overlay=${MAIN_ORIGIN.x}:${MAIN_ORIGIN.y}:shortest=1[detail]`,
+      "[desktop][search][detail]concat=n=3:v=1:a=0,format=yuv420p,split=2[mp4-out][webm-out]",
     ].join(";");
 
     const webmOutPath = join(OUT_DIR, "landing-search.webm");
     const mp4Path = join(OUT_DIR, "landing-search.mp4");
     const posterPath = join(OUT_DIR, "landing-search-poster.png");
+    // BT.709 tagging keeps the saturated desktop and the palette text from being decoded as
+    // washed-out BT.601; both encodes come off the same filter graph, so neither is a re-compress.
+    const colorTags = ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"];
     await run([
       "ffmpeg", "-y", "-i", mainVideoPath, "-i", paletteVideoPath,
-      "-filter_complex", filter, "-map", "[out]", "-c:v", "libx264", "-crf", "22",
-      "-preset", "slow", "-movflags", "+faststart", "-an", mp4Path,
+      "-loop", "1", "-framerate", String(FPS), "-t", stageDuration.toFixed(3), "-i", wallpaperPath,
+      "-filter_complex", filter,
+      "-map", "[mp4-out]", "-c:v", "libx264", "-crf", "18", "-preset", "slow", "-pix_fmt", "yuv420p", ...colorTags, "-movflags", "+faststart", "-an", mp4Path,
+      "-map", "[webm-out]", "-c:v", "libvpx-vp9", "-crf", "24", "-b:v", "0", "-deadline", "good", "-cpu-used", "2", "-row-mt", "1", "-pix_fmt", "yuv420p", ...colorTags, "-an", webmOutPath,
     ], "ffmpeg compose");
-    await run(["ffmpeg", "-y", "-i", mp4Path, "-c:v", "libvpx-vp9", "-crf", "30", "-b:v", "0", "-deadline", "good", "-cpu-used", "2", "-row-mt", "1", "-pix_fmt", "yuv420p", "-an", webmOutPath], "ffmpeg webm transcode");
-    const posterSecond = blankDuration + HOLD.palette / 1000 + Math.max(0, paletteQuery.length - 1) * TYPE_DELAY / 1000 + 0.05;
-    await run(["ffmpeg", "-y", "-ss", posterSecond.toFixed(3), "-i", mp4Path, "-frames:v", "1", posterPath], "ffmpeg poster");
+    await run([
+      "ffmpeg", "-y", "-i", wallpaperPath, "-i", paletteFramePath,
+      "-filter_complex", `[0:v][1:v]overlay=${PALETTE_ORIGIN.x}:${PALETTE_ORIGIN.y}[poster]`,
+      "-map", "[poster]", "-frames:v", "1", posterPath,
+    ], "ffmpeg poster");
 
     const stream = await probeVideo(mp4Path);
     if (stream.codec_name !== "h264" || stream.width !== VIEWPORT.width || stream.height !== VIEWPORT.height) {
@@ -307,6 +413,10 @@ async function main() {
     const webmStream = await probeVideo(webmOutPath);
     if (webmStream.codec_name !== "vp9" || webmStream.width !== VIEWPORT.width || webmStream.height !== VIEWPORT.height) {
       throw new Error(`unexpected webm stream: ${JSON.stringify(webmStream)}`);
+    }
+    const poster = JSON.parse(await run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "json", posterPath], "ffprobe poster"));
+    if (poster.streams[0].width !== VIEWPORT.width || poster.streams[0].height !== VIEWPORT.height) {
+      throw new Error(`unexpected poster size: ${JSON.stringify(poster.streams[0])}`);
     }
     const mp4Bytes = (await stat(mp4Path)).size;
     const webmBytes = (await stat(webmOutPath)).size;
@@ -322,16 +432,23 @@ async function main() {
       pr: paletteNumber,
       prTitle: paletteTitle,
       query: paletteQuery,
-      viewportCss: VIEWPORT,
+      capture: "headless Electron surface capture composited over the wallpaper by ffmpeg; no OS screen recording, no pointer or cursor layer in any frame",
+      canvasCss: VIEWPORT,
+      canvas: "every frame is composited on one fixed 1280x960 stage; no window or canvas is resized mid-video",
       renderScale: 1,
-      detailScale: 0.85,
-      trimSeconds: Number(blankStart.toFixed(2)),
+      zoomFactor: 1,
+      detailRestsAt: "scroll top, never scrolled into the slide: the description image is cut by the fold",
+      desktop: {
+        source: "CSS gradient rendered at 1280x960 by this script",
+        role: "stands in for the macOS desktop; the transparent palette panel and the app window are composited onto it, so no synthetic app plane sits behind the palette",
+      },
       shell: {
         runtime: "Electron",
-        paletteWindow: { width: 680, height: 440 },
+        paletteWindow: { ...PALETTE_WINDOW, origin: PALETTE_ORIGIN, fixed: "content size asserted at 680x440 before the shortcut, on show, and with the result rendered" },
+        mainWindow: { ...MAIN_WINDOW, origin: MAIN_ORIGIN, fixed: "content size asserted at 1120x840 when the detail opens; zoom factor left at 1" },
         trigger: "The isolated recorder presents the same standalone BrowserWindow bound to Command+Option+K; OS global-shortcut registration is not exercised.",
       },
-      flow: ["blank PR Cockpit window", "standalone Electron search palette", `type word query at ${TYPE_DELAY}ms/char`, "Enter", `PR detail #/pr/${repo}/${paletteNumber}`],
+      flow: ["macOS desktop, PR Cockpit window not shown", "standalone 680x440 Electron search palette over the desktop", `type word query at ${TYPE_DELAY}ms/char`, "Enter", `hard cut to the 1120x840 app window on PR detail #/pr/${repo}/${paletteNumber} at scroll top`],
       capturedPr: {
         changedLines: paletteDetail.additions + paletteDetail.deletions,
         additions: paletteDetail.additions,
@@ -340,9 +457,11 @@ async function main() {
         ci: paletteDetail.lastCommit?.nodes?.[0]?.commit?.statusCheckRollup?.state ?? "NONE",
       },
       fixtureAugmentation: snapshot.fixtureAugmentations[String(paletteNumber)],
+      descriptionImageFraming: { topPx: Math.round(framing.top), bottomPx: Math.round(framing.bottom), foldPx: Math.round(framing.fold) },
+      encode: { mp4Crf: 18, webmCrf: 24, colorSpace: "bt709", note: "single filter pass feeds both encoders; the poster is composited from PNGs, never from a video frame" },
       video: { path: "docs/screenshots/landing-search.webm", codec: webmStream.codec_name, durationSeconds: Number(webmStream.duration.toFixed(2)), bytes: webmBytes },
       fallback: { path: "docs/screenshots/landing-search.mp4", codec: stream.codec_name, durationSeconds: Number(stream.duration.toFixed(2)), bytes: mp4Bytes },
-      poster: { path: "docs/screenshots/landing-search-poster.png", scene: "standalone Electron palette with word query", bytes: posterBytes },
+      poster: { path: "docs/screenshots/landing-search-poster.png", scene: "standalone Electron palette with word query over the desktop", bytes: posterBytes },
     };
     await writeFile(join(OUT_DIR, "landing-search.json"), `${JSON.stringify(manifest, null, 2)}\n`);
     console.log(`RECORD_RESULT ${JSON.stringify(manifest)}`);
@@ -356,6 +475,7 @@ async function main() {
     await rm(dataDir, { recursive: true, force: true });
     await rm(videoDir, { recursive: true, force: true });
     await rm(profileDir, { recursive: true, force: true });
+    await rm(stageDir, { recursive: true, force: true });
   }
 }
 

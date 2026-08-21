@@ -228,6 +228,7 @@
         {#each results as result, i (prKey(result))}
           <button
             class="palette-result"
+            data-pr-key={prKey(result)}
             class:active={i === selected}
             onmouseenter={() => (selected = i)}
             onclick={() => choose(result)}

@@ -6,27 +6,47 @@
   "pr": 160859,
   "prTitle": "`core::num::f16b` Rust's 16bit Brain Float",
   "query": "core num f16b",
-  "viewportCss": {
+  "capture": "headless Electron surface capture composited over the wallpaper by ffmpeg; no OS screen recording, no pointer or cursor layer in any frame",
+  "canvasCss": {
     "width": 1280,
     "height": 960
   },
+  "canvas": "every frame is composited on one fixed 1280x960 stage; no window or canvas is resized mid-video",
   "renderScale": 1,
-  "detailScale": 0.85,
-  "trimSeconds": 0.2,
+  "zoomFactor": 1,
+  "detailRestsAt": "scroll top, never scrolled into the slide: the description image is cut by the fold",
+  "desktop": {
+    "source": "CSS gradient rendered at 1280x960 by this script",
+    "role": "stands in for the macOS desktop; the transparent palette panel and the app window are composited onto it, so no synthetic app plane sits behind the palette"
+  },
   "shell": {
     "runtime": "Electron",
     "paletteWindow": {
       "width": 680,
-      "height": 440
+      "height": 440,
+      "origin": {
+        "x": 300,
+        "y": 260
+      },
+      "fixed": "content size asserted at 680x440 before the shortcut, on show, and with the result rendered"
+    },
+    "mainWindow": {
+      "width": 1120,
+      "height": 840,
+      "origin": {
+        "x": 80,
+        "y": 60
+      },
+      "fixed": "content size asserted at 1120x840 when the detail opens; zoom factor left at 1"
     },
     "trigger": "The isolated recorder presents the same standalone BrowserWindow bound to Command+Option+K; OS global-shortcut registration is not exercised."
   },
   "flow": [
-    "blank PR Cockpit window",
-    "standalone Electron search palette",
+    "macOS desktop, PR Cockpit window not shown",
+    "standalone 680x440 Electron search palette over the desktop",
     "type word query at 55ms/char",
     "Enter",
-    "PR detail #/pr/rust-lang/rust/160859"
+    "hard cut to the 1120x840 app window on PR detail #/pr/rust-lang/rust/160859 at scroll top"
   ],
   "capturedPr": {
     "changedLines": 1009,
@@ -42,21 +62,32 @@
       "originalBodySha256": "06746df39c8e968ccc229eb2bd8167c4e5ee9db6faa3258b5b2b388d5693900c"
     }
   },
+  "descriptionImageFraming": {
+    "topPx": 488,
+    "bottomPx": 1042,
+    "foldPx": 840
+  },
+  "encode": {
+    "mp4Crf": 18,
+    "webmCrf": 24,
+    "colorSpace": "bt709",
+    "note": "single filter pass feeds both encoders; the poster is composited from PNGs, never from a video frame"
+  },
   "video": {
     "path": "docs/screenshots/landing-search.webm",
     "codec": "vp9",
-    "durationSeconds": 6.4,
-    "bytes": 191488
+    "durationSeconds": 6.44,
+    "bytes": 264973
   },
   "fallback": {
     "path": "docs/screenshots/landing-search.mp4",
     "codec": "h264",
-    "durationSeconds": 6.4,
-    "bytes": 167415
+    "durationSeconds": 6.44,
+    "bytes": 322924
   },
   "poster": {
     "path": "docs/screenshots/landing-search-poster.png",
-    "scene": "standalone Electron palette with word query",
-    "bytes": 28098
+    "scene": "standalone Electron palette with word query over the desktop",
+    "bytes": 577662
   }
 }
