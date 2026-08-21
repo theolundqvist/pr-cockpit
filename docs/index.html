@@ -1393,15 +1393,7 @@
 
     /* Search-to-PR demo */
     .search-demo-intro { margin-bottom: 28px; }
-    .video-mat {
-      position: relative;
-      padding: clamp(22px, 3vw, 44px);
-      border-radius: 14px;
-      background:
-        radial-gradient(90% 130% at 0% 45%, rgba(245, 70, 81, 0.85), rgba(162, 53, 123, 0.55) 34%, rgba(91, 57, 118, 0) 62%),
-        radial-gradient(85% 120% at 100% 60%, rgba(246, 20, 73, 0.8), rgba(245, 153, 62, 0.5) 36%, rgba(245, 153, 62, 0) 64%),
-        linear-gradient(118deg, #79cbfd 0%, #4aa0d8 30%, #036daf 58%, #074575 80%, #003d65 100%);
-    }
+    .video-mat { position: relative; }
     .search-demo-video { display: block; width: 100%; height: auto; border-radius: 8px; background: #f9f9f7; box-shadow: 0 10px 36px rgba(0, 10, 30, 0.35); }
     .search-demo-decision { display: grid; grid-template-columns: 0.8fr 1.2fr; gap: 40px; align-items: start; margin-top: 30px; }
     .search-demo-decision h3 { margin: 0; font-size: clamp(25px, 3.2vw, 38px); letter-spacing: -0.04em; line-height: 1.04; }
@@ -2159,16 +2151,16 @@
 
 
     const motionReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const playOnceVisible = (element, play) => {
+    const playOnceVisible = (element, play, visibleRatio = 0.28) => {
       if (motionReduced) {
         play();
         return;
       }
       const observer = new IntersectionObserver((entries) => {
-        if (!entries.some((entry) => entry.isIntersecting && entry.intersectionRatio >= 0.28)) return;
+        if (!entries.some((entry) => entry.isIntersecting && entry.intersectionRatio >= visibleRatio)) return;
         observer.disconnect();
         play();
-      }, { threshold: 0.28 });
+      }, { threshold: visibleRatio });
       observer.observe(element);
     };
 
@@ -2187,7 +2179,7 @@
         else searchDemoVideo.pause();
       });
       syncSearchDemoToggle();
-      if (!motionReduced) playOnceVisible(searchDemoVideo, () => searchDemoVideo.play().catch(() => {}));
+      if (!motionReduced) playOnceVisible(searchDemoVideo, () => searchDemoVideo.play().catch(() => {}), 0.65);
     }
 
     const cliFlowPlayer = document.querySelector("[data-cli-flow-player]");
