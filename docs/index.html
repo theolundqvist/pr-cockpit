@@ -478,8 +478,16 @@
       align-items: center;
     }
 
-    .palette-layout .shot-shell {
-      padding: 6px;
+    .palette-layout .palette-shot {
+      padding: 0;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+
+    .palette-shot .shot-button,
+    .palette-shot img {
+      border-radius: var(--radius);
     }
 
     .feature-list {
@@ -1369,7 +1377,7 @@
             <h2>⌥⌘K. Any PR.</h2>
           </article>
         </div>
-        <div class="shot-shell">
+        <div class="shot-shell palette-shot">
           <button class="shot-button" type="button" data-lightbox="screenshots/palette-macos.png" aria-label="Open standalone pull request search on a macOS desktop">
             <img src="screenshots/palette-macos.png" alt="Standalone pull request search opened with Option-Command-K over a blue macOS wallpaper" width="1000" height="760" loading="lazy">
           </button>
