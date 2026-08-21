@@ -77,5 +77,7 @@ After a task needs non-obvious investigation, repeated failed attempts, or a rec
 - Agent workflow, operational runbooks, and environment traps go here.
 - A reproducible code failure gets an automated test instead of a paragraph.
 - Record only evidence-backed, reusable guidance. No credentials, no transient PIDs, no diary of one-off failures.
+- The Forgejo host mounts `/run` with `noexec`; invoke migration helpers through `bash` or `python3` rather than executing files there directly.
+- Forgejo hides pull requests when `repository.is_mirror` is true even if the unit is enabled. Keep the `mirror` row for scheduled fetches, clear only `is_mirror`, and write fallback refs as UID/GID `994:984` so Forgejo can update them.
 
 Keep entries short and current. When a new procedure supersedes an old one, replace the old instruction rather than leaving conflicting advice.
