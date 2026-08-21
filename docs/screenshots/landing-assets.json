@@ -1,11 +1,12 @@
 {
-  "frameIcon": "assets/icon.png",
   "assets": [
     {
       "path": "docs/screenshots/landing-inbox.png",
       "width": 1280,
-      "height": 960,
-      "appWindowWidth": 1200,
+      "height": 980,
+      "shotWidth": 1200,
+      "shotHeight": 900,
+      "padding": 40,
       "theme": "light",
       "source": ".scratch/landing-real/inbox-light.png",
       "scenario": "microsoft/vscode frozen inbox"
@@ -13,8 +14,10 @@
     {
       "path": "docs/screenshots/landing-editor.png",
       "width": 1280,
-      "height": 960,
-      "appWindowWidth": 1200,
+      "height": 980,
+      "shotWidth": 1200,
+      "shotHeight": 900,
+      "padding": 40,
       "theme": "light",
       "source": ".scratch/landing-real/editing-light.png",
       "scenario": "microsoft/vscode#331804 editor at changed line 192"
@@ -22,8 +25,10 @@
     {
       "path": "docs/screenshots/landing-agent-prompt.png",
       "width": 1280,
-      "height": 960,
-      "appWindowWidth": 1200,
+      "height": 980,
+      "shotWidth": 1200,
+      "shotHeight": 900,
+      "padding": 40,
       "theme": "light",
       "source": ".scratch/landing-agent/1200x900/light/detail-agent-prompt.png",
       "scenario": "fixture/cockpit#101 actual p prompt"
@@ -31,29 +36,57 @@
     {
       "path": "docs/screenshots/landing-file-history.png",
       "width": 1280,
-      "height": 960,
-      "appWindowWidth": 1200,
+      "height": 980,
+      "shotWidth": 1200,
+      "shotHeight": 900,
+      "padding": 40,
       "theme": "light",
       "source": ".scratch/landing-real/history-light.png",
       "scenario": "microsoft/vscode#331804 file history"
     },
     {
+      "path": "docs/screenshots/landing-revert-menu.png",
+      "width": 1280,
+      "height": 980,
+      "shotWidth": 1200,
+      "shotHeight": 900,
+      "padding": 40,
+      "theme": "light",
+      "source": ".scratch/landing-real/revert-menu-light.png",
+      "scenario": "microsoft/vscode#331804 right-click Revert hunk context menu"
+    },
+    {
+      "path": "docs/screenshots/landing-hide-tests-before.png",
+      "width": 1280,
+      "height": 980,
+      "shotWidth": 1200,
+      "shotHeight": 900,
+      "padding": 40,
+      "theme": "light",
+      "source": ".scratch/landing-real/hide-tests-all-light.png",
+      "scenario": "microsoft/vscode#331771 all 75 changed files"
+    },
+    {
       "path": "docs/screenshots/landing-hide-tests-cockpit.png",
       "width": 1280,
-      "height": 960,
-      "appWindowWidth": 1200,
+      "height": 980,
+      "shotWidth": 1200,
+      "shotHeight": 900,
+      "padding": 40,
       "theme": "light",
       "source": ".scratch/landing-real/hide-tests-light.png",
-      "scenario": "microsoft/vscode#331804 after hide tests"
+      "scenario": "microsoft/vscode#331771 after hiding 9 test files"
     },
     {
       "path": "docs/screenshots/landing-hide-tests-github.png",
       "width": 1280,
-      "height": 960,
-      "appWindowWidth": 1200,
+      "height": 980,
+      "shotWidth": 1200,
+      "shotHeight": 900,
+      "padding": 40,
       "theme": "light",
-      "source": ".scratch/landing-real/github-files.webp",
-      "scenario": "real GitHub microsoft/vscode#331804 files"
+      "source": ".scratch/landing-real/github-files-331771.webp",
+      "scenario": "real GitHub microsoft/vscode#331771 files view"
     }
   ]
 }

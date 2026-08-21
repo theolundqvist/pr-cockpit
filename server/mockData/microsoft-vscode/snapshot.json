@@ -37,6 +37,9 @@
       "number": 331804,
       "path": "src/vs/workbench/services/extensionManagement/electron-browser/extensionGalleryManifestService.ts"
     },
+    "hideTests": {
+      "number": 331771
+    },
     "palette": {
       "number": 331794
     }
