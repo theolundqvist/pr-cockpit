@@ -13,10 +13,12 @@ legacy_migration=0
 if [[ -t 1 ]]; then
   bold=$'\033[1m'
   accent=$'\033[36m'
+  green=$'\033[32m'
   reset=$'\033[0m'
 else
   bold=""
   accent=""
+  green=""
   reset=""
 fi
 
@@ -49,7 +51,7 @@ confirm() {
   if [[ "$have_tty" -ne 1 ]]; then
     return 1
   fi
-  printf 'pr-cockpit: %s [y/N] ' "$1"
+  printf '%bpr-cockpit:%b %b%s%b %b[y/N]%b ' "$accent" "$reset" "$bold" "$1" "$reset" "$accent" "$reset"
   read -r reply <&3 || return 1
   [[ "$reply" == [yY]* ]]
 }
@@ -94,9 +96,11 @@ prepare_agent_instructions() {
   fi
   agent_instruction_targets=("${pending[@]}")
 
-  printf '\nOptional assistant setup\n'
-  printf 'Add these instructions to:\n'
-  printf '  %s\n' "${agent_instruction_targets[@]}"
+  printf '\n%b%bOptional assistant setup%b\n' "$bold" "$accent" "$reset"
+  printf '%bAdd these instructions to:%b\n' "$bold" "$reset"
+  for candidate in "${agent_instruction_targets[@]}"; do
+    printf '  %b%s%b\n' "$green" "$candidate" "$reset"
+  done
   printf '\n%s\n\n' "$agent_instruction_block"
   if confirm "Teach assistants to use pr-cockpit instead of gh for pull-request reads?"; then
     install_agent_instructions=1
