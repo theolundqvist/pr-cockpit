@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="pr-cockpit makes GitHub PRs instant: detail, diffs, threads, and images are prefetched to disk before you open them.">
+  <meta name="description" content="pr-cockpit keeps GitHub PR detail, diffs, threads, and images in a local cache for fast review.">
   <title>pr-cockpit · GitHub PRs at local speed</title>
   <style>
     :root {
@@ -92,16 +92,15 @@
     }
 
     .brand-mark {
-      display: grid;
+      display: block;
       width: 25px;
       height: 25px;
-      place-items: center;
-      border: 1px solid var(--border-strong);
-      border-radius: 7px;
-      background: var(--panel-raised);
-      color: var(--green);
-      font-size: 11px;
-      box-shadow: inset 0 1px rgba(255, 255, 255, 0.04);
+    }
+
+    .brand-mark img {
+      display: block;
+      width: 100%;
+      height: 100%;
     }
 
     .nav-links {
@@ -129,7 +128,7 @@
     }
 
     .hero {
-      padding: 72px 0 36px;
+      padding: 96px 0 48px;
       text-align: center;
     }
 
@@ -143,54 +142,6 @@
       line-height: 0.98;
     }
 
-
-    .hero-actions {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: center;
-      gap: 10px;
-      margin-top: 24px;
-    }
-
-    .button {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 44px;
-      padding: 0 18px;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      background: var(--panel-raised);
-      color: var(--text);
-      font-size: 14px;
-      font-weight: 600;
-      transition: transform 150ms ease, border-color 150ms ease, background 150ms ease;
-    }
-
-    .button:hover {
-      border-color: var(--border-strong);
-      background: var(--surface);
-      transform: translateY(-1px);
-    }
-
-    .button.primary {
-      border-color: rgba(94, 210, 141, 0.35);
-      background: var(--green);
-      color: #101c14;
-    }
-
-    .button.primary:hover {
-      background: #6ddd9a;
-    }
-
-    .requirements {
-      margin: 16px 0 0;
-      color: var(--text-faint);
-      font-family: var(--mono);
-      font-size: 12px;
-    }
-
-
     .shot-shell {
       position: relative;
       border: 1px solid var(--border);
@@ -199,12 +150,6 @@
       box-shadow: 0 20px 60px rgba(0, 0, 0, 0.36);
     }
 
-    .hero-shot {
-      margin-top: 24px;
-      max-width: 900px;
-      padding: 4px;
-      overflow: clip;
-    }
 
     .shot-button {
       display: block;
@@ -222,28 +167,6 @@
       height: auto;
     }
 
-    .hero-shot::before,
-    .hero-shot::after {
-      position: absolute;
-      z-index: -1;
-      top: 20%;
-      width: 34%;
-      height: 60%;
-      border-radius: 50%;
-      filter: blur(80px);
-      opacity: 0.12;
-      content: "";
-    }
-
-    .hero-shot::before {
-      left: -8%;
-      background: var(--blue);
-    }
-
-    .hero-shot::after {
-      right: -8%;
-      background: var(--green);
-    }
 
     .section {
       padding: 72px 0;
@@ -269,8 +192,28 @@
       line-height: 1.02;
     }
 
+    .section-lede {
+      max-width: 660px;
+      margin: 16px 0 0;
+      color: var(--text-dim);
+      font-size: 16px;
+      line-height: 1.6;
+    }
+
+    .cache-more {
+      display: inline-block;
+      margin-top: 18px;
+      color: var(--text-faint);
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+
+    .cache-more:hover {
+      color: var(--text);
+    }
+
     .hero-benchmark {
-      margin-top: 32px;
+      margin-top: 56px;
       text-align: left;
     }
 
@@ -321,6 +264,28 @@
       min-width: 0;
       gap: 10px;
     }
+    .cursor-benchmark-card {
+      grid-column: 1 / -1;
+    }
+
+    .cursor-benchmark-products {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .benchmark-product.cursor .benchmark-bar {
+      border-color: color-mix(in srgb, var(--blue) 36%, var(--border));
+    }
+
+    .benchmark-product.cursor .benchmark-bar-fill {
+      border-color: color-mix(in srgb, var(--blue) 58%, transparent);
+      background: color-mix(in srgb, var(--blue) 32%, transparent);
+    }
+
+    .benchmark-product.cursor .benchmark-product-name,
+    .benchmark-product.cursor .benchmark-value {
+      color: var(--blue);
+    }
+
 
     .benchmark-product {
       min-width: 0;
@@ -434,82 +399,38 @@
     }
 
     .benchmark-method {
-      max-width: 900px;
-      margin: 18px auto 0;
-      color: var(--text-faint);
-      font-family: var(--mono);
-      font-size: 11px;
-      line-height: 1.6;
+      position: sticky;
+      bottom: 14px;
+      margin: 24px 0 0;
       text-align: center;
     }
 
     .benchmark-method a {
-      color: var(--text-dim);
-      text-decoration: underline;
-      text-underline-offset: 3px;
-    }
-
-
-    .solo-shot {
-      padding: 6px;
-    }
-
-    .files-stack {
-      position: relative;
-      padding-bottom: 15%;
-    }
-
-    .files-stack .shot-shell {
-      padding: 6px;
-    }
-
-    .history-shot {
-      position: absolute;
-      right: -2.5%;
-      bottom: 0;
-      width: 72%;
-      box-shadow: 0 28px 80px rgba(0, 0, 0, 0.66);
-    }
-
-    .palette-layout {
-      display: grid;
-      grid-template-columns: minmax(0, 0.9fr) minmax(340px, 1.1fr);
-      gap: 32px;
+      display: inline-flex;
       align-items: center;
+      min-height: 30px;
+      padding: 0 13px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--panel-raised);
+      color: var(--text-dim);
+      font-family: var(--mono);
+      font-size: 11px;
     }
 
-    .palette-layout .palette-shot {
-      padding: 0;
-      border: 0;
-      background: transparent;
-      box-shadow: none;
+    .benchmark-method a:hover {
+      border-color: var(--border-strong);
+      color: var(--text);
     }
 
-    .palette-shot .shot-button,
-    .palette-shot img {
-      border-radius: var(--radius);
-    }
 
-    .feature-list {
-      display: grid;
-      gap: 28px;
-    }
 
-    .feature-item {
-      padding-top: 28px;
-      border-top: 1px solid var(--border);
-    }
 
-    .feature-item:first-child {
-      padding-top: 0;
-      border-top: 0;
-    }
 
-    .feature-item h2 {
-      margin: 0;
-      font-size: 21px;
-      letter-spacing: -0.025em;
-    }
+
+
+
+
 
 
     .agents-panel {
@@ -532,35 +453,152 @@
       line-height: 1.02;
     }
 
-    .agent-prompt-media {
+    .compare-grid {
       display: grid;
-      min-height: 300px;
-      place-items: center;
-      padding: 24px;
-      border: 0;
-      border-left: 1px solid var(--border);
-      background: #141413;
-      cursor: zoom-in;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 20px;
     }
 
-    .agent-prompt-media img {
-      width: 100%;
-      height: auto;
-      border-radius: 8px;
-      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.42);
+    .compare-side {
+      margin: 0;
+      min-width: 0;
     }
 
-    .agent-console {
+    .compare-label {
+      margin: 0 0 10px;
+      color: var(--text-faint);
+      font-family: var(--mono);
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .compare-grid .shot-shell,
+    .showcase-shot {
+      padding: 5px;
+    }
+
+    .queue-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+      gap: 40px;
+      align-items: center;
+    }
+
+    .queue-layout .queue-shot {
+      padding: 5px;
+    }
+
+    .showcase-controls {
       display: flex;
-      flex-direction: column;
-      justify-content: center;
-      min-height: 300px;
-      padding: 28px;
-      border-left: 1px solid var(--border);
-      background: #141413;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    .showcase-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .showcase-tab {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 36px;
+      padding: 0 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel-raised);
+      color: var(--text-dim);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .showcase-tab[aria-selected="true"] {
+      border-color: var(--border-strong);
+      background: var(--surface);
+      color: var(--text);
+    }
+
+    .showcase-arrows {
+      display: flex;
+      gap: 8px;
+    }
+
+    .showcase-arrow {
+      width: 36px;
+      height: 36px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel-raised);
+      color: var(--text);
+      cursor: pointer;
+    }
+
+    .showcase-tab:hover,
+    .showcase-arrow:hover {
+      border-color: var(--border-strong);
+      color: var(--text);
+    }
+
+    .showcase-tab:focus-visible,
+    .showcase-arrow:focus-visible {
+      outline: 2px solid var(--green);
+      outline-offset: 2px;
+    }
+
+    .showcase-panel {
+      display: grid;
+      grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+      gap: 28px;
+      align-items: center;
+    }
+
+    .showcase-panel[hidden] {
+      display: none;
+    }
+
+    .showcase-panel-copy {
+      grid-template-columns: 1fr;
+      max-width: 720px;
+    }
+
+    .showcase-copy h3 {
+      margin: 0 0 10px;
+      font-size: 21px;
+      letter-spacing: -0.025em;
+    }
+
+    .showcase-copy p {
+      margin: 0;
+      color: var(--text-dim);
+    }
+
+    .showcase-steps {
+      display: grid;
+      gap: 10px;
+      margin: 22px 0 0;
+      padding: 0;
+      list-style: none;
+      color: var(--text-dim);
       font-family: var(--mono);
       font-size: 13px;
     }
+
+    .showcase-steps li {
+      display: flex;
+      gap: 10px;
+    }
+
+    .showcase-steps .step-index {
+      color: var(--text-faint);
+    }
+
 
     .how-card {
       padding: 32px;
@@ -570,100 +608,83 @@
     }
 
     .system {
+      margin: 26px 0 0;
+    }
+
+    .system-map {
       display: grid;
-      grid-template-columns: minmax(170px, 0.55fr) minmax(210px, 0.95fr) minmax(280px, 1.1fr);
-      gap: 22px;
-      align-items: center;
-      margin: 24px 0 0;
+      grid-template-columns:
+        minmax(120px, 1fr) 44px minmax(110px, 0.85fr) 44px
+        14px minmax(0, 1.1fr) 44px minmax(0, 1.1fr) 44px minmax(0, 1.1fr) 14px;
+      grid-template-rows: 46px 36px auto 14px 54px;
     }
 
     .system-node {
+      z-index: 2;
       display: flex;
       flex-direction: column;
-      gap: 7px;
-      padding: 19px;
-      border: 1px solid var(--border);
+      grid-row: 3;
+      gap: 6px;
+      padding: 15px 16px;
+      border: 1px solid rgba(17, 17, 16, 0.16);
       border-radius: 6px;
-      background: #151514;
-    }
-
-    .system-node.primary {
-      border-color: rgba(94, 210, 141, 0.34);
-      background: var(--green-soft);
+      background: var(--text);
+      color: var(--bg);
     }
 
     .system-node strong {
-      font-size: 16px;
+      font-size: 15px;
       letter-spacing: -0.02em;
     }
 
     .system-node span {
-      color: var(--text-faint);
+      color: rgba(17, 17, 16, 0.62);
       font-family: var(--mono);
-      font-size: 11px;
-      line-height: 1.45;
+      font-size: 10.5px;
+      line-height: 1.5;
     }
 
-    .system-paths {
-      display: grid;
-      gap: 30px;
-      padding: 0 6px;
+    .node-github {
+      grid-column: 1;
     }
 
-    .system-path {
-      display: grid;
-      gap: 8px;
-      font-family: var(--mono);
-      font-size: 11px;
-      line-height: 1.45;
+    .node-relay {
+      grid-column: 3;
+      align-self: center;
+      padding: 11px 13px;
     }
 
-    .system-path.inbound {
-      color: var(--blue);
+    .node-relay strong {
+      font-size: 13px;
     }
 
-    .system-path.outbound {
-      color: var(--green);
+    .node-prc {
+      grid-column: 6;
     }
 
-    .path-label {
-      letter-spacing: 0.02em;
+    .node-sqlite {
+      grid-column: 8;
     }
 
-    .path-line {
-      display: flex;
-      align-items: center;
-      gap: 9px;
-      font-size: 15px;
-      line-height: 1;
+    .node-ui {
+      grid-column: 10;
+      border-color: rgba(94, 210, 141, 0.5);
+      box-shadow: 0 0 0 3px rgba(94, 210, 141, 0.18);
     }
 
-    .line-in::before,
-    .line-out::after {
-      flex: 1;
-      height: 1px;
-      background: currentColor;
-      opacity: 0.55;
-      content: "";
-    }
-
-    .glyph-v {
-      display: none;
-    }
-
-    .system-local {
+    .system-zone {
       position: relative;
-      display: grid;
-      gap: 10px;
-      padding: 42px 16px 16px;
+      z-index: 1;
+      grid-column: 5 / 12;
+      grid-row: 2 / 5;
       border: 1px dashed var(--border-strong);
       border-radius: 6px;
     }
 
-    .system-local-label {
+    .system-zone-label {
       position: absolute;
-      top: 15px;
-      left: 17px;
+      top: 11px;
+      left: 15px;
       color: var(--text-faint);
       font-family: var(--mono);
       font-size: 11px;
@@ -671,67 +692,173 @@
       text-transform: uppercase;
     }
 
-    .system-join {
-      display: grid;
-      place-items: center;
-      color: var(--text-faint);
+    .step-n {
+      display: inline-flex;
+      flex: none;
+      align-items: center;
+      justify-content: center;
+      width: 18px;
+      height: 18px;
+      border: 1px solid var(--green);
+      border-radius: 50%;
+      background: var(--panel);
+      color: var(--green);
       font-family: var(--mono);
-      font-size: 14px;
+      font-size: 10px;
       line-height: 1;
     }
 
-
-    .console-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 25px;
-      padding-bottom: 14px;
-      border-bottom: 1px solid var(--border);
-      color: var(--text-faint);
-      font-size: 11px;
-      text-transform: uppercase;
+    .system-edge {
+      z-index: 2;
+      display: grid;
+      grid-row: 3;
+      align-self: center;
+      justify-items: center;
+      gap: 7px;
+      color: var(--blue);
     }
 
-    .console-status {
+    .edge-1 {
+      grid-column: 2;
+    }
+
+    .edge-2 {
+      grid-column: 4;
+    }
+
+    .edge-4 {
+      grid-column: 7;
+    }
+
+    .edge-5 {
+      grid-column: 9;
+    }
+
+    .edge-line {
+      position: relative;
+      width: 100%;
+      height: 1px;
+      background: currentColor;
+      opacity: 0.6;
+    }
+
+    .edge-line::after {
+      position: absolute;
+      top: 50%;
+      right: -3px;
+      font-size: 13px;
+      line-height: 1;
+      transform: translateY(-50%);
+      content: "→";
+    }
+
+    .system-arc,
+    .system-return {
+      position: relative;
+      z-index: 3;
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+
+    .system-arc {
+      grid-column: 1 / 7;
+      grid-row: 1 / 3;
+      margin: 8px 90px 0 60px;
+      border: 1px solid rgba(112, 174, 255, 0.55);
+      border-bottom: 0;
+      border-radius: 10px 10px 0 0;
+      color: var(--blue);
+    }
+
+    .system-return {
+      grid-column: 1 / 11;
+      grid-row: 4 / 6;
+      margin: 0 60px 8px 30px;
+      border: 1px solid rgba(94, 210, 141, 0.5);
+      border-top: 0;
+      border-radius: 0 0 10px 10px;
       color: var(--green);
     }
 
-    .console-line {
-      display: grid;
-      grid-template-columns: 23px 1fr;
+    .system-arc::before,
+    .system-return::before {
+      position: absolute;
+      left: -5px;
+      font-size: 13px;
+      line-height: 1;
+    }
+
+    .system-arc::before {
+      bottom: -4px;
+      content: "↓";
+    }
+
+    .system-return::before {
+      top: -6px;
+      content: "↑";
+    }
+
+    .arc-label,
+    .return-label {
+      position: absolute;
+      left: 50%;
+      display: inline-flex;
+      align-items: center;
       gap: 8px;
-      padding: 9px 0;
+      padding: 0 10px;
+      background: var(--panel);
+      transform: translateX(-50%);
+      white-space: nowrap;
+    }
+
+    .arc-label {
+      top: -9px;
+    }
+
+    .return-label {
+      bottom: -9px;
+    }
+
+    .system-steps {
+      margin: 28px 0 0;
+    }
+
+    .system-steps ol {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px 32px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .system-steps li {
+      display: flex;
+      gap: 10px;
       color: var(--text-dim);
+      font-family: var(--mono);
+      font-size: 11.5px;
+      line-height: 1.6;
     }
 
-    .console-line span:first-child {
+    .system-steps li .step-n {
+      margin-top: 2px;
+    }
+
+    .system-note {
+      margin: 20px 0 0;
       color: var(--text-faint);
+      font-family: var(--mono);
+      font-size: 11px;
     }
 
-    .console-line.active {
-      color: var(--text);
-    }
 
-    .console-cursor {
-      display: inline-block;
-      width: 7px;
-      height: 14px;
-      margin-left: 5px;
-      vertical-align: -2px;
-      background: var(--green);
-      animation: blink 1.1s steps(1) infinite;
-    }
 
-    @keyframes blink {
-      50% { opacity: 0; }
-    }
 
-    .cli-panel {
-      display: block;
-      margin-top: 12px;
-      padding: 18px;
-    }
+
+
+
+
 
     .terminal-window {
       overflow: hidden;
@@ -773,23 +900,9 @@
       grid-column: 2;
     }
 
-    .cli-panel .agent-console {
-      min-height: 260px;
-      border: 0;
-      background: #10100f;
-    }
 
-    .console-line .cli-prompt {
-      color: var(--green);
-    }
 
-    .console-line.wake {
-      color: var(--text);
-    }
 
-    .console-line.wake span:first-child {
-      color: var(--green);
-    }
 
 
     .visual-pr-media {
@@ -807,17 +920,41 @@
       padding: 5px;
     }
 
-    .visual-pr-links {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      margin-top: 18px;
+    .package-list {
+      display: grid;
+      gap: 14px;
+      margin: 18px 0 0;
+      padding: 0;
+      list-style: none;
+      color: var(--text-dim);
+      font-size: 15px;
     }
 
-    .visual-pr-links .button {
-      min-height: 40px;
-      padding: 0 16px;
+    .package-list a,
+    .package-note a {
+      color: var(--text);
+      font-weight: 600;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+
+    .package-list a:hover,
+    .package-note a:hover {
+      color: var(--green);
+    }
+
+    .package-note {
+      margin: 18px 0 0;
+      color: var(--text-faint);
       font-size: 13px;
+    }
+
+    .media-caption {
+      margin: 12px 0 0;
+      color: var(--text-faint);
+      font-family: var(--mono);
+      font-size: 11px;
+      text-align: center;
     }
 
     .keys-section {
@@ -833,6 +970,10 @@
       max-width: 980px;
       margin: 28px auto 0;
     }
+    .key-grid-secondary[hidden] {
+      display: none;
+    }
+
 
     .key-action {
       display: inline-flex;
@@ -845,6 +986,21 @@
       background: var(--panel);
       color: var(--text-dim);
       font-size: 13px;
+    }
+
+    .key-more {
+      cursor: pointer;
+      padding: 5px 13px;
+    }
+
+    .key-more:hover,
+    .key-more[aria-expanded="true"] {
+      border-color: var(--border-strong);
+      color: var(--text);
+    }
+
+    .key-grid-secondary {
+      margin-top: 9px;
     }
 
     kbd {
@@ -1013,7 +1169,7 @@
       }
 
       .section-intro,
-      .palette-layout,
+      .queue-layout,
       .agents-panel,
       .install-card {
         grid-template-columns: 1fr;
@@ -1027,51 +1183,151 @@
       .benchmark-grid {
         grid-template-columns: 1fr;
       }
-
-      .palette-layout .feature-list {
-        order: 2;
+      .cursor-benchmark-products {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
       }
 
-      .agent-console,
-      .agent-prompt-media {
-        min-height: 260px;
-        border-top: 1px solid var(--border);
-        border-left: 0;
-      }
 
-      .cli-panel .agent-console {
-        border: 0;
-      }
+
+
+
 
       .visual-pr-media {
         border-top: 1px solid var(--border);
         border-left: 0;
       }
 
-      .system {
+      .system-map {
         grid-template-columns: 1fr;
-        gap: 16px;
+        grid-template-rows: repeat(5, auto) 40px repeat(5, auto) 14px auto;
       }
 
-      .system-paths {
-        gap: 22px;
+      .system-node,
+      .system-edge,
+      .system-arc,
+      .system-return {
+        grid-column: 1;
+      }
+
+      .node-github {
+        grid-row: 1;
+      }
+
+      .edge-1 {
+        grid-row: 2;
+      }
+
+      .node-relay {
+        grid-row: 3;
+        align-self: stretch;
+        padding: 15px 16px;
+      }
+
+      .edge-2 {
+        grid-row: 4;
+      }
+
+      .system-arc {
+        grid-row: 5;
+      }
+
+      .system-zone {
+        grid-column: 1;
+        grid-row: 6 / 13;
+      }
+
+      .node-prc {
+        grid-row: 7;
+      }
+
+      .edge-4 {
+        grid-row: 8;
+      }
+
+      .node-sqlite {
+        grid-row: 9;
+      }
+
+      .edge-5 {
+        grid-row: 10;
+      }
+
+      .node-ui {
+        grid-row: 11;
+      }
+
+      .system-return {
+        grid-row: 13;
+      }
+
+      .node-prc,
+      .node-sqlite,
+      .node-ui,
+      .edge-4,
+      .edge-5 {
+        margin-inline: 14px;
+      }
+
+      .system-edge {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        align-self: auto;
+        gap: 8px;
+        height: 44px;
+      }
+
+      .edge-line {
+        width: 1px;
+        height: 100%;
+      }
+
+      .edge-line::after {
+        top: auto;
+        right: auto;
+        bottom: -3px;
+        left: 50%;
+        transform: translateX(-50%);
+        content: "↓";
+      }
+
+      .system-arc,
+      .system-return {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        margin: 0;
+        padding: 12px 0;
+        border: 0;
+        border-radius: 0;
+      }
+
+      .system-arc::before,
+      .system-return::before {
+        position: static;
+        content: "↑";
+      }
+
+      .arc-label,
+      .return-label {
+        position: static;
         padding: 0;
+        transform: none;
+        white-space: normal;
       }
 
-      .glyph-h {
-        display: none;
-      }
-
-      .glyph-v {
-        display: inline;
+      .system-steps ol {
+        grid-template-columns: 1fr;
       }
 
       .install-card {
         padding: 28px;
       }
 
-      .history-shot {
-        right: 0;
+      .compare-grid,
+      .showcase-panel {
+        grid-template-columns: 1fr;
       }
     }
 
@@ -1089,28 +1345,13 @@
       }
 
       .hero {
-        padding: 48px 0 24px;
+        padding: 64px 0 32px;
       }
 
       h1 {
         font-size: 44px;
       }
 
-
-      .hero-actions .button {
-        flex: 1 1 150px;
-      }
-
-
-      .hero-shot {
-        margin-top: 18px;
-        padding: 3px;
-        border-radius: var(--radius);
-      }
-
-      .hero-shot .shot-button {
-        border-radius: 4px;
-      }
 
       .section {
         padding: 52px 0;
@@ -1152,26 +1393,16 @@
       .benchmark-meta {
         gap: 10px;
       }
-
-
-      .files-stack {
-        padding-bottom: 22%;
+      .cursor-benchmark-products {
+        grid-template-columns: 1fr;
       }
 
-      .history-shot {
-        right: 0;
-        width: 82%;
-      }
 
       .agents-copy,
-      .agent-console,
       .install-card {
         padding: 22px;
       }
 
-      .agent-console {
-        font-size: 11px;
-      }
 
       .how-card {
         padding: 24px;
@@ -1219,12 +1450,185 @@
         transition-duration: 0.01ms !important;
       }
     }
+
+
+    /* Search-to-PR demo */
+    .search-demo-intro { margin-bottom: 28px; }
+    .search-demo-player { position: relative; }
+    .search-demo-canvas {
+      position: relative;
+      container-type: inline-size;
+      min-height: 650px;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 12px;
+      background: radial-gradient(circle at 20% 26%, rgba(170, 226, 255, 0.84), transparent 24%), radial-gradient(circle at 80% 12%, rgba(104, 166, 255, 0.9), transparent 32%), linear-gradient(145deg, #166ec8 0%, #3d9ae2 42%, #183f94 100%);
+      box-shadow: 0 35px 90px rgba(0, 0, 0, 0.42);
+      color: #1d1d1b;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-serif;
+    }
+    .search-demo-canvas::before { position: absolute; inset: 0; background: linear-gradient(120deg, transparent 0 38%, rgba(255, 255, 255, 0.14) 38.2% 38.8%, transparent 39% 100%), linear-gradient(20deg, rgba(7, 49, 116, 0.46), transparent 52%); content: ""; }
+    .search-demo-window { position: absolute; overflow: hidden; border: 1px solid rgba(34, 34, 30, 0.22); border-radius: 11px; background: rgba(249, 249, 247, 0.98); box-shadow: 0 35px 90px rgba(0, 24, 76, 0.46), 0 2px 8px rgba(0, 0, 0, 0.16); transition: opacity 240ms ease, transform 300ms cubic-bezier(0.2, 0.9, 0.25, 1); }
+    .search-demo-shortcut { position: absolute; z-index: 8; top: 50%; left: 50%; display: flex; gap: 8px; padding: 13px; border: 1px solid rgba(255, 255, 255, 0.24); border-radius: 13px; background: rgba(16, 21, 32, 0.72); box-shadow: 0 18px 50px rgba(0, 0, 0, 0.3); opacity: 0; transform: translate(-50%, -42%) scale(0.92); transition: opacity 180ms ease, transform 220ms ease; backdrop-filter: blur(18px); }
+    .search-demo-shortcut kbd { min-width: 42px; min-height: 42px; padding: 0; border-color: rgba(255, 255, 255, 0.28); border-radius: 8px; background: rgba(255, 255, 255, 0.14); box-shadow: inset 0 1px rgba(255, 255, 255, 0.15), 0 3px 0 rgba(0, 0, 0, 0.22); font-size: 17px; }
+    .search-demo-canvas[data-search-demo-state="shortcut"] .search-demo-shortcut { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    .search-demo-palette { z-index: 4; top: 50%; left: 50%; width: min(650px, 72%); min-height: 494px; opacity: 0; transform: translate(-50%, -46%) scale(0.96); }
+    .search-demo-canvas:is([data-search-demo-state="palette"], [data-search-demo-state="typing"], [data-search-demo-state="selected"], [data-search-demo-state="enter"]) .search-demo-palette { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    .search-demo-canvas[data-search-demo-state="enter"] .search-demo-palette { opacity: 0; transform: translate(-50%, -52%) scale(1.025); }
+    .search-demo-palette-header { padding: 21px 20px 14px; border-bottom: 1px solid #dfdfdc; background: #f4f4f1; }
+    .search-demo-app, .search-demo-eyebrow { display: block; margin-bottom: 5px; color: #8b8b84; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; }
+    .search-demo-palette h3 { margin: 0 0 15px; font-size: 20px; letter-spacing: -0.025em; }
+    .search-demo-input { position: relative; display: flex; align-items: center; min-height: 45px; padding: 0 50px 0 39px; overflow: hidden; border: 1px solid #c9c9c3; border-radius: 8px; background: #fff; box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.04); font-size: 14px; }
+    .search-demo-input svg { position: absolute; left: 14px; width: 16px; fill: none; stroke: #6f6f69; stroke-linecap: round; stroke-width: 1.5; }
+    .search-demo-placeholder { color: #9b9b96; }
+    .search-demo-query { position: absolute; color: #242420; }
+    .search-demo-caret { display: none; width: 1px; height: 18px; margin-left: 1px; background: #3379da; animation: search-demo-caret 740ms steps(1) infinite; }
+    .search-demo-canvas[data-search-demo-state="typing"] .search-demo-placeholder { visibility: hidden; }
+    .search-demo-canvas[data-search-demo-state="typing"] .search-demo-caret { display: inline-block; }
+    .search-demo-escape { position: absolute; right: 10px; padding: 3px 6px; border: 1px solid #d8d8d3; border-radius: 5px; color: #868680; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .search-demo-results { height: 324px; margin: 0; padding: 7px; overflow: hidden; list-style: none; }
+    .search-demo-result { display: grid; grid-template-columns: auto minmax(0, 1fr) auto 8px; gap: 10px; align-items: center; min-height: 49px; padding: 0 11px; border-radius: 7px; color: #353531; font-size: 13px; }
+    .search-demo-result.is-filtered { display: none; }
+    .search-demo-result.is-selected { background: #dfeeff; box-shadow: inset 0 0 0 1px rgba(43, 120, 213, 0.2); }
+    .search-demo-canvas[data-search-demo-state="selected"] .search-demo-result.is-selected { animation: search-demo-select 580ms ease both; }
+    .search-demo-state-pill { padding: 3px 6px; border-radius: 999px; background: #dff5e9; color: #218a52; font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; }
+    .search-demo-state-pill.is-draft { background: #ecece8; color: #73736d; }
+    .search-demo-result-title, .search-demo-result-ref { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .search-demo-result-ref { color: #8a8a84; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .search-demo-result-dot { width: 7px; height: 7px; border-radius: 50%; background: #36a86c; }
+    .search-demo-result-dot.is-red { background: #dc5959; }
+    .search-demo-result-dot.is-amber { background: #e19a35; }
+    .search-demo-footer { display: flex; justify-content: center; gap: 22px; min-height: 34px; border-top: 1px solid #e2e2de; color: #8c8c86; font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 34px; }
+    .search-demo-footer b { color: #55554f; font-weight: 600; }
+    .search-demo-detail { z-index: 5; inset: 5.5% 6%; display: flex; flex-direction: column; padding: 23px 25px 0; opacity: 0; transform: translateY(15px) scale(0.975); }
+    .search-demo-canvas[data-search-demo-state="detail"] .search-demo-detail { opacity: 1; transform: none; }
+    .search-demo-back { margin-bottom: 12px; color: #6f6f69; font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .search-demo-detail-card { border: 1px solid #deded9; border-radius: 8px; background: #fff; }
+    .search-demo-detail-header { display: flex; justify-content: space-between; gap: 24px; padding: 18px 20px; }
+    .search-demo-title-block { min-width: 0; }
+    .search-demo-title-block h3 { max-width: 680px; margin: 0 0 12px; overflow: hidden; font-size: clamp(17px, 2.05cqw, 25px); letter-spacing: -0.035em; line-height: 1.1; text-overflow: ellipsis; white-space: nowrap; }
+    .search-demo-meta, .search-demo-author, .search-demo-tabs, .search-demo-keybar { display: flex; align-items: center; gap: 9px; color: #777771; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .search-demo-open { padding: 3px 6px; border-radius: 999px; background: #ddf4e7; color: #218a52; font-weight: 700; }
+    .search-demo-stats { display: flex; flex: none; align-self: stretch; }
+    .search-demo-stats span { display: flex; flex-direction: column; justify-content: center; min-width: 64px; padding: 0 14px; border-left: 1px solid #e4e4df; text-align: center; }
+    .search-demo-stats i, .search-demo-stats b { font-style: normal; font-size: 10px; }
+    .search-demo-stats i { color: #8a8a84; font-weight: 400; }
+    .search-demo-stats b { margin-top: 5px; color: #33332f; }
+    .search-demo-stats em { color: #218a52; font-style: normal; }
+    .search-demo-stats del { color: #c44b4b; text-decoration: none; }
+    .search-demo-author { min-height: 38px; padding: 0 5px; color: #6f6f69; }
+    .search-demo-avatar { display: grid; width: 23px; height: 23px; place-items: center; border-radius: 50%; background: linear-gradient(135deg, #446be2, #7e55d9); color: white; font: 700 11px -apple-system, BlinkMacSystemFont, sans-serif; }
+    .search-demo-author b { color: #3a3a35; }
+    .search-demo-ci { margin-left: auto; padding: 5px 8px; border-radius: 6px; background: #dff5e9; color: #217b4c; }
+    .search-demo-tabs { gap: 3px; min-height: 31px; border-bottom: 1px solid #deded9; }
+    .search-demo-tabs span { align-self: stretch; padding: 0 13px; line-height: 31px; }
+    .search-demo-tabs .is-active { border-bottom: 2px solid #347ed8; color: #2d2d29; }
+    .search-demo-detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) 170px; gap: 13px; min-height: 0; padding: 13px 0; }
+    .search-demo-description { min-width: 0; padding: 17px; }
+    .search-demo-description p { margin: 0 0 10px; color: #474742; font-size: clamp(10px, 1.05cqw, 13px); line-height: 1.42; }
+    .search-demo-description-image { display: block; width: 100%; max-height: 228px; margin-top: 14px; }
+    .search-demo-mini-lane rect { fill: #fff; stroke: #e5e5e0; }
+    .search-demo-mini-lane path { fill: none; stroke: #d7d7d2; stroke-linecap: round; stroke-width: 6; }
+    .search-demo-actions { display: grid; align-content: start; gap: 10px; }
+    .search-demo-actions > div { display: grid; gap: 7px; padding: 11px; }
+    .search-demo-actions span { margin-bottom: 1px; color: #8a8a84; font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; }
+    .search-demo-actions b { padding: 7px 8px; border: 1px solid #ddddda; border-radius: 5px; color: #50504a; font-size: 10px; font-weight: 600; }
+    .search-demo-actions b.is-merge { border-color: #b8dfc8; background: #def4e7; color: #217b4c; }
+    .search-demo-keybar { justify-content: center; gap: 18px; min-height: 37px; margin: auto -25px 0; border-top: 1px solid #deded9; background: #f0f0ed; color: #74746e; }
+    .search-demo-keybar b { color: #343430; }
+    .search-demo-replay { position: absolute; z-index: 12; right: 18px; bottom: 18px; min-height: 39px; padding: 0 15px; border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 999px; background: rgba(15, 15, 14, 0.78); color: #fff; font: 600 11px var(--mono); cursor: pointer; backdrop-filter: blur(12px); }
+    .search-demo-replay:hover { border-color: var(--green); background: rgba(15, 15, 14, 0.92); }
+    .search-demo-replay:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
+    .search-demo-decision { display: grid; grid-template-columns: 0.8fr 1.2fr; gap: 40px; align-items: start; margin-top: 30px; }
+    .search-demo-decision h3 { margin: 0; font-size: clamp(25px, 3.2vw, 38px); letter-spacing: -0.04em; line-height: 1.04; }
+    .search-demo-decision p { max-width: 620px; margin: 3px 0 0; color: var(--text-dim); font-size: 16px; line-height: 1.65; }
+    @keyframes search-demo-caret { 50% { opacity: 0; } }
+    @keyframes search-demo-select { 50% { transform: scale(0.992); background: #c8e2ff; } }
+
+    @media (max-width: 720px) {
+      .search-demo-canvas { min-height: 480px; }
+      .search-demo-palette { width: calc(100% - 24px); min-height: 392px; }
+      .search-demo-palette-header { padding: 16px 14px 10px; }
+      .search-demo-palette h3 { margin-bottom: 10px; font-size: 16px; }
+      .search-demo-input { min-height: 39px; font-size: 11px; }
+      .search-demo-results { height: 266px; }
+      .search-demo-result { grid-template-columns: auto minmax(0, 1fr) 7px; min-height: 42px; gap: 7px; padding-inline: 8px; font-size: 10px; }
+      .search-demo-result-ref { display: none; }
+      .search-demo-footer { min-height: 31px; line-height: 31px; }
+      .search-demo-detail { inset: 14px; padding: 17px 16px 0; }
+      .search-demo-detail-header { padding: 13px; }
+      .search-demo-title-block h3 { font-size: 14px; }
+      .search-demo-stats, .search-demo-actions { display: none; }
+      .search-demo-author { font-size: 8px; }
+      .search-demo-ci { padding: 4px 6px; }
+      .search-demo-detail-grid { grid-template-columns: 1fr; padding-block: 10px; }
+      .search-demo-description { padding: 12px; }
+      .search-demo-description p { margin-bottom: 7px; font-size: 9px; }
+      .search-demo-description-image { max-height: 210px; margin-top: 8px; }
+      .search-demo-keybar { gap: 10px; min-height: 31px; margin-inline: -16px; font-size: 8px; }
+      .search-demo-keybar span:nth-child(3), .search-demo-keybar span:nth-child(6) { display: none; }
+      .search-demo-replay { top: 10px; right: 10px; bottom: auto; min-height: 36px; }
+      .search-demo-decision { grid-template-columns: 1fr; gap: 12px; margin-top: 24px; }
+      .search-demo-decision p { font-size: 14px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) { .search-demo-replay { display: none; } }
+
+
+    /* CLI listen flow */
+    .cli-flow-player { position: relative; }
+    .cli-flow-intro code { color: var(--green); font-family: var(--mono); font-size: 0.84em; }
+    .cli-flow-stage { position: relative; min-height: 580px; overflow: hidden; padding: 42px 42px 66px; border: 1px solid var(--border-strong); border-radius: 12px; background: radial-gradient(circle at 78% 12%, rgba(94, 210, 141, 0.08), transparent 28%), linear-gradient(150deg, #171716, #0d0d0c 70%); box-shadow: 0 35px 90px rgba(0, 0, 0, 0.36); }
+    .cli-flow-map { display: grid; grid-template-columns: minmax(100px, 1fr) 42px minmax(100px, 1fr) 42px minmax(100px, 1fr) 42px minmax(110px, 1.1fr) 42px minmax(100px, 1fr); align-items: center; }
+    .cli-flow-node, .cli-flow-wake { display: grid; grid-template-columns: 24px 1fr; gap: 2px 9px; align-items: center; min-height: 76px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); opacity: 0.32; transition: opacity 220ms ease, border-color 220ms ease, box-shadow 220ms ease, transform 220ms ease; }
+    .cli-flow-node > span, .cli-flow-wake > span { display: grid; grid-row: 1 / 3; width: 22px; height: 22px; place-items: center; border: 1px solid var(--border-strong); border-radius: 50%; color: var(--text-faint); font: 10px var(--mono); }
+    .cli-flow-node b, .cli-flow-wake b { font-size: 13px; letter-spacing: -0.01em; }
+    .cli-flow-node small, .cli-flow-wake small { overflow: hidden; color: var(--text-faint); font: 9px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+    .cli-flow-node.is-active, .cli-flow-wake.is-active { border-color: rgba(94, 210, 141, 0.5); box-shadow: 0 0 0 3px rgba(94, 210, 141, 0.09); opacity: 1; transform: translateY(-2px); }
+    .cli-flow-node.is-active > span, .cli-flow-wake.is-active > span { border-color: var(--green); color: var(--green); }
+    .cli-flow-link, .cli-flow-return { position: relative; height: 1px; background: var(--border-strong); opacity: 0.38; }
+    .cli-flow-link::after, .cli-flow-return::after { position: absolute; top: 50%; right: -3px; color: var(--text-faint); font: 12px var(--mono); transform: translateY(-50%); content: "→"; }
+    .cli-flow-link.is-active, .cli-flow-return.is-active { background: var(--green); box-shadow: 0 0 10px rgba(94, 210, 141, 0.75); opacity: 1; animation: cli-flow-pulse 800ms ease both; }
+    .cli-flow-terminal { width: min(860px, 88%); margin: 42px auto 0; }
+    .cli-flow-console { min-height: 272px; padding: 24px 28px; background: #10100f; font: 12px/1.65 var(--mono); }
+    .cli-flow-line { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 8px; min-height: 23px; color: var(--text); opacity: 1; transform: none; transition: opacity 180ms ease, transform 180ms ease; }
+    .cli-flow-line.is-entering { opacity: 0; transform: translateY(5px); }
+    .cli-flow-line span { color: var(--text-faint); }
+    .cli-flow-line b { overflow: hidden; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+    .cli-flow-line.is-command span, .cli-flow-line.is-result span, .cli-flow-line.is-result b { color: var(--green); }
+    .cli-flow-line.is-muted b { color: var(--text-faint); }
+    .cli-flow-line.is-event b { color: var(--blue); }
+    .cli-flow-caption { position: absolute; right: 42px; bottom: 24px; left: 42px; color: var(--text-faint); font: 11px var(--mono); text-align: center; }
+    .cli-flow-replay { position: absolute; z-index: 12; right: 18px; bottom: 18px; min-height: 39px; padding: 0 15px; border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 999px; background: rgba(15, 15, 14, 0.78); color: #fff; font: 600 11px var(--mono); cursor: pointer; backdrop-filter: blur(12px); }
+    .cli-flow-replay:hover { border-color: var(--green); background: rgba(15, 15, 14, 0.92); }
+    .cli-flow-replay:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
+    .cli-flow-steps { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin: 18px 0 0; padding: 0; list-style: none; }
+    .cli-flow-steps li { display: flex; gap: 8px; color: var(--text-faint); font: 10px/1.5 var(--mono); }
+    .cli-flow-steps b { display: grid; flex: none; width: 19px; height: 19px; place-items: center; border: 1px solid var(--border-strong); border-radius: 50%; color: var(--green); font-size: 9px; }
+    .cli-flow-footnote { margin: 14px 0 0; color: var(--text-faint); font: 10px/1.5 var(--mono); }
+    .cli-flow-footnote code { color: var(--text-dim); }
+    @keyframes cli-flow-pulse { 0% { transform: scaleX(0); transform-origin: left; } 100% { transform: scaleX(1); transform-origin: left; } }
+
+    @media (max-width: 720px) {
+      .cli-flow-stage { min-height: 770px; padding: 24px 14px 70px; }
+      .cli-flow-map { grid-template-columns: 1fr; justify-items: stretch; max-width: 250px; margin-inline: auto; }
+      .cli-flow-node, .cli-flow-wake { min-height: 57px; }
+      .cli-flow-link, .cli-flow-return { width: 1px; height: 22px; justify-self: center; }
+      .cli-flow-link::after, .cli-flow-return::after { top: auto; right: auto; bottom: -5px; left: 50%; transform: translateX(-50%); content: "↓"; }
+      .cli-flow-terminal { width: 100%; margin-top: 26px; }
+      .cli-flow-console { min-height: 218px; padding: 16px 14px; font-size: 9px; }
+      .cli-flow-caption { right: 18px; bottom: 22px; left: 18px; padding-right: 82px; font-size: 9px; text-align: left; }
+      .cli-flow-replay { right: 10px; bottom: 10px; min-height: 36px; }
+      .cli-flow-steps { grid-template-columns: 1fr; gap: 8px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) { .cli-flow-replay { display: none; } }
   </style>
 </head>
 <body>
   <header class="wrap nav">
     <a class="brand" href="#top" aria-label="pr-cockpit home">
-      <span class="brand-mark">PR</span>
+      <span class="brand-mark" aria-hidden="true"><img src="assets/icon.png" alt="" width="25" height="25"></span>
       <span>pr-cockpit</span>
     </a>
     <nav class="nav-links" aria-label="Primary navigation">
@@ -1238,7 +1642,7 @@
     <section class="wrap hero">
       <h1>GitHub PRs at local speed.</h1>
       <div class="hero-benchmark" id="performance">
-        <div class="benchmark-grid" aria-label="PR Cockpit and GitHub performance comparison">
+        <div class="benchmark-grid" aria-label="PR Cockpit, GitHub, and Cursor Origin performance comparison">
           <article class="benchmark-card">
             <div class="benchmark-card-header">
               <h2 class="benchmark-label">Open a PR</h2>
@@ -1265,7 +1669,7 @@
                 <div class="benchmark-bar">
                   <span class="benchmark-bar-fill" data-benchmark-bar="github:pr-open"></span>
                   <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">GITHUB (healthy)</span>
+                    <span class="benchmark-product-name">GITHUB (current connection)</span>
                     <div class="benchmark-value-line">
                       <strong class="benchmark-value" data-benchmark-value="github:pr-open">—</strong>
                       <span class="benchmark-unit">s</span>
@@ -1305,7 +1709,7 @@
                 <div class="benchmark-bar">
                   <span class="benchmark-bar-fill" data-benchmark-bar="github:pr-search"></span>
                   <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">GITHUB (healthy)</span>
+                    <span class="benchmark-product-name">GITHUB (current connection)</span>
                     <div class="benchmark-value-line">
                       <strong class="benchmark-value" data-benchmark-value="github:pr-search">—</strong>
                       <span class="benchmark-unit">s</span>
@@ -1345,7 +1749,7 @@
                 <div class="benchmark-bar">
                   <span class="benchmark-bar-fill" data-benchmark-bar="github:diff-open"></span>
                   <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">GITHUB (healthy)</span>
+                    <span class="benchmark-product-name">GITHUB (current connection)</span>
                     <div class="benchmark-value-line">
                       <strong class="benchmark-value" data-benchmark-value="github:diff-open">—</strong>
                       <span class="benchmark-unit">s</span>
@@ -1359,50 +1763,163 @@
               </div>
             </div>
           </article>
-        </div>
-        <p class="benchmark-method">
-          <a href="https://github.com/theolundqvist/pr-cockpit/blob/main/scripts/benchmark-ui.mjs">Reproduce benchmark</a>
-        </p>
-      </div>
-      <div class="hero-actions">
-        <a class="button primary" href="#install">Install pr-cockpit</a>
-        <a class="button" href="https://github.com/theolundqvist/pr-cockpit">View source</a>
-      </div>
-      <p class="requirements">macOS · open source</p>
-    </section>
-    <section class="section-rule">
-      <div class="wrap section palette-layout">
-        <div class="feature-list">
-          <article class="feature-item">
-            <h2>⌥⌘K. Any PR.</h2>
+          <article class="benchmark-card cursor-benchmark-card" data-cursor-benchmark-card hidden>
+            <div class="benchmark-card-header">
+              <h2 class="benchmark-label">Cursor Origin · Scape staging</h2>
+              <span class="benchmark-speedup">render checkpoints</span>
+            </div>
+            <div class="benchmark-products cursor-benchmark-products">
+              <div class="benchmark-product cursor">
+                <div class="benchmark-bar">
+                  <span class="benchmark-bar-fill" data-cursor-benchmark-bar="pr-list-first-useful"></span>
+                  <div class="benchmark-bar-content">
+                    <span class="benchmark-product-name">LIST FIRST PAINT</span>
+                    <div class="benchmark-value-line">
+                      <strong class="benchmark-value" data-cursor-benchmark-value="pr-list-first-useful">—</strong>
+                      <span class="benchmark-unit">s</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="benchmark-meta">
+                  <p class="benchmark-definition">Pull Requests navigation to first painted PR row.</p>
+                  <p class="benchmark-p95"><span data-cursor-benchmark-p95="pr-list-first-useful">—</span> s p95</p>
+                </div>
+              </div>
+              <div class="benchmark-product cursor">
+                <div class="benchmark-bar">
+                  <span class="benchmark-bar-fill" data-cursor-benchmark-bar="pr-list-full"></span>
+                  <div class="benchmark-bar-content">
+                    <span class="benchmark-product-name">LIST COMPLETE</span>
+                    <div class="benchmark-value-line">
+                      <strong class="benchmark-value" data-cursor-benchmark-value="pr-list-full">—</strong>
+                      <span class="benchmark-unit">s</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="benchmark-meta">
+                  <p class="benchmark-definition">Pull Requests navigation to every visible PR row.</p>
+                  <p class="benchmark-p95"><span data-cursor-benchmark-p95="pr-list-full">—</span> s p95</p>
+                </div>
+              </div>
+              <div class="benchmark-product cursor">
+                <div class="benchmark-bar">
+                  <span class="benchmark-bar-fill" data-cursor-benchmark-bar="pr-detail-first-useful"></span>
+                  <div class="benchmark-bar-content">
+                    <span class="benchmark-product-name">PR FIRST PAINT</span>
+                    <div class="benchmark-value-line">
+                      <strong class="benchmark-value" data-cursor-benchmark-value="pr-detail-first-useful">—</strong>
+                      <span class="benchmark-unit">s</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="benchmark-meta">
+                  <p class="benchmark-definition">PR #8110 click to painted detail shell.</p>
+                  <p class="benchmark-p95"><span data-cursor-benchmark-p95="pr-detail-first-useful">—</span> s p95</p>
+                </div>
+              </div>
+              <div class="benchmark-product cursor">
+                <div class="benchmark-bar">
+                  <span class="benchmark-bar-fill" data-cursor-benchmark-bar="pr-detail-complete"></span>
+                  <div class="benchmark-bar-content">
+                    <span class="benchmark-product-name">PR COMPLETE</span>
+                    <div class="benchmark-value-line">
+                      <strong class="benchmark-value" data-cursor-benchmark-value="pr-detail-complete">—</strong>
+                      <span class="benchmark-unit">s</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="benchmark-meta">
+                  <p class="benchmark-definition">PR #8110 click to painted activity and merge controls.</p>
+                  <p class="benchmark-p95"><span data-cursor-benchmark-p95="pr-detail-complete">—</span> s p95</p>
+                </div>
+              </div>
+            </div>
           </article>
         </div>
-        <div class="shot-shell palette-shot">
-          <button class="shot-button" type="button" data-lightbox="screenshots/palette-macos.png" aria-label="Open standalone pull request search on a macOS desktop">
-            <img src="screenshots/palette-macos.png" alt="Standalone pull request search opened with Option-Command-K over a blue macOS wallpaper" width="1000" height="760" loading="lazy">
-          </button>
-        </div>
+        <p class="benchmark-method">
+          <a href="https://github.com/theolundqvist/pr-cockpit/blob/main/scripts/benchmark-ui.mjs">Source · reproduce this benchmark</a>
+        </p>
       </div>
     </section>
-
-    <div class="wrap shot-shell hero-shot">
-      <button class="shot-button" type="button" data-lightbox="screenshots/inbox-dark.png" aria-label="Open inbox screenshot">
-        <img src="screenshots/inbox-dark.png" alt="pr-cockpit inbox sorting open pull requests into ready to merge, your move, and waiting" width="1120" height="1269">
-      </button>
-    </div>
-
+    <section class="section-rule search-demo-section" id="search-demo">
+      <div class="wrap section">
+        <div class="section-intro search-demo-intro">
+          <div>
+            <h2 class="section-title">⌥⌘K. Enter. You&rsquo;re reviewing.</h2>
+          </div>
+        </div>
+        <p class="visually-hidden">Pressing Option Command K opens pull request search. Typing fixtures selects pull request 101. Pressing Enter opens its locally cached detail and description image.</p>
+        <div class="search-demo-player" data-search-demo-player>
+          <div class="search-demo-canvas" id="search-demo-canvas" data-search-demo-state="detail" aria-hidden="true">
+            <div class="search-demo-shortcut"><kbd>⌥</kbd><kbd>⌘</kbd><kbd>K</kbd></div>
+            <div class="search-demo-window search-demo-palette">
+              <div class="search-demo-palette-header">
+                <span class="search-demo-app">PR Cockpit</span>
+                <h3>Find a pull request</h3>
+                <div class="search-demo-input">
+                  <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.7"></circle><path d="m10.5 10.5 3 3"></path></svg>
+                  <span class="search-demo-placeholder">Title, #number, or branch…</span><span class="search-demo-query" data-search-demo-query></span><span class="search-demo-caret"></span><span class="search-demo-escape">esc</span>
+                </div>
+              </div>
+              <ul class="search-demo-results">
+                <li class="search-demo-result" data-search-demo-row data-search-demo-title="Expose optional telemetry without blocking the required build"><span class="search-demo-state-pill">open</span><span class="search-demo-result-title">Expose optional telemetry without blocking the required build</span><span class="search-demo-result-ref">cockpit#104</span><i class="search-demo-result-dot is-red"></i></li>
+                <li class="search-demo-result" data-search-demo-row data-search-demo-title="Show failed optimistic mutations with recovery controls"><span class="search-demo-state-pill">open</span><span class="search-demo-result-title">Show failed optimistic mutations with recovery controls</span><span class="search-demo-result-ref">cockpit#109</span><i class="search-demo-result-dot is-amber"></i></li>
+                <li class="search-demo-result" data-search-demo-row data-search-demo-title="Ship deterministic screenshot fixtures for every PR Cockpit view"><span class="search-demo-state-pill">open</span><span class="search-demo-result-title">Ship deterministic screenshot fixtures for every PR Cockpit view</span><span class="search-demo-result-ref">cockpit#101</span><i class="search-demo-result-dot"></i></li>
+                <li class="search-demo-result" data-search-demo-row data-search-demo-title="Draft the command palette information architecture"><span class="search-demo-state-pill is-draft">draft</span><span class="search-demo-result-title">Draft the command palette information architecture</span><span class="search-demo-result-ref">cockpit#105</span><i class="search-demo-result-dot"></i></li>
+                <li class="search-demo-result" data-search-demo-row data-search-demo-title="Regenerate the complete API client and bundled binary assets"><span class="search-demo-state-pill">open</span><span class="search-demo-result-title">Regenerate the complete API client and bundled binary assets</span><span class="search-demo-result-ref">cockpit#107</span><i class="search-demo-result-dot"></i></li>
+                <li class="search-demo-result" data-search-demo-row data-search-demo-title="Wait in the queue while required integration checks start"><span class="search-demo-state-pill">open</span><span class="search-demo-result-title">Wait in the queue while required integration checks start</span><span class="search-demo-result-ref">cockpit#114</span><i class="search-demo-result-dot is-amber"></i></li>
+              </ul>
+              <div class="search-demo-footer"><span><b>↑↓</b> navigate</span><span><b>↵</b> open</span><span><b>esc</b> close</span></div>
+            </div>
+            <div class="search-demo-window search-demo-detail">
+              <span class="search-demo-back">← inbox</span>
+              <div class="search-demo-detail-card search-demo-detail-header">
+                <div class="search-demo-title-block"><span class="search-demo-eyebrow">Pull request #101</span><h3>Ship deterministic screenshot fixtures for every PR Cockpit view</h3><div class="search-demo-meta"><span class="search-demo-open">OPEN</span><span>main ← fixture/pr-101</span><span>· 12m</span></div></div>
+                <div class="search-demo-stats"><span><i>Changed</i><b><em>+36</em> <del>−9</del></b></span><span><i>Files</i><b>3</b></span><span><i>Commits</i><b>2</b></span></div>
+              </div>
+              <div class="search-demo-author"><span class="search-demo-avatar">t</span><b>theolundqvist</b><span class="search-demo-ci">✓ CI passing · 3 of 3 checks passed</span></div>
+              <div class="search-demo-tabs"><span class="is-active">Conversation</span><span>Files 3</span><span>Agents</span></div>
+              <div class="search-demo-detail-grid">
+                <article class="search-demo-detail-card search-demo-description">
+                  <p>This green PR is the baseline conversation and files fixture.</p><p>The inbox now renders every state at a glance:</p>
+                  <svg class="search-demo-description-image" viewBox="0 0 660 252" role="img" aria-label="Description image showing ready to merge, your move, and waiting inbox lanes">
+                    <rect x="1" y="1" width="658" height="250" rx="12" fill="#fafaf9" stroke="#deded9"></rect>
+                    <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="600"><text x="22" y="30" fill="#218a52">ready to merge</text><text x="242" y="30" fill="#b96d13">your move</text><text x="462" y="30" fill="#74746e">waiting</text></g>
+                    <g class="search-demo-mini-lane" transform="translate(22 46)"><rect width="196" height="52" rx="8"></rect><circle cx="18" cy="18" r="5" fill="#2aa766"></circle><path d="M32 15h114M32 31h78"></path><rect y="62" width="196" height="52" rx="8"></rect><circle cx="18" cy="80" r="5" fill="#2aa766"></circle><path d="M32 77h92M32 93h118"></path></g>
+                    <g class="search-demo-mini-lane" transform="translate(242 46)"><rect width="196" height="52" rx="8"></rect><circle cx="18" cy="18" r="5" fill="#e69b35"></circle><path d="M32 15h118M32 31h82"></path><rect y="62" width="196" height="52" rx="8"></rect><circle cx="18" cy="80" r="5" fill="#e69b35"></circle><path d="M32 77h102M32 93h68"></path><rect y="124" width="196" height="52" rx="8"></rect><circle cx="18" cy="142" r="5" fill="#e69b35"></circle><path d="M32 139h124M32 155h94"></path></g>
+                    <g class="search-demo-mini-lane" transform="translate(462 46)"><rect width="176" height="52" rx="8"></rect><circle cx="18" cy="18" r="5" fill="#aaa9a3"></circle><path d="M32 15h102M32 31h76"></path><rect y="62" width="176" height="52" rx="8"></rect><circle cx="18" cy="80" r="5" fill="#aaa9a3"></circle><path d="M32 77h82M32 93h110"></path></g>
+                  </svg>
+                </article>
+                <aside class="search-demo-actions"><div class="search-demo-detail-card"><span>Actions</span><b class="is-merge">merge (squash)</b><b>close PR (x)</b></div><div class="search-demo-detail-card"><span>Review</span><b>Approve ▾</b><b>Submit review</b></div></aside>
+              </div>
+              <div class="search-demo-keybar"><span><b>d</b> files</span><span><b>c</b> comment</span><span><b>e</b> editor</span><span><b>v</b> review</span><span><b>m</b> merge</span><span><b>p</b> agent</span><span><b>esc</b></span></div>
+            </div>
+          </div>
+          <button class="search-demo-replay" type="button" aria-controls="search-demo-canvas" data-search-demo-replay>↻ Replay</button>
+        </div>
+        <div class="search-demo-decision"><h3>Everything needed to decide.</h3><p>Failing checks with logs, merge conflicts, open threads, review state — one screen, painted from the local cache.</p></div>
+        <p class="media-caption">HTML recreation from PR Cockpit&rsquo;s deterministic fixture data.</p>
+      </div>
+    </section>
 
     <section class="section-rule">
       <div class="wrap section">
-        <div class="section-intro">
-          <div>
-            <h2 class="section-title">Everything needed to decide.</h2>
-          </div>
-        </div>
-        <div class="shot-shell solo-shot">
-          <button class="shot-button" type="button" data-lightbox="screenshots/conversation-dark.png" aria-label="Open pull request detail screenshot">
-            <img src="screenshots/conversation-dark.png" alt="Pull request detail with checks, merge conflicts, conversation, and review actions" width="1100" height="800" loading="lazy">
+        <h2 class="section-title">Webhook-aware. Locally cached.</h2>
+        <p class="section-lede">A marker for a cached PR triggers a targeted refresh; repo-level markers fall back to a debounced poll. The open PR view checks local state every 12 seconds; the review queue every 30 seconds. Your own comments, reviews, and merges appear immediately while PR Cockpit writes them back to GitHub.</p>
+        <a class="cache-more" href="#how-it-works">See the full read/write loop ↓</a>
+      </div>
+    </section>
+
+    <section class="section-rule">
+      <div class="wrap section queue-layout">
+        <div class="shot-shell queue-shot">
+          <button class="shot-button" type="button" data-lightbox="screenshots/landing-inbox.png" aria-label="Open review queue screenshot">
+            <img src="screenshots/landing-inbox.png" alt="Review queue sorting open pull requests into ready to merge, your move, and waiting lanes" width="1280" height="960" loading="lazy">
           </button>
+        </div>
+        <div>
+          <h2 class="section-title">Three lanes. Zero triage.</h2>
+          <p class="section-lede">Ready to merge, your move, waiting — every open PR sorted by what needs you, not by recency.</p>
         </div>
       </div>
     </section>
@@ -1412,18 +1929,93 @@
         <div class="section-intro">
           <div>
             <h2 class="section-title">Hide tests. See the change.</h2>
+            <p class="section-lede">The same public PR, microsoft/vscode#331804: a 5-line source change under 229 lines of test updates. Press <kbd>x</kbd> and the test files fold away — a view filter on your machine, the PR itself is untouched.</p>
           </div>
         </div>
-        <div class="files-stack">
-          <div class="shot-shell">
-            <button class="shot-button" type="button" data-lightbox="screenshots/files-light.png" aria-label="Open files screenshot">
-              <img src="screenshots/files-light.png" alt="Files tab with a file tree and expanded source diff" width="1100" height="800" loading="lazy">
-            </button>
+        <div class="compare-grid">
+          <figure class="compare-side">
+            <figcaption class="compare-label">GitHub · every changed file</figcaption>
+            <div class="shot-shell">
+              <button class="shot-button" type="button" data-lightbox="screenshots/landing-hide-tests-github.png" aria-label="Open GitHub files changed screenshot">
+                <img src="screenshots/landing-hide-tests-github.png" alt="GitHub files changed view of microsoft/vscode#331804 listing the source file and its test file together" width="1280" height="960" loading="lazy">
+              </button>
+            </div>
+          </figure>
+          <figure class="compare-side">
+            <figcaption class="compare-label">PR Cockpit · tests hidden</figcaption>
+            <div class="shot-shell">
+              <button class="shot-button" type="button" data-lightbox="screenshots/landing-hide-tests-cockpit.png" aria-label="Open PR Cockpit hidden tests screenshot">
+                <img src="screenshots/landing-hide-tests-cockpit.png" alt="PR Cockpit files tab showing only the source change, with a show 1 test file control in the toolbar" width="1280" height="960" loading="lazy">
+              </button>
+            </div>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-rule" id="review-actions">
+      <div class="wrap section">
+        <div class="section-intro">
+          <div>
+            <h2 class="section-title">One key from review to change.</h2>
           </div>
-          <div class="shot-shell history-shot">
-            <button class="shot-button" type="button" data-lightbox="screenshots/editing-dark.png" aria-label="Open inline file editor screenshot">
-              <img src="screenshots/editing-dark.png" alt="Inline source editor with a visible local change ready for review" width="1100" height="800" loading="lazy">
-            </button>
+        </div>
+        <div class="showcase">
+          <div class="showcase-controls">
+            <div class="showcase-tabs" role="tablist" aria-label="Review actions">
+              <button class="showcase-tab" id="showcase-tab-editor" type="button" role="tab" aria-selected="true" aria-controls="showcase-panel-editor"><kbd>e</kbd>Edit</button>
+              <button class="showcase-tab" id="showcase-tab-agent" type="button" role="tab" aria-selected="false" tabindex="-1" aria-controls="showcase-panel-agent"><kbd>p</kbd>Agent</button>
+              <button class="showcase-tab" id="showcase-tab-revert" type="button" role="tab" aria-selected="false" tabindex="-1" aria-controls="showcase-panel-revert">Revert hunk</button>
+              <button class="showcase-tab" id="showcase-tab-history" type="button" role="tab" aria-selected="false" tabindex="-1" aria-controls="showcase-panel-history"><kbd>h</kbd>History</button>
+            </div>
+            <div class="showcase-arrows">
+              <button class="showcase-arrow" type="button" data-showcase-prev aria-label="Previous feature">←</button>
+              <button class="showcase-arrow" type="button" data-showcase-next aria-label="Next feature">→</button>
+            </div>
+          </div>
+          <div class="showcase-panel" id="showcase-panel-editor" role="tabpanel" tabindex="0" aria-labelledby="showcase-tab-editor">
+            <div class="showcase-copy">
+              <h3>Edit where you read.</h3>
+              <p>Press <kbd>e</kbd> on the open PR and the full file opens at the changed line under your pointer — or right-click a line for Edit here. Leaving the editor shows your patch as a diff with a commit message. Commit to PR writes it to the PR head.</p>
+            </div>
+            <div class="shot-shell showcase-shot">
+              <button class="shot-button" type="button" data-lightbox="screenshots/landing-editor.png" aria-label="Open inline editor screenshot">
+                <img src="screenshots/landing-editor.png" alt="Full-file editor opened at a changed line of a pull request file, ready to commit back to the PR" width="1280" height="960" loading="lazy">
+              </button>
+            </div>
+          </div>
+          <div class="showcase-panel" id="showcase-panel-agent" role="tabpanel" tabindex="0" aria-labelledby="showcase-tab-agent" hidden>
+            <div class="showcase-copy">
+              <h3>One task, one agent.</h3>
+              <p>Press <kbd>p</kbd> and describe one task. PR Cockpit launches a one-shot agent in a dedicated PR workspace, where it can do the work, commit, and push to the PR head.</p>
+            </div>
+            <div class="shot-shell showcase-shot">
+              <button class="shot-button" type="button" data-lightbox="screenshots/landing-agent-prompt.png" aria-label="Open agent prompt screenshot">
+                <img src="screenshots/landing-agent-prompt.png" alt="Prompt an agent dialog opened with p on a pull request" width="1280" height="960" loading="lazy">
+              </button>
+            </div>
+          </div>
+          <div class="showcase-panel showcase-panel-copy" id="showcase-panel-revert" role="tabpanel" tabindex="0" aria-labelledby="showcase-tab-revert" hidden>
+            <div class="showcase-copy">
+              <h3>Roll back one hunk.</h3>
+              <p>Right-click inside a hunk and choose Revert hunk. PR Cockpit verifies the hunk still matches the current file, builds the inverse change, and opens it for review with a prefilled message. Nothing is pushed until you choose Commit to PR.</p>
+              <ol class="showcase-steps">
+                <li><span class="step-index">1</span>Right-click → Revert hunk</li>
+                <li><span class="step-index">2</span>Review the inverse diff</li>
+                <li><span class="step-index">3</span>Commit to PR</li>
+              </ol>
+            </div>
+          </div>
+          <div class="showcase-panel" id="showcase-panel-history" role="tabpanel" tabindex="0" aria-labelledby="showcase-tab-history" hidden>
+            <div class="showcase-copy">
+              <h3>Trace the file. Or the symbol.</h3>
+              <p>Press <kbd>h</kbd> on a file to walk this PR and up to 30 earlier commits — author, a PR or commit link when known, and available diffs — without leaving the review. Right-click a symbol in search for the commits that mention it.</p>
+            </div>
+            <div class="shot-shell showcase-shot">
+              <button class="shot-button" type="button" data-lightbox="screenshots/landing-file-history.png" aria-label="Open file history screenshot">
+                <img src="screenshots/landing-file-history.png" alt="File history view listing earlier commits with the selected commit's diff" width="1280" height="960" loading="lazy">
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -1431,37 +2023,51 @@
 
     <section class="section-rule">
       <div class="wrap section">
-        <div class="agents-panel">
-          <div class="agents-copy">
-            <h2>Press p. Put an agent on it.</h2>
-          </div>
-          <button class="agent-prompt-media" type="button" data-lightbox="screenshots/agent-prompt.png" aria-label="Open agent prompt screenshot">
-            <img src="screenshots/agent-prompt.png" alt="Prompt an agent dialog opened with p on a pull request" width="660" height="250" loading="lazy">
-          </button>
-        </div>
+      </div>
+    </section>
 
-        <div class="agents-panel cli-panel">
-          <div class="terminal-window">
-            <div class="terminal-toolbar" aria-hidden="true">
-              <span class="terminal-lights">
-                <span class="terminal-light close"></span>
-                <span class="terminal-light minimize"></span>
-                <span class="terminal-light maximize"></span>
-              </span>
-              <span class="terminal-title">pr-cockpit — zsh</span>
-            </div>
-            <div class="agent-console" aria-label="Example pr-cockpit listen session">
-              <div class="console-head">
-                <span>pr-cockpit CLI · local cache</span>
-                <span class="console-status">listening</span>
-              </div>
-              <div class="console-line"><span class="cli-prompt">$</span><span>pr-cockpit listen owner/repo#6278</span></div>
-              <div class="console-line"><span></span><span>blocked · waiting for the cached PR to change</span></div>
-              <div class="console-line wake"><span>→</span><span>woke · CI failed on the new push · 1 unresolved thread</span></div>
-              <div class="console-line active"><span class="cli-prompt">$</span><span>pr-cockpit owner/repo#6278<span class="console-cursor" aria-hidden="true"></span></span></div>
-            </div>
+    <section class="section-rule cli-flow-section" id="cli-flow">
+      <div class="wrap section">
+        <div class="section-intro cli-flow-intro">
+          <div>
+            <h2 class="section-title">Agents wait. The webhook wakes them.</h2>
+            <p class="section-lede"><code>pr-cockpit listen fixture/cockpit#101</code> blocks on the cached PR. A substantive review update triggers a targeted refresh, changes the local fingerprint, prints the refreshed PR, and exits — without repeatedly polling GitHub.</p>
           </div>
         </div>
+        <p class="visually-hidden">Animated flow: an agent starts pr-cockpit listen and blocks on local cached state. GitHub emits a review webhook. The relay forwards a change marker. PR Cockpit refreshes pull request 101 from GitHub. Listen wakes, prints the refreshed pull request, exits, and the agent continues.</p>
+        <div class="cli-flow-player" data-cli-flow-player>
+          <div class="cli-flow-stage" id="cli-flow-stage" data-cli-flow-state="done" aria-hidden="true">
+            <div class="cli-flow-map">
+              <div class="cli-flow-node cli-flow-agent" data-cli-flow-node="agent"><span>1</span><b>Agent</b><small>blocked locally</small></div>
+              <i class="cli-flow-link" data-cli-flow-link="webhook"></i>
+              <div class="cli-flow-node cli-flow-github" data-cli-flow-node="github"><span>2</span><b>GitHub</b><small>review submitted</small></div>
+              <i class="cli-flow-link" data-cli-flow-link="relay"></i>
+              <div class="cli-flow-node cli-flow-relay" data-cli-flow-node="relay"><span>3</span><b>Relay</b><small>change marker</small></div>
+              <i class="cli-flow-link" data-cli-flow-link="refresh"></i>
+              <div class="cli-flow-node cli-flow-cache" data-cli-flow-node="cache"><span>4</span><b>PR Cockpit</b><small>targeted refresh</small></div>
+              <i class="cli-flow-return" data-cli-flow-link="wake"></i>
+              <div class="cli-flow-wake" data-cli-flow-node="wake"><span>5</span><b>Wake</b><small>fingerprint changed</small></div>
+            </div>
+            <div class="terminal-window cli-flow-terminal">
+              <div class="terminal-toolbar"><span class="terminal-lights"><span class="terminal-light close"></span><span class="terminal-light minimize"></span><span class="terminal-light maximize"></span></span><span class="terminal-title">agent — zsh</span></div>
+              <div class="cli-flow-console" data-cli-flow-console>
+                <div class="cli-flow-line is-command"><span>$</span><b>pr-cockpit listen fixture/cockpit#101</b></div>
+                <div class="cli-flow-line is-muted"><span>·</span><b>blocked · cached PR unchanged</b></div>
+                <div class="cli-flow-line is-event"><span>→</span><b>review submitted · targeted refresh complete</b></div>
+                <div class="cli-flow-line"><span>#</span><b>Pull Request #101: Ship deterministic screenshot fixtures…</b></div>
+                <div class="cli-flow-line is-muted"><span>·</span><b>Cached snapshot: 0s old</b></div>
+                <div class="cli-flow-line is-result"><span>✓</span><b>Review: APPROVED · CI: PASSING</b></div>
+                <div class="cli-flow-line is-result"><span>→</span><b>agent resumes with the refreshed PR</b></div>
+              </div>
+            </div>
+            <div class="cli-flow-caption" data-cli-flow-caption>Listen returned once. The agent continues with fresh local context.</div>
+          </div>
+          <button class="cli-flow-replay" type="button" aria-controls="cli-flow-stage" data-cli-flow-replay>↻ Replay</button>
+        </div>
+        <ol class="cli-flow-steps">
+          <li><b>1</b><span>Block on the local PR fingerprint.</span></li><li><b>2</b><span>Receive a substantive GitHub event.</span></li><li><b>3</b><span>Relay only what changed.</span></li><li><b>4</b><span>Refresh PR #101 directly from GitHub.</span></li><li><b>5</b><span>Print the new snapshot, exit, continue.</span></li>
+        </ol>
+        <p class="cli-flow-footnote"><code>--ci-only</code> and <code>--comments-only</code> narrow the wake signal.</p>
       </div>
     </section>
 
@@ -1479,6 +2085,12 @@
           <span class="key-action"><kbd>p</kbd> agent</span>
           <span class="key-action"><kbd>a</kbd> auto-merge</span>
           <span class="key-action"><kbd>?</kbd> every shortcut</span>
+          <button class="key-action key-more" type="button" aria-expanded="false" aria-controls="key-more-grid">more</button>
+        </div>
+        <div class="key-grid key-grid-secondary" id="key-more-grid" hidden aria-label="More keyboard shortcuts">
+          <span class="key-action"><kbd>x</kbd> hide tests</span>
+          <span class="key-action"><kbd>e</kbd> edit file</span>
+          <span class="key-action"><kbd>h</kbd> file history</span>
         </div>
       </div>
     </section>
@@ -1487,40 +2099,39 @@
       <div class="wrap section">
         <div class="section-intro">
           <div>
-            <h2 class="section-title">GitHub stays true. The wait disappears.</h2>
+            <h2 class="section-title">A local copy GitHub keeps fresh.</h2>
+            <p class="section-lede">GitHub stays the source of truth. A marker for a cached PR triggers a targeted refresh; repo-level markers fall back to a debounced poll. The app paints cached PRs, local search results, and warmed diffs from SQLite and disk, while cold or extended lookups fetch GitHub and populate the cache. Comments, reviews, and merges paint immediately while PR Cockpit writes them back to GitHub, with visible pending and retry states.</p>
           </div>
         </div>
 
-        <div class="how-card" aria-label="How pr-cockpit reads, writes, and receives live updates">
+        <div class="how-card">
           <figure class="system">
-            <div class="system-node">
-              <strong>GitHub</strong>
-              <span>source of truth · webhooks + GraphQL</span>
+            <div class="system-map" aria-hidden="true">
+              <div class="system-arc"><span class="arc-label"><span class="step-n">3</span>targeted refresh · content skips the relay</span></div>
+              <div class="system-zone"><span class="system-zone-label">Your Mac</span></div>
+              <div class="system-node node-github"><strong>GitHub</strong><span>source of truth</span></div>
+              <div class="system-edge edge-1"><span class="step-n">1</span><span class="edge-line"></span></div>
+              <div class="system-node node-relay"><strong>Relay</strong><span>Cloudflare Worker · stores what changed, never the content</span></div>
+              <div class="system-edge edge-2"><span class="step-n">2</span><span class="edge-line"></span></div>
+              <div class="system-node node-prc"><strong>PR Cockpit (local)</strong><span>fetches from GitHub · writes to disk</span></div>
+              <div class="system-edge edge-4"><span class="step-n">4</span><span class="edge-line"></span></div>
+              <div class="system-node node-sqlite"><strong>SQLite + images</strong><span>PRs, diffs, threads, checks · images warmed to disk</span></div>
+              <div class="system-edge edge-5"><span class="step-n">5</span><span class="edge-line"></span></div>
+              <div class="system-node node-ui"><strong>UI</strong><span>renders the local cache</span></div>
+              <div class="system-return"><span class="return-label"><span class="step-n">6</span>comment, review, merge · appear locally, then post with your gh auth</span></div>
             </div>
-            <div class="system-paths">
-              <div class="system-path inbound">
-                <span class="path-label">Events and reads flow in · live in seconds</span>
-                <span class="path-line line-in" aria-hidden="true"><span class="glyph glyph-h">→</span><span class="glyph glyph-v">↓</span></span>
-              </div>
-              <div class="system-path outbound">
-                <span class="path-label">Writes echo instantly, then post via your gh auth</span>
-                <span class="path-line line-out" aria-hidden="true"><span class="glyph glyph-h">←</span><span class="glyph glyph-v">↑</span></span>
-              </div>
-            </div>
-            <div class="system-local">
-              <span class="system-local-label">Local cockpit · your Mac</span>
-              <div class="system-node">
-                <strong>SQLite + disk images</strong>
-                <span>PRs, diffs, threads, warmed images</span>
-              </div>
-              <span class="system-join" aria-hidden="true">↓</span>
-              <div class="system-node primary">
-                <strong>Local UI</strong>
-                <span>reads cache only · opens ~0 ms</span>
-              </div>
-            </div>
+            <figcaption class="system-steps">
+              <ol>
+                <li><span class="step-n">1</span>GitHub sends a signed webhook for every PR event.</li>
+                <li><span class="step-n">2</span>The relay extracts and stores only a change marker — repo, PR number, event — and PR Cockpit polls markers every 5 s; it does not persist or forward PR content.</li>
+                <li><span class="step-n">3</span>A marker for a cached PR triggers a targeted refresh from GitHub with your gh token; repo-level markers fall back to a debounced poll.</li>
+                <li><span class="step-n">4</span>Rows land in SQLite; images are warmed to disk.</li>
+                <li><span class="step-n">5</span>Cached PRs, local search results, and warmed diffs paint from disk; cold or extended lookups fetch GitHub and populate the cache.</li>
+                <li><span class="step-n">6</span>Comments, reviews, and merges appear locally with visible pending and failed states, then post to GitHub with your gh auth.</li>
+              </ol>
+              <p class="system-note">After every write the PR is re-fetched from GitHub, so the cache converges to the source of truth.</p>
+            </figcaption>
           </figure>
-
         </div>
       </div>
     </section>
@@ -1529,7 +2140,7 @@
       <div class="wrap section">
         <div class="install-card">
           <div>
-            <h2>One command.</h2>
+            <h2>Install.</h2>
           </div>
           <div class="code-shell">
             <div class="code-toolbar">
@@ -1547,12 +2158,12 @@
       <div class="wrap section">
         <div class="agents-panel visual-pr-panel">
           <div class="agents-copy">
-            <h2>The story lives in the PR.</h2>
-            <div class="visual-pr-links">
-              <a class="button primary" href="https://github.com/theolundqvist/justshowme/pull/1">See open-source PR #1</a>
-              <a class="button" href="https://github.com/theolundqvist/justshowme">Get JustShowMe</a>
-              <a class="button" href="https://github.com/theolundqvist/gh-img">Get gh-img</a>
-            </div>
+            <h2>Get the most out of pr-cockpit.</h2>
+            <ul class="package-list">
+              <li><a href="https://github.com/theolundqvist/justshowme">JustShowMe</a> turns a code change into a visual story worth reviewing.</li>
+              <li><a href="https://github.com/theolundqvist/gh-img">gh-img</a> places it straight into the pull request description.</li>
+            </ul>
+            <p class="package-note">Open source from the same workshop. <a href="https://github.com/theolundqvist/justshowme/pull/1">See them together in a real PR</a>.</p>
           </div>
           <div class="visual-pr-media">
             <div class="shot-shell">
@@ -1560,6 +2171,7 @@
                 <img src="screenshots/justshowme-gh-img.png" alt="A code change becomes a focused JustShowMe story, then gh-img places it inline in a pull request for review" width="1600" height="900" loading="lazy">
               </button>
             </div>
+            <p class="media-caption">Made with JustShowMe · placed in the PR by gh-img</p>
           </div>
         </div>
       </div>
@@ -1579,7 +2191,7 @@
     <img id="lightbox-image" alt="">
   </dialog>
 
-  <script src="benchmark-results.js"></script>
+  <script src="benchmark-results.js?v=2026-08-21-cursor-origin"></script>
   <script>
     const lightbox = document.querySelector("#lightbox");
     const lightboxImage = document.querySelector("#lightbox-image");
@@ -1588,6 +2200,7 @@
       const seconds = milliseconds / 1000;
       return seconds < 1 ? (Math.round(milliseconds) / 1000).toFixed(3) : seconds.toFixed(2);
     };
+    const formatRecordedSeconds = (seconds) => seconds < 1 ? seconds.toFixed(3) : seconds.toFixed(2);
     if (benchmarkResults) {
       for (const metric of benchmarkResults.metrics) {
         const maxP50 = Math.max(metric.cockpit.p50, metric.github.p50);
@@ -1597,6 +2210,16 @@
           document.querySelector(`[data-benchmark-bar="${product}:${metric.id}"]`).style.width = `${metric[product].p50 / maxP50 * 100}%`;
         }
         document.querySelector(`[data-benchmark-speedup="${metric.id}"]`).textContent = `${metric.speedup}× faster`;
+      }
+      if (benchmarkResults.cursorOrigin) {
+        const card = document.querySelector("[data-cursor-benchmark-card]");
+        const maxP50 = Math.max(...benchmarkResults.cursorOrigin.metrics.map((metric) => metric.p50));
+        for (const metric of benchmarkResults.cursorOrigin.metrics) {
+          document.querySelector(`[data-cursor-benchmark-value="${metric.id}"]`).textContent = formatRecordedSeconds(metric.p50);
+          document.querySelector(`[data-cursor-benchmark-p95="${metric.id}"]`).textContent = formatRecordedSeconds(metric.p95);
+          document.querySelector(`[data-cursor-benchmark-bar="${metric.id}"]`).style.width = `${metric.p50 / maxP50 * 100}%`;
+        }
+        card.hidden = false;
       }
     }
 
@@ -1636,6 +2259,208 @@
         copyStatus.textContent = "";
       }, 2000);
     });
+
+    const keyMoreButton = document.querySelector(".key-more");
+    const keyMorePanel = document.querySelector("#key-more-grid");
+    keyMoreButton.addEventListener("click", () => {
+      const expand = keyMoreButton.getAttribute("aria-expanded") !== "true";
+      keyMoreButton.setAttribute("aria-expanded", String(expand));
+      keyMorePanel.hidden = !expand;
+      keyMoreButton.textContent = expand ? "less" : "more";
+    });
+  </script>
+  <script>
+    {
+      const showcase = document.querySelector(".showcase");
+      const showcaseTabs = [...showcase.querySelectorAll("[role=tab]")];
+      const showcasePanels = showcaseTabs.map((tab) => document.getElementById(tab.getAttribute("aria-controls")));
+      let showcaseIndex = 0;
+      const activateShowcase = (index, focusTab) => {
+        showcaseIndex = (index + showcaseTabs.length) % showcaseTabs.length;
+        showcaseTabs.forEach((tab, i) => {
+          const selected = i === showcaseIndex;
+          tab.setAttribute("aria-selected", String(selected));
+          tab.tabIndex = selected ? 0 : -1;
+          showcasePanels[i].hidden = !selected;
+        });
+        if (focusTab) showcaseTabs[showcaseIndex].focus();
+      };
+      showcaseTabs.forEach((tab, i) => tab.addEventListener("click", () => activateShowcase(i, false)));
+      showcase.querySelector("[data-showcase-prev]").addEventListener("click", () => activateShowcase(showcaseIndex - 1, false));
+      showcase.querySelector("[data-showcase-next]").addEventListener("click", () => activateShowcase(showcaseIndex + 1, false));
+      showcase.querySelector("[role=tablist]").addEventListener("keydown", (event) => {
+        const step = { ArrowLeft: -1, ArrowRight: 1 }[event.key];
+        if (step) {
+          event.preventDefault();
+          activateShowcase(showcaseIndex + step, true);
+        } else if (event.key === "Home" || event.key === "End") {
+          event.preventDefault();
+          activateShowcase(event.key === "Home" ? 0 : showcaseTabs.length - 1, true);
+        }
+      });
+    }
+
+
+    const motionReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const playOnceVisible = (element, play) => {
+      if (motionReduced) {
+        play();
+        return;
+      }
+      const observer = new IntersectionObserver((entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        observer.disconnect();
+        play();
+      }, { threshold: 0.28 });
+      observer.observe(element);
+    };
+
+    const searchDemoPlayer = document.querySelector("[data-search-demo-player]");
+    if (searchDemoPlayer) {
+      const canvas = searchDemoPlayer.querySelector("[data-search-demo-state]");
+      const query = searchDemoPlayer.querySelector("[data-search-demo-query]");
+      const rows = [...searchDemoPlayer.querySelectorAll("[data-search-demo-row]")];
+      const replay = searchDemoPlayer.querySelector("[data-search-demo-replay]");
+      let timers = [];
+
+      const later = (delay, action) => timers.push(window.setTimeout(action, delay));
+      const resetRows = () => rows.forEach((row, index) => {
+        row.classList.remove("is-filtered");
+        row.classList.toggle("is-selected", index === 0);
+      });
+      const filterRows = (value) => {
+        let selected = false;
+        for (const row of rows) {
+          const matches = row.dataset.searchDemoTitle.toLowerCase().includes(value.toLowerCase());
+          row.classList.toggle("is-filtered", !matches);
+          row.classList.toggle("is-selected", matches && !selected);
+          if (matches) selected = true;
+        }
+      };
+      const playSearchDemo = () => {
+        timers.forEach(window.clearTimeout);
+        timers = [];
+        query.textContent = "";
+        resetRows();
+        searchDemoPlayer.dataset.searchDemoPlayed = "true";
+        if (motionReduced) {
+          canvas.dataset.searchDemoState = "detail";
+          return;
+        }
+        canvas.dataset.searchDemoState = "idle";
+        later(260, () => { canvas.dataset.searchDemoState = "shortcut"; });
+        later(920, () => { canvas.dataset.searchDemoState = "palette"; });
+        later(1320, () => { canvas.dataset.searchDemoState = "typing"; });
+        const text = "fixtures";
+        [...text].forEach((letter, index) => later(1430 + index * 95, () => {
+          query.textContent += letter;
+          filterRows(query.textContent);
+        }));
+        later(2380, () => { canvas.dataset.searchDemoState = "selected"; });
+        later(3040, () => { canvas.dataset.searchDemoState = "enter"; });
+        later(3370, () => { canvas.dataset.searchDemoState = "detail"; });
+      };
+      canvas.dataset.searchDemoState = motionReduced ? "detail" : "idle";
+      replay.addEventListener("click", playSearchDemo);
+      playOnceVisible(searchDemoPlayer, playSearchDemo);
+    }
+
+    const cliFlowPlayer = document.querySelector("[data-cli-flow-player]");
+    if (cliFlowPlayer) {
+      const stage = cliFlowPlayer.querySelector("[data-cli-flow-state]");
+      const consoleBody = cliFlowPlayer.querySelector("[data-cli-flow-console]");
+      const caption = cliFlowPlayer.querySelector("[data-cli-flow-caption]");
+      const nodes = [...cliFlowPlayer.querySelectorAll("[data-cli-flow-node]")];
+      const links = [...cliFlowPlayer.querySelectorAll("[data-cli-flow-link]")];
+      const replay = cliFlowPlayer.querySelector("[data-cli-flow-replay]");
+      let timers = [];
+
+      const line = (symbol, text, tone = "") => {
+        const row = document.createElement("div");
+        row.className = `cli-flow-line${tone ? ` ${tone}` : ""}`;
+        const mark = document.createElement("span");
+        const body = document.createElement("b");
+        mark.textContent = symbol;
+        body.textContent = text;
+        row.append(mark, body);
+        return row;
+      };
+      const addLine = (symbol, text, tone = "") => {
+        const row = line(symbol, text, tone);
+        row.classList.add("is-entering");
+        consoleBody.append(row);
+        requestAnimationFrame(() => row.classList.remove("is-entering"));
+      };
+      const activate = (items, name) => items.find((item) => item.dataset.cliFlowNode === name || item.dataset.cliFlowLink === name)?.classList.add("is-active");
+      const later = (delay, action) => timers.push(window.setTimeout(action, delay));
+      const showFinalCli = () => {
+        consoleBody.replaceChildren(
+          line("$", "pr-cockpit listen fixture/cockpit#101", "is-command"),
+          line("·", "blocked · cached PR unchanged", "is-muted"),
+          line("→", "review submitted · targeted refresh complete", "is-event"),
+          line("#", "Pull Request #101: Ship deterministic screenshot fixtures…"),
+          line("·", "Cached snapshot: 0s old", "is-muted"),
+          line("✓", "Review: APPROVED · CI: PASSING", "is-result"),
+          line("→", "agent resumes with the refreshed PR", "is-result")
+        );
+        [...nodes, ...links].forEach((item) => item.classList.add("is-active"));
+        stage.dataset.cliFlowState = "done";
+        caption.textContent = "Listen returned once. The agent continues with fresh local context.";
+      };
+      const playCliFlow = () => {
+        timers.forEach(window.clearTimeout);
+        timers = [];
+        [...nodes, ...links].forEach((item) => item.classList.remove("is-active"));
+        cliFlowPlayer.dataset.cliFlowPlayed = "true";
+        if (motionReduced) {
+          showFinalCli();
+          return;
+        }
+        stage.dataset.cliFlowState = "listen";
+        caption.textContent = "The agent starts a blocking local-cache wait.";
+        consoleBody.replaceChildren(line("$", "", "is-command"));
+        const commandBody = consoleBody.querySelector("b");
+        const command = "pr-cockpit listen fixture/cockpit#101";
+        [...command].forEach((letter, index) => later(260 + index * 24, () => { commandBody.textContent += letter; }));
+        later(1250, () => {
+          activate(nodes, "agent");
+          addLine("·", "blocked · cached PR unchanged", "is-muted");
+          caption.textContent = "Listen blocks on the local PR fingerprint — not a GitHub poll loop.";
+        });
+        later(2250, () => {
+          activate(nodes, "github");
+          activate(links, "webhook");
+          caption.textContent = "GitHub reports a substantive review update.";
+        });
+        later(2920, () => {
+          activate(nodes, "relay");
+          activate(links, "relay");
+          caption.textContent = "The relay forwards only the change marker.";
+        });
+        later(3560, () => {
+          activate(nodes, "cache");
+          activate(links, "refresh");
+          caption.textContent = "PR Cockpit refreshes PR #101 directly from GitHub.";
+        });
+        later(4220, () => {
+          activate(nodes, "wake");
+          activate(links, "wake");
+          addLine("→", "review submitted · targeted refresh complete", "is-event");
+          caption.textContent = "The local fingerprint changes. Listen wakes.";
+        });
+        later(4550, () => addLine("#", "Pull Request #101: Ship deterministic screenshot fixtures…"));
+        later(4720, () => addLine("·", "Cached snapshot: 0s old", "is-muted"));
+        later(4890, () => addLine("✓", "Review: APPROVED · CI: PASSING", "is-result"));
+        later(5180, () => {
+          addLine("→", "agent resumes with the refreshed PR", "is-result");
+          stage.dataset.cliFlowState = "done";
+          caption.textContent = "Listen returned once. The agent continues with fresh local context.";
+        });
+      };
+      stage.dataset.cliFlowState = motionReduced ? "done" : "idle";
+      replay.addEventListener("click", playCliFlow);
+      playOnceVisible(cliFlowPlayer, playCliFlow);
+    }
   </script>
 </body>
 </html>

@@ -4798,7 +4798,7 @@
     max-width: 1120px;
   }
   .cols {
-    grid-template-columns: minmax(0, 816px) minmax(248px, 278px);
+    grid-template-columns: minmax(0, 1fr) minmax(248px, 278px);
     gap: 26px;
   }
   .right {
