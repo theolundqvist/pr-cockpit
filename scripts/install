@@ -265,8 +265,14 @@ PLIST
 
 echo "pr-cockpit: starting background services..."
 shell_agent_loaded=0
-if launchctl print "gui/$(id -u)/$agent_label" >/dev/null 2>&1; then
+shell_agent_root=""
+if agent_state="$(launchctl print "gui/$(id -u)/$agent_label" 2>/dev/null)"; then
   shell_agent_loaded=1
+  # A loaded job keeps the environment it was bootstrapped with, so rewriting the
+  # plist cannot move a registration from an older root onto this install. Such a
+  # job crash-loops: its launcher sees this install's server on the port, reads a
+  # foreign root in /healthz, and exits "serving a different instance".
+  shell_agent_root="$(printf '%s\n' "$agent_state" | sed -n 's/^[[:space:]]*COCKPIT_ROOT=\(.*\)$/\1/p' | head -n 1)"
 fi
 if health_is_ours; then
   curl --max-time 2 -fsS -X POST "http://127.0.0.1:$install_port/api/shutdown" >/dev/null 2>&1 || true
@@ -301,10 +307,14 @@ bootstrap_agent() {
 # Restart only the server. A loaded renderer stays alive and picks up UI assets
 # on its next navigation or refresh.
 bootstrap_agent "$server_agent_plist"
-if [[ "$shell_agent_loaded" -eq 0 ]]; then
-  bootstrap_agent "$agent_plist"
-else
+if [[ "$shell_agent_loaded" -eq 1 && "$shell_agent_root" == "$root" ]]; then
   echo "pr-cockpit: preserving running app"
+else
+  if [[ "$shell_agent_loaded" -eq 1 ]]; then
+    echo "pr-cockpit: replacing the app registration for ${shell_agent_root:-an unknown root}"
+    launchctl bootout "gui/$(id -u)/$agent_label" >/dev/null 2>&1 || true
+  fi
+  bootstrap_agent "$agent_plist"
 fi
 
 server_ready=0
