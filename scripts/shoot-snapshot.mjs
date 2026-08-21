@@ -7,7 +7,6 @@ import { extname, join, resolve } from "node:path";
 import { chromium } from "playwright";
 
 const ROOT = resolve(import.meta.dirname, "..");
-const VIEWPORT = { width: 1600, height: 1200 };
 const THEMES = ["light", "dark"];
 const CONTENT_TYPE_BY_EXTENSION = {
   ".png": "image/png",
@@ -17,7 +16,7 @@ const CONTENT_TYPE_BY_EXTENSION = {
 };
 
 function parseArgs(argv) {
-  const options = { snapshot: "server/mockData/microsoft-vscode", out: "docs/screenshots" };
+  const options = { snapshot: "server/mockData/microsoft-vscode", out: "docs/screenshots", viewport: "1600x1200", theme: "both", profile: "public", filter: "" };
   for (let i = 0; i < argv.length; i += 2) {
     const key = argv[i]?.replace(/^--/, "");
     if (!key || argv[i + 1] === undefined) throw new Error(`missing value for ${argv[i]}`);
@@ -25,6 +24,12 @@ function parseArgs(argv) {
   }
   return options;
 }
+function parseViewport(value) {
+  const match = value.match(/^(\d+)x(\d+)$/);
+  if (!match) throw new Error(`invalid viewport: ${value}`);
+  return { width: Number(match[1]), height: Number(match[2]) };
+}
+
 
 function collectAuthors(detail) {
   const authors = [detail.author];
@@ -95,12 +100,12 @@ async function settle(page, theme) {
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
 }
 
-function inspectPng(buffer) {
+function inspectPng(buffer, viewport) {
   if (buffer.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") throw new Error("screenshot is not a PNG");
   const width = buffer.readUInt32BE(16);
   const height = buffer.readUInt32BE(20);
-  if (width !== VIEWPORT.width || height !== VIEWPORT.height) {
-    throw new Error(`PNG is ${width}×${height}, expected ${VIEWPORT.width}×${VIEWPORT.height}`);
+  if (width !== viewport.width || height !== viewport.height) {
+    throw new Error(`PNG is ${width}×${height}, expected ${viewport.width}×${viewport.height}`);
   }
   if (buffer.length < 10_000) throw new Error(`PNG appears blank: only ${buffer.length} bytes`);
 }
@@ -129,6 +134,7 @@ async function openFile(page, path) {
   await treeEntry.click();
   await fileBlock(page, path).waitFor();
 }
+
 async function positionFiles(page) {
   await page.locator(".files-layout").evaluate((layout) => {
     const scroller = layout.closest(".page");
@@ -150,12 +156,25 @@ async function verifyAligned(page, leftSelector, rightSelector) {
   }
 }
 
+async function verifyRightEdgesAligned(page, leftSelector, rightSelector) {
+  const [left, right] = await Promise.all([
+    page.locator(leftSelector).first().boundingBox(),
+    page.locator(rightSelector).first().boundingBox(),
+  ]);
+  if (!left || !right) throw new Error(`missing capture edges: ${leftSelector}, ${rightSelector}`);
+  const leftEdge = left.x + left.width;
+  const rightEdge = right.x + right.width;
+  if (Math.abs(leftEdge - rightEdge) > 2) {
+    throw new Error(`capture edges are not aligned: ${leftSelector} x=${leftEdge}, ${rightSelector} x=${rightEdge}`);
+  }
+}
 
-function scenariosFor(snapshot, roles) {
+
+function scenariosFor(snapshot, roles, profile) {
   const repo = snapshot.repo;
   const paletteTitle = snapshot.details.find((detail) => detail.number === roles.palette.number).title;
   const paletteQuery = paletteTitle.split(/\W+/).filter(Boolean).slice(0, 3).join(" ");
-  return [
+  const scenarios = [
     {
       name: "inbox",
       route: "#/",
@@ -168,6 +187,7 @@ function scenariosFor(snapshot, roles) {
       name: "conversation",
       route: `#/pr/${repo}/${roles.conversation.number}`,
       ready: ".page .detail",
+      verify: (page) => verifyRightEdgesAligned(page, ".pr-head", ".right"),
     },
     {
       name: "files",
@@ -182,19 +202,23 @@ function scenariosFor(snapshot, roles) {
       ready: ".files-layout .diff",
       interact: async (page) => {
         await openFile(page, roles.editing.path);
-        const block = fileBlock(page, roles.editing.path);
-        await block.locator(".file-edit-btn").click();
+        await fileBlock(page, roles.editing.path).locator(".file-edit-btn").click();
         const editor = page.getByLabel(`Edit ${roles.editing.path}`);
         await editor.waitFor();
-        await editor.click();
-        await page.keyboard.press("Meta+Home");
-        const marker = roles.editing.path.endsWith(".css")
-          ? "/* Edited locally in PR Cockpit */"
-          : "// Edited locally in PR Cockpit";
-        await page.keyboard.type(`${marker}\n`);
+        await editor.evaluate((content) => {
+          const scroller = content.closest(".cm-editor")?.querySelector(".cm-scroller");
+          if (!(scroller instanceof HTMLElement)) throw new Error("editor scroller missing");
+          scroller.scrollTop = scroller.scrollHeight * 0.93;
+          scroller.dispatchEvent(new Event("scroll"));
+        });
+        const changedLine = page.locator(".cm-line").filter({ hasText: "!Array.isArray(extensionGalleryManifest.resources)" }).first();
+        await changedLine.waitFor();
+        await changedLine.click();
+        await page.keyboard.press("End");
+        await page.keyboard.type(" /* reviewed here */");
         await page.waitForFunction(
           ({ label, expected }) => document.querySelector(`[aria-label="${CSS.escape(label)}"]`)?.textContent?.includes(expected),
-          { label: `Edit ${roles.editing.path}`, expected: "Edited locally in PR Cockpit" },
+          { label: `Edit ${roles.editing.path}`, expected: "reviewed here" },
         );
         await positionFiles(page);
       },
@@ -218,15 +242,32 @@ function scenariosFor(snapshot, roles) {
       },
     },
   ];
+  if (profile === "landing") {
+    scenarios.push({
+      name: "hide-tests",
+      route: `#/pr/${repo}/${roles.files.number}/files`,
+      ready: ".files-layout .diff",
+      interact: async (page) => {
+        await page.getByRole("button", { name: /hide 1 test file/ }).click();
+        await page.getByRole("button", { name: /show 1 test file/ }).waitFor();
+        await positionFiles(page);
+      },
+      verify: (page) => verifyAligned(page, ".tree-pane", ".diff-pane"),
+    });
+  }
+  return scenarios;
 }
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  const viewport = parseViewport(options.viewport);
+  const themes = options.theme === "both" ? THEMES : [options.theme];
+  if (!themes.every((theme) => THEMES.includes(theme))) throw new Error("--theme must be light, dark, or both");
   const snapshotDir = resolve(ROOT, options.snapshot);
   const snapshot = JSON.parse(await readFile(join(snapshotDir, "snapshot.json"), "utf8"));
   const roles = requireRoles(snapshot);
   const assets = loadAssets(snapshotDir, snapshot);
-  const scenarios = scenariosFor(snapshot, roles);
+  const scenarios = scenariosFor(snapshot, roles, options.profile).filter((scenario) => scenario.name.includes(options.filter));
   const outDir = resolve(ROOT, options.out);
   const dataDir = await mkdtemp(join(tmpdir(), "pr-cockpit-snapshot-"));
   const port = await availablePort();
@@ -267,9 +308,9 @@ async function main() {
 
     browser = await chromium.launch({ headless: true });
     await mkdir(outDir, { recursive: true });
-    for (const theme of THEMES) {
+    for (const theme of themes) {
       const context = await browser.newContext({
-        viewport: VIEWPORT,
+        viewport,
         deviceScaleFactor: 1,
         colorScheme: theme,
         reducedMotion: "reduce",
@@ -308,7 +349,7 @@ async function main() {
         }
         if (pageErrors.length) throw new AggregateError(pageErrors, `${scenario.name}-${theme}: uncaught browser error`);
         const png = await page.screenshot({ type: "png", animations: "disabled" });
-        inspectPng(png);
+        inspectPng(png, viewport);
         const output = join(outDir, `${scenario.name}-${theme}.png`);
         await writeFile(output, png);
         console.log(`wrote ${output}`);

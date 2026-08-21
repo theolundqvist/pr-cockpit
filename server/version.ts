@@ -1,4 +1,4 @@
-const CHECK_INTERVAL_MS = 15 * 60 * 1000;
+const CHECK_INTERVAL_MS = 5 * 60 * 1000;
 const repoRoot = `${import.meta.dir}/..`;
 
 let updateAvailable = false;
