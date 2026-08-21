@@ -284,12 +284,12 @@ describe("agent PR summary", () => {
       cancelled: 1,
       skipped: 1,
       checks: [
-        { name: "lint", state: "passed", required: true, url: null },
-        { name: "tests", state: "passed", required: true, url: null },
-        { name: "review", state: "running", required: false, url: "https://example.com/review" },
-        { name: "deploy", state: "failed", required: true, url: "https://example.com/deploy" },
-        { name: "trpc compat", state: "skipped", required: true, url: null },
-        { name: "browser", state: "cancelled", required: false, url: null },
+        { name: "lint", state: "passed", required: true, url: null, logBytes: null },
+        { name: "tests", state: "passed", required: true, url: null, logBytes: null },
+        { name: "review", state: "running", required: false, url: "https://example.com/review", logBytes: null },
+        { name: "deploy", state: "failed", required: true, url: "https://example.com/deploy", logBytes: null },
+        { name: "trpc compat", state: "skipped", required: true, url: null, logBytes: null },
+        { name: "browser", state: "cancelled", required: false, url: null, logBytes: null },
       ],
     });
     expect(summary.openComments).toEqual([
@@ -322,10 +322,10 @@ describe("agent PR summary", () => {
 
     const ci = buildPrAgentSummary("example-org/webapp#6133", rerun, null).ci;
     expect(ci.checks.filter((c) => c.name === "flaky")).toEqual([
-      { name: "flaky", state: "running", required: false, url: null },
+      { name: "flaky", state: "running", required: false, url: null, logBytes: null },
     ]);
     expect(ci.checks.filter((c) => c.name === "browser")).toEqual([
-      { name: "browser", state: "running", required: false, url: null },
+      { name: "browser", state: "running", required: false, url: null, logBytes: null },
     ]);
     expect(ci.failed).toBe(1);
     expect(ci.cancelled).toBe(0);

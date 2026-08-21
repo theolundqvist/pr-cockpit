@@ -15,6 +15,7 @@ import {
   listClosedPrs,
   listPrIndex,
   listPrs,
+  listRunJobs,
   saveDiff,
   saveFileContents,
   setArchived,
@@ -93,6 +94,7 @@ import { createTmuxFocusHandler } from "./tmuxFocus.ts";
 import type { TmuxFocusHandler } from "./tmuxFocus.ts";
 import { needsMeRank } from "./rank.ts";
 import { invalidateInbox, invalidatePr } from "./rendererInvalidation.ts";
+import { cachedJobLogs, formatJobLogs, syncRunJobs } from "./runLogs.ts";
 const cockpitRoot = process.cwd();
 
 function json(data: unknown, status = 200): Response {
@@ -589,7 +591,7 @@ function handlePrDetails(url: URL): Response {
   return json({ details });
 }
 
-type PrSummaryCheck = { name: string; state: CheckState; required: boolean; url: string | null };
+type PrSummaryCheck = { name: string; state: CheckState; required: boolean; url: string | null; logBytes: number | null };
 type PrSummaryComment = { author: string; body: string; createdAt: string };
 type PrSummaryThread = { handle: string; path: string; line: number | null; outdated: boolean; comments: PrSummaryComment[] };
 type PrSummaryNewComment = PrSummaryComment & {
@@ -655,16 +657,23 @@ export function buildPrAgentSummary(
   const live = liveCheckNames(checkNodes);
   const checks: PrSummaryCheck[] = [];
   const counts: Record<CheckState, number> = { passed: 0, running: 0, failed: 0, cancelled: 0, skipped: 0 };
+  // a cached log turns a red check into something an agent can read without another GitHub call
+  const logBytesByJob: Record<string, number> = {};
+  for (const job of listRunJobs(ref.slice(0, ref.lastIndexOf("#")), String(detail.headRefOid ?? ""))) {
+    if (job.log_bytes !== null) logBytesByJob[job.name] = job.log_bytes;
+  }
   for (const check of checkNodes) {
     const state = checkState(check);
     // a re-queued run supersedes the previous attempt's verdict
     if ((state === "failed" || state === "cancelled") && live.has(checkName(check))) continue;
     counts[state] += 1;
+    const name = String(check.__typename === "CheckRun" ? check.name : check.context);
     checks.push({
-      name: String(check.__typename === "CheckRun" ? check.name : check.context),
+      name,
       state,
       required: check.isRequired === true,
       url: check.__typename === "CheckRun" ? check.detailsUrl ?? null : check.targetUrl ?? null,
+      logBytes: logBytesByJob[name] ?? null,
     });
   }
 
@@ -755,7 +764,11 @@ export function formatPrAgentSummary(summary: PrAgentSummary, includeComments = 
     `Checks: ${summary.ci.passed} passed · ${summary.ci.running} running · ${summary.ci.failed} failed · ${summary.ci.cancelled} cancelled · ${summary.ci.skipped} skipped · ${summary.ci.checks.length} total${!summary.ci.checksFetched ? " · NOT FETCHED" : summary.ci.complete ? "" : " · PARTIAL (100+ checks)"}`,
   );
   for (const check of summary.ci.checks) {
-    lines.push(`- ${check.state.toUpperCase()}${check.required ? " required" : ""}: ${check.name}${check.url ? ` — ${check.url}` : ""}`);
+    const log = check.logBytes === null ? "" : ` · log cached (${Math.max(1, Math.round(check.logBytes / 1024))} KB)`;
+    lines.push(`- ${check.state.toUpperCase()}${check.required ? " required" : ""}: ${check.name}${log}${check.url ? ` — ${check.url}` : ""}`);
+  }
+  if (summary.ci.checks.some((check) => check.logBytes !== null)) {
+    lines.push("", `Read a cached log with \`pr-cockpit ${summary.ref} --logs [check name]\` instead of polling GitHub Actions.`);
   }
 
   if (includeComments && summary.newCommentsSince) {
@@ -1061,6 +1074,30 @@ async function handleAgentPrDiff(owner: string, repo: string, number: string, ur
   if (!validPrReference(owner, repo, number)) return json({ error: "invalid PR reference" }, 400);
   if (!resolvePrContext(`${owner}/${repo}`, Number(number))) return json({ error: "PR is not cached yet" }, 404);
   return handlePrDiff(owner, repo, number, url);
+}
+
+async function handleAgentPrLogs(owner: string, repo: string, number: string, url: URL): Promise<Response> {
+  if (!validPrReference(owner, repo, number)) return json({ error: "invalid PR reference" }, 400);
+  const repoName = `${owner}/${repo}`;
+  const num = Number(number);
+  const cached = getPr(repoName, num) ?? getCachedPrDetail(repoName, num);
+  if (!cached) return json({ error: "PR is not cached yet" }, 404);
+  const detail = JSON.parse(cached.detail_json) as PrDetail;
+  const check = url.searchParams.get("check") ?? undefined;
+
+  let entries = cachedJobLogs(repoName, detail.headRefOid, check);
+  if (entries.every((entry) => entry.body === null)) {
+    // an agent asking for a log outright is worth the REST reserve the background sync protects
+    try {
+      await syncRunJobs(repoName, detail, { background: false });
+    } catch (err) {
+      console.error(`run job sync failed for ${repoName}#${num}:`, err);
+    }
+    entries = cachedJobLogs(repoName, detail.headRefOid, check);
+  }
+  return new Response(formatJobLogs(detail.headRefOid, entries), {
+    headers: { "content-type": "text/plain; charset=utf-8" },
+  });
 }
 
 async function handleAgentPrFile(owner: string, repo: string, number: string, url: URL): Promise<Response> {
@@ -2001,6 +2038,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       parts[2] === "pr"
     ) {
       if (parts[6] === "diff") return handleAgentPrDiff(parts[3]!, parts[4]!, parts[5]!, url);
+      if (parts[6] === "logs") return handleAgentPrLogs(parts[3]!, parts[4]!, parts[5]!, url);
       if (parts[6] === "file") return handleAgentPrFile(parts[3]!, parts[4]!, parts[5]!, url);
     }
     const trustedCliHost = /^(?:127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(req.headers.get("host") ?? url.host);

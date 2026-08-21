@@ -59,7 +59,7 @@ function check(name: string, conclusion: string | null, required = true, status 
     startedAt: at(55),
     completedAt: status === "COMPLETED" ? at(50) : null,
     isRequired: required,
-    checkSuite: { workflowRun: { workflow: { name: "CI" } } },
+    checkSuite: { workflowRun: { databaseId: runId, workflow: { name: "CI" } } },
   };
 }
 
@@ -403,6 +403,125 @@ function fixtureDetail(repo: string, number: number): PrDetail {
   return structuredClone(detail);
 }
 
+interface RunJobStep {
+  name: string;
+  number: number;
+  status: string;
+  conclusion: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+interface RunJob {
+  id: number;
+  run_id: number;
+  run_attempt: number;
+  head_sha: string;
+  name: string;
+  status: string;
+  conclusion: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  html_url: string | null;
+  steps: RunJobStep[];
+}
+
+function fixtureRunHeadSha(repo: string, runId: number): string {
+  for (const [key, detail] of Object.entries(details)) {
+    if (!key.startsWith(`${repo}#`)) continue;
+    const checks = detail.lastCommit.nodes[0]?.commit.statusCheckRollup?.contexts.nodes ?? [];
+    const matches = checks.some((candidate) =>
+      candidate.__typename === "CheckRun"
+      && candidate.conclusion === "FAILURE"
+      && candidate.checkSuite?.workflowRun?.databaseId === runId
+    );
+    if (matches) return sha(detail.number);
+  }
+  throw new Error(`no mock run jobs for ${repo}:${runId}`);
+}
+
+function fixtureRunJobs(repo: string, runId: number): RunJob[] {
+  const headSha = fixtureRunHeadSha(repo, runId);
+  const job = (offset: number, name: string, conclusion: string, started: number, completed: number, steps: RunJobStep[]): RunJob => {
+    const id = runId * 10 + offset;
+    return {
+      id,
+      run_id: runId,
+      run_attempt: 1,
+      head_sha: headSha,
+      name,
+      status: "completed",
+      conclusion,
+      started_at: at(started),
+      completed_at: at(completed),
+      html_url: `https://github.com/${REPO}/actions/runs/${runId}/job/${id}`,
+      steps,
+    };
+  };
+  return [
+    job(1, "Lint", "success", 49, 47, [
+      { name: "Set up job", number: 1, status: "completed", conclusion: "success", started_at: at(49), completed_at: at(48) },
+      { name: "Run lint", number: 2, status: "completed", conclusion: "success", started_at: at(48), completed_at: at(47) },
+    ]),
+    job(2, "Unit tests", "failure", 47, 44, [
+      { name: "Set up job", number: 1, status: "completed", conclusion: "success", started_at: at(47), completed_at: at(46) },
+      { name: "Run tests", number: 2, status: "completed", conclusion: "failure", started_at: at(46), completed_at: at(44) },
+    ]),
+    job(3, "Browser tests", "cancelled", 46, 43, [
+      { name: "Set up job", number: 1, status: "completed", conclusion: "success", started_at: at(46), completed_at: at(45) },
+      { name: "Run browser tests", number: 2, status: "completed", conclusion: "cancelled", started_at: at(45), completed_at: at(43) },
+    ]),
+  ];
+}
+
+function fixtureJobLog(repo: string, jobId: number): string {
+  const runId = Math.floor(jobId / 10);
+  if (!fixtureRunJobs(repo, runId).some((job) => job.id === jobId)) throw new Error(`no mock job log for ${repo}:${jobId}`);
+  const lines = [
+    `Runner version: '2.325.0' for job ${jobId}`,
+    "##[group]Operating System",
+    "macOS",
+    "15.5",
+    "24F74",
+    "##[endgroup]",
+    "##[group]Runner Image",
+    "Image: macos-15-arm64",
+    "Version: 20260713.1",
+    "Included Software: https://github.com/actions/runner-images",
+    "##[endgroup]",
+    "Prepare workflow directory",
+    "Prepare all required actions",
+    "Getting action download info",
+    "Download action repository 'actions/checkout@v4'",
+    "Complete job name: Unit tests",
+    "##[group]Run actions/checkout@v4",
+    "Syncing repository: fixture/cockpit",
+    "Getting Git version info",
+    "Temporarily overriding HOME",
+    "Adding repository directory to the temporary git global config",
+    "Disabling automatic garbage collection",
+    "Setting up auth",
+    "Fetching the repository",
+    "Determining the checkout info",
+    "Checking out the ref",
+    "##[endgroup]",
+    "##[group]Run bun test src/flight.test.ts",
+    "$ bun test src/flight.test.ts",
+    "bun test v1.2.18",
+    "",
+    "src/flight.test.ts:",
+    "✓ takes off deterministically [2.00ms]",
+    "\u001b[31mFAIL src/flight.test.ts > lands the plane\u001b[0m",
+    "expect(received).toBe(expected)",
+    "Expected: \"landed\"",
+    "Received: \"circling\"",
+    "##[error]Process completed with exit code 1",
+    "##[endgroup]",
+    "Cleaning up orphan processes",
+  ];
+  return lines.map((line, index) => `${new Date(Date.parse(at(50)) + index * 1_000).toISOString().replace("Z", "0000Z")} ${line}`).join("\n");
+}
+
 export const mockGithub = isMockGithub ? {
   viewerLogin: snapshot?.viewer ?? VIEWER,
   localBranch: (repo: string): string | null => capturedRepo ? null : repo === REPO ? "fixture/pr-101" : null,
@@ -451,6 +570,8 @@ export const mockGithub = isMockGithub ? {
     fixtureDetail(repo, number);
     return prPatch(number);
   },
+  runJobs: fixtureRunJobs,
+  jobLog: fixtureJobLog,
   fileHistory: (repo: string, path: string, base: string): FileHistoryCommit[] => {
     const key = capturedHistory ?? { repo: REPO, path: "src/flight.ts", base: "main" };
     if (repo !== key.repo || path !== key.path || base !== key.base) throw new Error(`no mock file history for ${repo}:${base}:${path}`);

@@ -147,6 +147,29 @@ CREATE TABLE IF NOT EXISTS review_rescores (
   created_at TEXT NOT NULL,
   PRIMARY KEY (repo, number, reviewer, review_sha, head_sha)
 );
+
+CREATE TABLE IF NOT EXISTS run_jobs (
+  repo TEXT NOT NULL,
+  job_id INTEGER NOT NULL,
+  run_id INTEGER NOT NULL,
+  run_attempt INTEGER NOT NULL,
+  head_sha TEXT NOT NULL,
+  name TEXT NOT NULL,
+  status TEXT NOT NULL,
+  conclusion TEXT,
+  started_at TEXT,
+  completed_at TEXT,
+  html_url TEXT,
+  failed_step TEXT,
+  log_gz BLOB,
+  log_bytes INTEGER,
+  log_truncated INTEGER NOT NULL DEFAULT 0,
+  log_error TEXT,
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY (repo, job_id)
+);
+
+CREATE INDEX IF NOT EXISTS run_jobs_sha_idx ON run_jobs (repo, head_sha);
 `);
 
 const prsColumns = db.query("PRAGMA table_info(prs)").all() as Array<{ name: string }>;
@@ -255,6 +278,8 @@ db.exec("DELETE FROM pr_webhook_activity WHERE received_at < datetime('now', '-3
 // Diffs are a pure re-fetchable cache and were insert-only until this column existed;
 // legacy rows carry '' and so are swept by the same retention pass.
 db.exec("DELETE FROM diffs WHERE fetched_at < datetime('now', '-30 days')");
+// Job rows and their logs are re-fetchable and only useful while the PR head is current.
+db.exec("DELETE FROM run_jobs WHERE fetched_at < datetime('now', '-30 days')");
 
 export interface PrRow {
   repo: string;
@@ -610,6 +635,96 @@ const saveFileContentsStmt = db.prepare(
 
 export function saveFileContents(sha: string, path: string, content: string): void {
   saveFileContentsStmt.run(sha, path, content);
+}
+
+export interface RunJobRow {
+  repo: string;
+  job_id: number;
+  run_id: number;
+  run_attempt: number;
+  head_sha: string;
+  name: string;
+  status: string;
+  conclusion: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  html_url: string | null;
+  failed_step: string | null;
+  log_bytes: number | null;
+  log_truncated: number;
+  log_error: string | null;
+  fetched_at: string;
+}
+
+// A re-queued job keeps its id, so metadata is replaced while a log already on disk is kept.
+const upsertRunJobStmt = db.prepare(
+  `INSERT INTO run_jobs (
+    repo, job_id, run_id, run_attempt, head_sha, name, status, conclusion,
+    started_at, completed_at, html_url, failed_step, fetched_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  ON CONFLICT (repo, job_id) DO UPDATE SET
+    run_attempt = excluded.run_attempt,
+    head_sha = excluded.head_sha,
+    name = excluded.name,
+    status = excluded.status,
+    conclusion = excluded.conclusion,
+    started_at = excluded.started_at,
+    completed_at = excluded.completed_at,
+    html_url = excluded.html_url,
+    failed_step = excluded.failed_step,
+    fetched_at = datetime('now')`,
+);
+
+export function upsertRunJob(job: Omit<RunJobRow, "log_bytes" | "log_truncated" | "log_error" | "fetched_at">): void {
+  upsertRunJobStmt.run(
+    job.repo,
+    job.job_id,
+    job.run_id,
+    job.run_attempt,
+    job.head_sha,
+    job.name,
+    job.status,
+    job.conclusion,
+    job.started_at,
+    job.completed_at,
+    job.html_url,
+    job.failed_step,
+  );
+}
+
+const listRunJobsStmt = db.prepare<RunJobRow, [string, string]>(
+  `SELECT repo, job_id, run_id, run_attempt, head_sha, name, status, conclusion,
+    started_at, completed_at, html_url, failed_step, log_bytes, log_truncated, log_error, fetched_at
+  FROM run_jobs WHERE repo = ? AND head_sha = ?
+  ORDER BY completed_at DESC, job_id DESC`,
+);
+
+export function listRunJobs(repo: string, headSha: string): RunJobRow[] {
+  return listRunJobsStmt.all(repo, headSha);
+}
+
+const getRunJobLogStmt = db.prepare<{ log_gz: Uint8Array | null }, [string, number]>(
+  "SELECT log_gz FROM run_jobs WHERE repo = ? AND job_id = ?",
+);
+
+export function getRunJobLog(repo: string, jobId: number): Uint8Array | null {
+  return getRunJobLogStmt.get(repo, jobId)?.log_gz ?? null;
+}
+
+const saveRunJobLogStmt = db.prepare(
+  "UPDATE run_jobs SET log_gz = ?, log_bytes = ?, log_truncated = ?, log_error = NULL WHERE repo = ? AND job_id = ?",
+);
+
+export function saveRunJobLog(repo: string, jobId: number, gz: Uint8Array, bytes: number, truncated: boolean): void {
+  saveRunJobLogStmt.run(gz, bytes, truncated ? 1 : 0, repo, jobId);
+}
+
+const saveRunJobLogErrorStmt = db.prepare(
+  "UPDATE run_jobs SET log_error = ? WHERE repo = ? AND job_id = ?",
+);
+
+export function saveRunJobLogError(repo: string, jobId: number, error: string): void {
+  saveRunJobLogErrorStmt.run(error, repo, jobId);
 }
 
 export interface MutationRow {

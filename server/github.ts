@@ -599,7 +599,7 @@ export async function removeRequestedReviewers(repo: string, number: number, log
   await restRequest("DELETE", `/repos/${repo}/pulls/${number}/requested_reviewers`, { reviewers: logins });
 }
 
-export const SCHEMA_EPOCH = 10;
+export const SCHEMA_EPOCH = 11;
 
 const REACTION_GROUPS_FIELD = `reactionGroups { content viewerHasReacted reactors { totalCount } }`;
 
@@ -613,7 +613,7 @@ const CHECK_CONTEXT_FIELDS = `
     startedAt
     completedAt
     isRequired(pullRequestNumber: $number)
-    checkSuite { workflowRun { workflow { name } } }
+    checkSuite { workflowRun { databaseId workflow { name } } }
   }
   ... on StatusContext {
     context
@@ -818,7 +818,7 @@ type PrDetailShape<Rx> = {
                   startedAt: string | null;
                   completedAt: string | null;
                   isRequired: boolean;
-                  checkSuite: { workflowRun: { workflow: { name: string } } | null } | null;
+                  checkSuite: { workflowRun: { databaseId: number | null; workflow: { name: string } } | null } | null;
                 }
               | {
                   __typename: "StatusContext";
@@ -1215,6 +1215,57 @@ export async function fetchDiff(repo: string, number: number, base?: string, hea
     throw new Error(`diff fetch failed: ${res.status} ${await res.text()}`);
   }
   return res.text();
+}
+
+export interface RunJobStep {
+  name: string;
+  number: number;
+  status: string;
+  conclusion: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface RunJob {
+  id: number;
+  run_id: number;
+  run_attempt: number;
+  head_sha: string;
+  name: string;
+  status: string;
+  conclusion: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  html_url: string | null;
+  steps: RunJobStep[];
+}
+
+// filter=latest is GitHub's default and drops jobs superseded by a re-run attempt
+export async function fetchRunJobs(repo: string, runId: number): Promise<RunJob[]> {
+  if (mockGithub) return mockGithub.runJobs(repo, runId);
+  const token = await ghToken();
+  const res = await fetch(`https://api.github.com/repos/${repo}/actions/runs/${runId}/jobs?per_page=100&filter=latest`, {
+    headers: { Authorization: `bearer ${token}`, Accept: "application/vnd.github+json" },
+  });
+  if (!res.ok) throw new Error(`run jobs fetch failed: ${res.status} ${await res.text()}`);
+  const payload = (await res.json()) as { jobs?: RunJob[] };
+  return payload.jobs ?? [];
+}
+
+// The logs endpoint answers 302 with a Location that expires after a minute, and that storage host
+// rejects a request carrying GitHub's Authorization header, so the download is a second bare fetch.
+export async function fetchJobLog(repo: string, jobId: number): Promise<string> {
+  if (mockGithub) return mockGithub.jobLog(repo, jobId);
+  const token = await ghToken();
+  const res = await fetch(`https://api.github.com/repos/${repo}/actions/jobs/${jobId}/logs`, {
+    headers: { Authorization: `bearer ${token}`, Accept: "application/vnd.github+json" },
+    redirect: "manual",
+  });
+  const location = res.headers.get("location");
+  if (!location) throw new Error(`job log fetch failed: ${res.status} ${await res.text()}`);
+  const download = await fetch(location);
+  if (!download.ok) throw new Error(`job log download failed: ${download.status}`);
+  return download.text();
 }
 
 export interface FileHistoryCommit {
