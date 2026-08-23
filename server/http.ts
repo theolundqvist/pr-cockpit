@@ -730,9 +730,63 @@ export function buildPrAgentSummary(
   };
 }
 
-export function formatPrAgentSummary(summary: PrAgentSummary, includeComments = true, includeBody = true): string {
+export interface AgentSummaryFormatOptions {
+  comments?: boolean;
+  body?: boolean;
+  digest?: boolean;
+}
+
+function newCommentLine(comment: PrSummaryNewComment): string {
+  const location = comment.path ? ` · \`${comment.path}${comment.line == null ? "" : `:${comment.line}`}\`` : "";
+  const verdict = comment.state ? ` · ${comment.state.toLowerCase().replace(/_/g, " ")}` : "";
+  return `- @${comment.author} · ${comment.kind}${verdict}${location}: ${comment.body}${comment.url ? ` — ${comment.url}` : ""}`;
+}
+
+function openThreadLines(summary: PrAgentSummary, staleMarkers: string[]): string[] {
+  const lines: string[] = [];
+  if (summary.openComments.length === 0) lines.push("_No open review comments._");
+  for (const thread of summary.openComments) {
+    lines.push(`- \`${thread.handle}\` · \`${thread.path}${thread.line == null ? "" : `:${thread.line}`}\`${thread.outdated ? " · OUTDATED" : ""}${thread.outdated && thread.comments.some((comment) => staleMarkers.some((marker) => comment.body.includes(marker))) ? " · STALE AUTO-RESOLVE — resolve manually" : ""}`);
+    for (const comment of thread.comments) lines.push(`  - @${comment.author}: ${comment.body}`);
+  }
+  if (!summary.openCommentsComplete) lines.push("_Partial: review threads or replies may be missing._");
+  return lines;
+}
+
+function formatPrAgentDigest(summary: PrAgentSummary, number: string, includeComments: boolean, staleMarkers: string[]): string {
+  const lines = [`# Pull Request #${number}: ${summary.title}`];
+  if (summary.snapshot) {
+    const { fetchedAt, freshness, newerActivityAt } = summary.snapshot;
+    if (freshness === "outdated") lines.push("", `Cached snapshot: OUTDATED · ${snapshotAge(fetchedAt)} old · ${fetchedAt}`);
+    if (newerActivityAt) lines.push(`Known newer activity: webhook received ${newerActivityAt}. This snapshot does not include that activity.`);
+  }
+  lines.push("", `Review: ${summary.review} · CI: ${summary.ci.state}`);
+  const attention = summary.ci.checks.filter((check) => check.state === "failed" || check.state === "cancelled");
+  for (const check of attention) {
+    const log = check.logBytes === null ? "" : ` · log cached (${Math.max(1, Math.round(check.logBytes / 1024))} KB)`;
+    lines.push(`- ${check.state.toUpperCase()}${check.required ? " required" : ""}: ${check.name}${log}`);
+  }
+  if (attention.some((check) => check.logBytes !== null)) {
+    lines.push(`Read a cached log with \`pr-cockpit ${summary.ref} --logs [check name]\`.`);
+  }
+  if (includeComments) {
+    if (summary.newComments.length > 0) {
+      lines.push("", `## New Comments Since ${summary.newCommentsSince}`, "", ...summary.newComments.map(newCommentLine));
+    } else if (summary.openComments.length > 0) {
+      lines.push("", "## Open Review Comments", "", ...openThreadLines(summary, staleMarkers));
+    } else if (summary.newCommentsSince) {
+      lines.push("", `## New Comments Since ${summary.newCommentsSince}`, "", "_No new comments._");
+    }
+  }
+  lines.push("", `_Full state: \`pr-cockpit ${summary.ref}\`._`);
+  return `${lines.join("\n")}\n`;
+}
+
+export function formatPrAgentSummary(summary: PrAgentSummary, options: AgentSummaryFormatOptions = {}): string {
+  const { comments: includeComments = true, body: includeBody = true, digest = false } = options;
   const number = summary.ref.slice(summary.ref.lastIndexOf("#") + 1);
   const staleMarkers = reviewBots().flatMap((bot) => bot.staleMarker ? [bot.staleMarker] : []);
+  if (digest) return formatPrAgentDigest(summary, number, includeComments, staleMarkers);
   const lines = [
     `# Pull Request #${number}: ${summary.title}`,
     "",
@@ -776,19 +830,10 @@ export function formatPrAgentSummary(summary: PrAgentSummary, includeComments = 
   if (includeComments && summary.newCommentsSince) {
     lines.push("", `## New Comments Since ${summary.newCommentsSince}`, "");
     if (summary.newComments.length === 0) lines.push("_No new comments._");
-    for (const comment of summary.newComments) {
-      const location = comment.path ? ` · \`${comment.path}${comment.line == null ? "" : `:${comment.line}`}\`` : "";
-      const verdict = comment.state ? ` · ${comment.state.toLowerCase().replace(/_/g, " ")}` : "";
-      lines.push(`- ${comment.createdAt} · @${comment.author} · ${comment.kind}${verdict}${location}: ${comment.body}${comment.url ? ` — ${comment.url}` : ""}`);
-    }
+    for (const comment of summary.newComments) lines.push(newCommentLine(comment));
   } else if (includeComments) {
     lines.push("", "## Open Review Comments", "");
-    if (summary.openComments.length === 0) lines.push("_No open review comments._");
-    for (const thread of summary.openComments) {
-      lines.push(`- \`${thread.handle}\` · \`${thread.path}${thread.line == null ? "" : `:${thread.line}`}\`${thread.outdated ? " · OUTDATED" : ""}${thread.outdated && thread.comments.some((comment) => staleMarkers.some((marker) => comment.body.includes(marker))) ? " · STALE AUTO-RESOLVE — resolve manually" : ""}`);
-      for (const comment of thread.comments) lines.push(`  - @${comment.author}: ${comment.body}`);
-    }
-    if (!summary.openCommentsComplete) lines.push("_Partial: review threads or replies may be missing._");
+    lines.push(...openThreadLines(summary, staleMarkers));
   }
 
   lines.push("", summary.quota
@@ -820,6 +865,9 @@ async function handleAgentPr(
   const bodyInput = url.searchParams.get("body");
   if (bodyInput !== null && bodyInput !== "0" && bodyInput !== "1") return json({ error: "body must be 0 or 1" }, 400);
   const includeBody = bodyInput !== "0";
+  const digestInput = url.searchParams.get("digest");
+  if (digestInput !== null && digestInput !== "0" && digestInput !== "1") return json({ error: "digest must be 0 or 1" }, 400);
+  const digest = digestInput === "1";
   const sinceInput = url.searchParams.get("since");
   let newCommentsSince: string | null = null;
   if (sinceInput !== null) {
@@ -850,7 +898,7 @@ async function handleAgentPr(
   }
   const summary = buildPrAgentSummary(`${owner}/${repo}#${number}`, detail, quota, newCommentsSince, commentsSince);
   if (format === "json") return json(summary);
-  return new Response(formatPrAgentSummary(summary, includeComments, includeBody), {
+  return new Response(formatPrAgentSummary(summary, { comments: includeComments, body: includeBody, digest }), {
     headers: { "content-type": "text/markdown; charset=utf-8" },
   });
 }

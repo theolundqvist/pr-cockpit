@@ -316,6 +316,7 @@ wait_for_pr_change() {
 }
 
 if [[ "$command" = "listen" ]]; then
+  [[ -n "$since" ]] || since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   wait_for_pr_change "${COCKPIT_LISTEN_INTERVAL:-1}"
 fi
 
@@ -328,7 +329,7 @@ fi
 case "$mode" in
   summary)
     args=(--get --data-urlencode "format=markdown" --data-urlencode "comments=$comments")
-    [[ "$command" != "listen" ]] || args+=(--data-urlencode "body=0")
+    [[ "$command" != "listen" ]] || args+=(--data-urlencode "digest=1")
     [[ -z "$since" ]] || args+=(--data-urlencode "since=$since")
     curl --noproxy '*' -sS --fail-with-body "${args[@]}" "$base_url"
     ;;

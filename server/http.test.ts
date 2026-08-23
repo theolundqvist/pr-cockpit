@@ -391,7 +391,7 @@ describe("agent PR summary", () => {
   });
 
   test("omits the body with a read pointer when includeBody is false", () => {
-    const output = formatPrAgentSummary(buildPrAgentSummary("example-org/webapp#6133", detail, null), true, false);
+    const output = formatPrAgentSummary(buildPrAgentSummary("example-org/webapp#6133", detail, null), { body: false });
     expect(output).toContain("## Body\n\n_Omitted. Read it with `pr-cockpit example-org/webapp#6133`._");
     expect(output).not.toContain("Keep recurrence expansion bounded.");
     expect(output).toContain("## Cockpit Status");
@@ -468,6 +468,37 @@ describe("agent PR summary", () => {
     expect(output).toContain("thread · `src/calendar.ts:42`: Keep this bounded.");
     expect(output).toContain("https://github.com/example-org/webapp/pull/6133#discussion_r1");
     expect(output).not.toContain("Handle the DST boundary.");
+  });
+
+  test("digest renders title, status, and new comments without header or body boilerplate", () => {
+    const since = "2026-07-22T10:00:00Z";
+    const output = formatPrAgentSummary(buildPrAgentSummary("example-org/webapp#6133", detail, null, since, [{
+      kind: "review comment",
+      author: "reviewer",
+      body: "Keep this bounded.",
+      createdAt: "2026-07-22T10:05:00Z",
+      path: "src/calendar.ts",
+      line: 42,
+      state: null,
+      url: "https://github.com/example-org/webapp/pull/6133#discussion_r1",
+    }]), { digest: true });
+
+    expect(output).toContain("# Pull Request #6133");
+    expect(output).toContain("Review:");
+    expect(output).toContain(`## New Comments Since ${since}`);
+    expect(output).toContain("- @reviewer · review comment · `src/calendar.ts:42`: Keep this bounded.");
+    expect(output).toContain("_Full state: `pr-cockpit example-org/webapp#6133`._");
+    expect(output).not.toContain("## Body");
+    expect(output).not.toContain("State:");
+    expect(output).not.toContain("Quota:");
+    expect(output).not.toContain("Checks:");
+  });
+
+  test("digest falls back to open review threads when no new comments arrived", () => {
+    const output = formatPrAgentSummary(buildPrAgentSummary("example-org/webapp#6133", detail, null, "2026-07-22T10:00:00Z", []), { digest: true });
+
+    expect(output).toContain("## Open Review Comments");
+    expect(output).not.toContain("_No new comments._");
   });
 
 

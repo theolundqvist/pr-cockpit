@@ -1263,10 +1263,10 @@
         <div class="section-intro cli-flow-intro">
           <div>
             <h2 class="section-title">Local GitHub cache. Faster agents. Fewer tokens.</h2>
-            <p class="section-lede"><code>pr-cockpit listen theolundqvist/pr-cockpit#109</code> blocks until the PR changes, then prints the fresh state and exits.</p>
+            <p class="section-lede"><code>pr-cockpit listen theolundqvist/pr-cockpit#109</code> blocks until the PR changes, then prints only what changed and exits.</p>
           </div>
         </div>
-        <p class="visually-hidden">Animated flow: an agent starts pr-cockpit listen and blocks on local cached state. Most of the time passes waiting for a reviewer comment. When it lands, GitHub emits a webhook, the relay forwards a change marker, PR Cockpit refreshes pull request 109 from GitHub, and listen wakes almost instantly, printing the refreshed pull request with the new review comment before the agent continues.</p>
+        <p class="visually-hidden">Animated flow: an agent starts pr-cockpit listen and blocks on local cached state. Most of the time passes waiting for a reviewer comment. When it lands, GitHub emits a webhook, the relay forwards a change marker, PR Cockpit refreshes pull request 109 from GitHub, and listen wakes almost instantly, printing a digest of just the new review comment before the agent continues.</p>
         <div class="cli-flow-player" data-cli-flow-player>
           <div class="cli-flow-stage" id="cli-flow-stage" data-cli-flow-state="done" aria-hidden="true">
             <div class="cli-flow-map">
@@ -1285,16 +1285,13 @@
               <div class="cli-flow-console" data-cli-flow-console>
                 <div class="cli-flow-line is-command"><span>$</span><b>pr-cockpit listen theolundqvist/pr-cockpit#109</b></div>
                 <div class="cli-flow-line"><span>#</span><b>Pull Request #109: Show failed optimistic mutations with recovery controls</b></div>
-                <div class="cli-flow-line"><span></span><b>State: OPEN</b></div>
-                <div class="cli-flow-line"><span></span><b>Head: failed-mutation-recovery</b></div>
-                <div class="cli-flow-line"><span>##</span><b>Body</b></div>
-                <div class="cli-flow-line"><span></span><b>_Omitted. Read it with `pr-cockpit theolundqvist/pr-cockpit#109`._</b></div>
-                <div class="cli-flow-line"><span>##</span><b>Cockpit Status</b></div>
+                <div class="cli-flow-line"><span></span><b></b></div>
                 <div class="cli-flow-line"><span></span><b>Review: NONE · CI: SUCCESS</b></div>
-                <div class="cli-flow-line"><span></span><b>Checks: 9 passed · 0 running · 0 failed · 0 cancelled · 0 skipped · 9 total</b></div>
-                <div class="cli-flow-line"><span>##</span><b>Open Review Comments</b></div>
-                <div class="cli-flow-line is-result"><span></span><b>- `1557531d2b` · `server/mutations.ts:72`</b></div>
-                <div class="cli-flow-line is-result"><span></span><b>  - @reviewer-one: Please make the retry path visible when the write fails.</b></div>
+                <div class="cli-flow-line"><span></span><b></b></div>
+                <div class="cli-flow-line"><span>##</span><b>New Comments Since 2026-08-23T09:14:02Z</b></div>
+                <div class="cli-flow-line is-result"><span></span><b>- @reviewer-one · review comment · `server/mutations.ts:72`: Surface the retry path on write failure.</b></div>
+                <div class="cli-flow-line"><span></span><b></b></div>
+                <div class="cli-flow-line"><span></span><b>_Full state: `pr-cockpit theolundqvist/pr-cockpit#109`._</b></div>
               </div>
             </div>
           </div>
@@ -1687,16 +1684,13 @@
       const later = (delay, action) => timers.push(window.setTimeout(action, delay));
       const finalLines = [
         ["#", "Pull Request #109: Show failed optimistic mutations with recovery controls", ""],
-        ["", "State: OPEN", ""],
-        ["", "Head: failed-mutation-recovery", ""],
-        ["##", "Body", ""],
-        ["", "_Omitted. Read it with `pr-cockpit theolundqvist/pr-cockpit#109`._", ""],
-        ["##", "Cockpit Status", ""],
+        ["", "", ""],
         ["", "Review: NONE · CI: SUCCESS", ""],
-        ["", "Checks: 9 passed · 0 running · 0 failed · 0 cancelled · 0 skipped · 9 total", ""],
-        ["##", "Open Review Comments", ""],
-        ["", "- `1557531d2b` · `server/mutations.ts:72`", "is-result"],
-        ["", "  - @reviewer-one: Please make the retry path visible when the write fails.", "is-result"],
+        ["", "", ""],
+        ["##", "New Comments Since 2026-08-23T09:14:02Z", ""],
+        ["", "- @reviewer-one · review comment · `server/mutations.ts:72`: Surface the retry path on write failure.", "is-result"],
+        ["", "", ""],
+        ["", "_Full state: `pr-cockpit theolundqvist/pr-cockpit#109`._", ""],
       ];
       const command = "pr-cockpit listen theolundqvist/pr-cockpit#109";
       const showFinalCli = () => {
