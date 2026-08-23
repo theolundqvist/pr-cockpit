@@ -341,11 +341,24 @@
     .benchmark-lane.is-origin .benchmark-p50 { background: color-mix(in srgb, var(--blue) 100%, transparent); }
 
     .benchmark-method {
+      display: flex;
+      justify-content: center;
+      gap: 22px;
       margin: 18px 0 0;
       color: var(--text-faint);
       font-family: var(--mono);
       font-size: 11px;
       text-align: center;
+    }
+
+    .benchmark-method a + a {
+      position: relative;
+    }
+
+    .benchmark-method a + a::before {
+      position: absolute;
+      left: -12px;
+      content: "·";
     }
 
     .benchmark-method a:hover {
@@ -1086,7 +1099,7 @@
     /* CLI listen flow */
     .cli-flow-player { position: relative; }
     .cli-flow-intro code { color: var(--green); font-family: var(--mono); font-size: 0.84em; }
-    .cli-flow-stage { position: relative; min-height: 580px; overflow: hidden; padding: 42px 42px 66px; border: 1px solid var(--border-strong); border-radius: 12px; background: radial-gradient(circle at 78% 12%, rgba(94, 210, 141, 0.08), transparent 28%), linear-gradient(150deg, #171716, #0d0d0c 70%); box-shadow: 0 35px 90px rgba(0, 0, 0, 0.36); }
+    .cli-flow-stage { position: relative; overflow: hidden; padding: 42px 42px 66px; border: 1px solid var(--border-strong); border-radius: 12px; background: radial-gradient(circle at 78% 12%, rgba(94, 210, 141, 0.08), transparent 28%), linear-gradient(150deg, #171716, #0d0d0c 70%); box-shadow: 0 35px 90px rgba(0, 0, 0, 0.36); }
     .cli-flow-map { display: grid; grid-template-columns: minmax(100px, 1fr) 42px minmax(100px, 1fr) 42px minmax(100px, 1fr) 42px minmax(110px, 1.1fr) 42px minmax(100px, 1fr); align-items: center; }
     .cli-flow-node, .cli-flow-wake { display: grid; grid-template-columns: 24px 1fr; gap: 2px 9px; align-items: center; min-height: 76px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); opacity: 0.32; transition: opacity 220ms ease, border-color 220ms ease, box-shadow 220ms ease, transform 220ms ease; }
     .cli-flow-node > span, .cli-flow-wake > span { display: grid; grid-row: 1 / 3; width: 22px; height: 22px; place-items: center; border: 1px solid var(--border-strong); border-radius: 50%; color: var(--text-faint); font: 10px var(--mono); }
@@ -1121,7 +1134,7 @@
     @keyframes cli-flow-march-down { to { background-position: 0 9px; } }
 
     @media (max-width: 720px) {
-      .cli-flow-stage { min-height: 770px; padding: 24px 14px 70px; }
+      .cli-flow-stage { padding: 24px 14px 70px; }
       .cli-flow-map { grid-template-columns: 1fr; justify-items: stretch; max-width: 250px; margin-inline: auto; }
       .cli-flow-node, .cli-flow-wake { min-height: 57px; }
       .cli-flow-link, .cli-flow-return { width: 1px; height: 22px; justify-self: center; }
@@ -1148,6 +1161,7 @@
       <div class="hero-benchmark" id="performance">
         <div class="benchmark-grid" id="benchmark-grid" aria-label="PR Cockpit, GitHub, and Cursor Origin performance comparison"></div>
         <p class="benchmark-method">
+          <a href="https://github.com/theolundqvist/pr-cockpit/blob/main/docs/BENCHMARKS.md">Full results · every run, p50–p99</a>
           <a href="https://github.com/theolundqvist/pr-cockpit/blob/main/scripts/benchmark-ui.mjs">Source · reproduce this benchmark</a>
         </p>
       </div>
@@ -1670,6 +1684,12 @@
       const githubNode = nodes.find((item) => item.dataset.cliFlowNode === "github");
       const webhookLink = links.find((item) => item.dataset.cliFlowLink === "webhook");
       const githubLabel = githubNode.querySelector("small");
+      const setWaiting = (on) => {
+        githubNode.classList.toggle("is-waiting", on);
+        webhookLink.classList.toggle("is-waiting", on);
+        githubLabel.textContent = on ? "waiting for comment" : "comment posted";
+      };
+      const later = (delay, action) => timers.push(window.setTimeout(action, delay));
       const finalLines = [
         ["", "- @reviewer-one · review comment · `server/mutations.ts:72`: Surface the retry path on write failure.", "is-result"],
       ];
