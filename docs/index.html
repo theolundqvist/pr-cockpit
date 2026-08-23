@@ -125,10 +125,13 @@
       position: relative;
       overflow: hidden;
       border-radius: 12px;
+      /* On #111110 a dark shadow has nothing to darken, so elevation comes from a hairline ring
+         and a neutral ambient halo; the dark layer only tightens the edge. */
       box-shadow:
-        0 1px 0 rgba(255, 255, 255, 0.14),
-        0 32px 70px rgba(0, 0, 0, 0.62),
-        0 10px 24px rgba(0, 0, 0, 0.48);
+        0 0 0 1px rgba(255, 255, 255, 0.1),
+        0 0 0 6px rgba(255, 255, 255, 0.03),
+        0 40px 90px rgba(255, 255, 255, 0.07),
+        0 16px 38px rgba(0, 0, 0, 0.6);
     }
 
 
@@ -1186,7 +1189,6 @@
     .cli-flow-line span { color: var(--text-faint); }
     .cli-flow-line b { overflow: hidden; font-weight: 400; text-overflow: ellipsis; white-space: pre; }
     .cli-flow-line.is-command span, .cli-flow-line.is-result span, .cli-flow-line.is-result b { color: var(--green); }
-    .cli-flow-caption { position: absolute; right: 42px; bottom: 24px; left: 42px; color: var(--text-faint); font: 11px var(--mono); text-align: center; }
     .cli-flow-replay, .search-demo-toggle { position: absolute; z-index: 12; right: 18px; bottom: 18px; min-height: 39px; padding: 0 15px; border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 999px; background: rgba(15, 15, 14, 0.78); color: #fff; font: 600 11px var(--mono); cursor: pointer; backdrop-filter: blur(12px); }
     .cli-flow-replay:hover, .search-demo-toggle:hover { border-color: var(--green); background: rgba(15, 15, 14, 0.92); }
     .cli-flow-replay:focus-visible, .search-demo-toggle:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
@@ -1200,7 +1202,6 @@
       .cli-flow-link::after, .cli-flow-return::after { top: auto; right: auto; bottom: -5px; left: 50%; transform: translateX(-50%); content: "↓"; }
       .cli-flow-terminal { width: 100%; margin-top: 26px; }
       .cli-flow-console { min-height: 218px; padding: 16px 14px; font-size: 9px; }
-      .cli-flow-caption { right: 18px; bottom: 22px; left: 18px; padding-right: 82px; font-size: 9px; text-align: left; }
       .cli-flow-replay, .search-demo-toggle { right: 10px; bottom: 10px; min-height: 36px; }
       .search-demo-toggle { min-height: 44px; }
     }
@@ -1564,10 +1565,10 @@
         <div class="section-intro cli-flow-intro">
           <div>
             <h2 class="section-title">Local GitHub cache. Faster agents. Fewer tokens.</h2>
-            <p class="section-lede"><code>pr-cockpit listen theolundqvist/pr-cockpit#109</code> blocks on local cached state and wakes after a webhook refresh, avoiding repeated GitHub reads so agents keep more context for the work.</p>
+            <p class="section-lede"><code>pr-cockpit listen theolundqvist/pr-cockpit#109</code> blocks until the PR changes, then prints the fresh state and exits.</p>
           </div>
         </div>
-        <p class="visually-hidden">Animated flow: an agent starts pr-cockpit listen and blocks on local cached state. A reviewer posts a comment and GitHub emits a webhook. The relay forwards a change marker. PR Cockpit refreshes pull request 109 from GitHub. Listen wakes, prints the refreshed pull request with the new review comment, exits, and the agent continues.</p>
+        <p class="visually-hidden">Animated flow: an agent starts pr-cockpit listen and blocks on local cached state. Most of the time passes waiting for a reviewer comment. When it lands, GitHub emits a webhook, the relay forwards a change marker, PR Cockpit refreshes pull request 109 from GitHub, and listen wakes almost instantly, printing the refreshed pull request with the new review comment before the agent continues.</p>
         <div class="cli-flow-player" data-cli-flow-player>
           <div class="cli-flow-stage" id="cli-flow-stage" data-cli-flow-state="done" aria-hidden="true">
             <div class="cli-flow-map">
@@ -1587,15 +1588,17 @@
                 <div class="cli-flow-line is-command"><span>$</span><b>pr-cockpit listen theolundqvist/pr-cockpit#109</b></div>
                 <div class="cli-flow-line"><span>#</span><b>Pull Request #109: Show failed optimistic mutations with recovery controls</b></div>
                 <div class="cli-flow-line"><span></span><b>State: OPEN</b></div>
-                <div class="cli-flow-line"><span></span><b>Author: @theolundqvist</b></div>
-                <div class="cli-flow-line"><span></span><b>Base: main</b></div>
                 <div class="cli-flow-line"><span></span><b>Head: failed-mutation-recovery</b></div>
+                <div class="cli-flow-line"><span>##</span><b>Body</b></div>
+                <div class="cli-flow-line"><span></span><b>_Omitted. Read it with `pr-cockpit theolundqvist/pr-cockpit#109`._</b></div>
+                <div class="cli-flow-line"><span>##</span><b>Cockpit Status</b></div>
+                <div class="cli-flow-line"><span></span><b>Review: NONE · CI: SUCCESS</b></div>
+                <div class="cli-flow-line"><span></span><b>Checks: 9 passed · 0 running · 0 failed · 0 cancelled · 0 skipped · 9 total</b></div>
                 <div class="cli-flow-line"><span>##</span><b>Open Review Comments</b></div>
                 <div class="cli-flow-line is-result"><span></span><b>- `1557531d2b` · `server/mutations.ts:72`</b></div>
                 <div class="cli-flow-line is-result"><span></span><b>  - @reviewer-one: Please make the retry path visible when the write fails.</b></div>
               </div>
             </div>
-            <div class="cli-flow-caption" data-cli-flow-caption>Listen returned once. The agent continues with fresh local context.</div>
           </div>
           <button class="cli-flow-replay" type="button" aria-controls="cli-flow-stage" data-cli-flow-replay>↻ Replay</button>
         </div>
@@ -1941,7 +1944,6 @@
     if (cliFlowPlayer) {
       const stage = cliFlowPlayer.querySelector("[data-cli-flow-state]");
       const consoleBody = cliFlowPlayer.querySelector("[data-cli-flow-console]");
-      const caption = cliFlowPlayer.querySelector("[data-cli-flow-caption]");
       const nodes = [...cliFlowPlayer.querySelectorAll("[data-cli-flow-node]")];
       const links = [...cliFlowPlayer.querySelectorAll("[data-cli-flow-link]")];
       const replay = cliFlowPlayer.querySelector("[data-cli-flow-replay]");
@@ -1969,20 +1971,21 @@
       const finalLines = [
         ["#", "Pull Request #109: Show failed optimistic mutations with recovery controls", ""],
         ["", "State: OPEN", ""],
-        ["", "Author: @theolundqvist", ""],
-        ["", "Base: main", ""],
         ["", "Head: failed-mutation-recovery", ""],
+        ["##", "Body", ""],
+        ["", "_Omitted. Read it with `pr-cockpit theolundqvist/pr-cockpit#109`._", ""],
+        ["##", "Cockpit Status", ""],
+        ["", "Review: NONE · CI: SUCCESS", ""],
+        ["", "Checks: 9 passed · 0 running · 0 failed · 0 cancelled · 0 skipped · 9 total", ""],
         ["##", "Open Review Comments", ""],
         ["", "- `1557531d2b` · `server/mutations.ts:72`", "is-result"],
         ["", "  - @reviewer-one: Please make the retry path visible when the write fails.", "is-result"],
       ];
       const command = "pr-cockpit listen theolundqvist/pr-cockpit#109";
-      const doneCaption = "Listen returned once. The agent continues with fresh local context.";
       const showFinalCli = () => {
         consoleBody.replaceChildren(line("$", command, "is-command"), ...finalLines.map((args) => line(...args)));
         [...nodes, ...links].forEach((item) => item.classList.add("is-active"));
         stage.dataset.cliFlowState = "done";
-        caption.textContent = doneCaption;
       };
       const pauseCliFlow = () => {
         timers.forEach(window.clearTimeout);
@@ -2005,38 +2008,29 @@
           return;
         }
         stage.dataset.cliFlowState = "listen";
-        caption.textContent = "The agent starts a blocking local-cache wait.";
         consoleBody.replaceChildren(line("$", "", "is-command"));
         const commandBody = consoleBody.querySelector("b");
         [...command].forEach((letter, index) => later(260 + index * 24, () => { commandBody.textContent += letter; }));
-        later(1500, () => {
-          activate(nodes, "agent");
-          caption.textContent = "Listen blocks on the local PR fingerprint — not a GitHub poll loop.";
-        });
-        later(2250, () => {
+        later(1500, () => activate(nodes, "agent"));
+        later(4000, () => {
           activate(nodes, "github");
           activate(links, "webhook");
-          caption.textContent = "A reviewer posts a comment on the pull request.";
         });
-        later(2920, () => {
+        later(4150, () => {
           activate(nodes, "relay");
           activate(links, "relay");
-          caption.textContent = "The relay forwards only the change marker.";
         });
-        later(3560, () => {
+        later(4300, () => {
           activate(nodes, "cache");
           activate(links, "refresh");
-          caption.textContent = "PR Cockpit refreshes PR #109 directly from GitHub.";
         });
-        later(4220, () => {
+        later(4450, () => {
           activate(nodes, "wake");
           activate(links, "wake");
-          caption.textContent = "The local fingerprint changes. Listen wakes.";
         });
-        later(4550, () => finalLines.forEach((args) => addLine(...args)));
-        later(4750, () => {
+        later(4520, () => {
+          finalLines.forEach((args) => addLine(...args));
           stage.dataset.cliFlowState = "done";
-          caption.textContent = doneCaption;
           later(5000, () => {
             if (!playbackActive) return;
             const box = cliFlowPlayer.getBoundingClientRect();

@@ -328,6 +328,7 @@ fi
 case "$mode" in
   summary)
     args=(--get --data-urlencode "format=markdown" --data-urlencode "comments=$comments")
+    [[ "$command" != "listen" ]] || args+=(--data-urlencode "body=0")
     [[ -z "$since" ]] || args+=(--data-urlencode "since=$since")
     curl --noproxy '*' -sS --fail-with-body "${args[@]}" "$base_url"
     ;;

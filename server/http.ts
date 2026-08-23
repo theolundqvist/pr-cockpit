@@ -730,7 +730,7 @@ export function buildPrAgentSummary(
   };
 }
 
-export function formatPrAgentSummary(summary: PrAgentSummary, includeComments = true): string {
+export function formatPrAgentSummary(summary: PrAgentSummary, includeComments = true, includeBody = true): string {
   const number = summary.ref.slice(summary.ref.lastIndexOf("#") + 1);
   const staleMarkers = reviewBots().flatMap((bot) => bot.staleMarker ? [bot.staleMarker] : []);
   const lines = [
@@ -758,7 +758,9 @@ export function formatPrAgentSummary(summary: PrAgentSummary, includeComments = 
     }
   }
 
-  lines.push("", "## Body", "", summary.body || "_No body._", "", "## Cockpit Status", "");
+  lines.push("", "## Body", "");
+  lines.push(includeBody ? summary.body || "_No body._" : `_Omitted. Read it with \`pr-cockpit ${summary.ref}\`._`);
+  lines.push("", "## Cockpit Status", "");
   lines.push(
     `Review: ${summary.review} · CI: ${summary.ci.state}`,
     `Checks: ${summary.ci.passed} passed · ${summary.ci.running} running · ${summary.ci.failed} failed · ${summary.ci.cancelled} cancelled · ${summary.ci.skipped} skipped · ${summary.ci.checks.length} total${!summary.ci.checksFetched ? " · NOT FETCHED" : summary.ci.complete ? "" : " · PARTIAL (100+ checks)"}`,
@@ -815,6 +817,9 @@ async function handleAgentPr(
   const commentsInput = url.searchParams.get("comments");
   if (commentsInput !== null && commentsInput !== "0" && commentsInput !== "1") return json({ error: "comments must be 0 or 1" }, 400);
   const includeComments = commentsInput !== "0";
+  const bodyInput = url.searchParams.get("body");
+  if (bodyInput !== null && bodyInput !== "0" && bodyInput !== "1") return json({ error: "body must be 0 or 1" }, 400);
+  const includeBody = bodyInput !== "0";
   const sinceInput = url.searchParams.get("since");
   let newCommentsSince: string | null = null;
   if (sinceInput !== null) {
@@ -845,7 +850,7 @@ async function handleAgentPr(
   }
   const summary = buildPrAgentSummary(`${owner}/${repo}#${number}`, detail, quota, newCommentsSince, commentsSince);
   if (format === "json") return json(summary);
-  return new Response(formatPrAgentSummary(summary, includeComments), {
+  return new Response(formatPrAgentSummary(summary, includeComments, includeBody), {
     headers: { "content-type": "text/markdown; charset=utf-8" },
   });
 }

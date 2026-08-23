@@ -390,6 +390,13 @@ describe("agent PR summary", () => {
     expect(output).toContain("Head SHA: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
   });
 
+  test("omits the body with a read pointer when includeBody is false", () => {
+    const output = formatPrAgentSummary(buildPrAgentSummary("example-org/webapp#6133", detail, null), true, false);
+    expect(output).toContain("## Body\n\n_Omitted. Read it with `pr-cockpit example-org/webapp#6133`._");
+    expect(output).not.toContain("Keep recurrence expansion bounded.");
+    expect(output).toContain("## Cockpit Status");
+  });
+
   test("flags outdated auto-resolve-marker threads for manual resolution", () => {
     const original = getSetting("review_bots");
     const marked = structuredClone(detail);
