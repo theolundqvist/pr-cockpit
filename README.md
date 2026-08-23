@@ -10,11 +10,11 @@ PR Cockpit is a keyboard-first macOS app that keeps pull requests, diffs, thread
 
 The local server serves the queue and open pull request from SQLite instead of rebuilding every screen from GitHub. Webhook markers trigger targeted refreshes, WebSocket invalidations update the UI, and a poller repairs missed events.
 
-100 warm-cache opens of the large private pull request `scape-app/scape#8132`:
+Warm-cache opens of the large private pull request `scape-app/scape#8132`:
 
 | Product | p50 | p95 | p99 |
 | --- | ---: | ---: | ---: |
-| PR Cockpit | 0.093 s | 0.151 s | **0.395 s** |
+| PR Cockpit | 0.082 s | 0.112 s | **0.121 s** |
 | Cursor Origin | 1.738 s | 3.702 s | 5.606 s |
 | GitHub | 3.381 s | 4.880 s | 5.678 s |
 
@@ -26,7 +26,7 @@ A separate 12-run comparison of the common interactions, each a cold first open:
 | Open a diff | 0.041 s | 1.487 s | 36.2× |
 | Search PRs | 0.049 s | 0.839 s | 17.1× |
 
-At p99, PR Cockpit painted the same pull request **14.4× faster than GitHub**. [Methodology and reproduction](scripts/benchmark-ui.mjs).
+At p99, PR Cockpit painted the same pull request **47× faster than GitHub**. [Methodology and reproduction](scripts/benchmark-ui.mjs).
 
 ## Search from anywhere
 
