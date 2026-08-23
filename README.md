@@ -10,7 +10,7 @@ PR Cockpit is a keyboard-first macOS app that keeps pull requests, diffs, thread
 
 The local server serves the queue and open pull request from SQLite instead of rebuilding every screen from GitHub. Webhook markers trigger targeted refreshes, WebSocket invalidations update the UI, and a poller repairs missed events.
 
-For the large private pull request `scape-app/scape#8132`, 100 successful warm-cache opens after 3 warmups produced:
+100 warm-cache opens of the large private pull request `scape-app/scape#8132`:
 
 | Product | p50 | p95 | p99 |
 | --- | ---: | ---: | ---: |
@@ -18,9 +18,7 @@ For the large private pull request `scape-app/scape#8132`, 100 successful warm-c
 | Cursor Origin | 1.738 s | 3.702 s | 5.606 s |
 | GitHub | 3.381 s | 4.880 s | 5.678 s |
 
-At p99, PR Cockpit was **14.4× faster than GitHub** and **14.2× faster than Cursor Origin**. One signed-in Chrome session drove all three products from their own pull-request list to the same painted state: title, first conversation body, no loading indicator, then two animation frames. p99 is the observed 99th sample, not an interpolation. [Read or reproduce the benchmark](scripts/benchmark-ui.mjs).
-
-A separate 12-run comparison measured the common interactions:
+A separate 12-run comparison of the common interactions, each a cold first open:
 
 | Interaction | PR Cockpit p50 | GitHub p50 | Faster |
 | --- | ---: | ---: | ---: |
@@ -28,13 +26,13 @@ A separate 12-run comparison measured the common interactions:
 | Open a diff | 0.041 s | 1.487 s | 36.2× |
 | Search PRs | 0.049 s | 0.839 s | 17.1× |
 
-The open and diff sample draws 12 measured runs from 15 public `microsoft/vscode` pull requests after 3 initial warmups, so every measured run opens a pull request that no earlier warmup or run had opened and each sample is a cold first open. The search sample uses the exact private `scape-app/scape#8133` result: PR Cockpit applies the query to its global local cache, while GitHub loads the repository-scoped search URL.
+At p99, PR Cockpit painted the same pull request **14.4× faster than GitHub**. [Methodology and reproduction](scripts/benchmark-ui.mjs).
 
 ## Search from anywhere
 
-Press <kbd>⌥⌘K</kbd> from any app, type words from the title, branch, repository, or pull-request number, and press <kbd>enter</kbd>. The standalone palette opens the full pull request from the local cache.
+Press <kbd>⌥⌘K</kbd> from any app, type, <kbd>enter</kbd>. The full pull request opens from the local cache.
 
-![Global pull request search opening a cached pull request](docs/screenshots/landing-search-palette.png)
+![Global pull request search opening a cached pull request](docs/screenshots/landing-search.gif)
 
 ## One queue. Three lanes.
 
@@ -44,11 +42,9 @@ Ready to merge, your move, and waiting are separate lanes, already sorted by wha
 
 ## Hide tests. See the change.
 
-Press <kbd>x</kbd> to fold test files out of a large diff without changing the pull request. In `graphql/graphql-js#4692`, 5 of the 6 changed files are regression tests, leaving the one-line validation fix on screen.
+Press <kbd>x</kbd> to fold test files out of the diff. In `graphql/graphql-js#4692`, that leaves the one-line fix on screen.
 
-| GitHub: all 6 changed files | PR Cockpit: 5 test files folded |
-| --- | --- |
-| ![GitHub showing all six changed files in graphql-js pull request 4692](docs/screenshots/landing-hide-tests-github.png) | ![PR Cockpit showing the five test diffs folded and the one-line source change open](docs/screenshots/landing-hide-tests-cockpit.png) |
+![Pressing x folds the five regression-test diffs, leaving the one-line source change open](docs/screenshots/landing-hide-tests.gif)
 
 ## One key from review to change
 
@@ -85,20 +81,11 @@ Waiting on CI, review, or a new comment? Block on the local fingerprint instead 
 pr-cockpit listen owner/repo#123
 ```
 
-`listen` returns when substantive cached state changes, such as a push, check result, review, or comment. `--ci-only` and `--comments-only` narrow the wake signal.
+`listen` blocks until substantive cached state changes — a push, check result, review, or comment — then prints only what changed. `--ci-only` and `--comments-only` narrow the wake signal.
 
 ## Under the hood
 
-```mermaid
-flowchart LR
-    Human --> UI
-    Agent -->|CLI / API| Server
-    UI <-->|WebSocket invalidation| Server
-    Server <-->|read / write| Local["SQLite + images"]
-    GitHub -->|webhook| Relay
-    Relay -->|change marker only| Server
-    Server -->|targeted fetches and authenticated writes| GitHub
-```
+![GitHub webhooks reach the local PR Cockpit server through a relay; the server keeps SQLite and the UI warm and serves agents over CLI and API](docs/screenshots/landing-under-the-hood.png)
 
 - **GitHub is authoritative.** The local database is a warm read model, not a fork of pull-request state.
 - **The relay carries markers, not pull-request payloads.** The local server fetches only what changed directly from GitHub.
