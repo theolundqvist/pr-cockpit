@@ -125,12 +125,9 @@
       position: relative;
       overflow: hidden;
       border-radius: 12px;
-      /* On #111110 a dark shadow has nothing to darken, so elevation comes from a hairline ring
-         and a neutral ambient halo; the dark layer only tightens the edge. */
+      /* Hairline ring only: on #111110 an ambient halo reads as a smudge behind the window. */
       box-shadow:
         0 0 0 1px rgba(255, 255, 255, 0.1),
-        0 0 0 6px rgba(255, 255, 255, 0.03),
-        0 40px 90px rgba(255, 255, 255, 0.07),
         0 16px 38px rgba(0, 0, 0, 0.6);
     }
 
@@ -1181,7 +1178,16 @@
     .cli-flow-node.is-active > span, .cli-flow-wake.is-active > span { border-color: var(--green); color: var(--green); }
     .cli-flow-link, .cli-flow-return { position: relative; height: 1px; background: var(--border-strong); opacity: 0.38; }
     .cli-flow-link::after, .cli-flow-return::after { position: absolute; top: 50%; right: -3px; color: var(--text-faint); font: 12px var(--mono); transform: translateY(-50%); content: "→"; }
-    .cli-flow-link.is-active, .cli-flow-return.is-active { background: var(--green); box-shadow: 0 0 10px rgba(94, 210, 141, 0.75); opacity: 1; animation: cli-flow-pulse 800ms ease both; }
+    .cli-flow-link::before, .cli-flow-return::before { position: absolute; inset: 0; background: var(--green); box-shadow: 0 0 10px rgba(94, 210, 141, 0.75); transform: scale(0); transform-origin: 0 0; content: ""; }
+    .cli-flow-link.is-active, .cli-flow-return.is-active { opacity: 1; }
+    .cli-flow-link.is-active::before, .cli-flow-return.is-active::before { transform: scale(1); transition: transform 160ms linear; }
+    .cli-flow-link.is-active::after, .cli-flow-return.is-active::after { color: var(--green); }
+    .cli-flow-link.is-waiting { opacity: 1; background: repeating-linear-gradient(90deg, rgba(242, 190, 53, 0.6) 0 4px, transparent 4px 9px); animation: cli-flow-march 700ms linear infinite; }
+    .cli-flow-link.is-waiting::after { color: var(--yellow); }
+    .cli-flow-node.is-waiting { opacity: 0.85; }
+    .cli-flow-node.is-waiting > span { border-color: rgba(242, 190, 53, 0.55); color: var(--yellow); }
+    .cli-flow-node.is-waiting small { color: var(--yellow); }
+    .cli-flow-node.is-waiting small::after { content: "…"; animation: cli-flow-dots 1600ms steps(1, end) infinite; }
     .cli-flow-terminal { width: min(860px, 88%); margin: 42px auto 0; }
     .cli-flow-console { min-height: 272px; padding: 24px 28px; background: #10100f; font: 12px/1.65 var(--mono); }
     .cli-flow-line { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 8px; min-height: 23px; color: var(--text); opacity: 1; transform: none; transition: opacity 180ms ease, transform 180ms ease; }
@@ -1192,7 +1198,9 @@
     .cli-flow-replay, .search-demo-toggle { position: absolute; z-index: 12; right: 18px; bottom: 18px; min-height: 39px; padding: 0 15px; border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 999px; background: rgba(15, 15, 14, 0.78); color: #fff; font: 600 11px var(--mono); cursor: pointer; backdrop-filter: blur(12px); }
     .cli-flow-replay:hover, .search-demo-toggle:hover { border-color: var(--green); background: rgba(15, 15, 14, 0.92); }
     .cli-flow-replay:focus-visible, .search-demo-toggle:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
-    @keyframes cli-flow-pulse { 0% { transform: scaleX(0); transform-origin: left; } 100% { transform: scaleX(1); transform-origin: left; } }
+    @keyframes cli-flow-march { to { background-position: 9px 0; } }
+    @keyframes cli-flow-dots { 0% { content: ""; } 33% { content: "."; } 66% { content: ".."; } }
+    @keyframes cli-flow-march-down { to { background-position: 0 9px; } }
 
     @media (max-width: 720px) {
       .cli-flow-stage { min-height: 770px; padding: 24px 14px 70px; }
@@ -1200,6 +1208,7 @@
       .cli-flow-node, .cli-flow-wake { min-height: 57px; }
       .cli-flow-link, .cli-flow-return { width: 1px; height: 22px; justify-self: center; }
       .cli-flow-link::after, .cli-flow-return::after { top: auto; right: auto; bottom: -5px; left: 50%; transform: translateX(-50%); content: "↓"; }
+      .cli-flow-link.is-waiting { background: repeating-linear-gradient(180deg, rgba(242, 190, 53, 0.6) 0 4px, transparent 4px 9px); animation-name: cli-flow-march-down; }
       .cli-flow-terminal { width: 100%; margin-top: 26px; }
       .cli-flow-console { min-height: 218px; padding: 16px 14px; font-size: 9px; }
       .cli-flow-replay, .search-demo-toggle { right: 10px; bottom: 10px; min-height: 36px; }
@@ -1967,6 +1976,14 @@
         requestAnimationFrame(() => row.classList.remove("is-entering"));
       };
       const activate = (items, name) => items.find((item) => item.dataset.cliFlowNode === name || item.dataset.cliFlowLink === name)?.classList.add("is-active");
+      const githubNode = nodes.find((item) => item.dataset.cliFlowNode === "github");
+      const webhookLink = links.find((item) => item.dataset.cliFlowLink === "webhook");
+      const githubLabel = githubNode.querySelector("small");
+      const setWaiting = (on) => {
+        githubNode.classList.toggle("is-waiting", on);
+        webhookLink.classList.toggle("is-waiting", on);
+        githubLabel.textContent = on ? "waiting for comment" : "comment posted";
+      };
       const later = (delay, action) => timers.push(window.setTimeout(action, delay));
       const finalLines = [
         ["#", "Pull Request #109: Show failed optimistic mutations with recovery controls", ""],
@@ -1984,6 +2001,7 @@
       const command = "pr-cockpit listen theolundqvist/pr-cockpit#109";
       const showFinalCli = () => {
         consoleBody.replaceChildren(line("$", command, "is-command"), ...finalLines.map((args) => line(...args)));
+        setWaiting(false);
         [...nodes, ...links].forEach((item) => item.classList.add("is-active"));
         stage.dataset.cliFlowState = "done";
       };
@@ -2002,6 +2020,7 @@
         replay.textContent = "Ⅱ Pause";
         replay.setAttribute("aria-pressed", "true");
         [...nodes, ...links].forEach((item) => item.classList.remove("is-active"));
+        setWaiting(false);
         cliFlowPlayer.dataset.cliFlowPlayed = "true";
         if (motionReduced) {
           pauseCliFlow();
@@ -2011,24 +2030,22 @@
         consoleBody.replaceChildren(line("$", "", "is-command"));
         const commandBody = consoleBody.querySelector("b");
         [...command].forEach((letter, index) => later(260 + index * 24, () => { commandBody.textContent += letter; }));
-        later(1500, () => activate(nodes, "agent"));
+        later(1500, () => {
+          activate(nodes, "agent");
+          setWaiting(true);
+        });
         later(4000, () => {
+          setWaiting(false);
           activate(nodes, "github");
           activate(links, "webhook");
         });
-        later(4150, () => {
-          activate(nodes, "relay");
-          activate(links, "relay");
-        });
-        later(4300, () => {
-          activate(nodes, "cache");
-          activate(links, "refresh");
-        });
-        later(4450, () => {
-          activate(nodes, "wake");
-          activate(links, "wake");
-        });
-        later(4520, () => {
+        later(4180, () => activate(links, "relay"));
+        later(4340, () => activate(nodes, "relay"));
+        later(4360, () => activate(links, "refresh"));
+        later(4520, () => activate(nodes, "cache"));
+        later(4540, () => activate(links, "wake"));
+        later(4700, () => activate(nodes, "wake"));
+        later(4760, () => {
           finalLines.forEach((args) => addLine(...args));
           stage.dataset.cliFlowState = "done";
           later(5000, () => {
