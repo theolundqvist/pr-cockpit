@@ -125,7 +125,10 @@
       position: relative;
       overflow: hidden;
       border-radius: 12px;
-      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.36);
+      box-shadow:
+        0 1px 0 rgba(255, 255, 255, 0.14),
+        0 32px 70px rgba(0, 0, 0, 0.62),
+        0 10px 24px rgba(0, 0, 0, 0.48);
     }
 
 
@@ -602,7 +605,7 @@
       width: 100%;
       min-width: 860px;
       height: auto;
-      aspect-ratio: 1180 / 336;
+      aspect-ratio: 1096 / 336;
       border: 1px solid #343432;
       border-radius: 6px;
       background: #191918;
@@ -622,11 +625,6 @@
       stroke: #46463f;
       stroke-dasharray: 4 4;
     }
-
-    .sys-accent--source { fill: var(--blue); }
-    .sys-accent--server { fill: var(--green); }
-    .sys-accent--local { fill: rgba(94, 210, 141, 0.55); }
-    .sys-accent--actor { fill: #5f5f5a; }
 
     .sys-wire {
       fill: none;
@@ -1475,8 +1473,8 @@
     <section class="section-rule">
       <div class="wrap section queue-layout">
         <div class="shot-shell queue-shot">
-          <button class="shot-button" type="button" data-lightbox="screenshots/landing-inbox.png" aria-label="Open review queue screenshot">
-            <img src="screenshots/landing-inbox.png" alt="Review queue sorting open pull requests into ready to merge, your move, and waiting lanes" width="1280" height="980" loading="lazy">
+          <button class="shot-button" type="button" data-lightbox="screenshots/landing-inbox.png?v=20260823-bare" aria-label="Open review queue screenshot">
+            <img src="screenshots/landing-inbox.png?v=20260823-bare" alt="Review queue sorting open pull requests into ready to merge, your move, and waiting lanes" width="1200" height="900" loading="lazy">
           </button>
         </div>
         <div>
@@ -1498,16 +1496,16 @@
           <figure class="compare-side">
             <figcaption class="compare-label">GitHub · all 3 changed files</figcaption>
             <div class="shot-shell">
-              <button class="shot-button" type="button" data-lightbox="screenshots/landing-hide-tests-github.png?v=react-36134" aria-label="Open GitHub files changed screenshot">
-                <img src="screenshots/landing-hide-tests-github.png?v=react-36134" alt="GitHub files changed view of react/react#36134 showing one reconciler source file and two regression-test files" width="1280" height="980" loading="lazy">
+              <button class="shot-button" type="button" data-lightbox="screenshots/landing-hide-tests-github.png?v=20260823-bare" aria-label="Open GitHub files changed screenshot">
+                <img src="screenshots/landing-hide-tests-github.png?v=20260823-bare" alt="GitHub files changed view of react/react#36134 showing one reconciler source file and two regression-test files" width="1200" height="900" loading="lazy">
               </button>
             </div>
           </figure>
           <figure class="compare-side">
             <figcaption class="compare-label">PR Cockpit · 2 test diffs folded</figcaption>
             <div class="shot-shell">
-              <button class="shot-button" type="button" data-lightbox="screenshots/landing-hide-tests-cockpit.png?v=react-36134" aria-label="Open PR Cockpit folded tests screenshot">
-                <img src="screenshots/landing-hide-tests-cockpit.png?v=react-36134" alt="PR Cockpit unified diff for react/react#36134 with both regression-test diffs folded and ReactFiberWorkLoop.js expanded" width="1280" height="980" loading="lazy">
+              <button class="shot-button" type="button" data-lightbox="screenshots/landing-hide-tests-cockpit.png?v=20260823-bare" aria-label="Open PR Cockpit folded tests screenshot">
+                <img src="screenshots/landing-hide-tests-cockpit.png?v=20260823-bare" alt="PR Cockpit unified diff for react/react#36134 with both regression-test diffs folded and ReactFiberWorkLoop.js expanded" width="1200" height="390" loading="lazy">
               </button>
             </div>
           </figure>
@@ -1526,29 +1524,29 @@
           <div class="showcase-stage" tabindex="0" aria-label="Review action carousel">
             <div class="showcase-panel is-active" id="showcase-panel-agent" role="tabpanel" aria-labelledby="showcase-tab-agent">
               <div class="shot-shell showcase-shot">
-                <button class="shot-button" type="button" data-lightbox="screenshots/landing-agent-prompt.png" aria-label="Open agent prompt screenshot">
-                  <img src="screenshots/landing-agent-prompt.png" alt="Prompt an agent dialog opened with p on a pull request" width="1280" height="980" loading="lazy">
+                <button class="shot-button" type="button" data-lightbox="screenshots/landing-agent-prompt.png?v=20260823-bare" aria-label="Open agent prompt screenshot">
+                  <img src="screenshots/landing-agent-prompt.png?v=20260823-bare" alt="Prompt an agent dialog opened with p on a pull request" width="1200" height="900" loading="lazy">
                 </button>
               </div>
             </div>
             <div class="showcase-panel is-next" id="showcase-panel-editor" role="tabpanel" aria-labelledby="showcase-tab-editor" aria-hidden="true" inert>
               <div class="shot-shell showcase-shot">
-                <button class="shot-button" type="button" data-lightbox="screenshots/landing-editor.png" aria-label="Open inline editor screenshot">
-                  <img src="screenshots/landing-editor.png" alt="Full-file editor opened at a changed line of a pull request file, ready to commit back to the PR" width="1280" height="980" loading="lazy">
+                <button class="shot-button" type="button" data-lightbox="screenshots/landing-editor.png?v=20260823-bare" aria-label="Open inline editor screenshot">
+                  <img src="screenshots/landing-editor.png?v=20260823-bare" alt="Full-file editor opened at a changed line of a pull request file, ready to commit back to the PR" width="1200" height="900" loading="lazy">
                 </button>
               </div>
             </div>
             <div class="showcase-panel" id="showcase-panel-revert" role="tabpanel" aria-labelledby="showcase-tab-revert" aria-hidden="true" inert>
               <div class="shot-shell showcase-shot">
-                <button class="shot-button" type="button" data-lightbox="screenshots/landing-revert-menu.png" aria-label="Open revert hunk context menu screenshot">
-                  <img src="screenshots/landing-revert-menu.png" alt="Right-click context menu on a unified diff hunk offering Revert hunk" width="1280" height="980" loading="lazy">
+                <button class="shot-button" type="button" data-lightbox="screenshots/landing-revert-menu.png?v=20260823-bare" aria-label="Open revert hunk context menu screenshot">
+                  <img src="screenshots/landing-revert-menu.png?v=20260823-bare" alt="Right-click context menu on a unified diff hunk offering Revert hunk" width="1200" height="900" loading="lazy">
                 </button>
               </div>
             </div>
             <div class="showcase-panel is-prev" id="showcase-panel-history" role="tabpanel" aria-labelledby="showcase-tab-history" aria-hidden="true" inert>
               <div class="shot-shell showcase-shot">
-                <button class="shot-button" type="button" data-lightbox="screenshots/landing-file-history.png" aria-label="Open file history screenshot">
-                  <img src="screenshots/landing-file-history.png" alt="File history view listing earlier commits with the selected commit's diff" width="1280" height="980" loading="lazy">
+                <button class="shot-button" type="button" data-lightbox="screenshots/landing-file-history.png?v=20260823-bare" aria-label="Open file history screenshot">
+                  <img src="screenshots/landing-file-history.png?v=20260823-bare" alt="File history view listing earlier commits with the selected commit's diff" width="1200" height="900" loading="lazy">
                 </button>
               </div>
             </div>
@@ -1647,42 +1645,36 @@
         <div class="how-card">
           <figure class="system">
             <figcaption class="visually-hidden">GitHub is the source of truth. A GitHub webhook reaches the relay, which forwards the change signal to the PR Cockpit server on your Mac for an instant update. The server fetches only the changed pull request from GitHub and sends authenticated writes back to GitHub. Locally it reads and writes SQLite and cached images, and invalidates the UI over WebSocket. Agents talk to the server over the CLI and local API; humans use the UI.</figcaption>
-            <svg class="system-canvas" viewBox="0 0 1180 336" aria-hidden="true">
+            <svg class="system-canvas" viewBox="0 0 1096 336" aria-hidden="true">
               <!-- On your Mac boundary -->
-              <rect class="sys-boundary" x="414" y="30" width="520" height="282" rx="4" />
+              <rect class="sys-boundary" x="414" y="30" width="436" height="282" rx="4" />
               <text class="sys-boundary-label" x="442" y="54">ON YOUR MAC</text>
 
               <!-- GitHub -->
               <rect class="sys-node" x="24" y="62" width="168" height="104" rx="3" />
-              <rect class="sys-accent--source" x="24" y="62" width="2" height="104" />
               <text class="sys-name sys-name--source" x="44" y="109">GitHub</text>
               <text class="sys-label" x="44" y="128">source of truth</text>
 
               <!-- PR Cockpit server -->
-              <rect class="sys-node sys-node--server" x="442" y="66" width="464" height="96" rx="3" />
-              <rect class="sys-accent--server" x="442" y="66" width="2" height="96" />
+              <rect class="sys-node sys-node--server" x="442" y="66" width="380" height="96" rx="3" />
               <text class="sys-name sys-name--server" x="462" y="109">PR Cockpit server</text>
               <text class="sys-label" x="462" y="129">ingest · cache · write queue</text>
 
               <!-- SQLite + images -->
-              <rect class="sys-node" x="442" y="232" width="216" height="56" rx="3" />
-              <rect class="sys-accent--local" x="442" y="232" width="2" height="56" />
+              <rect class="sys-node" x="442" y="232" width="176" height="56" rx="3" />
               <text class="sys-name" x="462" y="264">SQLite + images</text>
 
               <!-- UI -->
-              <rect class="sys-node" x="690" y="232" width="216" height="56" rx="3" />
-              <rect class="sys-accent--local" x="690" y="232" width="2" height="56" />
-              <text class="sys-name" x="710" y="264">UI</text>
+              <rect class="sys-node" x="646" y="232" width="176" height="56" rx="3" />
+              <text class="sys-name" x="666" y="264">UI</text>
 
               <!-- Agents (CLI · API against the server) -->
-              <rect class="sys-node" x="1000" y="86" width="156" height="56" rx="3" />
-              <rect class="sys-accent--actor" x="1000" y="86" width="2" height="56" />
-              <text class="sys-name" x="1020" y="118">Agents</text>
+              <rect class="sys-node" x="916" y="86" width="156" height="56" rx="3" />
+              <text class="sys-name" x="936" y="118">Agents</text>
 
               <!-- Humans (talk to the UI) -->
-              <rect class="sys-node" x="1000" y="232" width="156" height="56" rx="3" />
-              <rect class="sys-accent--actor" x="1000" y="232" width="2" height="56" />
-              <text class="sys-name" x="1020" y="264">Humans</text>
+              <rect class="sys-node" x="916" y="232" width="156" height="56" rx="3" />
+              <text class="sys-name" x="936" y="264">Humans</text>
 
               <!-- GitHub → server: webhook via relay -->
               <text class="sys-label" x="317" y="66" text-anchor="middle">webhook · instant update</text>
@@ -1702,26 +1694,26 @@
               <path class="sys-head--data" d="M199 140.5 L192 144 L199 147.5 Z" />
 
               <!-- server ↕ SQLite -->
-              <path class="sys-wire sys-wire--local" d="M550 169 V225" />
-              <path class="sys-head--local" d="M546.5 169 L550 162 L553.5 169 Z" />
-              <path class="sys-head--local" d="M546.5 225 L550 232 L553.5 225 Z" />
-              <text class="sys-label" x="540" y="200" text-anchor="end">read · write</text>
+              <path class="sys-wire sys-wire--local" d="M530 169 V225" />
+              <path class="sys-head--local" d="M526.5 169 L530 162 L533.5 169 Z" />
+              <path class="sys-head--local" d="M526.5 225 L530 232 L533.5 225 Z" />
+              <text class="sys-label" x="520" y="200" text-anchor="end">read · write</text>
 
               <!-- server → UI -->
-              <path class="sys-wire sys-wire--local" d="M798 162 V225" />
-              <path class="sys-head--local" d="M794.5 225 L798 232 L801.5 225 Z" />
-              <text class="sys-label" x="788" y="200" text-anchor="end">WebSocket invalidation</text>
+              <path class="sys-wire sys-wire--local" d="M734 162 V225" />
+              <path class="sys-head--local" d="M730.5 225 L734 232 L737.5 225 Z" />
+              <text class="sys-label" x="744" y="200">realtime</text>
 
               <!-- Agents ↔ server -->
-              <text class="sys-label" x="967" y="106" text-anchor="middle">CLI · API</text>
-              <path class="sys-wire sys-wire--serve" d="M913 114 H993" />
-              <path class="sys-head--serve" d="M913 110.5 L906 114 L913 117.5 Z" />
-              <path class="sys-head--serve" d="M993 110.5 L1000 114 L993 117.5 Z" />
+              <text class="sys-label" x="883" y="106" text-anchor="middle">CLI · API</text>
+              <path class="sys-wire sys-wire--serve" d="M829 114 H909" />
+              <path class="sys-head--serve" d="M829 110.5 L822 114 L829 117.5 Z" />
+              <path class="sys-head--serve" d="M909 110.5 L916 114 L909 117.5 Z" />
 
               <!-- Humans ↔ UI -->
-              <path class="sys-wire sys-wire--serve" d="M913 260 H993" />
-              <path class="sys-head--serve" d="M913 256.5 L906 260 L913 263.5 Z" />
-              <path class="sys-head--serve" d="M993 256.5 L1000 260 L993 263.5 Z" />
+              <path class="sys-wire sys-wire--serve" d="M829 260 H909" />
+              <path class="sys-head--serve" d="M829 256.5 L822 260 L829 263.5 Z" />
+              <path class="sys-head--serve" d="M909 256.5 L916 260 L909 263.5 Z" />
             </svg>
           </figure>
         </div>
