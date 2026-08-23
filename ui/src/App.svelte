@@ -10,11 +10,13 @@
   import Cheatsheet from "./lib/Cheatsheet.svelte";
   import Lightbox from "./lib/Lightbox.svelte";
   import QuotaBanner from "./lib/QuotaBanner.svelte";
+  import Kbd from "./lib/Kbd.svelte";
   import { fetchSettings } from "./lib/api.js";
   import { showFlash } from "./lib/flash.svelte.js";
   import { prefs } from "./lib/prefs.svelte.js";
   import { quota } from "./lib/quota.svelte.js";
   import { quotaImpact } from "./lib/quotaImpact.js";
+  import { SETTINGS_SECTION_KEY, SETTINGS_SECTIONS, normalizeSettingsSection, settingsSectionHref } from "./lib/settingsSections.js";
 
   window.cockpitFlash = showFlash;
 
@@ -40,7 +42,11 @@
         historySymbol,
       };
     }
-    if (hash === "#/settings") return { name: "settings" };
+    const settingsMatch = hash.match(/^#\/settings(?:\/([^/]+))?$/);
+    if (settingsMatch) {
+      const requestedSection = settingsMatch[1] ?? localStorage.getItem(SETTINGS_SECTION_KEY);
+      return { name: "settings", section: normalizeSettingsSection(requestedSection) };
+    }
     if (hash.startsWith("#/palette")) return { name: "palette" };
     return { name: "inbox" };
   }
@@ -152,8 +158,7 @@
   <div
     class="app-shell"
     class:shell={isShell}
-    class:sidebar-hidden={prefs.hideSidebar}
-    class:settingsRoute={route.name === "settings"}
+    class:sidebar-hidden={prefs.hideSidebar && route.name !== "settings"}
     style="--app-banner-height: {bannerHeight}px"
   >
     <div class="app-banner" bind:clientHeight={bannerHeight}>
@@ -161,7 +166,31 @@
     </div>
     <div class="app-drag-region" aria-hidden="true"></div>
     <aside class="app-sidebar">
-      <nav class="app-nav" aria-label="Cockpit navigation">
+      <nav class="app-nav" aria-label={route.name === "settings" ? "Settings navigation" : "Cockpit navigation"}>
+        {#if route.name === "settings"}
+          <a class="nav-item settings-back" href="#/">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="m14.5 6-6 6 6 6" />
+            </svg>
+            <span>Back to inbox</span>
+          </a>
+          <span class="nav-label settings-nav-label">Settings</span>
+          {#each SETTINGS_SECTIONS as section}
+            <a
+              class="nav-item"
+              class:active={route.section === section.id}
+              href={settingsSectionHref(section.id)}
+              aria-current={route.section === section.id ? "page" : undefined}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                {#each section.iconPaths as path}
+                  <path d={path} />
+                {/each}
+              </svg>
+              <span>{section.label}</span>
+            </a>
+          {/each}
+        {:else}
         <span class="nav-label">Workspace</span>
         <a
           class="nav-item"
@@ -181,7 +210,7 @@
             <path d="m15 15 4 4" />
           </svg>
           <span>Find a PR</span>
-          <kbd aria-label="Command K"><span>⌘</span><span>K</span></kbd>
+          <span class="nav-kbd"><Kbd keys={["cmd", "k"]} /></span>
         </button>
 
         <span class="nav-label nav-label-lower">Control</span>
@@ -197,29 +226,34 @@
           </svg>
           <span>Settings</span>
         </a>
+        {/if}
       </nav>
 
       {#if quota.resources}
         {@const graphql = quota.resources.graphql}
-        <a
+        {@const quotaPercent = Math.max(0, Math.min(100, (graphql.remaining / Math.max(1, graphql.limit)) * 100))}
+        <div
           class="quota-status {quotaTone}"
-          href="#/settings"
           title={`GitHub GraphQL: ${graphql.remaining.toLocaleString()} of ${graphql.limit.toLocaleString()} remaining. Resets ${new Date(graphql.resetAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.`}
           aria-label={`GitHub GraphQL quota: ${graphql.remaining} of ${graphql.limit} remaining`}
+          role="status"
         >
           <span class="quota-dot" aria-hidden="true"></span>
           <span class="quota-copy">
-            <strong>GraphQL</strong>
-            <small>{graphql.remaining.toLocaleString()} / {graphql.limit.toLocaleString()}</small>
+            <strong>{quotaTone === "critical" ? "API exhausted" : quotaTone === "warning" ? "API limited" : "API healthy"}</strong>
+            <small>{Math.round(quotaPercent)}% available</small>
+            <span class="quota-meter" aria-hidden="true">
+              <span class="quota-meter-fill" style={`width: ${quotaPercent}%`}></span>
+            </span>
           </span>
-        </a>
+        </div>
       {/if}
 
     </aside>
 
     <main class="app-main">
       <div class="app-history">
-        <HistoryNav />
+        <HistoryNav backFallback={route.name === "detail" ? "#/" : null} />
       </div>
 
       {#if setupOpen}
@@ -227,7 +261,7 @@
       {:else if route.name === "detail"}
         <PrDetail repo={route.repo} number={route.number} tab={route.tab} historyPath={route.historyPath} historySymbol={route.historySymbol} refreshRevision={detailRevision} />
       {:else if route.name === "settings"}
-        <Settings onRunSetup={() => (setupOpen = true)} />
+        <Settings section={route.section} onRunSetup={() => (setupOpen = true)} />
       {:else if reposConfigured === false}
         <Onboarding onDone={finishSetup} />
       {:else if reposConfigured}
@@ -253,7 +287,7 @@
 
 <style>
   .app-shell {
-    --app-rail-width: 228px;
+    --app-rail-width: 216px;
     --app-content-max-width: 1320px;
     --app-content-gutter: 32px;
     /* views size themselves to --general-height, so the banner takes its height out of it */
@@ -293,10 +327,6 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .app-shell.settingsRoute {
-    --app-content-max-width: 920px;
-  }
-
   .app-shell.sidebar-hidden .app-sidebar {
     display: none;
   }
@@ -308,10 +338,10 @@
     min-width: 0;
     flex-direction: column;
     min-height: 0;
-    padding: 54px 12px 18px;
-    border-right: 1px solid var(--border);
-    background: color-mix(in srgb, var(--surface) 78%, var(--panel));
-    backdrop-filter: blur(20px) saturate(160%);
+    padding: 54px 10px 18px;
+    border-right: 1px solid var(--border-soft);
+    background: color-mix(in srgb, var(--surface) 42%, var(--bg));
+    backdrop-filter: blur(20px) saturate(135%);
   }
 
   .app-nav {
@@ -321,15 +351,25 @@
   }
 
   .nav-label {
-    padding: 0 10px 7px;
+    padding: 0 10px 6px;
     color: var(--text-faint);
-    font-size: 10.5px;
-    font-weight: 600;
-    letter-spacing: 0.055em;
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 16px;
+    letter-spacing: 0;
   }
 
   .nav-label-lower {
     margin-top: 20px;
+  }
+
+  .settings-back {
+    margin-bottom: 22px;
+    color: var(--text-dim);
+  }
+
+  .settings-nav-label {
+    padding-top: 0;
   }
 
   .nav-item {
@@ -339,12 +379,12 @@
     min-height: 34px;
     gap: 10px;
     padding: 0 10px;
-    border: 1px solid transparent;
+    border: 0;
     border-radius: var(--radius-sm);
     background: none;
     color: var(--text-dim);
     font-family: var(--sans);
-    font-size: 12.5px;
+    font-size: 14px;
     font-weight: 500;
     line-height: 1;
     text-align: left;
@@ -358,30 +398,24 @@
     color: var(--text-faint);
   }
 
-  .nav-item kbd {
-    margin-left: auto;
+  .nav-kbd {
     display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    color: var(--text-faint);
-    font-family: var(--mono);
-    font-size: 9.5px;
+    margin-left: auto;
   }
 
   .nav-item.active {
-    border-color: var(--border);
-    background: var(--panel);
+    background: var(--surface-hover);
     color: var(--text);
-    box-shadow: var(--shadow-xs);
+    box-shadow: none;
   }
 
   .nav-item.active svg {
-    color: var(--link);
+    color: var(--text);
   }
 
   @media (hover: hover) and (pointer: fine) {
     .nav-item:hover {
-      background: var(--panel);
+      background: color-mix(in srgb, var(--text) 5%, transparent);
     }
 
     .nav-item:hover {
@@ -395,24 +429,20 @@
 
   .quota-status {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 9px;
     margin-top: auto;
     padding: 9px 10px;
     border-radius: var(--radius-sm);
     color: var(--text-faint);
-    text-decoration: none;
-  }
-
-  .quota-status:hover {
-    background: var(--panel);
-    color: var(--text-dim);
+    cursor: default;
   }
 
   .quota-dot {
     flex: none;
     width: 7px;
     height: 7px;
+    margin-top: 4px;
     border-radius: 50%;
     background: var(--ready);
   }
@@ -428,6 +458,7 @@
 
   .quota-copy {
     display: grid;
+    flex: 1;
     gap: 3px;
     min-width: 0;
   }
@@ -441,6 +472,30 @@
   .quota-copy small {
     font-family: var(--mono);
     font-size: 9.5px;
+  }
+
+  .quota-meter {
+    display: block;
+    width: 100%;
+    height: 3px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: var(--surface-hover);
+  }
+
+  .quota-meter-fill {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--ready);
+  }
+
+  .quota-status.warning .quota-meter-fill {
+    background: var(--review);
+  }
+
+  .quota-status.critical .quota-meter-fill {
+    background: var(--fail);
   }
 
   .app-main {
@@ -508,7 +563,7 @@
     }
 
     .nav-item > span,
-    .nav-item kbd,
+    .nav-kbd,
     .nav-label {
       display: none;
     }

@@ -78,16 +78,16 @@
   }
   .failure-actions button {
     min-height: 28px;
-    padding: 4px 9px;
-    border-radius: 6px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 999px;
     font-family: var(--sans);
-    font-size: 11.5px;
-    font-weight: 600;
+    font-size: 12px;
+    font-weight: 500;
     cursor: pointer;
   }
   .retry {
-    border: 1px solid color-mix(in srgb, var(--fail) 38%, var(--border));
-    background: var(--panel);
+    background: var(--fail-bg);
     color: var(--fail);
   }
   .dismiss {
@@ -96,7 +96,10 @@
     color: var(--text-dim);
   }
   .failure-actions button:hover {
-    background: var(--panel-raised);
+    background: var(--ghost-hover);
+  }
+  .failure-actions .retry:hover {
+    background: color-mix(in srgb, var(--fail-bg) 72%, var(--fail) 12%);
   }
   details {
     margin-top: 8px;
@@ -106,7 +109,7 @@
   summary {
     width: fit-content;
     color: var(--text-faint);
-    font: 10.5px/1.3 var(--mono);
+    font: 10.5px/1.3 var(--sans);
     cursor: pointer;
   }
   pre {

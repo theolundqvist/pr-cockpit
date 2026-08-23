@@ -1,12 +1,14 @@
 <script>
+  import Kbd from "./Kbd.svelte";
+
   let { keys } = $props();
 </script>
 
-<div class="keybar mono">
+<div class="keybar">
   <div class="keybar-content">
     {#each keys as { key, label }}
       <span class="hint">
-        <kbd>{key}</kbd>
+        <Kbd keys={key} />
         <span class="label">{label}</span>
       </span>
     {/each}
@@ -44,18 +46,6 @@
     gap: 7px;
     white-space: nowrap;
   }
-  kbd {
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--text-dim);
-    background: var(--panel-raised);
-    border: 1px solid var(--border);
-    border-bottom-width: 2px;
-    border-radius: 4px;
-    padding: 1px 6px;
-    min-width: 16px;
-    text-align: center;
-  }
   .label {
     font-size: 11.5px;
     color: var(--text-faint);
@@ -66,15 +56,6 @@
     height: var(--keybar-height);
     padding: 0 var(--app-content-gutter, 28px);
     border-top-color: var(--border);
-  }
-  kbd {
-    min-width: 20px;
-    color: var(--text-dim);
-    background: var(--surface);
-    border-color: var(--border);
-    border-bottom-width: 1px;
-    border-radius: 5px;
-    box-shadow: var(--shadow-xs);
   }
   .label {
     font-family: var(--sans);

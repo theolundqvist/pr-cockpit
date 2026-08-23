@@ -289,6 +289,37 @@ if (isMockGithub) addDetail(REPO, baseDetail(113, {
   updatedAt: at(75),
 }));
 
+if (isMockGithub) addDetail(REPO, baseDetail(115, {
+  title: "Keep review activity compact and readable",
+  reviews: {
+    nodes: [
+      { id: "review-115-1", author: author("moritzcodes"), state: "APPROVED", body: "", submittedAt: at(72), reactions: [] },
+      { id: "review-115-2", author: author("moritzcodes"), state: "APPROVED", body: "", submittedAt: at(68), reactions: [] },
+    ],
+  },
+  comments: {
+    nodes: [{
+      id: "comment-115-greptile",
+      author: author("greptile-apps"),
+      body: `## Greptile Summary
+
+Adds a narrowly scoped egress firewall rule allowing clients in the service subnet to reach HTTPS destinations in that subnet.
+
+- Adds an allow rule at priority 1130 for TCP 443.
+- Restricts both source and destination to the service subnet.
+- Preserves the terminal deny-all rule for other destinations and ports.
+
+**Confidence Score: 5/5**
+
+The pull request appears safe to merge; no concrete changed-code failure was identified.`,
+      createdAt: at(60),
+      reactions: [],
+    }],
+  },
+  reviewThreads: { nodes: [] },
+  updatedAt: at(55),
+}));
+
 if (isMockGithub) addDetail(REPO, baseDetail(114, {
   title: "Wait in the queue while required integration checks start",
   mergeStateStatus: "BEHIND",

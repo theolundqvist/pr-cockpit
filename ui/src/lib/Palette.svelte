@@ -215,7 +215,7 @@
           <path d="m15 15 4 4" />
         </svg>
         <input
-          class="palette-input mono"
+          class="palette-input"
           bind:this={inputEl}
           bind:value={query}
           placeholder="Jump to a PR — title, #number, or branch…"
@@ -241,7 +241,7 @@
             {/if}
           </button>
         {:else}
-          <div class="palette-empty mono">{query.trim() ? "No matching PRs" : "Type to search"}</div>
+          <div class="palette-empty">{query.trim() ? "No matching PRs" : "Type to search"}</div>
         {/each}
       </div>
     </div>
@@ -252,7 +252,8 @@
   .scrim {
     position: fixed;
     inset: 0;
-    background: rgba(4, 6, 9, 0.6);
+    background: var(--modal-scrim);
+    backdrop-filter: blur(4px) saturate(85%);
     display: flex;
     justify-content: center;
     align-items: flex-start;
@@ -403,14 +404,10 @@
     font-size: 12.5px;
   }
 
-  .scrim {
-    background: color-mix(in srgb, var(--text) 22%, transparent);
-    backdrop-filter: blur(4px);
-  }
   .palette {
     background: var(--panel);
     border-color: var(--border);
-    border-radius: 14px;
+    border-radius: 16px;
     box-shadow: var(--shadow-dialog);
   }
   .palette-input {
@@ -437,14 +434,14 @@
     }
   }
   .palette-result.active {
-    background: var(--surface);
-    border-color: var(--border);
-    box-shadow: var(--shadow-xs);
+    background: var(--link-bg);
+    border-color: transparent;
+    box-shadow: none;
   }
   .pr-title {
     font-size: 13.5px;
-    font-weight: 600;
-    letter-spacing: -0.01em;
+    font-weight: 500;
+    letter-spacing: 0;
   }
   .pr-ref {
     font-size: 11.5px;
@@ -456,6 +453,11 @@
     }
     .palette.standalone {
       max-height: calc(var(--general-height) - 56px);
+    }
+  }
+  @media (prefers-reduced-transparency: reduce) {
+    .scrim {
+      backdrop-filter: none;
     }
   }
 </style>

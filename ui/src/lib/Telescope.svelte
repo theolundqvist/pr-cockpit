@@ -7,6 +7,7 @@
   import { showFlash } from "./flash.svelte.js";
   import { testMatcher } from "./testPath.js";
   import { prefs } from "./prefs.svelte.js";
+  import Kbd from "./Kbd.svelte";
   import { columnWithin, createDefinitionHover, tokenAtPoint, wordAtPoint } from "./wordAtPoint.js";
 
   let { repo, headSha, headRef, testsHidden = false, changedFiles = [], onOpenChangedFile, onOpenHistory, open = $bindable(false) } = $props();
@@ -428,12 +429,12 @@
 {#if open}
   <div class="ts-root" role="dialog" aria-label="code browser">
     <div class="ts-side">
-      <div class="ts-tabs mono">
+      <div class="ts-tabs">
         <button class="ts-tab" class:on={mode === "search"} onclick={() => activate("search")}>
-          search <kbd>⌘⇧F</kbd>
+          search <Kbd keys={["cmd", "shift", "f"]} />
         </button>
         <button class="ts-tab" class:on={mode === "files"} onclick={() => activate("files")}>
-          files <kbd>⌘P</kbd>
+          files <Kbd keys={["cmd", "p"]} />
         </button>
         {#if mode === "defs"}
           <span class="ts-tab on ts-tab-defs" title="definitions of {defsSymbol}">defs: {defsSymbol}</span>
@@ -454,7 +455,7 @@
           autocomplete="off"
         />
       {/if}
-      <div class="ts-count mono">
+      <div class="ts-count">
         {#if searchStatus === "fetching" || filesStatus === "fetching"}fetching…
         {:else if searchStatus === "fetch-failed" || filesStatus === "fetch-failed"}cache fetch failed
         {:else if searchStatus === "error" || filesStatus === "error"}request failed
@@ -492,7 +493,7 @@
       </div>
     </div>
     <div class="ts-main">
-      <div class="ts-bar mono">
+      <div class="ts-bar">
         <button class="ts-nav" disabled={histIndex <= 0} onclick={goBack} title="Back (⌘[)" aria-label="Back">←</button>
         <button
           class="ts-nav"
@@ -553,10 +554,10 @@
     border-right: 1px solid var(--border);
   }
   .ts-tabs {
-    display: flex;
+    display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 8px 10px;
+    gap: 4px;
+    padding: 10px;
     border-bottom: 1px solid var(--border-soft);
   }
   :global(.app-shell.shell) .ts-tabs {
@@ -566,21 +567,31 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    background: none;
-    border: none;
-    border-radius: 6px;
-    padding: 4px 8px;
-    color: var(--text-dim);
-    font-size: 11.5px;
+    min-height: 32px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--panel);
+    box-shadow: var(--shadow-control-outlined);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    font-weight: 500;
     cursor: pointer;
+    transition: background-color 140ms ease, box-shadow 140ms ease, transform 140ms var(--ease-out);
   }
   .ts-tab.on {
     background: var(--surface);
+    box-shadow: var(--shadow-control-selected);
     color: var(--text);
   }
-  .ts-tab kbd {
-    font-size: 9.5px;
-    color: var(--text-faint);
+  .ts-tab:active {
+    transform: scale(0.99);
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .ts-tab:hover {
+      background: var(--surface);
+    }
   }
   .ts-tab-defs {
     max-width: 40%;
@@ -760,6 +771,7 @@
     text-align: left;
     font-size: 11.5px;
     color: var(--text);
+    font-family: var(--mono);
   }
   .ts-hint {
     flex: none;

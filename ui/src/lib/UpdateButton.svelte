@@ -39,8 +39,8 @@
 </script>
 
 {#if available}
-  <button class="update mono" class:updating disabled={updating} onclick={update}>
-    {updating ? "updating…" : "update ready"}
+  <button class="update" class:updating disabled={updating} aria-label={updating ? "Updating" : "Install update"} onclick={update}>
+    {updating ? "Updating…" : "Install update"}
   </button>
 {/if}
 
@@ -49,7 +49,7 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    font-family: var(--mono);
+    font-family: var(--sans);
     font-size: 11px;
     letter-spacing: 0.06em;
     color: var(--link);
@@ -76,12 +76,19 @@
   }
 
   .update {
-    min-height: 28px;
-    padding: 3px 10px;
+    min-height: 32px;
+    padding: 0 12px;
     font-family: var(--sans);
-    font-weight: 600;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 20px;
     letter-spacing: 0;
+    box-shadow: none;
     border-color: transparent;
-    border-radius: 7px;
+    border-radius: 999px;
+    transition: background-color 140ms ease, transform 140ms var(--ease-out);
+  }
+  .update:active:not(:disabled) {
+    transform: scale(0.99);
   }
 </style>

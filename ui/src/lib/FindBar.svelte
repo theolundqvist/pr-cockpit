@@ -123,7 +123,7 @@
 </script>
 
 {#if open}
-  <div class="find-bar mono">
+  <div class="find-bar">
     <input bind:this={inputEl} bind:value={query} oninput={search} placeholder="Find" spellcheck="false" autocomplete="off" />
     <span class="count" class:none={query && !count}>{count ? `${current + 1}/${count}` : query ? "0" : ""}</span>
     <button class="nav" title="previous" onclick={() => cycle(-1)}>↑</button>
@@ -152,7 +152,7 @@
     background: none;
     border: none;
     color: var(--text);
-    font-family: var(--mono);
+    font-family: var(--sans);
     font-size: 12.5px;
     width: 160px;
     outline: none;

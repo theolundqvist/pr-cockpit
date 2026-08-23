@@ -4,6 +4,7 @@
   import MutationBadge from "./MutationBadge.svelte";
   import Avatar from "./Avatar.svelte";
   import Reactions from "./Reactions.svelte";
+  import Chevron from "./Chevron.svelte";
 
   let { thread, pending, onReply, onToggleResolve, onRetry, onDiscard, inline = false } = $props();
 
@@ -41,7 +42,7 @@
   });
 
   async function submitReply() {
-    if (!replyDraft.trim()) return;
+    if (replySubmitting || !replyDraft.trim()) return;
     const rootCommentId = thread.comments.nodes[0]?.databaseId;
     if (!rootCommentId) return;
     replySubmitting = true;
@@ -51,6 +52,13 @@
     } finally {
       replySubmitting = false;
     }
+  }
+
+  function onReplyKeydown(e) {
+    if (e.isComposing || e.shiftKey || e.altKey) return;
+    if (!(e.metaKey || e.ctrlKey) || e.key !== "Enter") return;
+    e.preventDefault();
+    submitReply();
   }
 
   async function toggleResolve() {
@@ -70,17 +78,17 @@
     class:outdated={thread.isOutdated}
     onclick={() => (expanded = true)}
   >
-    <span class="caret">▸</span>
+    <Chevron direction="right" />
     <span class="tag resolved">resolved</span>
     <Avatar login={firstComment?.author?.login} url={firstComment?.author?.avatarUrl} size={16} />
-    <span class="author mono">{firstComment?.author?.login ?? "ghost"}</span>
+    <span class="author">{firstComment?.author?.login ?? "ghost"}</span>
     <span class="loc mono">{loc}</span>
     <span class="summary-text">{summary}</span>
   </button>
 {:else}
   <div class="thread" class:conversation-thread={!inline} class:outdated={thread.isOutdated}>
     <div
-      class="thread-head mono"
+      class="thread-head"
       class:collapsible={effectiveResolved}
       role="button"
       tabindex="0"
@@ -88,7 +96,7 @@
       onkeydown={collapseFromHead}
     >
       {#if effectiveResolved}
-        <button class="caret-btn" onclick={() => (expanded = false)}>▾</button>
+        <button class="caret-btn" aria-label="Collapse thread" onclick={() => (expanded = false)}><Chevron /></button>
         <span class="tag resolved">resolved</span>
       {:else}
         <span class="tag open">unresolved</span>
@@ -102,8 +110,8 @@
           onDiscard={() => onDiscard(resolveMutation.id)}
         />
       {/if}
-      <button class="resolve-btn mono" disabled={resolveSubmitting || !!resolveMutation} onclick={toggleResolve}>
-        {effectiveResolved ? "unresolve" : "resolve"}
+      <button class="resolve-btn" disabled={resolveSubmitting || !!resolveMutation} onclick={toggleResolve}>
+        {effectiveResolved ? "Unresolve" : "Resolve"}
       </button>
     </div>
     {#if hunkTail.length}
@@ -117,7 +125,7 @@
     {/if}
     {#each thread.comments.nodes as comment}
       <div class="comment">
-        <div class="comment-head mono">
+        <div class="comment-head">
           <Avatar login={comment.author?.login} url={comment.author?.avatarUrl} />
           <span class="author">{comment.author?.login ?? "ghost"}</span>
           <span class="when">{relativeTime(comment.createdAt)}</span>
@@ -128,7 +136,7 @@
     {/each}
     {#each replyMutations as m (m.id)}
       <div class="comment">
-        <div class="comment-head mono">
+        <div class="comment-head">
           <span class="author">you</span>
           <MutationBadge state={m.state} onRetry={() => onRetry(m.id)} onDiscard={() => onDiscard(m.id)} />
         </div>
@@ -136,8 +144,8 @@
       </div>
     {/each}
     <div class="reply">
-      <textarea class="mono" placeholder="Reply…" data-reply-for={thread.id} bind:value={replyDraft}></textarea>
-      <button class="btn mono" disabled={!replyDraft.trim() || replySubmitting} onclick={submitReply}>
+      <textarea placeholder="Reply…" data-reply-for={thread.id} bind:value={replyDraft} onkeydown={onReplyKeydown}></textarea>
+      <button class="btn" disabled={!replyDraft.trim() || replySubmitting} onclick={submitReply}>
         {replySubmitting ? "Posting…" : "Reply"}
       </button>
     </div>
@@ -190,16 +198,13 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .caret {
-    flex: none;
-    color: var(--text-faint);
-    font-size: 9px;
-  }
   .caret-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     background: none;
     border: none;
     color: var(--text-faint);
-    font-size: 9px;
     cursor: pointer;
     padding: 0;
   }
@@ -339,9 +344,13 @@
     padding: 6px 8px;
   }
   .conversation-thread .reply textarea {
-    min-height: 56px;
-    padding: 10px 12px;
+    height: 36px;
+    min-height: 36px;
+    padding: 7px 12px;
     line-height: 1.45;
+  }
+  .conversation-thread .reply textarea::-webkit-resizer {
+    opacity: 0;
   }
   .reply textarea:focus {
     outline: none;
@@ -361,6 +370,9 @@
   .conversation-thread .btn {
     min-height: 36px;
     padding: 8px 14px;
+    background: var(--link);
+    box-shadow: var(--shadow-control-filled);
+    color: var(--on-brand);
   }
   .btn:hover:not(:disabled) {
     border-color: var(--text-faint);
@@ -372,8 +384,8 @@
 
   .thread {
     border-radius: 10px;
-    background: var(--surface);
-    box-shadow: var(--shadow-xs);
+    background: var(--panel);
+    box-shadow: var(--shadow-surface);
   }
   .tag {
     padding: 2px 7px;
@@ -383,11 +395,41 @@
   }
   .resolve-btn,
   .btn {
-    min-height: 28px;
-    border-radius: 7px;
-    background: var(--panel);
-    border-color: var(--border);
-    box-shadow: var(--shadow-xs);
+    min-height: 32px;
+    padding: 0 13px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--surface);
+    box-shadow: var(--shadow-control-outlined);
+    font-family: var(--sans);
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .resolve-btn:disabled,
+  .btn:disabled {
+    background: var(--disabled-bg);
+    box-shadow: none;
+    color: var(--disabled-fg);
+    opacity: 1;
+  }
+  .conversation-thread .btn:disabled {
+    background: var(--brand-disabled);
+    box-shadow: none;
+    color: var(--on-brand);
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .resolve-btn:hover:not(:disabled),
+    .btn:hover:not(:disabled) {
+      background: var(--surface);
+      border-color: transparent;
+    }
+    .conversation-thread .btn:hover:not(:disabled) {
+      background: var(--brand-hover);
+    }
+  }
+  .resolve-btn:active:not(:disabled),
+  .btn:active:not(:disabled) {
+    transform: scale(0.99);
   }
   .reply textarea {
     border-radius: 8px;

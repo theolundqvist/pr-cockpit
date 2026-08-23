@@ -5,13 +5,27 @@
   --panel: #ffffff;
   --panel-raised: #f6f6f6;
   --surface: #f6f6f6;
-  --surface-hover: #e9e9e9;
-  --border: #e2e2e2;
-  --border-soft: #f2f2f2;
-  --border-hover: #c7c7c7;
+  --surface-hover: #e8e8e8;
+  --surface-pressed: #efefef;
+  --border: #e8e8e8;
+  --border-soft: #f6f6f6;
+  --border-hover: #d4d4d4;
   --text: #222323;
-  --text-dim: #626266;
-  --text-faint: #76767b;
+  --text-dim: #717171;
+  --text-faint: #8c8c8c;
+  /* AppKit semantic colors. The Electron shell replaces these fallbacks with
+     NSColor values for the active macOS appearance and accessibility settings. */
+  --native-accent: #007aff;
+  --native-blue: #0088ff;
+  --native-gray: #8e8e93;
+  --native-green: #34c759;
+  --native-orange: #ff8d28;
+  --native-purple: #cb30e0;
+  --native-red: #ff383c;
+  --native-yellow: #ffcc00;
+  --native-on-accent: #ffffff;
+  --native-focus: #007aff;
+  --modal-scrim: rgb(0 0 0 / 0.18);
   --mono-system: "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
   --sans-system: "SF Pro Display", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --alacritty: "0xProto Nerd Font Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
@@ -22,9 +36,26 @@
   --code-font: var(--mono-system);
   /* comment and description prose */
   --md-font: var(--sans-system);
-  --focus-ring: rgba(1, 122, 255, 0.24);
-  --shadow-xs: 0 1px 1px rgb(0 0 0 / 0.08);
-  --shadow-floating: 2px 2px 6px rgb(242 242 242 / 0.82);
+  --focus-ring: color-mix(in srgb, var(--native-focus) 22%, transparent);
+  --ghost-hover: rgb(34 35 35 / 0.05);
+  --ghost-pressed: rgb(34 35 35 / 0.065);
+  --brand-hover: color-mix(in srgb, var(--native-accent) 82%, white);
+  --brand-pressed: color-mix(in srgb, var(--native-accent) 90%, black);
+  --brand-disabled: color-mix(in srgb, var(--native-accent) 38%, var(--bg));
+  --on-brand: var(--native-on-accent);
+  --disabled-fg: #bababa;
+  --disabled-bg: #ffffff;
+  --switch-unchecked: #e8e8e8;
+  --switch-unchecked-hover: #dedede;
+  --switch-unchecked-pressed: #dadada;
+  --switch-thumb: #ffffff;
+  --shadow-control-filled: 0 3px 6px -2px rgb(0 0 0 / 0.02), 0 1px 1px rgb(0 0 0 / 0.04);
+  --shadow-control-hairline: 0 0 0 0.5px rgb(0 0 0 / 0.088);
+  --shadow-control-outlined: 0 0 0 0.5px rgb(0 0 0 / 0.088), 0 3px 6px -2px rgb(0 0 0 / 0.02), 0 1px 1px rgb(0 0 0 / 0.04);
+  --shadow-control-selected: 0 0 0 0.5px rgb(0 0 0 / 0.147), 0 1px 2px rgb(0 0 0 / 0.05);
+  --shadow-xs: var(--shadow-control-outlined);
+  --shadow-floating: 2px 2px 6px rgb(242 242 242 / 0.25);
+  --shadow-surface: 0 0 0 0.5px rgb(34 35 35 / 0.07), 0 1px 2px rgb(34 35 35 / 0.06), 0 10px 28px -18px rgb(34 35 35 / 0.34);
   --shadow-dialog: 0 18px 48px rgb(34 35 35 / 0.14), 0 2px 8px rgb(34 35 35 / 0.08);
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
@@ -43,38 +74,40 @@
   --space-6: 24px;
   --space-7: 32px;
   --space-8: 40px;
-  --radius-sm: 7px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
   --control-sm: 28px;
   --control-md: 34px;
   --keybar-height: 44px;
   --app-rail-width: 0px;
 
-  --fail: #d84222;
-  --fail-bg: #fbece9;
-  --review: #a67a00;
-  --review-bg: #fef8e6;
-  --ready: #13964e;
-  --ready-bg: #e7f5ed;
-  --wait: #7e7e7e;
-  --wait-bg: #f1f1f1;
-  --merged: #8250df;
-  --merged-bg: #f5eeff;
-  --closed: #cf222e;
-  --closed-bg: #ffebe9;
+  /* Native hue for recognition; text mixing keeps compact labels accessible. */
+  --fail: color-mix(in srgb, var(--native-red) 68%, var(--text));
+  --fail-bg: color-mix(in srgb, var(--native-red) 9%, var(--bg));
+  --review: color-mix(in srgb, var(--native-orange) 52%, var(--text));
+  --review-bg: color-mix(in srgb, var(--native-orange) 10%, var(--bg));
+  --ready: color-mix(in srgb, var(--native-green) 52%, var(--text));
+  --ready-bg: color-mix(in srgb, var(--native-green) 9%, var(--bg));
+  --wait: color-mix(in srgb, var(--native-gray) 70%, var(--text));
+  --wait-bg: color-mix(in srgb, var(--native-gray) 9%, var(--bg));
+  --merged: color-mix(in srgb, var(--native-purple) 68%, var(--text));
+  --merged-bg: color-mix(in srgb, var(--native-purple) 9%, var(--bg));
+  --closed: color-mix(in srgb, var(--native-red) 58%, var(--text));
+  --closed-bg: color-mix(in srgb, var(--native-red) 8%, var(--bg));
+  --on-ready: var(--native-on-accent);
 
-  --add-bg: #e7f5ed;
-  --add-bg-intra: rgba(19, 150, 78, 0.28);
-  --add-gutter: #13964e;
-  --del-bg: #fbece9;
-  --del-bg-intra: rgba(216, 66, 34, 0.24);
-  --del-gutter: #d84222;
+  --add-bg: color-mix(in srgb, var(--native-green) 9%, var(--bg));
+  --add-bg-intra: color-mix(in srgb, var(--native-green) 26%, transparent);
+  --add-gutter: color-mix(in srgb, var(--native-green) 60%, var(--text));
+  --del-bg: color-mix(in srgb, var(--native-red) 9%, var(--bg));
+  --del-bg-intra: color-mix(in srgb, var(--native-red) 24%, transparent);
+  --del-gutter: color-mix(in srgb, var(--native-red) 68%, var(--text));
 
   --md-body: #434343;
-  --link: #017aff;
-  --link-bg: #ebf5ff;
-  --link-bg-hover: #d6ebff;
+  --link: var(--native-accent);
+  --link-bg: color-mix(in srgb, var(--native-accent) 10%, var(--bg));
+  --link-bg-hover: color-mix(in srgb, var(--native-accent) 17%, var(--bg));
   --code-bg: #f6f6f6;
   --code-fg: #222323;
   --code-block-bg: #fafafa;
@@ -89,7 +122,6 @@
 
 [data-font-ui="alacritty"] {
   --mono: var(--alacritty);
-  --sans: var(--alacritty);
 }
 
 [data-font-code="alacritty"] {
@@ -102,46 +134,75 @@
 
 [data-theme="dark"] {
   color-scheme: dark;
-  --bg: #171716;
-  --panel: #1d1d1c;
-  --panel-raised: #262625;
-  --surface: #262625;
-  --surface-hover: #30302e;
-  --border: #393937;
-  --border-soft: #2b2b29;
-  --border-hover: #585855;
-  --text: #f5f5f2;
-  --text-dim: #bebebb;
-  --text-faint: #8b8b86;
-  --focus-ring: rgba(110, 174, 255, 0.28);
-  --shadow-xs: 0 1px 1px rgb(0 0 0 / 0.24);
+  --bg: #171717;
+  --panel: #171717;
+  --panel-raised: #2c2c2c;
+  --surface: #2c2c2c;
+  --surface-hover: #3a3a3a;
+  --surface-pressed: #303030;
+  --border: #3a3a3a;
+  --border-soft: #2c2c2c;
+  --border-hover: #484848;
+  --text: #f2f2f2;
+  --text-dim: #aeaeae;
+  --text-faint: #8f8f8f;
+  --native-accent: #0a84ff;
+  --native-blue: #0088ff;
+  --native-gray: #98989d;
+  --native-green: #34c759;
+  --native-orange: #ff8d28;
+  --native-purple: #cb30e0;
+  --native-red: #ff383c;
+  --native-yellow: #ffd60a;
+  --native-on-accent: #ffffff;
+  --native-focus: #0a84ff;
+  --modal-scrim: rgb(0 0 0 / 0.56);
+  --focus-ring: color-mix(in srgb, var(--native-focus) 28%, transparent);
+  --ghost-hover: rgb(242 242 242 / 0.05);
+  --ghost-pressed: rgb(242 242 242 / 0.065);
+  --brand-hover: color-mix(in srgb, var(--native-accent) 84%, white);
+  --brand-pressed: color-mix(in srgb, var(--native-accent) 90%, black);
+  --brand-disabled: color-mix(in srgb, var(--native-accent) 26%, var(--bg));
+  --on-brand: var(--native-on-accent);
+  --disabled-fg: #636363;
+  --disabled-bg: #1f1f1f;
+  --switch-unchecked: #3a3a3a;
+  --switch-unchecked-hover: #434343;
+  --switch-unchecked-pressed: #464646;
+  --switch-thumb: #f2f2f2;
+  --shadow-control-hairline: 0 0 0 0.5px rgb(255 255 255 / 0.08);
+  --shadow-control-outlined: 0 0 0 0.5px rgb(255 255 255 / 0.08), 0 3px 6px -2px rgb(0 0 0 / 0.02), 0 1px 1px rgb(0 0 0 / 0.04);
+  --shadow-control-selected: 0 0 0 0.5px rgb(255 255 255 / 0.14), 0 1px 2px rgb(0 0 0 / 0.16);
+  --shadow-xs: var(--shadow-control-outlined);
   --shadow-floating: 0 2px 8px rgb(0 0 0 / 0.18);
+  --shadow-surface: 0 0 0 0.5px rgb(255 255 255 / 0.065), 0 1px 2px rgb(0 0 0 / 0.3), 0 12px 30px -18px rgb(0 0 0 / 0.78);
   --shadow-dialog: 0 20px 56px rgb(0 0 0 / 0.5), 0 2px 8px rgb(0 0 0 / 0.34);
 
-  --fail: #ff806e;
-  --fail-bg: rgba(216, 66, 34, 0.2);
-  --review: #f2be35;
-  --review-bg: rgba(243, 186, 0, 0.16);
-  --ready: #5ed28d;
-  --ready-bg: rgba(19, 150, 78, 0.2);
-  --wait: #aaa9a3;
-  --wait-bg: rgba(161, 161, 161, 0.14);
-  --merged: #a371f7;
-  --merged-bg: rgba(130, 80, 223, 0.24);
-  --closed: #f85149;
-  --closed-bg: rgba(207, 34, 46, 0.24);
+  --fail: color-mix(in srgb, var(--native-red) 82%, var(--text));
+  --fail-bg: color-mix(in srgb, var(--native-red) 14%, var(--bg));
+  --review: color-mix(in srgb, var(--native-orange) 82%, var(--text));
+  --review-bg: color-mix(in srgb, var(--native-orange) 13%, var(--bg));
+  --ready: color-mix(in srgb, var(--native-green) 78%, var(--text));
+  --ready-bg: color-mix(in srgb, var(--native-green) 13%, var(--bg));
+  --wait: color-mix(in srgb, var(--native-gray) 78%, var(--text));
+  --wait-bg: color-mix(in srgb, var(--native-gray) 12%, var(--bg));
+  --merged: color-mix(in srgb, var(--native-purple) 82%, var(--text));
+  --merged-bg: color-mix(in srgb, var(--native-purple) 14%, var(--bg));
+  --closed: color-mix(in srgb, var(--native-red) 74%, var(--text));
+  --closed-bg: color-mix(in srgb, var(--native-red) 12%, var(--bg));
+  --on-ready: var(--native-on-accent);
 
-  --add-bg: rgba(19, 150, 78, 0.16);
-  --add-bg-intra: rgba(19, 150, 78, 0.4);
-  --add-gutter: #5ed28d;
-  --del-bg: rgba(216, 66, 34, 0.17);
-  --del-bg-intra: rgba(216, 66, 34, 0.42);
-  --del-gutter: #ff806e;
+  --add-bg: color-mix(in srgb, var(--native-green) 13%, var(--bg));
+  --add-bg-intra: color-mix(in srgb, var(--native-green) 35%, transparent);
+  --add-gutter: color-mix(in srgb, var(--native-green) 76%, var(--text));
+  --del-bg: color-mix(in srgb, var(--native-red) 14%, var(--bg));
+  --del-bg-intra: color-mix(in srgb, var(--native-red) 38%, transparent);
+  --del-gutter: color-mix(in srgb, var(--native-red) 80%, var(--text));
 
   --md-body: #deded9;
-  --link: #70aeff;
-  --link-bg: rgba(1, 122, 255, 0.18);
-  --link-bg-hover: rgba(1, 122, 255, 0.28);
+  --link: var(--native-accent);
+  --link-bg: color-mix(in srgb, var(--native-accent) 14%, var(--bg));
+  --link-bg-hover: color-mix(in srgb, var(--native-accent) 22%, var(--bg));
   --code-bg: #262625;
   --code-fg: #f5f5f2;
   --code-block-bg: #1a1a19;
@@ -173,7 +234,7 @@ body {
   color: var(--text);
   font-family: var(--sans);
   font-size: 14px;
-  line-height: 1.4286;
+  line-height: 20px;
   font-kerning: normal;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -225,12 +286,34 @@ button:not(:disabled),
 
 button:not(:disabled):active,
 [role="button"]:not([aria-disabled="true"]):active {
-  transform: scale(0.98);
+  transform: scale(0.99);
 }
 
 button:disabled,
 [aria-disabled="true"] {
   cursor: default;
+}
+
+kbd {
+  display: inline-flex;
+  min-width: 20px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface-hover) 50%, transparent);
+  box-shadow: none;
+  color: color-mix(in srgb, var(--text-dim) 80%, transparent);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-transform: none;
+  white-space: nowrap;
 }
 
 ::selection {
@@ -254,14 +337,15 @@ button:disabled,
 .badge {
   display: inline-flex;
   align-items: center;
+  min-height: 20px;
   font-family: var(--sans);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0;
   line-height: 16px;
-  padding: 2px 8px;
-  border: 1px solid transparent;
-  border-radius: 999px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 5px;
   white-space: nowrap;
 }
 .badge.fail {
@@ -293,16 +377,17 @@ button:disabled,
    can use them as building blocks without looking like a component gallery. */
 .ui-card {
   background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-xs);
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .ui-eyebrow {
   display: block;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.035em;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 16px;
+  letter-spacing: 0;
   color: var(--text-faint);
 }
 
@@ -313,13 +398,14 @@ button:disabled,
   min-width: 20px;
   min-height: 20px;
   padding: 1px 5px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  background: var(--surface);
-  box-shadow: var(--shadow-xs);
-  color: var(--text-dim);
-  font-family: var(--mono);
-  font-size: 10px;
+  border: 0;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface-hover) 50%, transparent);
+  box-shadow: none;
+  color: color-mix(in srgb, var(--text-dim) 80%, transparent);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 11px;
+  font-weight: 500;
   line-height: 1;
 }
 
@@ -329,7 +415,7 @@ button:disabled,
   border-radius: var(--radius-sm);
   background: var(--panel);
   color: var(--text);
-  box-shadow: var(--shadow-xs);
+  box-shadow: none;
 }
 
 .ui-control:focus-visible {
@@ -516,36 +602,36 @@ button:disabled,
   margin-bottom: 4px;
 }
 .md .callout-note {
-  border-color: #4a9eff;
-  background: rgba(74, 158, 255, 0.08);
+  border-color: var(--native-blue);
+  background: color-mix(in srgb, var(--native-blue) 9%, var(--bg));
 }
 .md .callout-note .callout-label {
-  color: #6eb0ff;
+  color: var(--link);
 }
 .md .callout-tip {
   border-color: var(--ready);
-  background: rgba(63, 185, 80, 0.08);
+  background: var(--ready-bg);
 }
 .md .callout-tip .callout-label {
   color: var(--ready);
 }
 .md .callout-important {
-  border-color: #a371f7;
-  background: rgba(163, 113, 247, 0.08);
+  border-color: var(--merged);
+  background: var(--merged-bg);
 }
 .md .callout-important .callout-label {
-  color: #b98bff;
+  color: var(--merged);
 }
 .md .callout-warning {
   border-color: var(--review);
-  background: rgba(216, 161, 58, 0.08);
+  background: var(--review-bg);
 }
 .md .callout-warning .callout-label {
   color: var(--review);
 }
 .md .callout-caution {
   border-color: var(--fail);
-  background: rgba(240, 97, 109, 0.08);
+  background: var(--fail-bg);
 }
 .md .callout-caution .callout-label {
   color: var(--fail);

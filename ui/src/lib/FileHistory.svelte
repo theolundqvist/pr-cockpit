@@ -178,22 +178,22 @@
 
 {#if open}
   <div class="fh-view">
-    <div class="fh-head mono">
-      <button class="fh-back" onclick={close}>← back</button>
-      <span class="fh-title">{symbol ? "history mentioning" : "history"} · {#if symbol}<span class="fh-symbol">{symbol}</span>{" · "}{/if}<span class="fh-path">{path}</span> on {base}</span>
+    <div class="fh-head">
+      <button class="fh-back" onclick={close}>← Back</button>
+      <span class="fh-title">{symbol ? "History mentioning" : "History"} · {#if symbol}<span class="fh-symbol mono">{symbol}</span>{" · "}{/if}<span class="fh-path mono">{path}</span> on <span class="mono">{base}</span></span>
       <button class="fh-esc" onclick={close} aria-label="Close">esc</button>
     </div>
 
     {#if status === "loading"}
-      <div class="fh-state mono">loading history…</div>
+      <div class="fh-state">Loading history…</div>
     {:else if status === "error"}
-      <div class="fh-state mono">couldn't load history.</div>
+      <div class="fh-state">Couldn’t load history.</div>
     {:else}
       <div class="fh-body">
         <div class="fh-rail" bind:this={railEl}>
           {#each entries as commit, i (commit.sha)}
             {@const col = commit.currentPr ? currentCol : diffs.get(commit.sha)}
-            <button class="fh-row mono" class:active={i === selectedIndex} class:current={commit.currentPr} onclick={() => (selectedIndex = i)}>
+            <button class="fh-row" class:active={i === selectedIndex} class:current={commit.currentPr} onclick={() => (selectedIndex = i)}>
               <span class="fh-spine"><span class="fh-dot"></span></span>
               <span class="fh-row-body">
                 <span class="fh-row-title">
@@ -224,7 +224,7 @@
 
         <div class="fh-detail">
           {#if selected}
-            <div class="fh-detail-head mono">
+            <div class="fh-detail-head">
               <div class="fh-detail-title">
                 {#if selected.currentPr}
                   <span class="fh-detail-subject">{currentPr.title}</span>
@@ -270,13 +270,13 @@
                   {layout}
                 />
               {:else}
-                <div class="fh-state mono">diff unavailable</div>
+                <div class="fh-state">Diff unavailable</div>
               {/if}
             </div>
           {/if}
         </div>
       </div>
-      <div class="fh-keybar mono">
+      <div class="fh-keybar">
         <span><kbd>j</kbd><kbd>k</kbd> move</span>
         <span class="fh-dim">·</span>
         <span><kbd>esc</kbd> back</span>
@@ -462,6 +462,7 @@
   .fh-chip {
     flex: none;
     color: var(--text-faint);
+    font-family: var(--mono);
     font-size: 11px;
   }
   .fh-row.current .fh-chip,
@@ -570,13 +571,14 @@
     color: var(--text-faint);
   }
   .fh-keybar kbd {
-    font-family: var(--mono);
-    font-size: 10.5px;
-    color: var(--text-dim);
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 5px;
-    padding: 1px 5px;
+    font-family: system-ui, -apple-system, sans-serif;
+    font-size: 11px;
+    font-weight: 500;
+    color: color-mix(in srgb, var(--text-dim) 80%, transparent);
+    background: color-mix(in srgb, var(--surface-hover) 50%, transparent);
+    border: 0;
+    border-radius: 6px;
+    padding: 0 6px;
     margin-right: 2px;
   }
 </style>

@@ -7,7 +7,8 @@
   import { scrollStep, scrollPage, scrollEdge } from "./scroll.js";
   import KeyBar from "./KeyBar.svelte";
   import ShortcutInput from "./ShortcutInput.svelte";
-  let { onRunSetup } = $props();
+  import { SETTINGS_SECTION_KEY, SETTINGS_SECTIONS, normalizeSettingsSection } from "./settingsSections.js";
+  let { onRunSetup, section = "general" } = $props();
 
 
   let repos = $state("");
@@ -41,27 +42,10 @@
   let saved = $state(false);
   let error = $state(null);
 
-  const TABS = [
-    { id: "general", label: "General" },
-    { id: "keybinds", label: "Keybinds" },
-    { id: "automerge", label: "Agents" },
-    { id: "tests", label: "Diff / Tests" },
-  ];
-  const TAB_KEY = "cockpit:settings-tab";
-  const storedTab = localStorage.getItem(TAB_KEY);
-  let activeTab = $state(TABS.some((t) => t.id === storedTab) ? storedTab : "general");
-  let tabBar = $state(null);
+  let activeTab = $derived(normalizeSettingsSection(section));
+  let activeSection = $derived(SETTINGS_SECTIONS.find((item) => item.id === activeTab));
 
-  $effect(() => localStorage.setItem(TAB_KEY, activeTab));
-
-  function onTabKey(e) {
-    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-    const idx = TABS.findIndex((t) => t.id === activeTab);
-    const next = (idx + (e.key === "ArrowRight" ? 1 : TABS.length - 1)) % TABS.length;
-    activeTab = TABS[next].id;
-    tabBar?.querySelectorAll(".tab")[next]?.focus();
-    e.preventDefault();
-  }
+  $effect(() => localStorage.setItem(SETTINGS_SECTION_KEY, activeTab));
 
   // UI copy for the built-in agents, keyed by agent id; definitions (enabled, trigger, keybind, prompt) come from the server
   const AGENT_META = {
@@ -304,7 +288,6 @@
 <div class="page">
   <div class="settings">
     <header class="head">
-      <a class="back" href="#/">← inbox</a>
       <div class="settings-head-copy">
         <span class="ui-eyebrow">Control center</span>
         <span class="head-title">Settings</span>
@@ -312,56 +295,40 @@
     </header>
 
     {#if error}
-      <div class="error mono">{error}</div>
+      <div class="error">{error}</div>
     {/if}
 
     {#if loaded}
-      <div class="tabs mono" bind:this={tabBar} onkeydown={onTabKey} role="tablist" aria-label="Settings sections" tabindex="-1">
-        {#each TABS as t}
-          <button
-            class="tab"
-            class:active={activeTab === t.id}
-            id={`settings-tab-${t.id}`}
-            type="button"
-            role="tab"
-            aria-selected={activeTab === t.id}
-            aria-controls={`settings-panel-${t.id}`}
-            tabindex={activeTab === t.id ? 0 : -1}
-            onclick={() => (activeTab = t.id)}
-          >{t.label}</button>
-        {/each}
-      </div>
-
-      <div class="settings-panel" id={`settings-panel-${activeTab}`} role="tabpanel" aria-labelledby={`settings-tab-${activeTab}`}>
+      <div class="settings-panel" id={`settings-panel-${activeTab}`} aria-label={`${activeSection?.label ?? "General"} settings`}>
       {#if activeTab === "general"}
         <div class="settings-intro">
           <span class="ui-eyebrow">Workspace</span>
           <p>Configure the repositories and update behavior that shape your review queue.</p>
         </div>
-        <button class="btn mono setup-again" type="button" onclick={onRunSetup}>Run setup again</button>
+        <button class="btn setup-again" type="button" onclick={onRunSetup}>Run setup again</button>
 
         <div class="settings-grid">
           <label class="field field-wide">
-            <span class="label mono">Repositories</span>
-            <span class="hint mono">one owner/name per line — watched for PRs involving you</span>
+            <span class="label">Repositories</span>
+            <span class="hint">One owner/name per line — watched for PRs involving you</span>
             <textarea class="input mono" rows={Math.max(3, repos.split("\n").length)} bind:value={repos} spellcheck="false"></textarea>
           </label>
 
           <label class="field">
-            <span class="label mono">Default repository</span>
-            <span class="hint mono">used to resolve bare-number PR jumps</span>
+            <span class="label">Default repository</span>
+            <span class="hint">Used to resolve bare-number PR jumps</span>
             <input class="input mono" bind:value={defaultRepo} placeholder="owner/name" spellcheck="false" autocomplete="off" />
           </label>
 
           <label class="field">
-            <span class="label mono">Poll interval</span>
-            <span class="hint mono">seconds — minimum 60 (GitHub quota), 180 recommended</span>
-            <input class="input mono narrow" type="number" min="60" step="10" bind:value={pollInterval} />
+            <span class="label">Poll interval</span>
+            <span class="hint">Seconds — minimum 60 (GitHub quota), 180 recommended</span>
+            <input class="input narrow" type="number" min="60" step="10" bind:value={pollInterval} />
           </label>
 
           <label class="field">
-            <span class="label mono">Appearance</span>
-            <span class="hint mono">System follows this Mac automatically</span>
+            <span class="label">Appearance</span>
+            <span class="hint">System follows this Mac automatically</span>
             <select class="input narrow" bind:value={themeName}>
               <option value="system">System</option>
               <option value="dark">Dark</option>
@@ -370,8 +337,8 @@
           </label>
 
           <label class="field">
-            <span class="label mono">Interface font</span>
-            <span class="hint mono">opt in to Alacritty's 0xProto Nerd Font Mono for buttons, lists and labels</span>
+            <span class="label">Technical UI font</span>
+            <span class="hint">Used for branches, paths, commit IDs, shortcuts and logs</span>
             <select class="input narrow" bind:value={fontUi}>
               <option value="default">Default</option>
               <option value="alacritty">Alacritty — 0xProto</option>
@@ -379,8 +346,8 @@
           </label>
 
           <label class="field">
-            <span class="label mono">Code font</span>
-            <span class="hint mono">diff lines and code blocks</span>
+            <span class="label">Code font</span>
+            <span class="hint">Diff lines and code blocks</span>
             <select class="input narrow" bind:value={fontCode}>
               <option value="default">Default</option>
               <option value="alacritty">Alacritty — 0xProto</option>
@@ -388,8 +355,8 @@
           </label>
 
           <label class="field">
-            <span class="label mono">Comment font</span>
-            <span class="hint mono">pull request descriptions, comments and reviews</span>
+            <span class="label">Comment font</span>
+            <span class="hint">Pull request descriptions, comments and reviews</span>
             <select class="input narrow" bind:value={fontComments}>
               <option value="default">Default</option>
               <option value="alacritty">Alacritty — 0xProto</option>
@@ -397,8 +364,8 @@
           </label>
 
           <label class="field">
-            <span class="label mono">Code colors</span>
-            <span class="hint mono">Catppuccin adds richer TypeScript colors and keeps embedded SQL highlighting</span>
+            <span class="label">Code colors</span>
+            <span class="hint">Catppuccin adds richer TypeScript colors and keeps embedded SQL highlighting</span>
             <select class="input narrow" bind:value={codeTheme}>
               <option value="github">GitHub</option>
               <option value="catppuccin">Catppuccin</option>
@@ -406,62 +373,62 @@
           </label>
 
           <label class="field">
-            <span class="label mono">General scale (%)</span>
-            <span class="hint mono">scales everything except diff text</span>
-            <input class="input mono narrow" type="number" min="75" max="200" step="5" bind:value={generalScale} />
+            <span class="label">General scale (%)</span>
+            <span class="hint">Scales everything except diff text</span>
+            <input class="input narrow" type="number" min="75" max="200" step="5" bind:value={generalScale} />
           </label>
 
           <label class="field">
-            <span class="label mono">Diff scale (%)</span>
-            <span class="hint mono">scales diff text and line numbers independently</span>
-            <input class="input mono narrow" type="number" min="75" max="200" step="5" bind:value={diffScale} />
+            <span class="label">Diff scale (%)</span>
+            <span class="hint">Scales diff text and line numbers independently</span>
+            <input class="input narrow" type="number" min="75" max="200" step="5" bind:value={diffScale} />
           </label>
 
           <label class="check-field settings-option grid-option">
             <input class="check" type="checkbox" bind:checked={hideSidebar} />
             <span class="check-text">
-              <span class="check-label mono">Hide sidebar</span>
-              <span class="hint mono">removes the navigation rail entirely — use ⌘, to return here</span>
+              <span class="check-label">Hide sidebar</span>
+              <span class="hint">Hides the main app rail — Settings keeps its own section navigation</span>
             </span>
           </label>
 
           <label class="check-field settings-option grid-option">
             <input class="check" type="checkbox" bind:checked={perViewWindowSize} />
             <span class="check-text">
-              <span class="check-label mono">Remember window size per view</span>
-              <span class="hint mono">restores the size you last used for the list and PR views</span>
+              <span class="check-label">Remember window size per view</span>
+              <span class="hint">Restores the size you last used for the list and PR views</span>
             </span>
           </label>
 
           <label class="check-field settings-option grid-option">
             <input class="check" type="checkbox" bind:checked={perViewWindowPosition} />
             <span class="check-text">
-              <span class="check-label mono">Remember window position per view</span>
-              <span class="hint mono">restores the screen position you last used for the list and PR views</span>
+              <span class="check-label">Remember window position per view</span>
+              <span class="hint">Restores the screen position you last used for the list and PR views</span>
             </span>
           </label>
 
           <div class="field field-wide">
-            <span class="label mono">Team sync</span>
-            <span class="hint mono">relay URL — pushes PR webhook events to every teammate's cockpit; empty = off</span>
+            <span class="label">Team sync</span>
+            <span class="hint">Relay URL — pushes PR webhook events to every teammate's cockpit; empty means off</span>
             <input class="input mono" bind:value={relayUrl} spellcheck="false" autocomplete="off" />
             {#if relayStatusText}
-              <span class="hint mono relay-status">{relayStatusText}</span>
+              <span class="hint relay-status">{relayStatusText}</span>
             {/if}
             {#if relayCoverage?.appExists === false}
-              <button class="btn mono relay-setup" type="button" disabled={!relayOrg} onclick={openGithubAppSetup}>Set up GitHub App…</button>
+              <button class="btn relay-setup" type="button" disabled={!relayOrg} onclick={openGithubAppSetup}>Set up GitHub App…</button>
             {/if}
             {#if relayInfo?.url && relayCoverage}
               <div class="coverage-list">
                 {#each configuredRepos as repo}
-                  <div class="coverage-row mono">
+                  <div class="coverage-row">
                     <span class="coverage-repo">{repo}</span>
                     {#if relayCoverage.repos?.[repo] === true}
                       <span class="coverage-live">live push ✓</span>
                     {:else if relayCoverage.repos?.[repo] === false}
                       <span class="coverage-polling">polling only</span>
                       {#if relayCoverage.appExists}
-                        <button class="link-btn mono" type="button" onclick={() => window.open(relayCoverage.installUrl, "_blank", "noopener")}>Install app</button>
+                        <button class="link-btn" type="button" onclick={() => window.open(relayCoverage.installUrl, "_blank", "noopener")}>Install app</button>
                       {/if}
                     {:else}
                       <span class="coverage-polling">coverage unknown — relay didn't answer</span>
@@ -469,7 +436,7 @@
                   </div>
                 {/each}
                 {#if relayCoverage.appExists && relayCoverage.repos && configuredRepos.some((r) => relayCoverage.repos[r] === false)}
-                  <span class="hint mono">org admins install; members can request it from an admin via the same page</span>
+                  <span class="hint">Org admins install; members can request it from an admin via the same page</span>
                 {/if}
               </div>
             {/if}
@@ -484,17 +451,17 @@
         </div>
         <div class="settings-grid">
           <label class="field">
-            <span class="label mono">Open cockpit</span>
-            <span class="hint mono">global shortcut that shows the main window from anywhere</span>
+            <span class="label">Open cockpit</span>
+            <span class="hint">Global shortcut that shows the main window from anywhere</span>
             <ShortcutInput value={keybindOpenApp} defaultValue="Command+Control+G" onChange={(a) => (keybindOpenApp = a)} />
           </label>
 
           <label class="field">
-            <span class="label mono">Open palette</span>
-            <span class="hint mono">global shortcut for the standalone PR-search palette</span>
+            <span class="label">Open palette</span>
+            <span class="hint">Global shortcut for the standalone PR-search palette</span>
             <ShortcutInput value={keybindOpenPalette} defaultValue="Command+Option+K" onChange={(a) => (keybindOpenPalette = a)} />
             {#if keybindClash}
-              <span class="hint mono invalid-hint">same combo bound twice — pick different shortcuts</span>
+              <span class="hint invalid-hint">Same combo bound twice — pick different shortcuts</span>
             {/if}
           </label>
         </div>
@@ -506,8 +473,8 @@
           <p>Choose which review work can run unattended. Merge paths stay explicit so the next irreversible step is always clear.</p>
         </div>
         <label class="field">
-          <span class="label mono">Agent harness</span>
-          <span class="hint mono">
+          <span class="label">Agent harness</span>
+          <span class="hint">
             which headless CLI every agent runs
             {#if !harnessAvailable[agentHarness]}
               — <strong>{agentHarness} is not installed</strong>, agents will fail to start
@@ -520,8 +487,8 @@
         </label>
 
         <div class="field">
-          <span class="label mono">Force-merge repositories</span>
-          <span class="hint mono">force-merge past a required-approval rule when everything else is green — never past failing checks, conflicts, or open threads</span>
+          <span class="label">Force-merge repositories</span>
+          <span class="hint">Force-merge past a required-approval rule when everything else is green — never past failing checks, conflicts, or open threads</span>
           {#if configuredRepos.length}
             <div class="repo-toggles">
               {#each configuredRepos as repo}
@@ -532,7 +499,7 @@
               {/each}
             </div>
           {:else}
-            <span class="hint mono">add repositories under General to enable per-repo force-merge</span>
+            <span class="hint">Add repositories under General to enable per-repo force-merge</span>
           {/if}
         </div>
 
@@ -544,17 +511,17 @@
                 <span>{agent.enabled ? "On" : "Off"}</span>
               </label>
               <div class="agent-identity">
-                <input class="input mono agent-name" bind:value={agent.name} placeholder="agent name" spellcheck="false" autocomplete="off" />
+                <input class="input agent-name" bind:value={agent.name} placeholder="Agent name" spellcheck="false" autocomplete="off" />
                 {#if isCustom(agent)}
-                  <span class="hint mono">supervised run on a PR — pushes fixes to the PR branch, never merges</span>
+                  <span class="hint">Supervised run on a PR — pushes fixes to the PR branch, never merges</span>
                 {:else}
-                  <span class="hint mono">{AGENT_META[agent.id]?.description}</span>
-                  <span class="hint mono">{AGENT_META[agent.id]?.offHint}</span>
+                  <span class="hint">{AGENT_META[agent.id]?.description}</span>
+                  <span class="hint">{AGENT_META[agent.id]?.offHint}</span>
                 {/if}
               </div>
             </div>
 
-            <div class="agent-trigger mono">
+            <div class="agent-trigger">
               <span class="trigger-kind">trigger</span>
               <select class="input narrow" bind:value={agent.trigger}>
                 <option value="keybind">keybind</option>
@@ -568,30 +535,30 @@
                 <option value="opus">opus</option>
                 <option value="sonnet">sonnet</option>
               </select>
-              <span class="hint mono trigger-hint">{agent.trigger === "keybind" ? "press its key on a PR or inbox selection" : "runs automatically when new commits land on your own PRs"}</span>
+              <span class="hint trigger-hint">{agent.trigger === "keybind" ? "Press its key on a PR or inbox selection" : "Runs automatically when new commits land on your own PRs"}</span>
             </div>
             {#if agentKeybindIssues.has(agent.id)}
-              <span class="hint mono invalid-hint keybind-issue">{agentKeybindIssues.get(agent.id)}</span>
+              <span class="hint invalid-hint keybind-issue">{agentKeybindIssues.get(agent.id)}</span>
             {/if}
 
             <label class="field agent-prompt">
-              <span class="label mono">Prompt</span>
-              <span class="hint mono">{isCustom(agent) ? "the agent's instruction — {{PR_NUMBER}}, {{BASE_REF}} and {{STATUS_FILE}} are filled in per run" : AGENT_META[agent.id]?.promptHint}</span>
+              <span class="label">Prompt</span>
+              <span class="hint">{isCustom(agent) ? "The agent's instruction — {{PR_NUMBER}}, {{BASE_REF}} and {{STATUS_FILE}} are filled in per run" : AGENT_META[agent.id]?.promptHint}</span>
               <textarea class="input mono" rows={isCustom(agent) ? 6 : 10} bind:value={agent.promptText} disabled={!agent.enabled} spellcheck="false"></textarea>
               {#if agent.prompt_default && agent.promptText.trim() !== agent.prompt_default.trim()}
-                <button class="reset-link mono" type="button" onclick={() => (agent.promptText = agent.prompt_default)}>reset prompt to default</button>
+                <button class="reset-link" type="button" onclick={() => (agent.promptText = agent.prompt_default)}>Reset prompt to default</button>
               {/if}
             </label>
 
             {#if isCustom(agent)}
-              <button class="reset-link mono remove-agent" type="button" onclick={() => removeAgent(agent.id)}>remove agent</button>
+              <button class="reset-link remove-agent" type="button" onclick={() => removeAgent(agent.id)}>Remove agent</button>
             {:else}
-              <button class="reset-link mono remove-agent" type="button" onclick={() => resetAgent(agent)}>reset agent to defaults</button>
+              <button class="reset-link remove-agent" type="button" onclick={() => resetAgent(agent)}>Reset agent to defaults</button>
             {/if}
           </div>
         {/each}
 
-        <button class="btn mono" type="button" onclick={addAgent}>+ Add agent</button>
+        <button class="btn" type="button" onclick={addAgent}>+ Add agent</button>
       {/if}
 
       {#if activeTab === "tests"}
@@ -600,8 +567,8 @@
           <p>Choose how code changes are laid out, and keep test code one shortcut away when you need it.</p>
         </div>
         <label class="field">
-          <span class="label mono">Diff layout</span>
-          <span class="hint mono">applies to pull request changes and file history</span>
+          <span class="label">Diff layout</span>
+          <span class="hint">Applies to pull request changes and file history</span>
           <select class="input narrow" bind:value={diffLayout}>
             <option value="split">Side by side</option>
             <option value="unified">Unified</option>
@@ -609,8 +576,8 @@
         </label>
 
         <label class="field">
-          <span class="label mono">Test path pattern</span>
-          <span class="hint mono">regex marking a file as a test — edit to override the built-in pattern shown below</span>
+          <span class="label">Test path pattern</span>
+          <span class="hint">Regex marking a file as a test — edit to override the built-in pattern shown below</span>
           <input
             class="input mono"
             class:invalid={testRegexInvalid}
@@ -619,30 +586,30 @@
             autocomplete="off"
           />
           {#if testRegexInvalid}
-            <span class="hint mono invalid-hint">invalid regex — falling back to the built-in pattern</span>
+            <span class="hint invalid-hint">Invalid regex — falling back to the built-in pattern</span>
           {/if}
         </label>
 
         <label class="check-field settings-option">
           <input class="check" type="checkbox" bind:checked={hideTestsDefault} />
           <span class="check-text">
-            <span class="check-label mono">Hide test files by default</span>
-            <span class="hint mono">collapses test files when a PR opens — the per-PR toggle still flips them</span>
+            <span class="check-label">Hide test files by default</span>
+            <span class="hint">Collapses test files when a PR opens — the per-PR toggle still flips them</span>
           </span>
         </label>
 
         <label class="check-field settings-option">
           <input class="check" type="checkbox" bind:checked={newestCommentsFirst} />
           <span class="check-text">
-            <span class="check-label mono">Show newest comments first</span>
-            <span class="hint mono">keeps the PR description at the top, then shows the composer and newest comments first</span>
+            <span class="check-label">Show newest comments first</span>
+            <span class="hint">Keeps the PR description at the top, then shows the composer and newest comments first</span>
           </span>
         </label>
       {/if}
 
       <div class="actions">
-        <button class="btn mono" disabled={saving || keybindClash || agentKeybindIssues.size > 0} onclick={save}>{saving ? "Saving…" : "Save"}</button>
-        {#if saved}<span class="saved mono">saved</span>{/if}
+        <button class="btn" disabled={saving || keybindClash || agentKeybindIssues.size > 0} onclick={save}>{saving ? "Saving…" : "Save"}</button>
+        {#if saved}<span class="saved">Saved</span>{/if}
       </div>
       </div>
     {/if}
@@ -662,7 +629,7 @@
   }
   .settings {
     width: 100%;
-    max-width: 640px;
+    max-width: var(--app-content-max-width, 1320px);
   }
   .head {
     display: flex;
@@ -672,23 +639,8 @@
     border-bottom: 1px solid var(--border);
     margin-bottom: 24px;
   }
-  .back {
-    color: var(--text-faint);
-    text-decoration: none;
-    font-family: var(--mono);
-    font-size: 12.5px;
-  }
-  .back:hover {
-    color: var(--text-dim);
-  }
-  .back:focus-visible {
-    outline: 2px solid var(--link);
-    outline-offset: 3px;
-    border-radius: 3px;
-    color: var(--text-dim);
-  }
   .head-title {
-    font-family: var(--mono);
+    font-family: var(--sans);
     font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.14em;
@@ -703,37 +655,6 @@
     border-radius: 8px;
     background: var(--fail-bg);
     margin-bottom: 22px;
-  }
-  .tabs {
-    display: flex;
-    gap: 4px;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: 24px;
-  }
-  .tab {
-    background: none;
-    border: none;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-    font-size: 12.5px;
-    letter-spacing: 0.03em;
-    text-transform: uppercase;
-    color: var(--text-faint);
-    padding: 8px 14px;
-    cursor: pointer;
-  }
-  .tab:hover {
-    color: var(--text-dim);
-  }
-  .tab:focus-visible {
-    outline: 2px solid var(--link);
-    outline-offset: -4px;
-    border-radius: 5px;
-    color: var(--text-dim);
-  }
-  .tab.active {
-    color: var(--text);
-    border-bottom-color: var(--review);
   }
   .reset-link {
     display: block;
@@ -970,9 +891,6 @@
     height: 100%;
     padding: 24px 32px 96px;
   }
-  .settings {
-    max-width: 920px;
-  }
   .head {
     position: sticky;
     top: 0;
@@ -990,21 +908,6 @@
   }
   .settings-head-copy .ui-eyebrow {
     font-size: 10px;
-  }
-  .back {
-    display: inline-flex;
-    align-items: center;
-    min-height: 28px;
-    padding: 0 8px;
-    margin-left: -8px;
-    border-radius: 7px;
-    font-family: var(--sans);
-  }
-  @media (hover: hover) and (pointer: fine) {
-    .back:hover {
-      color: var(--text);
-      background: var(--surface);
-    }
   }
   .head-title {
     font-family: var(--sans);
@@ -1040,42 +943,6 @@
   .settings-grid .settings-option {
     min-height: 100%;
     margin: 0;
-  }
-  .tabs {
-    display: inline-flex;
-    width: fit-content;
-    gap: 2px;
-    padding: 3px;
-    margin-bottom: 22px;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-  }
-  .tab {
-    min-height: 28px;
-    margin: 0;
-    padding: 0 11px;
-    border: 1px solid transparent;
-    border-radius: 7px;
-    color: var(--text-dim);
-    font-family: var(--sans);
-    font-size: 12px;
-    font-weight: 500;
-    letter-spacing: -0.005em;
-    text-transform: none;
-  }
-  @media (hover: hover) and (pointer: fine) {
-    .tab:hover {
-      color: var(--text);
-      background: var(--panel);
-    }
-  }
-  .tab.active {
-    color: var(--text);
-    background: var(--panel);
-    border-color: var(--border);
-    border-bottom-color: var(--border);
-    box-shadow: var(--shadow-xs);
   }
   .field {
     margin-bottom: 12px;
@@ -1124,34 +991,33 @@
   .check {
     appearance: none;
     position: relative;
-    width: 34px;
-    height: 20px;
+    width: 36px;
+    height: 21px;
     margin: 0;
     flex: none;
-    border: 1px solid var(--border-hover);
+    border: 0;
     border-radius: 999px;
-    background: var(--surface);
-    box-shadow: inset 0 1px 1px rgb(0 0 0 / 0.05);
-    transition: background-color 160ms var(--ease-out), border-color 160ms var(--ease-out), box-shadow 160ms var(--ease-out);
+    background: var(--switch-unchecked);
+    box-shadow: none;
+    transition: background-color 140ms ease, box-shadow 140ms ease;
   }
   .check::after {
     content: "";
     position: absolute;
     top: 2px;
-    left: 3px;
-    width: 14px;
-    height: 14px;
+    left: 2px;
+    width: 17px;
+    height: 17px;
     border-radius: 50%;
-    background: var(--panel);
-    box-shadow: 0 1px 2px rgb(0 0 0 / 0.2);
-    transition: transform 160ms var(--ease-out);
+    background: var(--switch-thumb);
+    box-shadow: var(--shadow-control-hairline);
+    transition: width 140ms var(--ease-out), transform 140ms var(--ease-out);
   }
   .check:checked {
-    border-color: var(--ready);
-    background: var(--ready);
+    background: var(--link);
   }
   .check:checked::after {
-    transform: translateX(14px);
+    transform: translateX(15px);
   }
   .check:not(:disabled) {
     cursor: pointer;
@@ -1159,6 +1025,23 @@
   .check:focus-visible {
     outline: 2px solid var(--link);
     outline-offset: 3px;
+  }
+  .check:active:not(:disabled) {
+    background: var(--switch-unchecked-pressed);
+  }
+  .check:checked:active:not(:disabled) {
+    background: var(--brand-pressed);
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .check:hover:not(:disabled) {
+      background: var(--switch-unchecked-hover);
+    }
+    .check:checked:hover:not(:disabled) {
+      background: var(--brand-hover);
+    }
+    .check:hover:not(:disabled)::after {
+      width: 19px;
+    }
   }
   .agent-card-head {
     display: grid;
@@ -1227,8 +1110,8 @@
   .actions .btn {
     background: var(--link);
     border-color: var(--link);
-    color: #fff;
-    box-shadow: 0 1px 1px rgb(1 122 255 / 0.24);
+    color: var(--on-brand);
+    box-shadow: var(--shadow-control-filled);
   }
   @media (hover: hover) and (pointer: fine) {
     .btn:hover:not(:disabled) {
@@ -1236,8 +1119,8 @@
       border-color: var(--border-hover);
     }
     .actions .btn:hover:not(:disabled) {
-      background: #006fe8;
-      border-color: #006fe8;
+      background: var(--brand-hover);
+      border-color: var(--brand-hover);
     }
   }
   .setup-again {
@@ -1256,6 +1139,154 @@
     .agent-card-head {
       grid-template-columns: 1fr;
       gap: 8px;
+    }
+  }
+
+  /* Settings use Scape's semantic type roles and flat grouped rows. */
+  .page {
+    --settings-page-inset: 18px;
+    padding: var(--settings-page-inset) 32px 96px;
+  }
+  .head {
+    top: calc(-1 * var(--settings-page-inset));
+    padding: var(--settings-page-inset) 0 14px;
+    margin: calc(-1 * var(--settings-page-inset)) 0 20px;
+    border-bottom-color: var(--border-soft);
+    background: var(--bg);
+    backdrop-filter: none;
+  }
+  .settings-head-copy {
+    gap: 0;
+  }
+  .settings-head-copy .ui-eyebrow {
+    font-size: 12px;
+  }
+  .head-title {
+    font-size: 24px;
+    font-weight: 500;
+    line-height: 30px;
+    letter-spacing: -0.025em;
+  }
+  .settings-intro {
+    max-width: 640px;
+    margin-bottom: 18px;
+  }
+  .settings-intro p {
+    margin-top: 3px;
+    font-size: 14px;
+    line-height: 20px;
+  }
+  .settings-grid {
+    column-gap: 32px;
+    row-gap: 0;
+  }
+  .field,
+  .settings-option {
+    margin: 0;
+    padding: 18px 0;
+    border: 0;
+    border-top: 1px solid var(--border-soft);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  .label {
+    margin-bottom: 2px;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 20px;
+    letter-spacing: 0;
+  }
+  .hint {
+    margin-bottom: 10px;
+    font-family: var(--sans);
+    font-size: 12px;
+    line-height: 16px;
+  }
+  .input {
+    min-height: 32px;
+    border-color: transparent;
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    font-family: var(--sans);
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 20px;
+  }
+  textarea.input {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 400;
+  }
+  .agent-card {
+    margin-bottom: 0;
+    padding: 20px 0;
+    border: 0;
+    border-top: 1px solid var(--border-soft);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  .agent-card.agent-disabled {
+    background: transparent;
+    opacity: 0.72;
+  }
+  .agent-prompt {
+    padding: 14px;
+    border: 0;
+    border-radius: var(--radius-md);
+    background: var(--surface);
+  }
+  .btn {
+    min-height: 32px;
+    padding-inline: 14px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--surface);
+    box-shadow: var(--shadow-control-outlined);
+    font-family: var(--sans);
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .btn:disabled {
+    background: var(--disabled-bg);
+    box-shadow: none;
+    color: var(--disabled-fg);
+    opacity: 1;
+  }
+  .actions {
+    margin-top: 18px;
+    border-top-color: var(--border-soft);
+  }
+  .actions .btn {
+    background: var(--link);
+    box-shadow: var(--shadow-control-filled);
+    color: var(--on-brand);
+  }
+  .actions .btn:disabled {
+    background: var(--brand-disabled);
+    box-shadow: none;
+    color: var(--on-brand);
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .btn:hover:not(:disabled) {
+      border-color: transparent;
+      background: var(--surface-hover);
+    }
+    .actions .btn:hover:not(:disabled) {
+      background: var(--brand-hover);
+    }
+  }
+  .btn:active:not(:disabled) {
+    transform: scale(0.99);
+  }
+  @media (max-width: 760px) {
+    .page {
+      --settings-page-inset: 14px;
+      padding: var(--settings-page-inset) 16px 84px;
+    }
+    .settings-grid {
+      grid-template-columns: 1fr;
     }
   }
 </style>

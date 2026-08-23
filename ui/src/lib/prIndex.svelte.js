@@ -78,5 +78,7 @@ export function prTitle(repo, number) {
 }
 
 export function prSummary(repo, number) {
-  return records.get(prKeyOf(repo, number)) ?? null;
+  const summary = records.get(prKeyOf(repo, number)) ?? null;
+  if (!summary) rememberMissing(repo, number);
+  return summary;
 }

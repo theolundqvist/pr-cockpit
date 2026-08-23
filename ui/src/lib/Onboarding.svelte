@@ -220,18 +220,18 @@
 
 <div class="onb-page">
   <form class="onb" onsubmit={onSubmit}>
-    <div class="stepper mono" aria-label="Setup progress">
+    <div class="stepper" aria-label="Setup progress">
       {#each ["Connect", "Repos", "Live updates", "Done"] as label, index}
         <span class:active={step === index + 1} class:complete={step > index + 1}>{index + 1}. {label}</span>
       {/each}
     </div>
 
     {#if step === 1}
-      <span class="eyebrow mono">Step 1 of 4</span>
+      <span class="eyebrow">Step 1 of 4</span>
       <h1 class="onb-title">Connect GitHub</h1>
       <p class="onb-sub">PR Cockpit uses the GitHub CLI already installed on your computer.</p>
 
-      <div class="status-card mono" aria-live="polite">
+      <div class="status-card" aria-live="polite">
         {#if authLoading}
           <span class="spinner" aria-hidden="true"></span>
           <span>Checking GitHub authentication…</span>
@@ -246,26 +246,26 @@
 
       <div class="actions">
         {#if !auth?.ok && !authLoading}
-          <button class="secondary mono" type="button" onclick={checkAuth}>Re-check</button>
+          <button class="secondary" type="button" onclick={checkAuth}>Re-check</button>
         {/if}
-        <button class="primary mono" type="submit" disabled={!auth?.ok}>Continue</button>
+        <button class="primary" type="submit" disabled={!auth?.ok}>Continue</button>
       </div>
     {:else if step === 2}
-      <span class="eyebrow mono">Step 2 of 4</span>
+      <span class="eyebrow">Step 2 of 4</span>
       <h1 class="onb-title">Choose repositories</h1>
       <p class="onb-sub">Pick the repositories whose pull requests should land in your inbox.</p>
 
       {#if repoError}
-        <div class="notice failure-notice mono" role="alert">
+        <div class="notice failure-notice" role="alert">
           <strong>Repository discovery failed.</strong>
           <span>{repoError}</span>
-          <button class="link-button mono" type="button" onclick={loadRepos}>Try again</button>
+          <button class="link-button" type="button" onclick={loadRepos}>Try again</button>
           <span>You can also add repositories manually below.</span>
         </div>
       {:else if reposLoading}
-        <div class="status-card mono"><span class="spinner" aria-hidden="true"></span><span>Loading your recent repositories…</span></div>
+        <div class="status-card"><span class="spinner" aria-hidden="true"></span><span>Loading your recent repositories…</span></div>
       {:else if reposLoaded && repos.length === 0}
-        <div class="notice mono">
+        <div class="notice">
           <strong>No repositories were returned.</strong>
           <span>Your account may not have repository access yet. Add an owner/name manually to continue.</span>
         </div>
@@ -274,7 +274,7 @@
       {#if repos.length}
         <label class="filter-field">
           <span class="sr-only">Filter repositories</span>
-          <input class="onb-input mono" type="search" placeholder="Filter repositories…" bind:value={filter} autocomplete="off" />
+          <input class="onb-input" type="search" placeholder="Filter repositories…" bind:value={filter} autocomplete="off" />
         </label>
         <div class="repo-list">
           {#if filteredRepos.length}
@@ -286,13 +286,13 @@
               </label>
             {/each}
           {:else}
-            <div class="repo-empty mono">No repositories match “{filter}”. Clear the filter or add one manually.</div>
+            <div class="repo-empty">No repositories match “{filter}”. Clear the filter or add one manually.</div>
           {/if}
         </div>
       {/if}
 
       {#each manual as name}
-        <div class="manual-repo mono">
+        <div class="manual-repo">
           <span>{name}</span>
           <button type="button" onclick={() => removeManual(name)} aria-label={`Remove ${name}`}>remove</button>
         </div>
@@ -308,20 +308,20 @@
           spellcheck="false"
           autocomplete="off"
         />
-        <button class="secondary mono" type="button" onclick={addManual}>Add</button>
+        <button class="secondary" type="button" onclick={addManual}>Add</button>
       </div>
-      {#if manualError}<p class="field-error mono" role="alert">{manualError}</p>{/if}
+      {#if manualError}<p class="field-error" role="alert">{manualError}</p>{/if}
 
       <div class="actions">
-        <button class="secondary mono" type="button" onclick={() => (step = 1)}>Back</button>
-        <button class="primary mono" type="submit" disabled={!chosen.length}>Continue{chosen.length ? ` with ${chosen.length}` : ""}</button>
+        <button class="secondary" type="button" onclick={() => (step = 1)}>Back</button>
+        <button class="primary" type="submit" disabled={!chosen.length}>Continue{chosen.length ? ` with ${chosen.length}` : ""}</button>
       </div>
     {:else if step === 3}
-      <span class="eyebrow mono">Step 3 of 4</span>
+      <span class="eyebrow">Step 3 of 4</span>
       <h1 class="onb-title">Enable live updates</h1>
       <p class="onb-sub">A shared relay delivers GitHub events within seconds, with no relay account needed.</p>
 
-      <div class="status-card coverage-card mono" aria-live="polite">
+      <div class="status-card coverage-card" aria-live="polite">
         {#if coverageState === "checking"}
           <span class="spinner" aria-hidden="true"></span>
           <span>Checking coverage for {chosen.length} {chosen.length === 1 ? "repository" : "repositories"}…</span>
@@ -346,25 +346,25 @@
       {#if !coverageConfirmed && !skippedLive}
         <div class="live-actions">
           {#if coverage?.installUrl}
-            <button class="primary mono" type="button" onclick={installApp} disabled={coverageState === "polling"}>Install GitHub App</button>
+            <button class="primary" type="button" onclick={installApp} disabled={coverageState === "polling"}>Install GitHub App</button>
           {/if}
           {#if coverageState === "failed"}
-            <button class="secondary mono" type="button" onclick={checkCoverage}>Retry check</button>
+            <button class="secondary" type="button" onclick={checkCoverage}>Retry check</button>
           {/if}
-          <button class="link-button mono" type="button" onclick={skipLiveUpdates}>Skip — poll every few minutes</button>
+          <button class="link-button" type="button" onclick={skipLiveUpdates}>Skip — poll every few minutes</button>
         </div>
       {/if}
 
       <div class="actions">
-        <button class="secondary mono" type="button" onclick={() => (stopCoveragePolling(), step = 2)}>Back</button>
-        <button class="primary mono" type="submit" disabled={!coverageConfirmed && !skippedLive}>Continue</button>
+        <button class="secondary" type="button" onclick={() => (stopCoveragePolling(), step = 2)}>Back</button>
+        <button class="primary" type="submit" disabled={!coverageConfirmed && !skippedLive}>Continue</button>
       </div>
     {:else}
-      <span class="eyebrow mono">Step 4 of 4</span>
+      <span class="eyebrow">Step 4 of 4</span>
       <h1 class="onb-title">Build your inbox</h1>
       <p class="onb-sub">Your settings are saved before PR Cockpit runs the first GitHub sync.</p>
 
-      <div class="sync-list mono" aria-live="polite">
+      <div class="sync-list" aria-live="polite">
         <div class:complete={syncState !== "saving" && syncState !== "idle"}>
           <span>{syncState === "saving" ? "…" : "✓"}</span>
           <span>Save {chosen.length} {chosen.length === 1 ? "repository" : "repositories"}</span>
@@ -376,17 +376,17 @@
       </div>
 
       {#if syncError}
-        <div class="notice failure-notice mono" role="alert">
+        <div class="notice failure-notice" role="alert">
           <strong>First sync failed.</strong>
           <span>{syncError}</span>
-          <button class="link-button mono" type="button" onclick={beginSync}>Try again</button>
+          <button class="link-button" type="button" onclick={beginSync}>Try again</button>
         </div>
       {:else if syncState === "complete"}
-        <p class="ready-copy mono">Your inbox is ready.</p>
+        <p class="ready-copy">Your inbox is ready.</p>
       {/if}
 
       <div class="actions">
-        <button class="primary mono" type="submit" disabled={syncState !== "complete"}>Open inbox</button>
+        <button class="primary" type="submit" disabled={syncState !== "complete"}>Open inbox</button>
       </div>
     {/if}
   </form>
@@ -406,7 +406,7 @@
     max-width: 580px;
     padding: 28px;
     background: var(--panel);
-    border: 1px solid var(--border);
+    border: 0;
     border-radius: 16px;
     box-shadow: var(--shadow-dialog);
   }
@@ -434,23 +434,24 @@
     display: block;
     margin-bottom: 7px;
     color: var(--text-faint);
-    font-size: 10px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
+    font-size: 12px;
+    line-height: 16px;
+    letter-spacing: 0;
+    text-transform: none;
   }
   .onb-title {
     margin: 0 0 8px;
     color: var(--text);
-    font-size: 28px;
-    font-weight: 600;
-    line-height: 1.15;
-    letter-spacing: -0.035em;
+    font-size: 24px;
+    font-weight: 500;
+    line-height: 30px;
+    letter-spacing: -0.025em;
   }
   .onb-sub {
     margin: 0 0 24px;
     color: var(--text-dim);
     font-size: 14px;
-    line-height: 1.45;
+    line-height: 20px;
   }
   .status-card,
   .notice {
@@ -458,8 +459,8 @@
     align-items: flex-start;
     gap: 10px;
     padding: 13px;
-    border: 1px solid var(--border);
-    border-radius: 10px;
+    border: 0;
+    border-radius: var(--radius-md);
     background: var(--surface);
     color: var(--text-dim);
     font-size: 12px;
@@ -511,8 +512,8 @@
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-    border: 1px solid var(--border);
-    border-radius: 10px;
+    border: 0;
+    border-radius: var(--radius-md);
     background: var(--surface);
   }
   .repo-row {
@@ -631,26 +632,30 @@
   }
   .primary,
   .secondary {
-    min-height: 38px;
-    padding: 0 16px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    font-size: 12.5px;
+    min-height: 32px;
+    padding: 0 14px;
+    border: 0;
+    border-radius: 999px;
+    font-family: var(--sans);
+    font-size: 14px;
+    font-weight: 500;
     cursor: pointer;
   }
   .primary {
-    border-color: var(--link);
     background: var(--link);
-    color: #fff;
-    font-weight: 600;
+    color: var(--on-brand);
+    box-shadow: var(--shadow-control-filled);
   }
   .secondary {
-    background: var(--panel);
-    color: var(--text-dim);
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: var(--shadow-control-outlined);
   }
-  .primary:hover:not(:disabled),
+  .primary:hover:not(:disabled) {
+    background: var(--brand-hover);
+  }
   .secondary:hover:not(:disabled) {
-    filter: brightness(1.08);
+    background: var(--surface-hover);
   }
   .primary:focus-visible,
   .secondary:focus-visible,
@@ -660,10 +665,14 @@
     outline-offset: 2px;
   }
   .primary:disabled {
-    border-color: var(--border);
-    background: var(--panel-raised);
-    color: var(--text-faint);
+    background: var(--brand-disabled);
+    box-shadow: none;
+    color: var(--on-brand);
     cursor: default;
+  }
+  .primary:active:not(:disabled),
+  .secondary:active:not(:disabled) {
+    transform: scale(0.99);
   }
   .link-button {
     padding: 0;
