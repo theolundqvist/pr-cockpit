@@ -26,6 +26,7 @@
       --sans: "SF Pro Display", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       --page: 1240px;
       --radius: 8px;
+      --shot-radius: 16px;
     }
 
     * {
@@ -124,7 +125,7 @@
     .shot-shell {
       position: relative;
       overflow: hidden;
-      border-radius: 12px;
+      border-radius: var(--shot-radius);
       /* Hairline ring only: on #111110 an ambient halo reads as a smudge behind the window. */
       box-shadow:
         0 0 0 1px rgba(255, 255, 255, 0.1),
@@ -138,7 +139,7 @@
       padding: 0;
       overflow: hidden;
       border: 0;
-      border-radius: calc(var(--radius) - 7px);
+      border-radius: var(--shot-radius);
       background: transparent;
       cursor: zoom-in;
     }
@@ -872,7 +873,7 @@
       max-width: none;
       padding: 0;
       border: 1px solid var(--border-strong);
-      border-radius: 12px;
+      border-radius: var(--shot-radius);
       background: #0b0b0a;
       box-shadow: 0 40px 120px rgba(0, 0, 0, 0.75);
     }
@@ -1070,7 +1071,7 @@
     /* Search-to-PR demo */
     .search-demo-intro { margin-bottom: 56px; }
     .video-mat { width: min(100%, 920px); margin-inline: auto; }
-    .demo-video { display: block; width: 100%; height: auto; border-radius: 8px; background: #f9f9f7; box-shadow: 0 10px 36px rgba(0, 10, 30, 0.35); }
+    .demo-video { display: block; width: 100%; height: auto; border-radius: var(--shot-radius); background: #f9f9f7; box-shadow: 0 10px 36px rgba(0, 10, 30, 0.35); }
     .search-demo-decision { display: grid; grid-template-columns: 0.8fr 1.2fr; gap: 40px; align-items: start; width: min(100%, 920px); margin: 30px auto 0; }
     .search-demo-decision h3 { margin: 0; font-size: clamp(25px, 3.2vw, 38px); letter-spacing: -0.04em; line-height: 1.04; }
     .search-demo-decision p { max-width: 620px; margin: 3px 0 0; color: var(--text-dim); font-size: 16px; line-height: 1.65; }
@@ -1106,7 +1107,7 @@
     .cli-flow-node.is-waiting small { color: var(--yellow); }
     .cli-flow-node.is-waiting small::after { content: "…"; animation: cli-flow-dots 1600ms steps(1, end) infinite; }
     .cli-flow-terminal { width: min(860px, 88%); margin: 42px auto 0; }
-    .cli-flow-console { min-height: 272px; padding: 24px 28px; background: #10100f; font: 12px/1.65 var(--mono); }
+    .cli-flow-console { min-height: 104px; padding: 24px 28px; background: #10100f; font: 12px/1.65 var(--mono); }
     .cli-flow-line { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 8px; min-height: 23px; color: var(--text); opacity: 1; transform: none; transition: opacity 180ms ease, transform 180ms ease; }
     .cli-flow-line.is-entering { opacity: 0; transform: translateY(5px); }
     .cli-flow-line span { color: var(--text-faint); }
@@ -1127,7 +1128,7 @@
       .cli-flow-link::after, .cli-flow-return::after { top: auto; right: auto; bottom: -5px; left: 50%; transform: translateX(-50%); content: "↓"; }
       .cli-flow-link.is-waiting { background: repeating-linear-gradient(180deg, rgba(242, 190, 53, 0.6) 0 4px, transparent 4px 9px); animation-name: cli-flow-march-down; }
       .cli-flow-terminal { width: 100%; margin-top: 26px; }
-      .cli-flow-console { min-height: 218px; padding: 16px 14px; font-size: 9px; }
+      .cli-flow-console { min-height: 78px; padding: 16px 14px; font-size: 9px; }
       .cli-flow-replay { right: 10px; bottom: 10px; min-height: 36px; }
     }
 
@@ -1284,14 +1285,7 @@
               <div class="terminal-toolbar"><span class="terminal-lights"><span class="terminal-light close"></span><span class="terminal-light minimize"></span><span class="terminal-light maximize"></span></span><span class="terminal-title">agent — zsh</span></div>
               <div class="cli-flow-console" data-cli-flow-console>
                 <div class="cli-flow-line is-command"><span>$</span><b>pr-cockpit listen theolundqvist/pr-cockpit#109</b></div>
-                <div class="cli-flow-line"><span>#</span><b>Pull Request #109: Show failed optimistic mutations with recovery controls</b></div>
-                <div class="cli-flow-line"><span></span><b></b></div>
-                <div class="cli-flow-line"><span></span><b>Review: NONE · CI: SUCCESS</b></div>
-                <div class="cli-flow-line"><span></span><b></b></div>
-                <div class="cli-flow-line"><span>##</span><b>New Comments Since 2026-08-23T09:14:02Z</b></div>
                 <div class="cli-flow-line is-result"><span></span><b>- @reviewer-one · review comment · `server/mutations.ts:72`: Surface the retry path on write failure.</b></div>
-                <div class="cli-flow-line"><span></span><b></b></div>
-                <div class="cli-flow-line"><span></span><b>_Full state: `pr-cockpit theolundqvist/pr-cockpit#109`._</b></div>
               </div>
             </div>
           </div>
@@ -1676,21 +1670,8 @@
       const githubNode = nodes.find((item) => item.dataset.cliFlowNode === "github");
       const webhookLink = links.find((item) => item.dataset.cliFlowLink === "webhook");
       const githubLabel = githubNode.querySelector("small");
-      const setWaiting = (on) => {
-        githubNode.classList.toggle("is-waiting", on);
-        webhookLink.classList.toggle("is-waiting", on);
-        githubLabel.textContent = on ? "waiting for comment" : "comment posted";
-      };
-      const later = (delay, action) => timers.push(window.setTimeout(action, delay));
       const finalLines = [
-        ["#", "Pull Request #109: Show failed optimistic mutations with recovery controls", ""],
-        ["", "", ""],
-        ["", "Review: NONE · CI: SUCCESS", ""],
-        ["", "", ""],
-        ["##", "New Comments Since 2026-08-23T09:14:02Z", ""],
         ["", "- @reviewer-one · review comment · `server/mutations.ts:72`: Surface the retry path on write failure.", "is-result"],
-        ["", "", ""],
-        ["", "_Full state: `pr-cockpit theolundqvist/pr-cockpit#109`._", ""],
       ];
       const command = "pr-cockpit listen theolundqvist/pr-cockpit#109";
       const showFinalCli = () => {
