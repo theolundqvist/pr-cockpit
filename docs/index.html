@@ -379,12 +379,18 @@
       display: flex;
       flex-wrap: wrap;
       justify-content: center;
-      gap: 8px 28px;
+      gap: 8px 14px;
       margin: 18px 0 0;
       color: var(--text-faint);
       font-family: var(--mono);
       font-size: 11px;
       text-align: center;
+    }
+
+    .benchmark-method a + a::before {
+      margin-right: 14px;
+      color: var(--text-faint);
+      content: "|";
     }
 
     .benchmark-method a:hover {
@@ -1187,8 +1193,8 @@
       <div class="hero-benchmark" id="performance">
         <div class="benchmark-grid" id="benchmark-grid" aria-label="PR Cockpit, GitHub, and Cursor Origin performance comparison"></div>
         <p class="benchmark-method">
-          <a href="https://github.com/theolundqvist/pr-cockpit/blob/main/docs/BENCHMARKS.md">Full results · every run, p50–p99</a>
-          <a href="https://github.com/theolundqvist/pr-cockpit/blob/main/scripts/benchmark-ui.mjs">Source · reproduce this benchmark</a>
+          <a href="https://github.com/theolundqvist/pr-cockpit/blob/main/docs/BENCHMARKS.md">Full results</a>
+          <a href="https://github.com/theolundqvist/pr-cockpit/blob/main/scripts/benchmark-ui.mjs">Reproduce this benchmark</a>
         </p>
       </div>
     </section>
