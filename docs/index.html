@@ -69,8 +69,33 @@
     }
 
     .wrap {
-      width: min(calc(100% - 40px), var(--page));
+      width: min(calc(100% - 56px), var(--page));
       margin-inline: auto;
+    }
+
+    .topbar {
+      position: fixed;
+      z-index: 20;
+      top: 0;
+      right: 0;
+      left: 0;
+      display: flex;
+      justify-content: flex-end;
+      gap: 22px;
+      padding: 18px max(28px, calc((100% - var(--page)) / 2));
+      color: var(--text-faint);
+      font-family: var(--mono);
+      font-size: 12px;
+      pointer-events: none;
+    }
+
+    .topbar a {
+      pointer-events: auto;
+      transition: color 120ms ease;
+    }
+
+    .topbar a:hover {
+      color: var(--text);
     }
 
     .footer a:hover {
@@ -78,7 +103,11 @@
     }
 
     .hero {
-      padding: 88px 0 56px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      min-height: calc(100svh - 130px);
+      padding: clamp(32px, 6vh, 80px) 0;
       text-align: center;
     }
 
@@ -118,7 +147,7 @@
 
 
     .section {
-      padding: 72px 0;
+      padding: 96px 0;
     }
 
     .section-rule {
@@ -126,7 +155,7 @@
     }
 
     .search-demo-section .section {
-      padding-top: 100.8px;
+      padding-top: 56px;
     }
 
     .section-intro {
@@ -166,19 +195,19 @@
     }
 
     .hero-benchmark {
-      margin-top: 78.4px;
+      margin-top: clamp(40px, 9vh, 88px);
       text-align: left;
     }
 
     .benchmark-grid {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 8px;
+      gap: 9px;
     }
 
     .benchmark-card {
       min-width: 0;
-      padding: 11px;
+      padding: 12px;
       overflow: hidden;
       border: 1px solid var(--border);
       border-radius: var(--radius);
@@ -190,13 +219,13 @@
       min-width: 0;
       align-items: flex-start;
       justify-content: space-between;
-      gap: 7px;
-      margin-bottom: 10px;
+      gap: 8px;
+      margin-bottom: 11px;
     }
 
     .benchmark-label {
       margin: 0;
-      font-size: 15px;
+      font-size: 17px;
       letter-spacing: -0.025em;
       line-height: 1.2;
     }
@@ -207,7 +236,7 @@
       overflow: hidden;
       color: var(--green);
       font-family: var(--mono);
-      font-size: 10px;
+      font-size: 11px;
       font-weight: 650;
       line-height: 1.35;
       text-align: right;
@@ -218,7 +247,7 @@
     .benchmark-products {
       display: grid;
       min-width: 0;
-      gap: 7px;
+      gap: 8px;
     }
     .benchmark-product.origin .benchmark-bar {
       border-color: color-mix(in srgb, var(--blue) 36%, var(--border));
@@ -235,7 +264,7 @@
     }
 
     .benchmark-product.unavailable .benchmark-value {
-      font-size: 10px;
+      font-size: 11px;
       letter-spacing: 0.04em;
       text-transform: uppercase;
     }
@@ -247,11 +276,11 @@
 
     .benchmark-bar {
       position: relative;
-      height: 35px;
+      height: 40px;
       min-width: 0;
       overflow: hidden;
       border: 1px solid var(--border);
-      border-radius: 5px;
+      border-radius: 6px;
       background: var(--panel);
       isolation: isolate;
     }
@@ -282,8 +311,8 @@
       min-width: 0;
       align-items: center;
       justify-content: space-between;
-      gap: 6px;
-      padding: 0 8px;
+      gap: 7px;
+      padding: 0 9px;
     }
 
     .benchmark-product-name {
@@ -291,7 +320,7 @@
       overflow: hidden;
       color: var(--text-dim);
       font-family: var(--mono);
-      font-size: 10px;
+      font-size: 11px;
       font-weight: 650;
       letter-spacing: 0.04em;
       text-overflow: ellipsis;
@@ -313,7 +342,7 @@
     }
 
     .benchmark-value {
-      font-size: 17px;
+      font-size: 19px;
       font-weight: 650;
       letter-spacing: -0.05em;
       line-height: 1;
@@ -322,13 +351,13 @@
     .benchmark-unit {
       color: var(--text-faint);
       font-family: var(--mono);
-      font-size: 10px;
+      font-size: 11px;
     }
 
     .benchmark-meta {
       display: flex;
       justify-content: flex-end;
-      padding: 4px 1px 0;
+      padding: 5px 1px 0;
     }
     .benchmark-meta[hidden] { display: none; }
 
@@ -338,10 +367,21 @@
       margin: 0;
       color: var(--text-faint);
       font-family: var(--mono);
-      font-size: 10px;
+      font-size: 11px;
       white-space: nowrap;
     }
 
+    .benchmark-method {
+      margin: 18px 0 0;
+      color: var(--text-faint);
+      font-family: var(--mono);
+      font-size: 11px;
+      text-align: center;
+    }
+
+    .benchmark-method a:hover {
+      color: var(--text);
+    }
 
 
 
@@ -554,223 +594,84 @@
 
     .system {
       margin: 26px 0 0;
+      overflow-x: auto;
     }
 
-    .arch {
-      display: grid;
-      grid-template-columns: auto minmax(140px, 0.9fr) minmax(230px, 1.2fr) auto;
-      align-items: center;
-      gap: 0 16px;
+    .system-canvas {
+      display: block;
+      width: 100%;
+      min-width: 860px;
+      height: auto;
+      aspect-ratio: 1180 / 336;
       border: 1px solid #343432;
       border-radius: 6px;
       background: #191918;
-      padding: 30px 26px;
     }
 
-    .arch-node {
-      display: grid;
-      gap: 3px;
-      border: 1px solid #343432;
-      border-left: 2px solid #565651;
-      border-radius: 3px;
-      background: #1d1d1c;
-      padding: 13px 14px;
+    .sys-node {
+      fill: #1d1d1c;
+      stroke: #343432;
     }
 
-    .arch-name {
-      color: #f4f4f1;
-      font-size: 13.5px;
-      font-weight: 650;
-      line-height: 1.3;
+    .sys-node--server {
+      fill: rgba(94, 210, 141, 0.1);
+    }
+
+    .sys-boundary {
+      fill: rgba(94, 210, 141, 0.035);
+      stroke: #46463f;
+      stroke-dasharray: 4 4;
+    }
+
+    .sys-accent--source { fill: var(--blue); }
+    .sys-accent--server { fill: var(--green); }
+    .sys-accent--local { fill: rgba(94, 210, 141, 0.55); }
+    .sys-accent--actor { fill: #5f5f5a; }
+
+    .sys-wire {
+      fill: none;
+      stroke-width: 1;
+    }
+
+    .sys-wire--signal { stroke: var(--yellow); stroke-dasharray: 5 6; }
+    .sys-wire--data { stroke: var(--blue); }
+    .sys-wire--local { stroke: var(--green); }
+    .sys-wire--serve { stroke: #6f6f6a; }
+
+    .sys-head--signal { fill: var(--yellow); }
+    .sys-head--data { fill: var(--blue); }
+    .sys-head--local { fill: var(--green); }
+    .sys-head--serve { fill: #6f6f6a; }
+
+    .sys-relay {
+      fill: #1b1b19;
+      stroke: rgba(242, 190, 53, 0.55);
+    }
+
+    .sys-name {
+      fill: #f4f4f1;
+      font: 650 13.5px var(--sans);
       letter-spacing: -0.01em;
     }
 
-    .arch-role,
-    .arch-wire-label,
-    .arch-boundary {
-      color: #8f8f8a;
-      font-family: var(--mono);
-      font-size: 10.5px;
-      font-weight: 600;
-      line-height: 1.35;
+    .sys-name--source { font-size: 16px; }
+    .sys-name--server { font-size: 15.5px; }
+
+    .sys-label {
+      fill: #8f8f8a;
+      font: 600 10.5px var(--mono);
     }
 
-    .arch-source {
-      align-content: center;
-      min-height: 96px;
-      border-left-color: var(--blue);
-    }
-
-    .arch-source .arch-name {
-      font-size: 16px;
-    }
-
-    .arch-runtime {
-      display: grid;
-      gap: 12px;
-      border: 1px dashed #46463f;
-      border-radius: 4px;
-      background: rgba(94, 210, 141, 0.035);
-      padding: 13px 14px 15px;
-    }
-
-    .arch-boundary {
-      color: #6f6f6a;
-      font-size: 9.5px;
+    .sys-boundary-label {
+      fill: #6f6f6a;
+      font: 600 9.5px var(--mono);
       letter-spacing: 0.09em;
-      text-transform: uppercase;
     }
 
-    .arch-server {
-      border-left-color: var(--green);
-      background: rgba(94, 210, 141, 0.1);
-      padding: 16px 15px;
-    }
-
-    .arch-server .arch-name {
-      font-size: 15.5px;
-    }
-
-    .arch-local {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 12px;
-      align-items: start;
-    }
-
-    .arch-store,
-    .arch-ui {
-      border-left-color: rgba(94, 210, 141, 0.55);
-    }
-
-    .arch-vwire {
-      display: grid;
-      grid-template-columns: 1px auto;
-      gap: 9px;
-      align-items: center;
-      height: 34px;
-      margin-left: 18px;
-      color: var(--green);
-    }
-
-    .arch-vwire-line {
-      position: relative;
-      width: 1px;
-      height: 100%;
-      background: currentColor;
-    }
-
-    .arch-vwire-line::after {
-      content: "";
-      position: absolute;
-      bottom: -1px;
-      left: 50%;
-      width: 7px;
-      height: 6px;
-      transform: translateX(-50%);
-      background: currentColor;
-      clip-path: polygon(0 0, 100% 0, 50% 100%);
-    }
-
-    .arch-vwire--both .arch-vwire-line::before {
-      content: "";
-      position: absolute;
-      top: -1px;
-      left: 50%;
-      width: 7px;
-      height: 6px;
-      transform: translateX(-50%);
-      background: currentColor;
-      clip-path: polygon(50% 0, 100% 100%, 0 100%);
-    }
-
-    .arch-link {
-      display: grid;
-      gap: 22px;
-    }
-
-    .arch-wire {
-      display: grid;
-      gap: 6px;
-    }
-
-    .arch-wire-label {
-      text-align: center;
-    }
-
-    .arch-wire-line {
-      position: relative;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      height: 1px;
-      background: currentColor;
-    }
-
-    .arch-wire--fwd .arch-wire-line::after {
-      content: "";
-      position: absolute;
-      top: 50%;
-      right: -1px;
-      width: 6px;
-      height: 7px;
-      transform: translateY(-50%);
-      background: currentColor;
-      clip-path: polygon(0 0, 100% 50%, 0 100%);
-    }
-
-    .arch-wire--back .arch-wire-line::before {
-      content: "";
-      position: absolute;
-      top: 50%;
-      left: -1px;
-      width: 6px;
-      height: 7px;
-      transform: translateY(-50%);
-      background: currentColor;
-      clip-path: polygon(100% 0, 100% 100%, 0 50%);
-    }
-
-    .arch-wire--signal {
-      color: var(--yellow);
-    }
-
-    .arch-wire--signal .arch-wire-line {
-      height: 22px;
-      background: repeating-linear-gradient(to right, currentColor 0 5px, transparent 5px 11px) center / 100% 1px no-repeat;
-    }
-
-    .arch-wire--data {
-      color: var(--blue);
-    }
-
-    .arch-wire--serve {
-      color: #6f6f6a;
-    }
-
-    .arch-relay {
-      border: 1px solid rgba(242, 190, 53, 0.55);
-      border-radius: 2px;
-      background: #1b1b19;
-      padding: 3px 8px;
-      color: var(--yellow);
-      font-family: var(--mono);
-      font-size: 10px;
-      font-weight: 700;
-      line-height: 1.4;
+    .sys-relay-label {
+      fill: var(--yellow);
+      font: 700 10px var(--mono);
       letter-spacing: 0.06em;
-      text-transform: uppercase;
-    }
-
-    .arch-serves {
-      display: grid;
-      grid-template-columns: minmax(64px, 1fr) auto;
-      gap: 26px 14px;
-      align-items: center;
-    }
-
-    .arch-actor {
-      border-left-color: #5f5f5a;
     }
 
     .terminal-window {
@@ -919,7 +820,7 @@
 
     .install-card {
       display: grid;
-      grid-template-columns: minmax(0, 0.55fr) minmax(420px, 1.45fr);
+      grid-template-columns: minmax(0, 0.4fr) minmax(420px, 1.6fr);
       gap: 40px;
       align-items: center;
       padding: 32px;
@@ -937,43 +838,35 @@
 
 
     .code-shell {
+      display: flex;
+      align-items: center;
+      gap: 8px;
       overflow: hidden;
+      padding: 0 8px 0 16px;
       border: 1px solid var(--border);
       border-radius: 6px;
       background: #10100f;
     }
 
-    .code-toolbar {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      padding: 8px 10px 8px 24px;
-      border-bottom: 1px solid var(--border);
-      color: var(--text-faint);
-      font-family: var(--mono);
-      font-size: 11px;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-    }
-
     .copy-install {
-      min-width: 76px;
-      min-height: 44px;
-      padding: 0 14px;
-      border: 1px solid var(--border);
+      display: flex;
+      width: 32px;
+      height: 32px;
+      flex: none;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      border: 1px solid transparent;
       border-radius: 5px;
-      background: var(--panel-raised);
-      color: var(--text);
-      font-size: 13px;
-      font-weight: 600;
+      background: transparent;
+      color: var(--text-faint);
       cursor: pointer;
     }
 
     .copy-install:hover {
-      border-color: var(--border-strong);
-      background: var(--surface);
+      border-color: var(--border);
+      background: var(--panel-raised);
+      color: var(--text);
     }
 
     .copy-install:focus-visible {
@@ -981,16 +874,30 @@
       outline-offset: 2px;
     }
 
+    .copy-install .icon-check,
+    .copy-install.copied .icon-copy {
+      display: none;
+    }
+
+    .copy-install.copied {
+      color: var(--green);
+    }
+
+    .copy-install.copied .icon-check {
+      display: block;
+    }
+
     .code-block {
-      overflow-x: hidden;
+      min-width: 0;
+      flex: 1;
+      overflow-x: auto;
       margin: 0;
-      padding: 18px;
-      overflow-wrap: anywhere;
+      padding: 14px 0;
       color: var(--text-dim);
       font-family: var(--mono);
-      font-size: 13px;
-      line-height: 1.8;
-      white-space: pre-wrap;
+      font-size: clamp(10px, 0.86vw, 13px);
+      line-height: 1.6;
+      white-space: nowrap;
     }
 
     .visually-hidden {
@@ -1057,97 +964,6 @@
       height: auto;
     }
 
-    @media (max-width: 819px) {
-      .arch {
-        grid-template-columns: 1fr;
-        gap: 0;
-        padding: 20px 16px 22px;
-      }
-
-      .arch-source {
-        min-height: 0;
-      }
-
-      .arch-link,
-      .arch-serves {
-        grid-template-columns: 1fr;
-        gap: 0;
-      }
-
-      .arch-wire {
-        grid-template-columns: 1px auto;
-        gap: 10px;
-        align-items: center;
-        height: 42px;
-        margin-left: 18px;
-      }
-
-      .arch-wire-line {
-        order: 1;
-        width: 1px;
-        height: 100%;
-      }
-
-      .arch-wire-label {
-        order: 2;
-        text-align: left;
-      }
-
-      .arch-wire--signal {
-        grid-template-columns: 36px auto;
-        gap: 14px;
-        margin-left: 0;
-      }
-
-      .arch-wire--signal .arch-wire-line {
-        justify-self: center;
-        width: 1px;
-        height: 100%;
-        background: repeating-linear-gradient(to bottom, currentColor 0 5px, transparent 5px 11px) center / 1px 100% no-repeat;
-      }
-
-      .arch-wire--fwd .arch-wire-line::after {
-        top: auto;
-        right: auto;
-        bottom: -1px;
-        left: 50%;
-        width: 7px;
-        height: 6px;
-        transform: translateX(-50%);
-        clip-path: polygon(0 0, 100% 0, 50% 100%);
-      }
-
-      .arch-wire--back .arch-wire-line::before {
-        top: -1px;
-        left: 50%;
-        width: 7px;
-        height: 6px;
-        transform: translateX(-50%);
-        clip-path: polygon(50% 0, 100% 100%, 0 100%);
-      }
-
-      .arch-relay {
-        position: absolute;
-        left: 50%;
-        transform: translateX(-50%);
-        padding: 2px 6px;
-        font-size: 9.5px;
-        white-space: nowrap;
-      }
-
-      .arch-runtime {
-        gap: 10px;
-        margin-block: 2px;
-      }
-
-      .arch-local {
-        grid-template-columns: 1fr;
-      }
-
-      .arch-vwire {
-        height: 30px;
-      }
-    }
     @media (max-width: 1100px) {
       .benchmark-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1297,10 +1113,6 @@
       }
 
 
-      .how-card {
-        padding: 24px;
-      }
-
       .key-action {
         font-size: 12px;
       }
@@ -1313,13 +1125,8 @@
         margin-inline: -12px;
       }
 
-      .code-toolbar {
-        padding-left: 18px;
-      }
-
       .code-block {
-        padding: 16px 18px;
-        font-size: 11px;
+        padding: 12px 0;
       }
 
       .footer {
@@ -1346,7 +1153,7 @@
 
 
     /* Search-to-PR demo */
-    .search-demo-intro { margin-bottom: 28px; }
+    .search-demo-intro { margin-bottom: 56px; }
     .video-mat { position: relative; width: min(100%, 920px); margin-inline: auto; }
     .search-demo-video { display: block; width: 100%; height: auto; border-radius: 8px; background: #f9f9f7; box-shadow: 0 10px 36px rgba(0, 10, 30, 0.35); }
     .search-demo-decision { display: grid; grid-template-columns: 0.8fr 1.2fr; gap: 40px; align-items: start; width: min(100%, 920px); margin: 30px auto 0; }
@@ -1411,64 +1218,17 @@
 </head>
 <body>
 
+  <nav class="topbar" aria-label="Site">
+    <a href="#install">Install</a>
+    <a href="https://github.com/theolundqvist/pr-cockpit">GitHub</a>
+  </nav>
+
   <main id="top">
     <section class="wrap hero">
       <h1>GitHub PRs at local speed.</h1>
       <div class="hero-benchmark" id="performance">
         <div class="benchmark-grid" aria-label="PR Cockpit, GitHub, and Cursor Origin performance comparison">
-          <article class="benchmark-card">
-            <div class="benchmark-card-header">
-              <h2 class="benchmark-label">Render a huge PR · p99</h2>
-              <span class="benchmark-speedup" data-render-speedup>—× faster at p99</span>
-            </div>
-            <div class="benchmark-products">
-              <div class="benchmark-product cockpit">
-                <div class="benchmark-bar">
-                  <span class="benchmark-bar-fill" data-render-bar="cockpit"></span>
-                  <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">PR COCKPIT</span>
-                    <div class="benchmark-value-line">
-                      <strong class="benchmark-value" data-render-value="cockpit">—</strong>
-                      <span class="benchmark-unit">s</span>
-                    </div>
-                  </div>
-                </div>
-                <div class="benchmark-meta">
-                  <p class="benchmark-p95" data-render-tail="cockpit">p95 —</p>
-                </div>
-              </div>
-              <div class="benchmark-product">
-                <div class="benchmark-bar">
-                  <span class="benchmark-bar-fill" data-render-bar="github"></span>
-                  <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">GITHUB (when healthy)</span>
-                    <div class="benchmark-value-line">
-                      <strong class="benchmark-value" data-render-value="github">—</strong>
-                      <span class="benchmark-unit">s</span>
-                    </div>
-                  </div>
-                </div>
-                <div class="benchmark-meta">
-                  <p class="benchmark-p95" data-render-tail="github">p95 —</p>
-                </div>
-              </div>
-              <div class="benchmark-product origin">
-                <div class="benchmark-bar">
-                  <span class="benchmark-bar-fill" data-render-bar="cursorOrigin"></span>
-                  <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">CURSOR ORIGIN</span>
-                    <div class="benchmark-value-line">
-                      <strong class="benchmark-value" data-render-value="cursorOrigin">—</strong>
-                      <span class="benchmark-unit">s</span>
-                    </div>
-                  </div>
-                </div>
-                <div class="benchmark-meta">
-                  <p class="benchmark-p95" data-render-tail="cursorOrigin">p95 —</p>
-                </div>
-              </div>
-            </div>
-          </article>
+          
           <article class="benchmark-card">
             <div class="benchmark-card-header">
               <h2 class="benchmark-label">Open a PR</h2>
@@ -1494,7 +1254,7 @@
                 <div class="benchmark-bar">
                   <span class="benchmark-bar-fill" data-benchmark-bar="github:pr-open"></span>
                   <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">GITHUB (when healthy)</span>
+                    <span class="benchmark-product-name">GITHUB (healthy)</span>
                     <div class="benchmark-value-line">
                       <strong class="benchmark-value" data-benchmark-value="github:pr-open">—</strong>
                       <span class="benchmark-unit">s</span>
@@ -1524,6 +1284,58 @@
           </article>
           <article class="benchmark-card">
             <div class="benchmark-card-header">
+              <h2 class="benchmark-label">Open a huge PR</h2>
+              <span class="benchmark-speedup" data-render-speedup>—× faster</span>
+            </div>
+            <div class="benchmark-products">
+              <div class="benchmark-product cockpit">
+                <div class="benchmark-bar">
+                  <span class="benchmark-bar-fill" data-render-bar="cockpit"></span>
+                  <div class="benchmark-bar-content">
+                    <span class="benchmark-product-name">PR COCKPIT</span>
+                    <div class="benchmark-value-line">
+                      <strong class="benchmark-value" data-render-value="cockpit">—</strong>
+                      <span class="benchmark-unit">s</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="benchmark-meta">
+                  <p class="benchmark-p95" data-render-tail="cockpit">p95 —</p>
+                </div>
+              </div>
+              <div class="benchmark-product">
+                <div class="benchmark-bar">
+                  <span class="benchmark-bar-fill" data-render-bar="github"></span>
+                  <div class="benchmark-bar-content">
+                    <span class="benchmark-product-name">GITHUB (healthy)</span>
+                    <div class="benchmark-value-line">
+                      <strong class="benchmark-value" data-render-value="github">—</strong>
+                      <span class="benchmark-unit">s</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="benchmark-meta">
+                  <p class="benchmark-p95" data-render-tail="github">p95 —</p>
+                </div>
+              </div>
+              <div class="benchmark-product origin">
+                <div class="benchmark-bar">
+                  <span class="benchmark-bar-fill" data-render-bar="cursorOrigin"></span>
+                  <div class="benchmark-bar-content">
+                    <span class="benchmark-product-name">CURSOR ORIGIN</span>
+                    <div class="benchmark-value-line">
+                      <strong class="benchmark-value" data-render-value="cursorOrigin">—</strong>
+                      <span class="benchmark-unit">s</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="benchmark-meta">
+                  <p class="benchmark-p95" data-render-tail="cursorOrigin">p95 —</p>
+                </div>
+              </div>
+            </div>
+          </article><article class="benchmark-card">
+            <div class="benchmark-card-header">
               <h2 class="benchmark-label">Search PRs</h2>
               <span class="benchmark-speedup" data-benchmark-speedup="pr-search">—× faster</span>
             </div>
@@ -1547,7 +1359,7 @@
                 <div class="benchmark-bar">
                   <span class="benchmark-bar-fill" data-benchmark-bar="github:pr-search"></span>
                   <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">GITHUB (when healthy)</span>
+                    <span class="benchmark-product-name">GITHUB (healthy)</span>
                     <div class="benchmark-value-line">
                       <strong class="benchmark-value" data-benchmark-value="github:pr-search">—</strong>
                       <span class="benchmark-unit">s</span>
@@ -1600,7 +1412,7 @@
                 <div class="benchmark-bar">
                   <span class="benchmark-bar-fill" data-benchmark-bar="github:diff-open"></span>
                   <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">GITHUB (when healthy)</span>
+                    <span class="benchmark-product-name">GITHUB (healthy)</span>
                     <div class="benchmark-value-line">
                       <strong class="benchmark-value" data-benchmark-value="github:diff-open">—</strong>
                       <span class="benchmark-unit">s</span>
@@ -1629,6 +1441,9 @@
             </div>
           </article>
         </div>
+        <p class="benchmark-method">
+          <a href="https://github.com/theolundqvist/pr-cockpit/blob/main/scripts/benchmark-ui.mjs">Source · reproduce this benchmark</a>
+        </p>
       </div>
     </section>
     <section class="section-rule search-demo-section" id="search-demo">
@@ -1639,9 +1454,9 @@
           </div>
         </div>
         <div class="video-mat">
-          <video id="search-demo-video" class="search-demo-video" poster="screenshots/landing-search-poster.png?v=20260821-palette" width="1280" height="986" muted playsinline loop aria-label="Screen recording of PR Cockpit: Option-Command-K opens pull request search over the review queue, typing narrows the results to one pull request, and Enter opens its full detail from the local cache.">
-            <source src="screenshots/landing-search.webm?v=20260821" type="video/webm" />
-            <source src="screenshots/landing-search.mp4?v=20260821" type="video/mp4" />
+          <video id="search-demo-video" class="search-demo-video" poster="screenshots/landing-search-poster.png?v=20260823-crop" width="1180" height="886" muted playsinline loop aria-label="Screen recording of PR Cockpit: Option-Command-K opens pull request search over the review queue, typing narrows the results to one pull request, and Enter opens its full detail from the local cache.">
+            <source src="screenshots/landing-search.webm?v=20260823-crop" type="video/webm" />
+            <source src="screenshots/landing-search.mp4?v=20260823-crop" type="video/mp4" />
           </video>
           <button class="search-demo-toggle" type="button" aria-controls="search-demo-video" aria-pressed="false" data-search-demo-toggle>▶ Play</button>
         </div>
@@ -1831,72 +1646,83 @@
 
         <div class="how-card">
           <figure class="system">
-            <figcaption class="visually-hidden">GitHub is the source of truth. A GitHub webhook reaches the relay, which forwards the change signal to the PR Cockpit server on your Mac for an instant update. The server fetches only the changed pull request from GitHub and sends authenticated writes back to GitHub. Locally it reads and writes SQLite and cached images, and invalidates the UI over WebSocket. Humans use the UI; agents use the CLI and local API.</figcaption>
-            <div class="arch" aria-hidden="true">
-              <div class="arch-node arch-source">
-                <span class="arch-name">GitHub</span>
-                <span class="arch-role">source of truth</span>
-              </div>
+            <figcaption class="visually-hidden">GitHub is the source of truth. A GitHub webhook reaches the relay, which forwards the change signal to the PR Cockpit server on your Mac for an instant update. The server fetches only the changed pull request from GitHub and sends authenticated writes back to GitHub. Locally it reads and writes SQLite and cached images, and invalidates the UI over WebSocket. Agents talk to the server over the CLI and local API; humans use the UI.</figcaption>
+            <svg class="system-canvas" viewBox="0 0 1180 336" aria-hidden="true">
+              <!-- On your Mac boundary -->
+              <rect class="sys-boundary" x="414" y="30" width="520" height="282" rx="4" />
+              <text class="sys-boundary-label" x="442" y="54">ON YOUR MAC</text>
 
-              <div class="arch-link">
-                <div class="arch-wire arch-wire--signal arch-wire--fwd">
-                  <span class="arch-wire-label">webhook · instant update</span>
-                  <span class="arch-wire-line"><span class="arch-relay">Relay</span></span>
-                </div>
-                <div class="arch-wire arch-wire--data arch-wire--fwd">
-                  <span class="arch-wire-label">targeted fetch</span>
-                  <span class="arch-wire-line"></span>
-                </div>
-                <div class="arch-wire arch-wire--data arch-wire--back">
-                  <span class="arch-wire-label">authenticated write</span>
-                  <span class="arch-wire-line"></span>
-                </div>
-              </div>
+              <!-- GitHub -->
+              <rect class="sys-node" x="24" y="62" width="168" height="104" rx="3" />
+              <rect class="sys-accent--source" x="24" y="62" width="2" height="104" />
+              <text class="sys-name sys-name--source" x="44" y="109">GitHub</text>
+              <text class="sys-label" x="44" y="128">source of truth</text>
 
-              <div class="arch-runtime">
-                <span class="arch-boundary">On your Mac</span>
-                <div class="arch-node arch-server">
-                  <span class="arch-name">PR Cockpit server</span>
-                </div>
-                <div class="arch-local">
-                  <div>
-                    <div class="arch-vwire arch-vwire--both">
-                      <span class="arch-vwire-line"></span>
-                      <span class="arch-wire-label">read · write</span>
-                    </div>
-                    <div class="arch-node arch-store">
-                      <span class="arch-name">SQLite + images</span>
-                    </div>
-                  </div>
-                  <div>
-                    <div class="arch-vwire">
-                      <span class="arch-vwire-line"></span>
-                      <span class="arch-wire-label">WebSocket invalidation</span>
-                    </div>
-                    <div class="arch-node arch-ui">
-                      <span class="arch-name">UI</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <!-- PR Cockpit server -->
+              <rect class="sys-node sys-node--server" x="442" y="66" width="464" height="96" rx="3" />
+              <rect class="sys-accent--server" x="442" y="66" width="2" height="96" />
+              <text class="sys-name sys-name--server" x="462" y="109">PR Cockpit server</text>
+              <text class="sys-label" x="462" y="129">ingest · cache · write queue</text>
 
-              <div class="arch-serves">
-                <div class="arch-wire arch-wire--serve arch-wire--fwd">
-                  <span class="arch-wire-label">UI</span>
-                  <span class="arch-wire-line"></span>
-                </div>
-                <div class="arch-node arch-actor">
-                  <span class="arch-name">Humans</span>
-                </div>
-                <div class="arch-wire arch-wire--serve arch-wire--fwd">
-                  <span class="arch-wire-label">CLI · API</span>
-                  <span class="arch-wire-line"></span>
-                </div>
-                <div class="arch-node arch-actor">
-                  <span class="arch-name">Agents</span>
-                </div>
-              </div>
-            </div>
+              <!-- SQLite + images -->
+              <rect class="sys-node" x="442" y="232" width="216" height="56" rx="3" />
+              <rect class="sys-accent--local" x="442" y="232" width="2" height="56" />
+              <text class="sys-name" x="462" y="264">SQLite + images</text>
+
+              <!-- UI -->
+              <rect class="sys-node" x="690" y="232" width="216" height="56" rx="3" />
+              <rect class="sys-accent--local" x="690" y="232" width="2" height="56" />
+              <text class="sys-name" x="710" y="264">UI</text>
+
+              <!-- Agents (CLI · API against the server) -->
+              <rect class="sys-node" x="1000" y="86" width="156" height="56" rx="3" />
+              <rect class="sys-accent--actor" x="1000" y="86" width="2" height="56" />
+              <text class="sys-name" x="1020" y="118">Agents</text>
+
+              <!-- Humans (talk to the UI) -->
+              <rect class="sys-node" x="1000" y="232" width="156" height="56" rx="3" />
+              <rect class="sys-accent--actor" x="1000" y="232" width="2" height="56" />
+              <text class="sys-name" x="1020" y="264">Humans</text>
+
+              <!-- GitHub → server: webhook via relay -->
+              <text class="sys-label" x="317" y="66" text-anchor="middle">webhook · instant update</text>
+              <path class="sys-wire sys-wire--signal" d="M192 84 H436" />
+              <path class="sys-head--signal" d="M435 80.5 L442 84 L435 87.5 Z" />
+              <rect class="sys-relay" x="287" y="74" width="60" height="20" rx="2" />
+              <text class="sys-relay-label" x="317" y="88" text-anchor="middle">RELAY</text>
+
+              <!-- GitHub → server: targeted fetch -->
+              <text class="sys-label" x="317" y="107" text-anchor="middle">targeted fetch</text>
+              <path class="sys-wire sys-wire--data" d="M192 114 H436" />
+              <path class="sys-head--data" d="M435 110.5 L442 114 L435 117.5 Z" />
+
+              <!-- server → GitHub: authenticated write -->
+              <text class="sys-label" x="317" y="137" text-anchor="middle">authenticated write</text>
+              <path class="sys-wire sys-wire--data" d="M198 144 H442" />
+              <path class="sys-head--data" d="M199 140.5 L192 144 L199 147.5 Z" />
+
+              <!-- server ↕ SQLite -->
+              <path class="sys-wire sys-wire--local" d="M550 169 V225" />
+              <path class="sys-head--local" d="M546.5 169 L550 162 L553.5 169 Z" />
+              <path class="sys-head--local" d="M546.5 225 L550 232 L553.5 225 Z" />
+              <text class="sys-label" x="540" y="200" text-anchor="end">read · write</text>
+
+              <!-- server → UI -->
+              <path class="sys-wire sys-wire--local" d="M798 162 V225" />
+              <path class="sys-head--local" d="M794.5 225 L798 232 L801.5 225 Z" />
+              <text class="sys-label" x="788" y="200" text-anchor="end">WebSocket invalidation</text>
+
+              <!-- Agents ↔ server -->
+              <text class="sys-label" x="967" y="106" text-anchor="middle">CLI · API</text>
+              <path class="sys-wire sys-wire--serve" d="M913 114 H993" />
+              <path class="sys-head--serve" d="M913 110.5 L906 114 L913 117.5 Z" />
+              <path class="sys-head--serve" d="M993 110.5 L1000 114 L993 117.5 Z" />
+
+              <!-- Humans ↔ UI -->
+              <path class="sys-wire sys-wire--serve" d="M913 260 H993" />
+              <path class="sys-head--serve" d="M913 256.5 L906 260 L913 263.5 Z" />
+              <path class="sys-head--serve" d="M993 256.5 L1000 260 L993 263.5 Z" />
+            </svg>
           </figure>
         </div>
       </div>
@@ -1909,11 +1735,11 @@
             <h2>Install.</h2>
           </div>
           <div class="code-shell">
-            <div class="code-toolbar">
-              <span id="install-label">Install command</span>
-              <button class="copy-install" type="button" aria-label="Copy install command">Copy</button>
-            </div>
-            <pre class="code-block" role="region" aria-labelledby="install-label" tabindex="0"><span class="prompt" aria-hidden="true">$ </span><code class="install-command">curl -fsSL https://raw.githubusercontent.com/theolundqvist/pr-cockpit/main/scripts/bootstrap | bash</code></pre>
+            <pre class="code-block" role="region" aria-label="Install command" tabindex="0"><span class="prompt" aria-hidden="true">$ </span><code class="install-command">curl -fsSL https://raw.githubusercontent.com/theolundqvist/pr-cockpit/main/scripts/bootstrap | bash</code></pre>
+            <button class="copy-install" type="button" aria-label="Copy install command">
+              <svg class="icon-copy" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M15 5.5A1.5 1.5 0 0 0 13.5 4H5.5A1.5 1.5 0 0 0 4 5.5v8A1.5 1.5 0 0 0 5.5 15"></path></svg>
+              <svg class="icon-check" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 12.8 9.2 17.5 19.5 7"></path></svg>
+            </button>
             <span class="copy-status visually-hidden" role="status"></span>
           </div>
         </div>
@@ -1996,14 +1822,15 @@
       const renderBenchmark = benchmarkResults.renderBenchmark;
       if (renderBenchmark) {
         const products = ["cockpit", "github", "cursorOrigin"];
-        const maxP99 = Math.max(...products.map((product) => renderBenchmark[product].p99));
+        const maxP50 = Math.max(...products.map((product) => renderBenchmark[product].p50));
         for (const product of products) {
           const measurement = renderBenchmark[product];
-          document.querySelector(`[data-render-value="${product}"]`).textContent = formatSeconds(measurement.p99);
-          document.querySelector(`[data-render-bar="${product}"]`).style.width = `${measurement.p99 / maxP99 * 100}%`;
+          document.querySelector(`[data-render-value="${product}"]`).textContent = formatSeconds(measurement.p50);
+          document.querySelector(`[data-render-bar="${product}"]`).style.width = `${measurement.p50 / maxP50 * 100}%`;
           document.querySelector(`[data-render-tail="${product}"]`).textContent = `${formatSeconds(measurement.p95)} s p95`;
         }
-        document.querySelector("[data-render-speedup]").textContent = `${renderBenchmark.p99Speedup}× faster at p99`;
+        const renderSpeedup = Math.round((renderBenchmark.github.p50 / renderBenchmark.cockpit.p50) * 10) / 10;
+        document.querySelector("[data-render-speedup]").textContent = `${renderSpeedup}× faster`;
       }
     }
 
@@ -2036,10 +1863,10 @@
         copyStatus.textContent = "Copy failed. Select the command and copy it manually.";
         return;
       }
-      copyButton.textContent = "Copied";
+      copyButton.classList.add("copied");
       copyStatus.textContent = "Install command copied to clipboard.";
       copyResetTimer = setTimeout(() => {
-        copyButton.textContent = "Copy";
+        copyButton.classList.remove("copied");
         copyStatus.textContent = "";
       }, 2000);
     });
