@@ -1190,11 +1190,6 @@
     .cli-flow-replay, .search-demo-toggle { position: absolute; z-index: 12; right: 18px; bottom: 18px; min-height: 39px; padding: 0 15px; border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 999px; background: rgba(15, 15, 14, 0.78); color: #fff; font: 600 11px var(--mono); cursor: pointer; backdrop-filter: blur(12px); }
     .cli-flow-replay:hover, .search-demo-toggle:hover { border-color: var(--green); background: rgba(15, 15, 14, 0.92); }
     .cli-flow-replay:focus-visible, .search-demo-toggle:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
-    .cli-flow-steps { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin: 18px 0 0; padding: 0; list-style: none; }
-    .cli-flow-steps li { display: flex; gap: 8px; color: var(--text-faint); font: 10px/1.5 var(--mono); }
-    .cli-flow-steps b { display: grid; flex: none; width: 19px; height: 19px; place-items: center; border: 1px solid var(--border-strong); border-radius: 50%; color: var(--green); font-size: 9px; }
-    .cli-flow-footnote { margin: 14px 0 0; color: var(--text-faint); font: 10px/1.5 var(--mono); }
-    .cli-flow-footnote code { color: var(--text-dim); }
     @keyframes cli-flow-pulse { 0% { transform: scaleX(0); transform-origin: left; } 100% { transform: scaleX(1); transform-origin: left; } }
 
     @media (max-width: 720px) {
@@ -1208,7 +1203,6 @@
       .cli-flow-caption { right: 18px; bottom: 22px; left: 18px; padding-right: 82px; font-size: 9px; text-align: left; }
       .cli-flow-replay, .search-demo-toggle { right: 10px; bottom: 10px; min-height: 36px; }
       .search-demo-toggle { min-height: 44px; }
-      .cli-flow-steps { grid-template-columns: 1fr; gap: 8px; }
     }
 
     @media (prefers-reduced-motion: reduce) { .cli-flow-replay { display: none; } }
@@ -1570,7 +1564,7 @@
         <div class="section-intro cli-flow-intro">
           <div>
             <h2 class="section-title">Local GitHub cache. Faster agents. Fewer tokens.</h2>
-            <p class="section-lede"><code>pr-cockpit listen fixture/cockpit#109</code> blocks on local cached state and wakes after a webhook refresh, avoiding repeated GitHub reads so agents keep more context for the work.</p>
+            <p class="section-lede"><code>pr-cockpit listen theolundqvist/pr-cockpit#109</code> blocks on local cached state and wakes after a webhook refresh, avoiding repeated GitHub reads so agents keep more context for the work.</p>
           </div>
         </div>
         <p class="visually-hidden">Animated flow: an agent starts pr-cockpit listen and blocks on local cached state. A reviewer posts a comment and GitHub emits a webhook. The relay forwards a change marker. PR Cockpit refreshes pull request 109 from GitHub. Listen wakes, prints the refreshed pull request with the new review comment, exits, and the agent continues.</p>
@@ -1590,12 +1584,12 @@
             <div class="terminal-window cli-flow-terminal">
               <div class="terminal-toolbar"><span class="terminal-lights"><span class="terminal-light close"></span><span class="terminal-light minimize"></span><span class="terminal-light maximize"></span></span><span class="terminal-title">agent — zsh</span></div>
               <div class="cli-flow-console" data-cli-flow-console>
-                <div class="cli-flow-line is-command"><span>$</span><b>pr-cockpit listen fixture/cockpit#109</b></div>
+                <div class="cli-flow-line is-command"><span>$</span><b>pr-cockpit listen theolundqvist/pr-cockpit#109</b></div>
                 <div class="cli-flow-line"><span>#</span><b>Pull Request #109: Show failed optimistic mutations with recovery controls</b></div>
                 <div class="cli-flow-line"><span></span><b>State: OPEN</b></div>
                 <div class="cli-flow-line"><span></span><b>Author: @theolundqvist</b></div>
                 <div class="cli-flow-line"><span></span><b>Base: main</b></div>
-                <div class="cli-flow-line"><span></span><b>Head: fixture/pr-109</b></div>
+                <div class="cli-flow-line"><span></span><b>Head: failed-mutation-recovery</b></div>
                 <div class="cli-flow-line"><span>##</span><b>Open Review Comments</b></div>
                 <div class="cli-flow-line is-result"><span></span><b>- `1557531d2b` · `server/mutations.ts:72`</b></div>
                 <div class="cli-flow-line is-result"><span></span><b>  - @reviewer-one: Please make the retry path visible when the write fails.</b></div>
@@ -1605,10 +1599,6 @@
           </div>
           <button class="cli-flow-replay" type="button" aria-controls="cli-flow-stage" data-cli-flow-replay>↻ Replay</button>
         </div>
-        <ol class="cli-flow-steps">
-          <li><b>1</b><span>Block on the local PR fingerprint.</span></li><li><b>2</b><span>Receive a new review comment from GitHub.</span></li><li><b>3</b><span>Relay only what changed.</span></li><li><b>4</b><span>Refresh PR #109 directly from GitHub.</span></li><li><b>5</b><span>Print the new snapshot, exit, continue.</span></li>
-        </ol>
-        <p class="cli-flow-footnote"><code>--ci-only</code> and <code>--comments-only</code> narrow the wake signal.</p>
       </div>
     </section>
 
@@ -1981,12 +1971,12 @@
         ["", "State: OPEN", ""],
         ["", "Author: @theolundqvist", ""],
         ["", "Base: main", ""],
-        ["", "Head: fixture/pr-109", ""],
+        ["", "Head: failed-mutation-recovery", ""],
         ["##", "Open Review Comments", ""],
         ["", "- `1557531d2b` · `server/mutations.ts:72`", "is-result"],
         ["", "  - @reviewer-one: Please make the retry path visible when the write fails.", "is-result"],
       ];
-      const command = "pr-cockpit listen fixture/cockpit#109";
+      const command = "pr-cockpit listen theolundqvist/pr-cockpit#109";
       const doneCaption = "Listen returned once. The agent continues with fresh local context.";
       const showFinalCli = () => {
         consoleBody.replaceChildren(line("$", command, "is-command"), ...finalLines.map((args) => line(...args)));
@@ -2019,7 +2009,7 @@
         consoleBody.replaceChildren(line("$", "", "is-command"));
         const commandBody = consoleBody.querySelector("b");
         [...command].forEach((letter, index) => later(260 + index * 24, () => { commandBody.textContent += letter; }));
-        later(1250, () => {
+        later(1500, () => {
           activate(nodes, "agent");
           caption.textContent = "Listen blocks on the local PR fingerprint — not a GitHub poll loop.";
         });
@@ -2043,8 +2033,8 @@
           activate(links, "wake");
           caption.textContent = "The local fingerprint changes. Listen wakes.";
         });
-        finalLines.forEach(([symbol, text, tone], index) => later(4550 + index * 140, () => addLine(symbol, text, tone)));
-        later(4550 + finalLines.length * 140 + 200, () => {
+        later(4550, () => finalLines.forEach((args) => addLine(...args)));
+        later(4750, () => {
           stage.dataset.cliFlowState = "done";
           caption.textContent = doneCaption;
           later(5000, () => {
