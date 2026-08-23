@@ -234,8 +234,18 @@
     }
 
     .hero-benchmark {
+      position: relative;
       margin-top: clamp(40px, 9vh, 88px);
       text-align: left;
+    }
+
+    .hero-benchmark::before {
+      content: "";
+      position: absolute;
+      inset: -60px -180px -90px;
+      z-index: -1;
+      pointer-events: none;
+      background: radial-gradient(ellipse 78% 52% at 50% 50%, rgba(94, 210, 141, 0.13), rgba(94, 210, 141, 0.045) 60%, transparent 80%);
     }
 
     .benchmark-grid {
