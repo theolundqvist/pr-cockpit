@@ -23,9 +23,9 @@ function summaryRow(name, samples) {
   return `| ${name} | ${sorted.length} | ${ms(sorted[0])} | ${ms(percentile(sorted, 50))} | ${ms(percentile(sorted, 90))} | ${ms(percentile(sorted, 95))} | ${ms(percentile(sorted, 99))} | ${ms(sorted.at(-1))} | ${ms(mean)} |`;
 }
 
-function section(metric, boundary) {
+function section(metric, ...notes) {
   const lines = [`## ${metric.label}`, ""];
-  if (boundary) lines.push(boundary, "");
+  for (const note of notes.filter(Boolean)) lines.push(note, "");
   lines.push(
     "| Product | Runs | min | p50 | p90 | p95 | p99 | max | mean |",
     "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
@@ -80,7 +80,7 @@ const document = [
   `Every measured sample behind the landing-page comparison, measured ${data.measuredAt}. Reproduce with [scripts/benchmark-ui.mjs](../scripts/benchmark-ui.mjs); regenerate this file with \`node scripts/benchmark-report.mjs\`.`,
   "",
   ...data.metrics.map((metric) => section(metric)),
-  section(data.renderBenchmark, data.renderBenchmark.boundary),
+  section(data.renderBenchmark, data.renderEnvironment.dataset, data.renderBenchmark.boundary),
   "## Environments",
   "",
   environment("Pull-request and diff opens", data.environment),

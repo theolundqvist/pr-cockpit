@@ -97,6 +97,8 @@ Cursor Origin: Origin PR #8105 Changes tab to first painted diff line
 
 ## Open a huge PR
 
+scape-app/scape#8132, a large open pull request: 1,879 changed files, 125,659 changed lines (108,995 added, 16,664 removed), about 360 comments
+
 Pull-request list row for #8132 to painted detail: title, first conversation body, no loading indicator
 
 | Product | Runs | min | p50 | p90 | p95 | p99 | max | mean |
@@ -277,7 +279,7 @@ Cursor Origin: Origin pull-request row to painted detail of #8132
 | runs | 100 |
 | warmups | 3 |
 | auth | One signed-in visible Chromium drives all three products |
-| dataset | scape-app/scape#8132, a large open pull request |
+| dataset | scape-app/scape#8132, a large open pull request: 1,879 changed files, 125,659 changed lines (108,995 added, 16,664 removed), about 360 comments |
 | cache | Warm browser cache and warm PR Cockpit disk cache; neither is cleared between warmups or measured runs |
 | cockpitURL | http://127.0.0.1:4825/#/pr/scape-app/scape/8132 |
 | githubListURL | https://github.com/scape-app/scape/pulls?q=is%3Apr%208132 |
