@@ -242,10 +242,14 @@
     .hero-benchmark::before {
       content: "";
       position: absolute;
-      inset: -60px -180px -90px;
+      top: -60px;
+      bottom: -90px;
+      left: 50%;
+      width: 100vw;
+      transform: translateX(-50%);
       z-index: -1;
       pointer-events: none;
-      background: radial-gradient(ellipse 78% 52% at 50% 50%, rgba(94, 210, 141, 0.13), rgba(94, 210, 141, 0.045) 60%, transparent 80%);
+      background: radial-gradient(ellipse 60% 52% at 50% 50%, rgba(94, 210, 141, 0.13), rgba(94, 210, 141, 0.045) 55%, transparent 82%);
     }
 
     .benchmark-grid {
@@ -1729,7 +1733,7 @@
       const setWaiting = (on) => {
         githubNode.classList.toggle("is-waiting", on);
         webhookLink.classList.toggle("is-waiting", on);
-        githubLabel.textContent = on ? "waiting for comment" : "comment posted";
+        githubLabel.textContent = on ? "waiting for updates" : "comment posted";
       };
       const later = (delay, action) => timers.push(window.setTimeout(action, delay));
       const finalLines = [
