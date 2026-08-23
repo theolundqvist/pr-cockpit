@@ -342,23 +342,14 @@
 
     .benchmark-method {
       display: flex;
+      flex-wrap: wrap;
       justify-content: center;
-      gap: 22px;
+      gap: 8px 28px;
       margin: 18px 0 0;
       color: var(--text-faint);
       font-family: var(--mono);
       font-size: 11px;
       text-align: center;
-    }
-
-    .benchmark-method a + a {
-      position: relative;
-    }
-
-    .benchmark-method a + a::before {
-      position: absolute;
-      left: -12px;
-      content: "·";
     }
 
     .benchmark-method a:hover {
