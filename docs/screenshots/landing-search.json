@@ -17,29 +17,35 @@
     "windowEdgePaddingPixels": 100.5,
     "note": "one fixed crop preserves the complete recording with equal source-pixel padding between the app window and every crop edge"
   },
+  "trim": {
+    "pixelsPerSide": 50,
+    "appliedTo": "the 1280x986 encode",
+    "note": "tightens the wallpaper margin around the app window to 24px left and right and drops the white band along the top edge"
+  },
   "encode": {
-    "width": 1280,
-    "height": 986,
+    "width": 1180,
+    "height": 886,
     "frameRate": 30,
     "durationSeconds": 7.866,
     "colorSpace": "bt709",
-    "mp4Crf": 20,
-    "webmCrf": 30
+    "mp4Crf": 18,
+    "webmCrf": 24,
+    "note": "re-encoded from the 1280x986 h264 master to apply the trim; crf lowered so the second generation does not add visible loss"
   },
   "video": {
     "path": "docs/screenshots/landing-search.webm",
     "codec": "vp9",
-    "bytes": 253742
+    "bytes": 326423
   },
   "fallback": {
     "path": "docs/screenshots/landing-search.mp4",
     "codec": "h264",
-    "bytes": 467254
+    "bytes": 494683
   },
   "poster": {
     "path": "docs/screenshots/landing-search-poster.png",
     "scene": "search palette before typing at 0.5 seconds",
-    "bytes": 441010
+    "bytes": 363228
   },
   "paletteImage": {
     "path": "docs/screenshots/landing-search-palette.png",

@@ -205,174 +205,139 @@
     .benchmark-grid {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 9px;
+      gap: 16px;
     }
 
     .benchmark-card {
-      min-width: 0;
-      padding: 12px;
-      overflow: hidden;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      background: var(--panel);
-    }
-
-    .benchmark-card-header {
+      position: relative;
       display: flex;
       min-width: 0;
-      align-items: flex-start;
+      flex-direction: column;
+      gap: 16px;
+      padding: 20px 18px 18px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0)), var(--panel);
+      overflow: hidden;
+    }
+
+    .benchmark-head {
+      display: flex;
+      align-items: baseline;
       justify-content: space-between;
-      gap: 8px;
-      margin-bottom: 11px;
+      gap: 12px;
     }
 
     .benchmark-label {
       margin: 0;
-      font-size: 17px;
-      letter-spacing: -0.025em;
-      line-height: 1.2;
-    }
-
-    .benchmark-speedup {
-      flex: none;
-      max-width: 45%;
-      overflow: hidden;
-      color: var(--green);
       font-family: var(--mono);
-      font-size: 11px;
-      font-weight: 650;
-      line-height: 1.35;
-      text-align: right;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .benchmark-products {
-      display: grid;
-      min-width: 0;
-      gap: 8px;
-    }
-    .benchmark-product.origin .benchmark-bar {
-      border-color: color-mix(in srgb, var(--blue) 36%, var(--border));
-    }
-
-    .benchmark-product.origin .benchmark-bar-fill {
-      border-color: color-mix(in srgb, var(--blue) 58%, transparent);
-      background: color-mix(in srgb, var(--blue) 32%, transparent);
-    }
-
-    .benchmark-product.origin .benchmark-product-name,
-    .benchmark-product.origin .benchmark-value {
-      color: var(--blue);
-    }
-
-    .benchmark-product.unavailable .benchmark-value {
-      font-size: 11px;
-      letter-spacing: 0.04em;
+      font-size: 14px;
+      font-weight: 400;
+      letter-spacing: 0.08em;
       text-transform: uppercase;
-    }
-
-
-    .benchmark-product {
-      min-width: 0;
-    }
-
-    .benchmark-bar {
-      position: relative;
-      height: 40px;
-      min-width: 0;
-      overflow: hidden;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      background: var(--panel);
-      isolation: isolate;
-    }
-
-    .benchmark-bar-fill {
-      position: absolute;
-      inset: 0 auto 0 0;
-      width: 0;
-      min-width: 2px;
-      border-right: 1px solid color-mix(in srgb, var(--text) 16%, transparent);
-      background: color-mix(in srgb, var(--text) 12%, transparent);
-    }
-
-    .benchmark-product.cockpit .benchmark-bar {
-      border-color: color-mix(in srgb, var(--green) 30%, var(--border));
-    }
-
-    .benchmark-product.cockpit .benchmark-bar-fill {
-      border-color: color-mix(in srgb, var(--green) 58%, transparent);
-      background: color-mix(in srgb, var(--green) 34%, transparent);
-    }
-
-    .benchmark-bar-content {
-      position: relative;
-      z-index: 1;
-      display: flex;
-      height: 100%;
-      min-width: 0;
-      align-items: center;
-      justify-content: space-between;
-      gap: 7px;
-      padding: 0 9px;
-    }
-
-    .benchmark-product-name {
-      min-width: 0;
-      overflow: hidden;
       color: var(--text-dim);
-      font-family: var(--mono);
-      font-size: 11px;
-      font-weight: 650;
-      letter-spacing: 0.04em;
-      text-overflow: ellipsis;
-      white-space: nowrap;
     }
 
-    .benchmark-product.cockpit .benchmark-product-name,
-    .benchmark-product.cockpit .benchmark-value {
-      color: var(--green);
-    }
-
-    .benchmark-value-line {
+    .benchmark-gain {
       display: flex;
-      min-width: 0;
-      flex: none;
       align-items: baseline;
-      gap: 3px;
+      gap: 5px;
+      font-size: 26px;
+      font-weight: 680;
+      line-height: 1;
+      letter-spacing: -0.03em;
+      color: var(--green);
       white-space: nowrap;
+    }
+
+    .benchmark-gain small {
+      font-size: 13px;
+      font-weight: 500;
+      letter-spacing: 0;
+      color: var(--text-dim);
+    }
+
+    .benchmark-lanes {
+      display: flex;
+      flex-direction: column;
+      gap: 11px;
+    }
+
+    .benchmark-lane {
+      display: grid;
+      grid-template-columns: 74px minmax(0, 1fr) 58px;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .benchmark-name {
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.03em;
+      color: var(--text-dim);
+    }
+
+    .benchmark-track {
+      position: relative;
+      height: 16px;
+      border-radius: 5px;
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .benchmark-band {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      min-width: 4px;
+      border-radius: 5px;
+      opacity: 0.5;
+    }
+
+    .benchmark-tick {
+      position: absolute;
+      top: 3px;
+      bottom: 3px;
+      width: 1px;
+      transform: translateX(-0.5px);
+    }
+
+    .benchmark-p50 {
+      position: absolute;
+      top: -2px;
+      bottom: -2px;
+      width: 2px;
+      border-radius: 1px;
     }
 
     .benchmark-value {
-      font-size: 19px;
-      font-weight: 650;
-      letter-spacing: -0.05em;
-      line-height: 1;
-    }
-
-    .benchmark-unit {
-      color: var(--text-faint);
       font-family: var(--mono);
-      font-size: 11px;
+      font-size: 12px;
+      font-weight: 600;
+      text-align: right;
+      color: var(--text);
     }
 
-    .benchmark-meta {
-      display: flex;
-      justify-content: flex-end;
-      padding: 5px 1px 0;
-    }
-    .benchmark-meta[hidden] { display: none; }
-
-
-    .benchmark-p95 {
-      flex: none;
-      margin: 0;
+    .benchmark-value .na {
+      font-weight: 400;
+      font-size: 10px;
       color: var(--text-faint);
-      font-family: var(--mono);
-      font-size: 11px;
-      white-space: nowrap;
     }
+
+    .benchmark-lane.is-cockpit .benchmark-band {
+      background: var(--green);
+      box-shadow: 0 0 12px color-mix(in srgb, var(--green) 60%, transparent);
+    }
+    .benchmark-lane.is-cockpit .benchmark-tick { background: color-mix(in srgb, #eafff2 65%, transparent); }
+    .benchmark-lane.is-cockpit .benchmark-p50 { background: #eafff2; }
+    .benchmark-lane.is-cockpit .benchmark-value { color: var(--green); }
+
+    .benchmark-lane.is-github .benchmark-band { background: rgba(255, 255, 255, 0.22); }
+    .benchmark-lane.is-github .benchmark-tick { background: rgba(255, 255, 255, 0.5); }
+    .benchmark-lane.is-github .benchmark-p50 { background: rgba(255, 255, 255, 0.85); }
+
+    .benchmark-lane.is-origin .benchmark-band { background: color-mix(in srgb, var(--blue) 55%, transparent); }
+    .benchmark-lane.is-origin .benchmark-tick { background: color-mix(in srgb, var(--blue) 85%, transparent); }
+    .benchmark-lane.is-origin .benchmark-p50 { background: color-mix(in srgb, var(--blue) 100%, transparent); }
 
     .benchmark-method {
       margin: 18px 0 0;
@@ -414,32 +379,6 @@
       font-size: clamp(32px, 3.8vw, 44px);
       letter-spacing: -0.045em;
       line-height: 1.02;
-    }
-
-    .compare-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 24px;
-      max-width: 1080px;
-      margin: 40px auto 0;
-    }
-
-    .compare-head {
-      padding-bottom: 72px;
-    }
-
-    .compare-side {
-      margin: 0;
-      min-width: 0;
-    }
-
-    .compare-label {
-      margin: 0 0 10px;
-      color: var(--text-faint);
-      font-family: var(--mono);
-      font-size: 12px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
     }
 
 
@@ -1025,8 +964,7 @@
       h1 {
         font-size: 44px;
       }
-      .benchmark-grid,
-      .compare-grid {
+      .benchmark-grid {
         grid-template-columns: 1fr;
       }
 
@@ -1080,28 +1018,7 @@
       }
 
       .benchmark-card {
-        padding: 11px;
-      }
-
-      .benchmark-card-header {
-        align-items: flex-start;
-      }
-
-      .benchmark-bar-content {
-        gap: 6px;
-        padding: 0 8px;
-      }
-
-      .benchmark-product-name {
-        font-size: 10px;
-      }
-
-      .benchmark-value {
-        font-size: 17px;
-      }
-
-      .benchmark-meta {
-        gap: 10px;
+        padding: 16px 14px 14px;
       }
 
 
@@ -1152,8 +1069,8 @@
 
     /* Search-to-PR demo */
     .search-demo-intro { margin-bottom: 56px; }
-    .video-mat { position: relative; width: min(100%, 920px); margin-inline: auto; }
-    .search-demo-video { display: block; width: 100%; height: auto; border-radius: 8px; background: #f9f9f7; box-shadow: 0 10px 36px rgba(0, 10, 30, 0.35); }
+    .video-mat { width: min(100%, 920px); margin-inline: auto; }
+    .demo-video { display: block; width: 100%; height: auto; border-radius: 8px; background: #f9f9f7; box-shadow: 0 10px 36px rgba(0, 10, 30, 0.35); }
     .search-demo-decision { display: grid; grid-template-columns: 0.8fr 1.2fr; gap: 40px; align-items: start; width: min(100%, 920px); margin: 30px auto 0; }
     .search-demo-decision h3 { margin: 0; font-size: clamp(25px, 3.2vw, 38px); letter-spacing: -0.04em; line-height: 1.04; }
     .search-demo-decision p { max-width: 620px; margin: 3px 0 0; color: var(--text-dim); font-size: 16px; line-height: 1.65; }
@@ -1195,9 +1112,9 @@
     .cli-flow-line span { color: var(--text-faint); }
     .cli-flow-line b { overflow: hidden; font-weight: 400; text-overflow: ellipsis; white-space: pre; }
     .cli-flow-line.is-command span, .cli-flow-line.is-result span, .cli-flow-line.is-result b { color: var(--green); }
-    .cli-flow-replay, .search-demo-toggle { position: absolute; z-index: 12; right: 18px; bottom: 18px; min-height: 39px; padding: 0 15px; border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 999px; background: rgba(15, 15, 14, 0.78); color: #fff; font: 600 11px var(--mono); cursor: pointer; backdrop-filter: blur(12px); }
-    .cli-flow-replay:hover, .search-demo-toggle:hover { border-color: var(--green); background: rgba(15, 15, 14, 0.92); }
-    .cli-flow-replay:focus-visible, .search-demo-toggle:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
+    .cli-flow-replay { position: absolute; z-index: 12; right: 18px; bottom: 18px; min-height: 39px; padding: 0 15px; border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 999px; background: rgba(15, 15, 14, 0.78); color: #fff; font: 600 11px var(--mono); cursor: pointer; backdrop-filter: blur(12px); }
+    .cli-flow-replay:hover { border-color: var(--green); background: rgba(15, 15, 14, 0.92); }
+    .cli-flow-replay:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
     @keyframes cli-flow-march { to { background-position: 9px 0; } }
     @keyframes cli-flow-dots { 0% { content: ""; } 33% { content: "."; } 66% { content: ".."; } }
     @keyframes cli-flow-march-down { to { background-position: 0 9px; } }
@@ -1211,8 +1128,7 @@
       .cli-flow-link.is-waiting { background: repeating-linear-gradient(180deg, rgba(242, 190, 53, 0.6) 0 4px, transparent 4px 9px); animation-name: cli-flow-march-down; }
       .cli-flow-terminal { width: 100%; margin-top: 26px; }
       .cli-flow-console { min-height: 218px; padding: 16px 14px; font-size: 9px; }
-      .cli-flow-replay, .search-demo-toggle { right: 10px; bottom: 10px; min-height: 36px; }
-      .search-demo-toggle { min-height: 44px; }
+      .cli-flow-replay { right: 10px; bottom: 10px; min-height: 36px; }
     }
 
     @media (prefers-reduced-motion: reduce) { .cli-flow-replay { display: none; } }
@@ -1229,220 +1145,7 @@
     <section class="wrap hero">
       <h1>GitHub PRs at local speed.</h1>
       <div class="hero-benchmark" id="performance">
-        <div class="benchmark-grid" aria-label="PR Cockpit, GitHub, and Cursor Origin performance comparison">
-          
-          <article class="benchmark-card">
-            <div class="benchmark-card-header">
-              <h2 class="benchmark-label">Open a PR</h2>
-              <span class="benchmark-speedup" data-benchmark-speedup="pr-open">—× faster</span>
-            </div>
-            <div class="benchmark-products">
-              <div class="benchmark-product cockpit">
-                <div class="benchmark-bar">
-                  <span class="benchmark-bar-fill" data-benchmark-bar="cockpit:pr-open"></span>
-                  <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">PR COCKPIT</span>
-                    <div class="benchmark-value-line">
-                      <strong class="benchmark-value" data-benchmark-value="cockpit:pr-open">—</strong>
-                      <span class="benchmark-unit">s</span>
-                    </div>
-                  </div>
-                </div>
-                <div class="benchmark-meta">
-                  <p class="benchmark-p95"><span data-benchmark-p95="cockpit:pr-open">—</span> s p95</p>
-                </div>
-              </div>
-              <div class="benchmark-product">
-                <div class="benchmark-bar">
-                  <span class="benchmark-bar-fill" data-benchmark-bar="github:pr-open"></span>
-                  <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">GITHUB (healthy)</span>
-                    <div class="benchmark-value-line">
-                      <strong class="benchmark-value" data-benchmark-value="github:pr-open">—</strong>
-                      <span class="benchmark-unit">s</span>
-                    </div>
-                  </div>
-                </div>
-                <div class="benchmark-meta">
-                  <p class="benchmark-p95"><span data-benchmark-p95="github:pr-open">—</span> s p95</p>
-                </div>
-              </div>
-              <div class="benchmark-product origin" data-origin-product="pr-open" hidden>
-                <div class="benchmark-bar">
-                  <span class="benchmark-bar-fill" data-origin-bar="pr-open"></span>
-                  <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">CURSOR ORIGIN</span>
-                    <div class="benchmark-value-line">
-                      <strong class="benchmark-value" data-origin-value="pr-open">—</strong>
-                      <span class="benchmark-unit">s</span>
-                    </div>
-                  </div>
-                </div>
-                <div class="benchmark-meta">
-                  <p class="benchmark-p95"><span data-origin-p95="pr-open">—</span> s p95</p>
-                </div>
-              </div>
-            </div>
-          </article>
-          <article class="benchmark-card">
-            <div class="benchmark-card-header">
-              <h2 class="benchmark-label">Open a huge PR</h2>
-              <span class="benchmark-speedup" data-render-speedup>—× faster</span>
-            </div>
-            <div class="benchmark-products">
-              <div class="benchmark-product cockpit">
-                <div class="benchmark-bar">
-                  <span class="benchmark-bar-fill" data-render-bar="cockpit"></span>
-                  <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">PR COCKPIT</span>
-                    <div class="benchmark-value-line">
-                      <strong class="benchmark-value" data-render-value="cockpit">—</strong>
-                      <span class="benchmark-unit">s</span>
-                    </div>
-                  </div>
-                </div>
-                <div class="benchmark-meta">
-                  <p class="benchmark-p95" data-render-tail="cockpit">p95 —</p>
-                </div>
-              </div>
-              <div class="benchmark-product">
-                <div class="benchmark-bar">
-                  <span class="benchmark-bar-fill" data-render-bar="github"></span>
-                  <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">GITHUB (healthy)</span>
-                    <div class="benchmark-value-line">
-                      <strong class="benchmark-value" data-render-value="github">—</strong>
-                      <span class="benchmark-unit">s</span>
-                    </div>
-                  </div>
-                </div>
-                <div class="benchmark-meta">
-                  <p class="benchmark-p95" data-render-tail="github">p95 —</p>
-                </div>
-              </div>
-              <div class="benchmark-product origin">
-                <div class="benchmark-bar">
-                  <span class="benchmark-bar-fill" data-render-bar="cursorOrigin"></span>
-                  <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">CURSOR ORIGIN</span>
-                    <div class="benchmark-value-line">
-                      <strong class="benchmark-value" data-render-value="cursorOrigin">—</strong>
-                      <span class="benchmark-unit">s</span>
-                    </div>
-                  </div>
-                </div>
-                <div class="benchmark-meta">
-                  <p class="benchmark-p95" data-render-tail="cursorOrigin">p95 —</p>
-                </div>
-              </div>
-            </div>
-          </article><article class="benchmark-card">
-            <div class="benchmark-card-header">
-              <h2 class="benchmark-label">Search PRs</h2>
-              <span class="benchmark-speedup" data-benchmark-speedup="pr-search">—× faster</span>
-            </div>
-            <div class="benchmark-products">
-              <div class="benchmark-product cockpit">
-                <div class="benchmark-bar">
-                  <span class="benchmark-bar-fill" data-benchmark-bar="cockpit:pr-search"></span>
-                  <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">PR COCKPIT</span>
-                    <div class="benchmark-value-line">
-                      <strong class="benchmark-value" data-benchmark-value="cockpit:pr-search">—</strong>
-                      <span class="benchmark-unit">s</span>
-                    </div>
-                  </div>
-                </div>
-                <div class="benchmark-meta">
-                  <p class="benchmark-p95"><span data-benchmark-p95="cockpit:pr-search">—</span> s p95</p>
-                </div>
-              </div>
-              <div class="benchmark-product">
-                <div class="benchmark-bar">
-                  <span class="benchmark-bar-fill" data-benchmark-bar="github:pr-search"></span>
-                  <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">GITHUB (healthy)</span>
-                    <div class="benchmark-value-line">
-                      <strong class="benchmark-value" data-benchmark-value="github:pr-search">—</strong>
-                      <span class="benchmark-unit">s</span>
-                    </div>
-                  </div>
-                </div>
-                <div class="benchmark-meta">
-                  <p class="benchmark-p95"><span data-benchmark-p95="github:pr-search">—</span> s p95</p>
-                </div>
-              </div>
-              <div class="benchmark-product origin" data-origin-product="pr-search" hidden>
-                <div class="benchmark-bar">
-                  <span class="benchmark-bar-fill" data-origin-bar="pr-search"></span>
-                  <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">CURSOR ORIGIN</span>
-                    <div class="benchmark-value-line">
-                      <strong class="benchmark-value" data-origin-value="pr-search">—</strong>
-                      <span class="benchmark-unit">s</span>
-                    </div>
-                  </div>
-                </div>
-                <div class="benchmark-meta">
-                  <p class="benchmark-p95"><span data-origin-p95="pr-search">—</span> s p95</p>
-                </div>
-              </div>
-            </div>
-          </article>
-          <article class="benchmark-card">
-            <div class="benchmark-card-header">
-              <h2 class="benchmark-label">Open a diff</h2>
-              <span class="benchmark-speedup" data-benchmark-speedup="diff-open">—× faster</span>
-            </div>
-            <div class="benchmark-products">
-              <div class="benchmark-product cockpit">
-                <div class="benchmark-bar">
-                  <span class="benchmark-bar-fill" data-benchmark-bar="cockpit:diff-open"></span>
-                  <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">PR COCKPIT</span>
-                    <div class="benchmark-value-line">
-                      <strong class="benchmark-value" data-benchmark-value="cockpit:diff-open">—</strong>
-                      <span class="benchmark-unit">s</span>
-                    </div>
-                  </div>
-                </div>
-                <div class="benchmark-meta">
-                  <p class="benchmark-p95"><span data-benchmark-p95="cockpit:diff-open">—</span> s p95</p>
-                </div>
-              </div>
-              <div class="benchmark-product">
-                <div class="benchmark-bar">
-                  <span class="benchmark-bar-fill" data-benchmark-bar="github:diff-open"></span>
-                  <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">GITHUB (healthy)</span>
-                    <div class="benchmark-value-line">
-                      <strong class="benchmark-value" data-benchmark-value="github:diff-open">—</strong>
-                      <span class="benchmark-unit">s</span>
-                    </div>
-                  </div>
-                </div>
-                <div class="benchmark-meta">
-                  <p class="benchmark-p95"><span data-benchmark-p95="github:diff-open">—</span> s p95</p>
-                </div>
-              </div>
-              <div class="benchmark-product origin" data-origin-product="diff-open" hidden>
-                <div class="benchmark-bar">
-                  <span class="benchmark-bar-fill" data-origin-bar="diff-open"></span>
-                  <div class="benchmark-bar-content">
-                    <span class="benchmark-product-name">CURSOR ORIGIN</span>
-                    <div class="benchmark-value-line">
-                      <strong class="benchmark-value" data-origin-value="diff-open">—</strong>
-                      <span class="benchmark-unit">s</span>
-                    </div>
-                  </div>
-                </div>
-                <div class="benchmark-meta">
-                  <p class="benchmark-p95"><span data-origin-p95="diff-open">—</span> s p95</p>
-                </div>
-              </div>
-            </div>
-          </article>
-        </div>
+        <div class="benchmark-grid" id="benchmark-grid" aria-label="PR Cockpit, GitHub, and Cursor Origin performance comparison"></div>
         <p class="benchmark-method">
           <a href="https://github.com/theolundqvist/pr-cockpit/blob/main/scripts/benchmark-ui.mjs">Source · reproduce this benchmark</a>
         </p>
@@ -1456,11 +1159,10 @@
           </div>
         </div>
         <div class="video-mat">
-          <video id="search-demo-video" class="search-demo-video" poster="screenshots/landing-search-poster.png?v=20260823-crop" width="1180" height="886" muted playsinline loop aria-label="Screen recording of PR Cockpit: Option-Command-K opens pull request search over the review queue, typing narrows the results to one pull request, and Enter opens its full detail from the local cache.">
+          <video id="search-demo-video" class="demo-video" data-demo-rate="0.7" poster="screenshots/landing-search-poster.png?v=20260823-crop" width="1180" height="886" muted playsinline loop aria-label="Screen recording of PR Cockpit: Option-Command-K opens pull request search over the review queue, typing narrows the results to one pull request, and Enter opens its full detail from the local cache.">
             <source src="screenshots/landing-search.webm?v=20260823-crop" type="video/webm" />
             <source src="screenshots/landing-search.mp4?v=20260823-crop" type="video/mp4" />
           </video>
-          <button class="search-demo-toggle" type="button" aria-controls="search-demo-video" aria-pressed="false" data-search-demo-toggle>▶ Play</button>
         </div>
         <div class="search-demo-decision"><h3>Everything needed to decide.</h3><p>Failing checks with logs, merge conflicts, open threads, review state — one screen, painted from the local cache.</p></div>
       </div>
@@ -1489,30 +1191,17 @@
     </section>
 
     <section class="section-rule">
-      <div class="wrap section compare-head">
+      <div class="wrap section">
         <div class="section-intro">
           <div>
             <h2 class="section-title">Hide tests. See the change.</h2>
-            <p class="section-lede">react/react#36134 fixes a <code>useDeferredValue</code> stall in one source file, backed by two regression-test files. Press <kbd>x</kbd> and the two test diffs fold closed — the product change stays open.</p>
           </div>
         </div>
-        <div class="compare-grid">
-          <figure class="compare-side">
-            <figcaption class="compare-label">GitHub · all 3 changed files</figcaption>
-            <div class="shot-shell">
-              <button class="shot-button" type="button" data-lightbox="screenshots/landing-hide-tests-github.png?v=20260823-bare" aria-label="Open GitHub files changed screenshot">
-                <img src="screenshots/landing-hide-tests-github.png?v=20260823-bare" alt="GitHub files changed view of react/react#36134 showing one reconciler source file and two regression-test files" width="1200" height="900" loading="lazy">
-              </button>
-            </div>
-          </figure>
-          <figure class="compare-side">
-            <figcaption class="compare-label">PR Cockpit · 2 test diffs folded</figcaption>
-            <div class="shot-shell">
-              <button class="shot-button" type="button" data-lightbox="screenshots/landing-hide-tests-cockpit.png?v=20260823-bare" aria-label="Open PR Cockpit folded tests screenshot">
-                <img src="screenshots/landing-hide-tests-cockpit.png?v=20260823-bare" alt="PR Cockpit unified diff for react/react#36134 with both regression-test diffs folded and ReactFiberWorkLoop.js expanded" width="1200" height="390" loading="lazy">
-              </button>
-            </div>
-          </figure>
+        <div class="video-mat">
+          <video id="hide-tests-video" class="demo-video" poster="screenshots/landing-hide-tests-poster.png?v=20260823" width="1742" height="1486" muted playsinline loop aria-label="Screen recording of PR Cockpit on graphql/graphql-js#4692: pressing x folds all five regression-test diffs closed, leaving the one-line DeferStreamDirectiveLabelRule.ts change on screen.">
+            <source src="screenshots/landing-hide-tests.webm?v=20260823" type="video/webm" />
+            <source src="screenshots/landing-hide-tests.mp4?v=20260823" type="video/mp4" />
+          </video>
         </div>
       </div>
     </section>
@@ -1777,7 +1466,7 @@
     <img id="lightbox-image" alt="">
   </dialog>
 
-  <script src="benchmark-results.js?v=2026-08-21-render-p99"></script>
+  <script src="benchmark-results.js?v=2026-08-23-cold-runs"></script>
   <script>
     const lightbox = document.querySelector("#lightbox");
     const lightboxImage = document.querySelector("#lightbox-image");
@@ -1787,44 +1476,68 @@
       return seconds < 1 ? (Math.round(milliseconds) / 1000).toFixed(3) : seconds.toFixed(2);
     };
     if (benchmarkResults) {
-      for (const metric of benchmarkResults.metrics) {
-        const origin = metric.cursorOrigin;
-        const candidates = [metric.cockpit.p50, metric.github.p50];
-        if (origin?.available) candidates.push(origin.p50);
-        const maxP50 = Math.max(...candidates);
-        for (const product of ["cockpit", "github"]) {
-          document.querySelector(`[data-benchmark-value="${product}:${metric.id}"]`).textContent = formatSeconds(metric[product].p50);
-          document.querySelector(`[data-benchmark-p95="${product}:${metric.id}"]`).textContent = formatSeconds(metric[product].p95);
-          document.querySelector(`[data-benchmark-bar="${product}:${metric.id}"]`).style.width = `${metric[product].p50 / maxP50 * 100}%`;
-        }
-        document.querySelector(`[data-benchmark-speedup="${metric.id}"]`).textContent = `${metric.speedup}× faster`;
-        if (origin?.available) {
-          document.querySelector(`[data-origin-product="${metric.id}"]`).hidden = false;
-          document.querySelector(`[data-origin-value="${metric.id}"]`).textContent = formatSeconds(origin.p50);
-          document.querySelector(`[data-origin-p95="${metric.id}"]`).textContent = formatSeconds(origin.p95);
-          document.querySelector(`[data-origin-bar="${metric.id}"]`).style.width = `${origin.p50 / maxP50 * 100}%`;
-        } else if (origin) {
-          const product = document.querySelector(`[data-origin-product="${metric.id}"]`);
-          product.hidden = false;
-          product.classList.add("unavailable");
-          product.querySelector(".benchmark-unit").hidden = true;
-          product.querySelector(".benchmark-meta").hidden = true;
-          document.querySelector(`[data-origin-value="${metric.id}"]`).textContent = "not available";
-          document.querySelector(`[data-origin-bar="${metric.id}"]`).style.width = "0";
-        }
-      }
-      const renderBenchmark = benchmarkResults.renderBenchmark;
-      if (renderBenchmark) {
-        const products = ["cockpit", "github", "cursorOrigin"];
-        const maxP50 = Math.max(...products.map((product) => renderBenchmark[product].p50));
+      const render = benchmarkResults.renderBenchmark;
+      const products = [
+        { key: "cockpit", name: "PR Cockpit", cls: "is-cockpit" },
+        { key: "github", name: "GitHub", cls: "is-github" },
+        { key: "cursorOrigin", name: "Cursor Origin", cls: "is-origin" },
+      ];
+      const interactions = [
+        { label: render.label, cockpit: render.cockpit, github: render.github, cursorOrigin: render.cursorOrigin },
+        ...benchmarkResults.metrics.map((metric) => ({
+          label: metric.label,
+          cockpit: metric.cockpit,
+          github: metric.github,
+          cursorOrigin: metric.cursorOrigin?.available ? metric.cursorOrigin : null,
+        })),
+      ];
+      const order = ["Open a PR", "Open a diff", "Open a huge PR", "Search PRs"];
+      const el = (tag, cls, html) => {
+        const node = document.createElement(tag);
+        if (cls) node.className = cls;
+        if (html !== undefined) node.innerHTML = html;
+        return node;
+      };
+
+      const grid = document.querySelector("#benchmark-grid");
+      for (const label of order) {
+        const item = interactions.find((candidate) => candidate.label === label);
+        const scaleMax = Math.max(...products.map((p) => (item[p.key] ? Math.max(...item[p.key].samples) : 0)));
+        const pos = (ms) => Math.max(0, Math.min(99, (ms / scaleMax) * 100));
+        const card = el("article", "benchmark-card");
+        const headline = item.cockpit.p50 < 1000
+          ? `${Math.round(item.cockpit.p50)}<small>ms</small>`
+          : `${(item.cockpit.p50 / 1000).toFixed(2)}<small>s</small>`;
+        const head = el("div", "benchmark-head");
+        head.append(el("h2", "benchmark-label", item.label));
+        head.append(el("span", "benchmark-gain", headline));
+        card.append(head);
+        const lanes = el("div", "benchmark-lanes");
         for (const product of products) {
-          const measurement = renderBenchmark[product];
-          document.querySelector(`[data-render-value="${product}"]`).textContent = formatSeconds(measurement.p50);
-          document.querySelector(`[data-render-bar="${product}"]`).style.width = `${measurement.p50 / maxP50 * 100}%`;
-          document.querySelector(`[data-render-tail="${product}"]`).textContent = `${formatSeconds(measurement.p95)} s p95`;
+          const measure = item[product.key];
+          const lane = el("div", `benchmark-lane ${product.cls}`);
+          lane.append(el("span", "benchmark-name", product.name));
+          const track = el("div", "benchmark-track");
+          if (measure) {
+            const band = el("div", "benchmark-band");
+            band.style.left = `${pos(Math.min(...measure.samples))}%`;
+            band.style.width = `${Math.max(1, pos(Math.max(...measure.samples)) - pos(Math.min(...measure.samples)))}%`;
+            track.append(band);
+            for (const sample of measure.samples) {
+              const tick = el("span", "benchmark-tick");
+              tick.style.left = `${pos(sample)}%`;
+              track.append(tick);
+            }
+            const median = el("span", "benchmark-p50");
+            median.style.left = `${pos(measure.p50)}%`;
+            track.append(median);
+          }
+          lane.append(track);
+          lane.append(el("div", "benchmark-value", measure ? `${formatSeconds(measure.p50)} s` : `<span class="na">n/a</span>`));
+          lanes.append(lane);
         }
-        const renderSpeedup = Math.round((renderBenchmark.github.p50 / renderBenchmark.cockpit.p50) * 10) / 10;
-        document.querySelector("[data-render-speedup]").textContent = `${renderSpeedup}× faster`;
+        card.append(lanes);
+        grid.append(card);
       }
     }
 
@@ -1929,25 +1642,12 @@
       observer.observe(element);
     };
 
-    const searchDemoVideo = document.querySelector(".search-demo-video");
-    const searchDemoToggle = document.querySelector("[data-search-demo-toggle]");
-    if (searchDemoVideo && searchDemoToggle) {
-      searchDemoVideo.defaultPlaybackRate = 0.7;
-      searchDemoVideo.playbackRate = 0.7;
-      const syncSearchDemoToggle = () => {
-        const playing = !searchDemoVideo.paused;
-        searchDemoToggle.textContent = playing ? "Ⅱ Pause" : "▶ Play";
-        searchDemoToggle.setAttribute("aria-pressed", String(playing));
-      };
-      searchDemoVideo.addEventListener("play", syncSearchDemoToggle);
-      searchDemoVideo.addEventListener("pause", syncSearchDemoToggle);
-      searchDemoToggle.addEventListener("click", () => {
-        if (searchDemoVideo.paused) searchDemoVideo.play().catch(() => {});
-        else searchDemoVideo.pause();
-      });
-      syncSearchDemoToggle();
-      if (!motionReduced) playOnceVisible(searchDemoVideo, () => searchDemoVideo.play().catch(() => {}), 0.65);
-    }
+    document.querySelectorAll(".demo-video").forEach((video) => {
+      const rate = Number(video.dataset.demoRate || 1);
+      video.defaultPlaybackRate = rate;
+      video.playbackRate = rate;
+      if (!motionReduced) playOnceVisible(video, () => video.play().catch(() => {}), 0.65);
+    });
 
     const cliFlowPlayer = document.querySelector("[data-cli-flow-player]");
     if (cliFlowPlayer) {
