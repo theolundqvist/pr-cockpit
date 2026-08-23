@@ -985,7 +985,7 @@
     {@const isCollapsed = collapsed.has(file.path)}
     {@const isViewed = viewed.has(file.path)}
     {@const whole = wholeFile.get(file.path)}
-    <section class="file" id="diff-file-{i}" style="--est-h:{estimateHeight(file, isCollapsed, whole)}px" use:nearViewport={file.path}>
+    <section class="file" class:collapsed={isCollapsed} id="diff-file-{i}" style="--est-h:{estimateHeight(file, isCollapsed, whole)}px" use:nearViewport={file.path}>
       <div class="file-head-row">
         <button class="file-head mono" onclick={() => (fileEditor?.path === file.path ? finishFileEdit() : onToggleFile(file))}>
           <Chevron direction={isCollapsed ? "right" : "down"} />
@@ -1185,7 +1185,7 @@
     max-width: 100%;
   }
   .file {
-    border: 1px solid var(--border);
+    border: 0;
     border-radius: 8px;
     margin-bottom: 16px;
     background: var(--panel);
@@ -1474,6 +1474,9 @@
   .hunk-head.expandable {
     cursor: pointer;
   }
+  .hunks > .hunk-head:first-child {
+    border-top: 0;
+  }
   .hunk-head.expandable:hover {
     background: var(--hunk-hover);
     color: var(--text-dim);
@@ -1692,7 +1695,7 @@
   }
 
   .file {
-    border-color: var(--border);
+    border: 0;
     border-radius: 8px;
     margin-bottom: 24px;
     box-shadow: var(--shadow-surface);
@@ -1705,6 +1708,10 @@
     background: color-mix(in srgb, var(--surface) 62%, transparent);
     border-color: var(--border-soft);
     border-radius: 7px 7px 0 0;
+  }
+  .file.collapsed .file-head-row {
+    border-bottom: 0;
+    border-radius: 8px;
   }
   .file-head {
     min-height: 32px;

@@ -484,6 +484,26 @@ const scenarios = [
     route: `#/pr/${REPO}/101/files`,
     description: "Files tab with an ordinary three-file diff and inline threads.",
     ready: ".files-layout .diff",
+    verify: async (page) => {
+      const file = page.locator(".diff .file").first();
+      const expanded = await file.evaluate((node) => ({
+        border: getComputedStyle(node).borderTopWidth,
+        firstHunkBorder: getComputedStyle(node.querySelector(".hunk-head")).borderTopWidth,
+        shadow: getComputedStyle(node).boxShadow,
+      }));
+      if (expanded.border !== "0px") throw new Error(`diff card has a border in addition to its elevation: ${JSON.stringify(expanded)}`);
+      if (expanded.firstHunkBorder !== "0px") throw new Error(`first hunk duplicates the header divider: ${JSON.stringify(expanded)}`);
+      if (expanded.shadow === "none") throw new Error("diff card lost its design-system elevation");
+
+      await file.locator(".file-head").click();
+      await file.evaluate((node) => {
+        if (!node.classList.contains("collapsed")) throw new Error("file did not enter its collapsed state");
+        const divider = getComputedStyle(node.querySelector(".file-head-row")).borderBottomWidth;
+        if (divider !== "0px") throw new Error(`collapsed header keeps a duplicate bottom divider: ${divider}`);
+      });
+      await file.locator(".file-head").click();
+      await file.locator(".hunks").waitFor();
+    },
   },
   {
     name: "detail-range-picker",
