@@ -753,32 +753,33 @@ function openThreadLines(summary: PrAgentSummary, staleMarkers: string[]): strin
   return lines;
 }
 
-function formatPrAgentDigest(summary: PrAgentSummary, number: string, includeComments: boolean, staleMarkers: string[]): string {
-  const lines = [`# Pull Request #${number}: ${summary.title}`];
-  if (summary.snapshot) {
-    const { fetchedAt, freshness, newerActivityAt } = summary.snapshot;
-    if (freshness === "outdated") lines.push("", `Cached snapshot: OUTDATED · ${snapshotAge(fetchedAt)} old · ${fetchedAt}`);
-    if (newerActivityAt) lines.push(`Known newer activity: webhook received ${newerActivityAt}. This snapshot does not include that activity.`);
+function formatPrAgentDigest(summary: PrAgentSummary, includeComments: boolean, staleMarkers: string[]): string {
+  const lines: string[] = [];
+  if (summary.snapshot?.freshness === "outdated") {
+    lines.push(`Cached snapshot: OUTDATED · ${snapshotAge(summary.snapshot.fetchedAt)} old · ${summary.snapshot.fetchedAt}`);
+    if (summary.snapshot.newerActivityAt) lines.push(`Known newer activity: webhook received ${summary.snapshot.newerActivityAt}.`);
   }
-  lines.push("", `Review: ${summary.review} · CI: ${summary.ci.state}`);
   const attention = summary.ci.checks.filter((check) => check.state === "failed" || check.state === "cancelled");
-  for (const check of attention) {
-    const log = check.logBytes === null ? "" : ` · log cached (${Math.max(1, Math.round(check.logBytes / 1024))} KB)`;
-    lines.push(`- ${check.state.toUpperCase()}${check.required ? " required" : ""}: ${check.name}${log}`);
-  }
-  if (attention.some((check) => check.logBytes !== null)) {
-    lines.push(`Read a cached log with \`pr-cockpit ${summary.ref} --logs [check name]\`.`);
-  }
-  if (includeComments) {
-    if (summary.newComments.length > 0) {
-      lines.push("", `## New Comments Since ${summary.newCommentsSince}`, "", ...summary.newComments.map(newCommentLine));
-    } else if (summary.openComments.length > 0) {
-      lines.push("", "## Open Review Comments", "", ...openThreadLines(summary, staleMarkers));
-    } else if (summary.newCommentsSince) {
-      lines.push("", `## New Comments Since ${summary.newCommentsSince}`, "", "_No new comments._");
+  if (attention.length > 0) {
+    lines.push(`CI: ${summary.ci.state}`);
+    for (const check of attention) {
+      const log = check.logBytes === null ? "" : ` · log cached (${Math.max(1, Math.round(check.logBytes / 1024))} KB)`;
+      lines.push(`- ${check.state.toUpperCase()}${check.required ? " required" : ""}: ${check.name}${log}`);
+    }
+    if (attention.some((check) => check.logBytes !== null)) {
+      lines.push(`Read a cached log with \`pr-cockpit ${summary.ref} --logs [check name]\`.`);
     }
   }
-  lines.push("", `_Full state: \`pr-cockpit ${summary.ref}\`._`);
+  if (includeComments) {
+    const commentLines = summary.newComments.length > 0
+      ? summary.newComments.map(newCommentLine)
+      : summary.openComments.length > 0 ? openThreadLines(summary, staleMarkers) : [];
+    if (commentLines.length > 0) {
+      if (lines.length > 0) lines.push("");
+      lines.push(...commentLines);
+    }
+  }
+  if (lines.length === 0) lines.push(`No new comments. CI: ${summary.ci.state} · Review: ${summary.review}.`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -786,7 +787,7 @@ export function formatPrAgentSummary(summary: PrAgentSummary, options: AgentSumm
   const { comments: includeComments = true, body: includeBody = true, digest = false } = options;
   const number = summary.ref.slice(summary.ref.lastIndexOf("#") + 1);
   const staleMarkers = reviewBots().flatMap((bot) => bot.staleMarker ? [bot.staleMarker] : []);
-  if (digest) return formatPrAgentDigest(summary, number, includeComments, staleMarkers);
+  if (digest) return formatPrAgentDigest(summary, includeComments, staleMarkers);
   const lines = [
     `# Pull Request #${number}: ${summary.title}`,
     "",

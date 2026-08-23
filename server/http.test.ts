@@ -470,7 +470,7 @@ describe("agent PR summary", () => {
     expect(output).not.toContain("Handle the DST boundary.");
   });
 
-  test("digest renders title, status, and new comments without header or body boilerplate", () => {
+  test("digest renders only the delta: new comments plus failing checks", () => {
     const since = "2026-07-22T10:00:00Z";
     const output = formatPrAgentSummary(buildPrAgentSummary("example-org/webapp#6133", detail, null, since, [{
       kind: "review comment",
@@ -483,22 +483,24 @@ describe("agent PR summary", () => {
       url: "https://github.com/example-org/webapp/pull/6133#discussion_r1",
     }]), { digest: true });
 
-    expect(output).toContain("# Pull Request #6133");
-    expect(output).toContain("Review:");
-    expect(output).toContain(`## New Comments Since ${since}`);
     expect(output).toContain("- @reviewer · review comment · `src/calendar.ts:42`: Keep this bounded.");
-    expect(output).toContain("_Full state: `pr-cockpit example-org/webapp#6133`._");
-    expect(output).not.toContain("## Body");
-    expect(output).not.toContain("State:");
+    expect(output).toContain("CI: PENDING");
+    expect(output).toContain("- FAILED required: deploy");
+    expect(output).toContain("- CANCELLED: browser");
+    expect(output).not.toContain("# Pull Request");
+    expect(output).not.toContain("## ");
+    expect(output).not.toContain("Full state");
+    expect(output).not.toContain("State: OPEN");
+    expect(output).not.toContain("- PASSED");
     expect(output).not.toContain("Quota:");
-    expect(output).not.toContain("Checks:");
   });
 
   test("digest falls back to open review threads when no new comments arrived", () => {
     const output = formatPrAgentSummary(buildPrAgentSummary("example-org/webapp#6133", detail, null, "2026-07-22T10:00:00Z", []), { digest: true });
 
-    expect(output).toContain("## Open Review Comments");
+    expect(output).toContain("Handle the DST boundary.");
     expect(output).not.toContain("_No new comments._");
+    expect(output).not.toContain("## Open Review Comments");
   });
 
 
