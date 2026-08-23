@@ -108,7 +108,7 @@
     color: color-mix(in srgb, var(--text-dim) 80%, transparent);
     font-family: system-ui, -apple-system, sans-serif;
     font-size: 11px;
-    font-weight: 500;
+    font-weight: 400;
     font-variant-numeric: tabular-nums;
     line-height: 1;
     white-space: nowrap;

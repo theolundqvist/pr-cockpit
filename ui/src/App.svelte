@@ -169,7 +169,7 @@
       <nav class="app-nav" aria-label={route.name === "settings" ? "Settings navigation" : "Cockpit navigation"}>
         {#if route.name === "settings"}
           <a class="nav-item settings-back" href="#/">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="m14.5 6-6 6 6 6" />
             </svg>
             <span>Back to inbox</span>
@@ -182,7 +182,7 @@
               href={settingsSectionHref(section.id)}
               aria-current={route.section === section.id ? "page" : undefined}
             >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 {#each section.iconPaths as path}
                   <path d={path} />
                 {/each}
@@ -198,14 +198,14 @@
           href="#/"
           aria-current={route.name === "inbox" || route.name === "detail" ? "page" : undefined}
         >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M4.5 5.5h15v13h-15z" />
             <path d="M4.5 11.5h4l1.5 2h4l1.5-2h4" />
           </svg>
           <span>Inbox</span>
         </a>
         <button class="nav-item nav-command" type="button" onclick={openPalette}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
             <circle cx="10.5" cy="10.5" r="5.5" />
             <path d="m15 15 4 4" />
           </svg>
@@ -220,7 +220,7 @@
           href="#/settings"
           aria-current={route.name === "settings" ? "page" : undefined}
         >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="12" cy="12" r="3" />
             <path transform="translate(-1.43 -0.5)" d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2 2-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.04 1.56V20.2h-2.8v-.1A1.7 1.7 0 0 0 11 18.54a1.7 1.7 0 0 0-1.88.34l-.06.06-2-2 .06-.06A1.7 1.7 0 0 0 7.46 15a1.7 1.7 0 0 0-1.56-1.04h-.1v-2.8h.1A1.7 1.7 0 0 0 7.46 10a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2-2 .06.06A1.7 1.7 0 0 0 11 6.46a1.7 1.7 0 0 0 1.04-1.56v-.1h2.8v.1A1.7 1.7 0 0 0 15.88 6.46a1.7 1.7 0 0 0 1.88-.34l.06-.06 2 2-.06.06A1.7 1.7 0 0 0 19.4 10a1.7 1.7 0 0 0 1.56 1.04h.1v2.8h-.1A1.7 1.7 0 0 0 19.4 15Z" />
           </svg>
@@ -265,7 +265,7 @@
       {:else if reposConfigured === false}
         <Onboarding onDone={finishSetup} />
       {:else if reposConfigured}
-        <Inbox refreshRevision={inboxRevision} {pollCompletedAt} />
+        <Inbox refreshRevision={inboxRevision} {pollCompletedAt} onFindPr={openPalette} />
       {:else}
         <div class="app-loading" role="status" aria-live="polite">
           <span class="app-loading-mark" aria-hidden="true"></span>
@@ -377,7 +377,7 @@
     align-items: center;
     width: 100%;
     min-height: 34px;
-    gap: 10px;
+    gap: 9px;
     padding: 0 10px;
     border: 0;
     border-radius: var(--radius-sm);
@@ -385,7 +385,7 @@
     color: var(--text-dim);
     font-family: var(--sans);
     font-size: 14px;
-    font-weight: 500;
+    font-weight: 400;
     line-height: 1;
     text-align: left;
     text-decoration: none;
@@ -393,8 +393,8 @@
 
   .nav-item svg {
     flex: none;
-    width: 16px;
-    height: 16px;
+    width: 18px;
+    height: 18px;
     color: var(--text-faint);
   }
 
@@ -406,6 +406,7 @@
   .nav-item.active {
     background: var(--surface-hover);
     color: var(--text);
+    font-weight: 500;
     box-shadow: none;
   }
 

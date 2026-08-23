@@ -61,13 +61,11 @@
     onkeydown={handleKeydown}
   >
     <div class="decision-header">
-      <span class="decision-mark" aria-hidden="true">
-        {#if force}
-          <svg viewBox="0 0 16 16"><path d="M8 2.2 14 13H2L8 2.2Z"></path><path d="M8 6v3.2m0 1.8v.1"></path></svg>
-        {:else}
+      {#if !force}
+        <span class="decision-mark" aria-hidden="true">
           <svg viewBox="0 0 16 16"><path d="M4 4.5h4.5a3 3 0 0 1 3 3v4"></path><path d="m8.8 9.3 2.7 2.7 2.7-2.7"></path><circle cx="3.3" cy="4.5" r="1.3"></circle></svg>
-        {/if}
-      </span>
+        </span>
+      {/if}
       <div>
         <div class="decision-eyebrow">{force ? "Bypass approval rule" : "Merge pull request"}</div>
         <h2 id={titleId}>{force ? "Force-merge" : "Merge"} pull request #{number}?</h2>
@@ -106,7 +104,7 @@
       </button>
       <button class="decision-button primary" class:danger={force} type="button" aria-label={force ? "Force-merge pull request" : "Merge pull request"} data-primary onclick={onConfirm}>
         <span>{force ? "Force-merge" : "Merge pull request"}</span>
-        <Kbd keys="enter" />
+        {#if !force}<Kbd keys="enter" />{/if}
       </button>
     </div>
   </div>
@@ -166,11 +164,6 @@
     color: var(--link);
   }
 
-  .force .decision-mark {
-    background: var(--fail-bg);
-    color: var(--fail);
-  }
-
   .decision-mark svg {
     width: 18px;
     height: 18px;
@@ -187,6 +180,10 @@
     font-family: var(--sans);
     font-size: 12px;
     font-weight: 550;
+  }
+
+  .force .decision-eyebrow {
+    font-weight: 400;
   }
 
   h2 {
@@ -282,21 +279,21 @@
 
   .decision-button {
     display: inline-flex;
-    min-height: 34px;
+    min-height: 32px;
     align-items: center;
     justify-content: center;
-    gap: 9px;
-    padding: 0 11px 0 14px;
+    gap: 8px;
+    padding: 0 13px;
     border: 0;
-    border-radius: 8px;
+    border-radius: 999px;
     font-family: var(--sans);
-    font-size: 13px;
-    font-weight: 550;
+    font-size: 14px;
+    font-weight: 500;
     box-shadow: var(--shadow-control-outlined);
   }
 
   .decision-button.secondary {
-    background: var(--panel);
+    background: var(--surface);
     color: var(--text);
   }
 
@@ -308,7 +305,7 @@
 
   .decision-button.primary.danger {
     background: var(--fail);
-    color: var(--panel);
+    color: var(--on-brand);
   }
 
   @media (hover: hover) and (pointer: fine) {

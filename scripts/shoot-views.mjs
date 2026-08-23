@@ -38,10 +38,11 @@ const scenarios = [
       }));
     },
     ready: ".inbox-layout .queue-group",
-    interact: async (page) => page.keyboard.press("Meta+K"),
+    interact: async (page) => page.getByRole("button", { name: /Find a pull request/ }).click(),
     verify: async (page) => {
       const palette = page.locator(".palette:not(.standalone)");
       await palette.waitFor();
+      if (new URL(page.url()).hash !== "#/") throw new Error(`quick action navigated away from the inbox: ${page.url()}`);
       const material = await palette.evaluate((node) => ({
         theme: document.documentElement.dataset.theme,
         scrim: getComputedStyle(node.parentElement).backgroundColor,

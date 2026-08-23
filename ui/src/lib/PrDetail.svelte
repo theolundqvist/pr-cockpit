@@ -1042,10 +1042,10 @@
 
   let ci = $derived.by(() => {
     const s = rollup?.state;
-    if (s === "SUCCESS") return { icon: "success", tone: "ready", text: "CI passing" };
-    if (s === "FAILURE" || s === "ERROR") return { icon: "failure", tone: "fail", text: "CI failing" };
-    if (s === "PENDING") return { icon: "pending", tone: "wait", text: "CI running" };
-    return { icon: "neutral", tone: "wait", text: "no CI" };
+    if (s === "SUCCESS") return { icon: "success", tone: "ready", text: "All checks passed" };
+    if (s === "FAILURE" || s === "ERROR") return { icon: "failure", tone: "fail", text: "Checks failed" };
+    if (s === "PENDING") return { icon: "pending", tone: "wait", text: "Checks running" };
+    return { icon: "neutral", tone: "wait", text: "No checks" };
   });
 
   let ciDetail = $derived.by(() => {
@@ -1053,11 +1053,11 @@
     const passed = checkCounts.success ?? 0;
     const failing = checkCounts.failing ?? 0;
     const pending = (checkCounts.queued ?? 0) + (checkCounts.expected ?? 0) + (checkCounts.in_progress ?? 0);
-    if (rollup?.state === "SUCCESS") return total ? `${passed} of ${total} checks passed` : "All reported checks passed";
+    if (rollup?.state === "SUCCESS") return total ? `${total} check${total === 1 ? "" : "s"}` : "Complete";
     if (rollup?.state === "FAILURE" || rollup?.state === "ERROR") {
       return `${failing || 1} failing${passed ? ` · ${passed} passed` : ""}`;
     }
-    if (rollup?.state === "PENDING") return `${pending || total} check${(pending || total) === 1 ? "" : "s"} still running`;
+    if (rollup?.state === "PENDING") return `${pending || total} check${(pending || total) === 1 ? "" : "s"} remaining`;
     return "No checks have been reported";
   });
 
@@ -2089,7 +2089,10 @@
             <div class="ci-summary {ci.tone}" role="status" aria-label={`${ci.text}. ${ciDetail}`}>
               <span class="ci-summary-icon" aria-hidden="true">
                 {#if ci.icon === "success"}
-                  <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"></circle><path d="m4.8 8 2 2 4.4-4.4"></path></svg>
+                  <svg class="status-success" viewBox="0 0 14 14">
+                    <circle cx="7" cy="7" r="6.5"></circle>
+                    <path d="m3.9 7.1 2 2 4.25-4.25"></path>
+                  </svg>
                 {:else if ci.icon === "failure"}
                   <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"></circle><path d="m5.5 5.5 5 5m0-5-5 5"></path></svg>
                 {:else if ci.icon === "pending"}
@@ -2098,7 +2101,7 @@
                   <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"></circle><path d="M5.5 8h5"></path></svg>
                 {/if}
               </span>
-              <strong>{ci.text}</strong>
+              <span class="ci-summary-label">{ci.text}</span>
               <span class="ci-summary-detail">{ciDetail}</span>
             </div>
           {/if}
@@ -4481,41 +4484,68 @@
   .ci-summary {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    min-height: 26px;
+    gap: 7px;
+    min-height: 28px;
     margin-left: auto;
-    padding: 0 9px;
-    border: 1px solid var(--border);
+    padding: 0 10px 0 7px;
+    border: 0;
     border-radius: 999px;
     background: var(--surface);
-    font-size: 11px;
+    color: var(--text-dim);
+    box-shadow: var(--shadow-control-hairline);
+    font-size: 12px;
     white-space: nowrap;
   }
-  .ci-summary.ready {
-    color: var(--ready);
-    border-color: color-mix(in srgb, var(--ready) 35%, var(--border));
-    background: var(--ready-bg);
-  }
-  .ci-summary.fail {
-    color: var(--fail);
-    border-color: color-mix(in srgb, var(--fail) 40%, var(--border));
-    background: var(--fail-bg);
-  }
-  .ci-summary.wait {
-    color: var(--wait);
-    background: var(--wait-bg);
-  }
   .ci-summary-icon {
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 16px;
+    height: 16px;
+    color: var(--text-faint);
   }
-  .ci-summary strong {
-    font-weight: 650;
+  .ci-summary.ready .ci-summary-icon {
+    color: var(--ready);
+  }
+  .ci-summary.fail .ci-summary-icon {
+    color: var(--native-red);
+  }
+  .ci-summary-icon svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .ci-summary-icon .status-success circle {
+    fill: currentColor;
+    stroke: none;
+  }
+  .ci-summary-icon .status-success path {
+    stroke: var(--native-on-accent);
+    stroke-width: 1.4;
+  }
+  .ci-summary-label {
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 400;
   }
   .ci-summary-detail {
-    color: var(--text-dim);
-    font-size: 9.5px;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--text-faint);
+    font-size: 10.5px;
+  }
+  .ci-summary-detail::before {
+    width: 2px;
+    height: 2px;
+    border-radius: 50%;
+    background: currentColor;
+    content: "";
   }
   .ci-failure-alert {
     margin-top: 12px;
@@ -5269,10 +5299,10 @@
     stroke-linecap: round;
     stroke-linejoin: round;
   }
-  .ci-summary strong {
+  .ci-summary-label {
     font-size: 13px;
-    font-weight: 650;
-    letter-spacing: -0.005em;
+    font-weight: 400;
+    letter-spacing: 0;
   }
   .ci-summary-detail {
     margin-left: 1px;

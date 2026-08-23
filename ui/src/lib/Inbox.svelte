@@ -23,7 +23,7 @@
   import CurrentBranchBadge from "./CurrentBranchBadge.svelte";
   import Kbd from "./Kbd.svelte";
 
-  let { refreshRevision = 0, pollCompletedAt = null } = $props();
+  let { refreshRevision = 0, pollCompletedAt = null, onFindPr = () => {} } = $props();
   let handledRefreshRevision = refreshRevision;
 
   let prs = $state([]);
@@ -1067,7 +1067,7 @@
       <aside class="queue-sidecar">
         <section class="side-panel quick-actions-panel">
           <div class="side-panel-head"><span>Quick actions</span></div>
-          <button class="quick-action" type="button" onclick={() => (location.hash = "#/palette")}>
+          <button class="quick-action" type="button" onclick={onFindPr}>
             <span class="quick-action-icon" aria-hidden="true">
               <svg viewBox="0 0 20 20" fill="none">
                 <circle cx="8.75" cy="8.75" r="4.75"></circle>
