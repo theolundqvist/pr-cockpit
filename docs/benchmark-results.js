@@ -4,10 +4,10 @@ window.PR_COCKPIT_BENCHMARKS = {
     "machine": "Apple M4 Max",
     "browser": "Chromium 149.0.7827.55",
     "viewport": "1100×800",
-    "runs": 20,
+    "runs": 12,
     "warmups": 3,
     "dataset": "15 public microsoft/vscode PRs",
-    "cache": "15 PRs rotated through 20 measured runs after 3 initial warmups, so this sample mixes first visits and revisits; PR Cockpit reads its warm local disk cache while GitHub uses the current network connection",
+    "cache": "Each of the 12 measured runs opens a distinct microsoft/vscode PR that no earlier warmup or run had opened, so every sample is a cold first open; PR Cockpit reads its warm local disk cache while GitHub uses the current network connection",
     "note": "The search metric is measured separately; see searchEnvironment"
   },
   "metrics": [
@@ -16,8 +16,8 @@ window.PR_COCKPIT_BENCHMARKS = {
       "label": "Open a PR",
       "cockpit": {
         "unit": "ms",
-        "p50": 18.5,
-        "p95": 29,
+        "p50": 19.8,
+        "p95": 42,
         "definition": "Inbox row to painted PR detail",
         "samples": [
           20.7,
@@ -31,21 +31,13 @@ window.PR_COCKPIT_BENCHMARKS = {
           14.3,
           29,
           16.4,
-          20.3,
-          14.8,
-          20.6,
-          16,
-          15.2,
-          17.7,
-          19.7,
-          15.8,
-          23.4
+          20.3
         ]
       },
       "github": {
         "unit": "ms",
-        "p50": 1172.2,
-        "p95": 1751.4,
+        "p50": 1421.3,
+        "p95": 2022,
         "definition": "Pull-request result to painted PR detail",
         "samples": [
           1355,
@@ -59,22 +51,14 @@ window.PR_COCKPIT_BENCHMARKS = {
           1440,
           2022,
           1231.7,
-          1152.3,
-          166.6,
-          197.3,
-          228.4,
-          239.1,
-          215.9,
-          249.5,
-          232.3,
-          268.4
+          1152.3
         ]
       },
-      "speedup": 63.4,
+      "speedup": 71.8,
       "cursorOrigin": {
         "available": true,
         "unit": "ms",
-        "p50": 1176.7,
+        "p50": 1166.8,
         "p95": 1502.7,
         "definition": "Origin PR #8105 list row to first painted PR detail",
         "samples": [
@@ -89,15 +73,7 @@ window.PR_COCKPIT_BENCHMARKS = {
           1176.7,
           1134.7,
           1287.4,
-          1384.4,
-          1412.2,
-          1285.7,
-          1033.6,
-          1457.6,
-          1148.4,
-          1193.5,
-          1085.2,
-          1512.9
+          1384.4
         ]
       }
     },
@@ -106,7 +82,7 @@ window.PR_COCKPIT_BENCHMARKS = {
       "label": "Search PRs",
       "cockpit": {
         "unit": "ms",
-        "p50": 47.4,
+        "p50": 49.1,
         "p95": 74,
         "definition": "⌘K palette open, query applied, to painted scape#8133 result",
         "samples": [
@@ -121,21 +97,13 @@ window.PR_COCKPIT_BENCHMARKS = {
           51.4,
           39,
           74,
-          46.4,
-          53.4,
-          47.4,
-          39,
-          35.3,
-          40.5,
-          77.8,
-          47.5,
-          46.3
+          46.4
         ]
       },
       "github": {
         "unit": "ms",
-        "p50": 844.9,
-        "p95": 994.7,
+        "p50": 839.2,
+        "p95": 994.6,
         "definition": "Load the repo-scoped pull-request search URL for the same query to first painted result",
         "samples": [
           839.2,
@@ -149,18 +117,10 @@ window.PR_COCKPIT_BENCHMARKS = {
           793.3,
           879.7,
           907,
-          994.6,
-          994.7,
-          1053.7,
-          752.4,
-          822.6,
-          844.9,
-          916.2,
-          872.2,
-          783
+          994.6
         ]
       },
-      "speedup": 17.8,
+      "speedup": 17.1,
       "cursorOrigin": {
         "available": false,
         "reason": "Cursor Origin exposes PR filters but no comparable PR word-search interaction"
@@ -171,8 +131,8 @@ window.PR_COCKPIT_BENCHMARKS = {
       "label": "Open a diff",
       "cockpit": {
         "unit": "ms",
-        "p50": 34.3,
-        "p95": 82.1,
+        "p50": 41.1,
+        "p95": 86.4,
         "definition": "Files click to painted cached diff",
         "samples": [
           25.5,
@@ -186,21 +146,13 @@ window.PR_COCKPIT_BENCHMARKS = {
           53.7,
           47.6,
           40.8,
-          41.1,
-          82.1,
-          32.8,
-          25.6,
-          25.5,
-          27.4,
-          30.8,
-          34.3,
-          27
+          41.1
         ]
       },
       "github": {
         "unit": "ms",
-        "p50": 1442.9,
-        "p95": 2145.7,
+        "p50": 1486.6,
+        "p95": 2345.3,
         "definition": "Files changed click to painted GitHub diff",
         "samples": [
           1086.3,
@@ -214,23 +166,15 @@ window.PR_COCKPIT_BENCHMARKS = {
           1690.7,
           2345.3,
           1377.7,
-          2145.7,
-          1323.1,
-          1733.5,
-          1504,
-          1442.9,
-          1442.7,
-          975.3,
-          1179,
-          1576.2
+          2145.7
         ]
       },
-      "speedup": 42.1,
+      "speedup": 36.2,
       "cursorOrigin": {
         "available": true,
         "unit": "ms",
-        "p50": 924.9,
-        "p95": 1384.3,
+        "p50": 794.3,
+        "p95": 1245.2,
         "definition": "Origin PR #8105 Changes tab to first painted diff line",
         "samples": [
           589.8,
@@ -244,15 +188,7 @@ window.PR_COCKPIT_BENCHMARKS = {
           789.7,
           794.3,
           923.8,
-          1245.2,
-          1480.4,
-          1108.3,
-          1090.3,
-          1309.2,
-          1384.3,
-          815.8,
-          1180.5,
-          1245
+          1245.2
         ]
       }
     }
@@ -262,7 +198,7 @@ window.PR_COCKPIT_BENCHMARKS = {
     "machine": "Apple M4 Max",
     "browser": "Chrome/152.0.7929.0",
     "viewport": "1291×1327",
-    "runs": 20,
+    "runs": 12,
     "warmups": 3,
     "auth": "One signed-in visible Chromium drives both products",
     "dataset": "PR Cockpit global cache and GitHub's scape-app/scape pull-request list receive the query \"remove harness efficiency\"; Cockpit requires scape-app/scape#8133",
@@ -277,7 +213,7 @@ window.PR_COCKPIT_BENCHMARKS = {
     "machine": "Apple M4 Max",
     "browser": "Chrome/152.0.7929.0",
     "viewport": "1100×800",
-    "runs": 20,
+    "runs": 12,
     "warmups": 3,
     "auth": "Authenticated isolated Chromium profile",
     "dataset": "scape-app/scape staging; representative open PR #8105",
@@ -295,7 +231,7 @@ window.PR_COCKPIT_BENCHMARKS = {
   },
   "renderBenchmark": {
     "id": "pr-render",
-    "label": "Render a huge PR",
+    "label": "Open a huge PR",
     "boundary": "Pull-request list row for #8132 to painted detail: title, first conversation body, no loading indicator",
     "cockpit": {
       "available": true,

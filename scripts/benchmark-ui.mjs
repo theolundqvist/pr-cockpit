@@ -9,7 +9,10 @@ import { chromium } from "playwright";
 const ROOT = resolve(import.meta.dirname, "..");
 const SNAPSHOT_DIR = resolve(ROOT, "server/mockData/microsoft-vscode");
 const VIEWPORT = { width: 1100, height: 800 };
-const RUNS = 20;
+// Must stay <= (fixture PRs - WARMUPS) so no measured run reopens a warmed PR:
+// a revisit is served from the client snapshot cache and paints in ~0.2s, which
+// mixes a fast cache-hit cluster into the cold "open a PR" numbers. 15 PRs - 3 = 12.
+const RUNS = 12;
 const WARMUPS = 3;
 
 const delay = (milliseconds) => new Promise((done) => setTimeout(done, milliseconds));
