@@ -116,7 +116,9 @@ For SSH access, leave TCP port 4820 closed and tunnel it instead:
 ssh -N -L 4820:127.0.0.1:4820 user@host
 ```
 
-Then open `http://127.0.0.1:4820`. For browser access through Tailscale Serve or Cloudflare Access, add each exact external origin to the comma-separated `COCKPIT_ALLOWED_ORIGINS` value in `server.env` (for example, `COCKPIT_ALLOWED_ORIGINS="https://cockpit.example.ts.net,https://cockpit.example.com"`) and restart the service. Tailscale Serve in front of the loopback service is preferred; never bind PR Cockpit publicly or expose port 4820.
+Then open `http://127.0.0.1:4820`.
+
+For phone access, keep the loopback binding and put a mesh VPN in front of it. A VPN whose agent runs on the same host reaches `127.0.0.1:4820` directly, so nothing has to listen on a public address. With Twingate, install a Connector on the host and define a Resource with address `127.0.0.1`, an alias, and TCP restricted to port `4820`; Tailscale Serve and Cloudflare Access work the same way. Add each exact browser origin to the comma-separated `COCKPIT_ALLOWED_ORIGINS` value in `server.env` (for example, `COCKPIT_ALLOWED_ORIGINS="http://cockpit.example.internal:4820"`) and restart the service, because unsafe requests and the event socket reject untrusted origins. Never bind PR Cockpit publicly or open port 4820.
 
 ## Start in four steps
 
