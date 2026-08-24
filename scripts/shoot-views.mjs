@@ -397,7 +397,12 @@ const scenarios = [
       await page.keyboard.press("Shift+M");
       await page.getByRole("alertdialog", { name: "Force-merge pull request #112?" }).waitFor();
     },
-    verify: async (page) => page.getByText("Required approvals will be bypassed.", { exact: false }).waitFor(),
+    verify: async (page) => {
+      const dialog = page.getByRole("alertdialog", { name: "Force-merge pull request #112?" });
+      await dialog.getByText("Source", { exact: true }).waitFor();
+      if (await dialog.getByText("Bypass approval rule", { exact: true }).count()) throw new Error("force-merge eyebrow is still visible");
+      if (await dialog.getByText("Required approvals will be bypassed.", { exact: false }).count()) throw new Error("force-merge explanation is still visible");
+    },
   },
   {
     ...detail("detail-conversation-conflicts", 103, "PR with exact conflict paths and an agent resolution action."),

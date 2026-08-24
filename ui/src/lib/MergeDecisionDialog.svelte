@@ -55,7 +55,7 @@
     role="alertdialog"
     aria-modal="true"
     aria-labelledby={titleId}
-    aria-describedby={descriptionId}
+    aria-describedby={force ? undefined : descriptionId}
     tabindex="-1"
     use:manageDialogFocus
     onkeydown={handleKeydown}
@@ -66,19 +66,14 @@
           <svg viewBox="0 0 16 16"><path d="M4 4.5h4.5a3 3 0 0 1 3 3v4"></path><path d="m8.8 9.3 2.7 2.7 2.7-2.7"></path><circle cx="3.3" cy="4.5" r="1.3"></circle></svg>
         </span>
       {/if}
-      <div>
-        <div class="decision-eyebrow">{force ? "Bypass approval rule" : "Merge pull request"}</div>
-        <h2 id={titleId}>{force ? "Force-merge" : "Merge"} pull request #{number}?</h2>
-      </div>
+      <h2 id={titleId}>{force ? "Force-merge" : "Merge"} pull request #{number}?</h2>
     </div>
 
-    <p id={descriptionId} class="decision-copy">
-      {#if force}
-        Required approvals will be bypassed. Confirm that this pull request is ready to merge.
-      {:else}
+    {#if !force}
+      <p id={descriptionId} class="decision-copy">
         This will merge <strong>{title}</strong> into <strong>{baseRef}</strong>.
-      {/if}
-    </p>
+      </p>
+    {/if}
 
     <div class="merge-route" aria-label={`${headRef} into ${baseRef}`}>
       <div class="route-branch">
@@ -172,18 +167,6 @@
     stroke-linecap: round;
     stroke-linejoin: round;
     stroke-width: 1.5;
-  }
-
-  .decision-eyebrow {
-    margin-bottom: 3px;
-    color: var(--text-dim);
-    font-family: var(--sans);
-    font-size: 12px;
-    font-weight: 550;
-  }
-
-  .force .decision-eyebrow {
-    font-weight: 400;
   }
 
   h2 {
