@@ -2164,7 +2164,6 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       parts[2] === "pr" &&
       parts[6] === "actions-lease"
     ) {
-      const trustedCliHost = /^(?:127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(req.headers.get("host") ?? url.host);
       if (!trustedCliHost || req.headers.get("x-pr-cockpit-cli") !== "1") {
         return json({ error: "trusted CLI request required" }, 403);
       }
