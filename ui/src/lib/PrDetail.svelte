@@ -634,6 +634,7 @@
 
   let mergeMutation = $derived(mutations.find((m) => m.kind === "merge"));
   let mergeMethodLabel = $derived(pr.mergeMethod === "merge" ? "merge commit" : pr.mergeMethod ?? "squash");
+  let mergeActionMethodLabel = $derived(pr.mergeMethod === "merge" ? "commit" : pr.mergeMethod ?? "squash");
   let mergeConfirm = $state(false);
   let forceMergeConfirm = $state(false);
   let closeConfirm = $state(false);
@@ -2643,7 +2644,7 @@
                         <path d="M6 8.5V13a5 5 0 0 0 5 5h4.5"></path>
                       </svg>
                       <span>Merge</span>
-                      <span class="action-method">{mergeMethodLabel}</span>
+                      <span class="action-method">{mergeActionMethodLabel}</span>
                       {#if enabled}<Kbd keys="m" />{/if}
                     {/snippet}
                     {#snippet menu()}
