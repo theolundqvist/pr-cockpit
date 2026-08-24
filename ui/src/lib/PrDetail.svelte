@@ -1346,6 +1346,14 @@
     (pr?.reviewThreads.nodes ?? []).filter((t) => !t.isResolved).length,
   );
   let prIsGreen = $derived(mergeGate.action === "merge" && unresolvedTotal === 0);
+  let autofixDef = $derived(keybindAgents.find((a) => a.id === "autofix"));
+  let fixShortcutTarget = $derived.by(() => {
+    if (!autofixDef || agent?.state === "running") return null;
+    if (failingChecks.length && !ciFixBusy) return "ci";
+    if (hasConflicts && conflictFilesState === "ready" && !conflictResolveBusy) return "conflict";
+    if (!prIsGreen && !autofixBusy) return "autofix";
+    return null;
+  });
 
   const reviewTone = (state) =>
     state === "APPROVED"
@@ -1884,6 +1892,10 @@
         promptOpen = true;
       } else if (tab === "conversation" && e.key === "E" && pr.body && !editingBody && !editBodyMutation) {
         startEditBody();
+      } else if (autofixDef?.keybind === e.key && fixShortcutTarget) {
+        if (fixShortcutTarget === "ci") ciFixConfirm = true;
+        else if (fixShortcutTarget === "conflict") conflictResolveConfirm = true;
+        else autofixConfirm = true;
       } else if (keybindAgents.some((a) => a.keybind === e.key)) {
         const def = keybindAgents.find((a) => a.keybind === e.key);
         if (def.id === "fixer") {
@@ -2178,11 +2190,12 @@
                   {ciCopied.value ? "Copied" : "Copy fix prompt"}
                 </button>
                 <button
-                  class="ci-agent-button"
+                  class="ci-agent-button shortcut-action"
                   disabled={ciFixBusy || agent?.state === "running"}
                   onclick={() => (ciFixConfirm = true)}
                 >
                   {ciFixBusy ? "Starting…" : agent?.state === "running" ? "Agent running" : "Fix with agent"}
+                  {#if fixShortcutTarget === "ci"}<Kbd keys={autofixDef.keybind} />{/if}
                 </button>
               </div>
             </div>
@@ -2225,11 +2238,12 @@
                     {conflictCopied.value ? "Copied" : "Copy fix prompt"}
                   </button>
                   <button
-                    class="conflict-primary"
+                    class="conflict-primary shortcut-action"
                     disabled={conflictResolveBusy || agent?.state === "running"}
                     onclick={() => (conflictResolveConfirm = true)}
                   >
                     {conflictResolveBusy ? "Starting…" : agent?.state === "running" ? "Agent running" : "Fix with agent"}
+                    {#if fixShortcutTarget === "conflict"}<Kbd keys={autofixDef.keybind} />{/if}
                   </button>
                 </div>
               {/if}
@@ -2739,8 +2753,8 @@
               {#if !prIsGreen}
                 <button class="btn wide shortcut-action" disabled={autofixBusy || agent?.state === "running"} onclick={() => (autofixConfirm = true)}>
                   {autofixBusy ? "Starting…" : "Auto-fix"}
-                  {#if !autofixBusy && agent?.state !== "running" && keybindAgents.some((a) => a.id === "autofix")}
-                    <Kbd keys={keybindAgents.find((a) => a.id === "autofix").keybind} />
+                  {#if fixShortcutTarget === "autofix"}
+                    <Kbd keys={autofixDef.keybind} />
                   {/if}
                 </button>
               {/if}

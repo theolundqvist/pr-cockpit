@@ -1,7 +1,5 @@
 <script>
   import { history, goBack, goForward } from "./history.svelte.js";
-  import { isTypingTarget } from "./dom.js";
-  import Kbd from "./Kbd.svelte";
 
   let { backFallback = null } = $props();
 
@@ -10,21 +8,6 @@
     else if (history.canBack) goBack();
   }
 
-  $effect(() => {
-    function onKey(e) {
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (isTypingTarget(e.target)) return;
-      if (e.key === "H") {
-        navigateBack();
-        e.preventDefault();
-      } else if (e.key === "L") {
-        goForward();
-        e.preventDefault();
-      }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  });
 </script>
 
 <div class="histnav">
@@ -36,11 +19,9 @@
     aria-label={backFallback ? "Back to inbox" : "Back"}
   >
     <span aria-hidden="true">←</span>
-    {#if history.canBack || backFallback}<Kbd keys={["shift", "h"]} />{/if}
   </button>
   <button class="arrow" disabled={!history.canForward} onclick={goForward} title="Forward" aria-label="Forward">
     <span aria-hidden="true">→</span>
-    {#if history.canForward}<Kbd keys={["shift", "l"]} />{/if}
   </button>
 </div>
 
@@ -51,14 +32,11 @@
     -webkit-app-region: no-drag;
   }
   .arrow {
-    width: auto;
-    min-width: 28px;
+    width: 28px;
     height: 28px;
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 4px;
-    padding: 0 4px;
     background: none;
     border: none;
     border-radius: 6px;
