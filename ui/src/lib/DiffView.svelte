@@ -7,7 +7,7 @@
   import { getHighlighter, ensureTheme, langForPath, tokenizeLine } from "./highlight.js";
   import { renderMarkdown } from "./markdown.js";
   import { theme } from "./theme.svelte.js";
-  import { buildWholeFile, buildGapRows, fileUsesSplitLayout, hunkOldOffset, revertHunk, splitDiffRows } from "./diff.js";
+  import { buildWholeFile, buildGapRows, fileUsesSplitLayout, hunkOldOffset, revertChange, revertFile, splitDiffRows } from "./diff.js";
   import { fetchFileContents } from "./api.js";
   import { columnWithin, createDefinitionHover, tokenAtPoint } from "./wordAtPoint.js";
   import Chevron from "./Chevron.svelte";
@@ -208,12 +208,25 @@
     editMenu = { ...editMenu, x: (viewportX - rect.left) / scale, y: (viewportY - rect.top) / scale };
   }
 
+  function changedRowAt(hunk, lineEl) {
+    if (!hunk || !lineEl) return null;
+    const oldLine = Number(lineEl.dataset.oldLine);
+    const newLine = Number(lineEl.dataset.newLine);
+    const row = hunk.rows.find((candidate) =>
+      (Number.isInteger(oldLine) ? candidate.oldNum === oldLine : candidate.oldNum === null) &&
+      (Number.isInteger(newLine) ? candidate.newNum === newLine : candidate.newNum === null)
+    );
+    return row && (row.type !== "context" || row.wsOnly) ? row : null;
+  }
+
   function onEditContextMenu(event, file) {
     if (!editable || file.isBinary || file.isDeleted || fileEditor) return;
     const hunkNode = event.target.closest("[data-hunk-index]");
     const hunkIndex = Number(hunkNode?.dataset.hunkIndex);
     const hunk = !file.isNew && Number.isInteger(hunkIndex) ? file.hunks[hunkIndex] : null;
     const lineEl = event.target.closest(".line");
+    const changeRow = changedRowAt(hunk, lineEl);
+    const canRevertFile = !file.isNew && file.hunks.length > 0;
     const line = Number(lineEl?.dataset.newLine);
     const section = event.currentTarget.closest(".file");
     let placement = null;
@@ -222,11 +235,13 @@
       const column = code && event.clientX >= code.getBoundingClientRect().left ? columnAtPoint(code, event.clientX, event.clientY) : 0;
       placement = editPlacement(section, lineEl, column);
     }
-    if (!placement && !hunk) return;
+    if (!placement && !hunk && !canRevertFile) return;
     const selection = placement ? selectedEditRange(section, event) : null;
     const menu = {
       file,
       hunk,
+      changeRow,
+      canRevertFile,
       canEdit: !!placement,
       placement: placement
         ? selection
@@ -248,13 +263,23 @@
     startFileEdit(file, placement);
   }
 
-  function startContextRevert() {
-    if (!editMenu?.hunk) return;
-    const { file, hunk, placement } = editMenu;
+  function startContextRevertChange() {
+    if (!editMenu?.hunk || !editMenu.changeRow) return;
+    const { file, hunk, changeRow, placement } = editMenu;
     editMenu = null;
     startFileEdit(file, placement, {
-      apply: (content) => revertHunk(content, hunk),
-      message: `Revert hunk in ${file.path.split("/").pop()}`,
+      apply: (content) => revertChange(content, hunk, changeRow),
+      message: `Revert change in ${file.path.split("/").pop()}`,
+    });
+  }
+
+  function startContextRevertFile() {
+    if (!editMenu?.canRevertFile) return;
+    const { file, placement } = editMenu;
+    editMenu = null;
+    startFileEdit(file, placement, {
+      apply: (content) => revertFile(content, file),
+      message: `Revert file ${file.path.split("/").pop()}`,
     });
   }
 
@@ -897,6 +922,7 @@
     class:ws-only={row.wsOnly}
     class:comment-selected={isCommentSelected(file, row)}
     data-new-line={row.newNum ?? undefined}
+    data-old-line={row.oldNum ?? undefined}
     data-hunk-index={hunkIndex ?? undefined}
     title={row.wsOnly ? "whitespace-only change" : undefined}
   >
@@ -930,6 +956,7 @@
     class:ws-only={row?.wsOnly}
     class:comment-selected={row && (side === "right" || row.type === "del") && isCommentSelected(file, row)}
     data-new-line={row?.newNum ?? undefined}
+    data-old-line={row?.oldNum ?? undefined}
     data-hunk-index={hunkIndex ?? undefined}
     title={row?.wsOnly ? "whitespace-only change" : undefined}
   >
@@ -1176,9 +1203,13 @@
     >
       {#if editMenu.canEdit}
         <button role="menuitem" use:focusOnMount onclick={startContextEdit}>Edit here</button>
-        {#if editMenu.hunk}<button role="menuitem" onclick={startContextRevert}>Revert hunk</button>{/if}
-      {:else if editMenu.hunk}
-        <button role="menuitem" use:focusOnMount onclick={startContextRevert}>Revert hunk</button>
+        {#if editMenu.changeRow}<button role="menuitem" onclick={startContextRevertChange}>Revert change</button>{/if}
+        {#if editMenu.canRevertFile}<button role="menuitem" onclick={startContextRevertFile}>Revert file</button>{/if}
+      {:else if editMenu.changeRow}
+        <button role="menuitem" use:focusOnMount onclick={startContextRevertChange}>Revert change</button>
+        {#if editMenu.canRevertFile}<button role="menuitem" onclick={startContextRevertFile}>Revert file</button>{/if}
+      {:else if editMenu.canRevertFile}
+        <button role="menuitem" use:focusOnMount onclick={startContextRevertFile}>Revert file</button>
       {/if}
     </div>
   {/if}

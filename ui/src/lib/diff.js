@@ -220,7 +220,7 @@ export function hunkOldOffset(range) {
   return hunk ? hunk.oldStart - hunk.newStart : 0;
 }
 
-export function revertHunk(content, hunk) {
+function revertRows(content, hunk, first, last) {
   const range = parseHunkRange(hunk.range);
   if (!range) throw new Error("Couldn't read this hunk.");
 
@@ -228,19 +228,52 @@ export function revertHunk(content, hunk) {
   const lines = content.split("\n");
   if (endsWithNewline) lines.pop();
 
-  const start = Math.max(0, range.newStart - 1);
-  const current = hunk.rows.filter((row) => row.type !== "del").map((row) => row.text);
-  const original = hunk.rows.filter((row) => row.type !== "add").map((row) => row.oldText ?? row.text);
-  const actual = lines.slice(start, start + range.newCount);
-  if (actual.length !== current.length || actual.some((line, index) => line !== current[index])) {
+  const before = hunk.rows.slice(0, first);
+  const rows = hunk.rows.slice(first, last);
+  const start = Math.max(0, range.newStart - 1 + before.filter((row) => row.type !== "del").length);
+  const current = rows.filter((row) => row.type !== "del").map((row) => row.text);
+  const original = rows.filter((row) => row.type !== "add").map((row) => row.oldText ?? row.text);
+  const actual = lines.slice(start, start + current.length);
+  const beforeContext = before.filter((row) => row.type !== "del").at(-1);
+  const afterContext = hunk.rows.slice(last).find((row) => row.type !== "del");
+  const mismatched =
+    actual.length !== current.length ||
+    actual.some((line, index) => line !== current[index]) ||
+    (beforeContext && lines[start - 1] !== beforeContext.text) ||
+    (afterContext && lines[start + current.length] !== afterContext.text);
+  if (mismatched) {
     throw new Error("The file no longer matches this hunk. Refresh the pull request and try again.");
   }
 
-  const touchesEnd = start + range.newCount === lines.length;
-  lines.splice(start, range.newCount, ...original);
+  const touchesEnd = last === hunk.rows.length && start + current.length === lines.length;
+  lines.splice(start, current.length, ...original);
   const revertedEndsWithNewline =
     touchesEnd && (hunk.oldNoNewline || hunk.newNoNewline) ? !hunk.oldNoNewline : endsWithNewline;
   return `${lines.join("\n")}${revertedEndsWithNewline ? "\n" : ""}`;
+}
+
+function isChangedRow(row) {
+  return row.type !== "context" || row.wsOnly;
+}
+
+export function revertChange(content, hunk, selectedRow) {
+  const index = hunk.rows.indexOf(selectedRow);
+  if (index < 0 || !isChangedRow(selectedRow)) throw new Error("Choose a changed line to revert.");
+  let first = index;
+  let last = index + 1;
+  while (first > 0 && isChangedRow(hunk.rows[first - 1])) first--;
+  while (last < hunk.rows.length && isChangedRow(hunk.rows[last])) last++;
+  return revertRows(content, hunk, first, last);
+}
+
+export function revertHunk(content, hunk) {
+  return revertRows(content, hunk, 0, hunk.rows.length);
+}
+
+export function revertFile(content, file) {
+  let reverted = content;
+  for (const hunk of [...file.hunks].reverse()) reverted = revertHunk(reverted, hunk);
+  return reverted;
 }
 
 export function buildWholeFile(file, content) {

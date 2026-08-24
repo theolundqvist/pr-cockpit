@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildGapRows, buildWholeFile, fileDiffFingerprint, fileUsesSplitLayout, hunkOldOffset, parseDiff, revertHunk, splitDiffRows } from "./diff.js";
+import { buildGapRows, buildWholeFile, fileDiffFingerprint, fileUsesSplitLayout, hunkOldOffset, parseDiff, revertChange, revertFile, revertHunk, splitDiffRows } from "./diff.js";
 
 function makeDiff(hunkBody) {
   return `diff --git a/foo.ts b/foo.ts\nindex abc..def 100644\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1,3 +1,3 @@\n${hunkBody}\n`;
@@ -166,6 +166,56 @@ describe("revertHunk", () => {
     const [file] = parseDiff(makeDiff("-const x = 1;\n+const x = 2;"));
 
     expect(() => revertHunk("const x = 3;\n", file.hunks[0])).toThrow("file no longer matches this hunk");
+  });
+});
+
+describe("revertChange", () => {
+  test("reverts only the selected change block inside a larger diff hunk", () => {
+    const [file] = parseDiff(
+      "diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1,5 +1,5 @@\n before\n-old one\n+new one\n middle\n-old two\n+new two\n after\n",
+    );
+    const selected = file.hunks[0].rows.find((row) => row.text === "new one");
+
+    expect(revertChange("before\nnew one\nmiddle\nnew two\nafter\n", file.hunks[0], selected)).toBe(
+      "before\nold one\nmiddle\nnew two\nafter\n",
+    );
+  });
+
+  test("restores a selected deletion without reverting a later change", () => {
+    const [file] = parseDiff(
+      "diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1,5 +1,4 @@\n before\n-removed\n middle\n-old two\n+new two\n after\n",
+    );
+    const selected = file.hunks[0].rows.find((row) => row.text === "removed");
+
+    expect(revertChange("before\nmiddle\nnew two\nafter\n", file.hunks[0], selected)).toBe(
+      "before\nremoved\nmiddle\nnew two\nafter\n",
+    );
+  });
+
+  test("restores a selected whitespace-only change", () => {
+    const [file] = parseDiff(makeDiff("-  const x = 1;\n+    const x = 1;"));
+
+    expect(revertChange("    const x = 1;\n", file.hunks[0], file.hunks[0].rows[0])).toBe("  const x = 1;\n");
+  });
+
+  test("rejects a selected change that no longer matches the head file", () => {
+    const [file] = parseDiff(makeDiff("-const x = 1;\n+const x = 2;"));
+
+    expect(() => revertChange("const x = 3;\n", file.hunks[0], file.hunks[0].rows[1])).toThrow(
+      "file no longer matches this hunk",
+    );
+  });
+});
+
+describe("revertFile", () => {
+  test("reverts every hunk without shifting earlier ranges", () => {
+    const [file] = parseDiff(
+      "diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1,2 @@\n-old top\n+new top\n+extra top\n@@ -4 +5 @@\n-old bottom\n+new bottom\n",
+    );
+
+    expect(revertFile("new top\nextra top\nkeep one\nkeep two\nnew bottom\n", file)).toBe(
+      "old top\nkeep one\nkeep two\nold bottom\n",
+    );
   });
 });
 
