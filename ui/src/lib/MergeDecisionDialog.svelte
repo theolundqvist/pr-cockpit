@@ -1,10 +1,9 @@
 <script>
   import Kbd from "./Kbd.svelte";
 
-  let { number, title, headRef, baseRef, methodLabel, force = false, onConfirm, onCancel } = $props();
+  let { number, headRef, baseRef, methodLabel, force = false, onConfirm, onCancel } = $props();
 
   let titleId = $derived(`merge-decision-title-${number}`);
-  let descriptionId = $derived(`merge-decision-description-${number}`);
 
   function manageDialogFocus(node) {
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -55,7 +54,6 @@
     role="alertdialog"
     aria-modal="true"
     aria-labelledby={titleId}
-    aria-describedby={force ? undefined : descriptionId}
     tabindex="-1"
     use:manageDialogFocus
     onkeydown={handleKeydown}
@@ -66,30 +64,14 @@
           <svg viewBox="0 0 16 16"><path d="M4 4.5h4.5a3 3 0 0 1 3 3v4"></path><path d="m8.8 9.3 2.7 2.7 2.7-2.7"></path><circle cx="3.3" cy="4.5" r="1.3"></circle></svg>
         </span>
       {/if}
-      <h2 id={titleId}>{force ? "Force-merge" : "Merge"} pull request #{number}?</h2>
+      <h2 id={titleId}>{force ? "Force-merge" : "Merge"} #{number}?</h2>
+      <span class="method-label">{methodLabel}</span>
     </div>
-
-    {#if !force}
-      <p id={descriptionId} class="decision-copy">
-        This will merge <strong>{title}</strong> into <strong>{baseRef}</strong>.
-      </p>
-    {/if}
 
     <div class="merge-route" aria-label={`${headRef} into ${baseRef}`}>
-      <div class="route-branch">
-        <span class="route-label">Source</span>
-        <span class="route-ref">{headRef}</span>
-      </div>
+      <span class="route-ref">{headRef}</span>
       <svg class="route-arrow" viewBox="0 0 20 12" aria-hidden="true"><path d="M1 6h16m-4-4 4 4-4 4"></path></svg>
-      <div class="route-branch target">
-        <span class="route-label">Base</span>
-        <span class="route-ref">{baseRef}</span>
-      </div>
-    </div>
-
-    <div class="decision-meta">
-      <span>Merge method</span>
-      <span class="method-label">{methodLabel}</span>
+      <span class="route-ref">{baseRef}</span>
     </div>
 
     <div class="decision-actions">
@@ -98,7 +80,7 @@
         <Kbd keys="esc" />
       </button>
       <button class="decision-button primary" class:danger={force} type="button" aria-label={force ? "Force-merge pull request" : "Merge pull request"} data-primary onclick={onConfirm}>
-        <span>{force ? "Force-merge" : "Merge pull request"}</span>
+        <span>{force ? "Force-merge" : "Merge"}</span>
         <Kbd keys="enter" />
       </button>
     </div>
@@ -131,9 +113,9 @@
 
   .merge-decision-dialog {
     position: relative;
-    width: min(470px, calc(100vw - 48px));
+    width: min(430px, calc(100vw - 48px));
     overflow: hidden;
-    padding: 22px;
+    padding: 20px;
     border: 1px solid var(--border);
     border-radius: 14px;
     outline: none;
@@ -144,17 +126,17 @@
 
   .decision-header {
     display: flex;
-    align-items: flex-start;
-    gap: 12px;
+    align-items: center;
+    gap: 10px;
   }
 
   .decision-mark {
     display: grid;
-    width: 34px;
-    height: 34px;
-    flex: 0 0 34px;
+    width: 30px;
+    height: 30px;
+    flex: 0 0 30px;
     place-items: center;
-    border-radius: 10px;
+    border-radius: 9px;
     background: var(--link-bg);
     color: var(--link);
   }
@@ -173,52 +155,24 @@
     margin: 0;
     color: var(--text);
     font-family: var(--sans);
-    font-size: 19px;
+    font-size: 18px;
     font-weight: 650;
     letter-spacing: -0.02em;
-    line-height: 1.25;
-  }
-
-  .decision-copy {
-    margin: 16px 0;
-    color: var(--text-dim);
-    font-family: var(--sans);
-    font-size: 13px;
-    line-height: 1.5;
-  }
-
-  .decision-copy strong {
-    color: var(--text);
-    font-weight: 550;
+    line-height: 1.2;
   }
 
   .merge-route {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 20px minmax(0, 1fr);
     align-items: center;
-    gap: 10px;
-    padding: 12px 13px;
-    border-radius: 10px;
+    gap: 9px;
+    margin: 16px 0 18px;
+    padding: 10px 12px;
+    border-radius: 9px;
     background: var(--surface);
   }
 
-  .route-branch {
-    min-width: 0;
-  }
-
-  .route-label {
-    display: block;
-    margin-bottom: 3px;
-    color: var(--text-faint);
-    font-family: var(--sans);
-    font-size: 10px;
-    font-weight: 550;
-    letter-spacing: 0.03em;
-    text-transform: uppercase;
-  }
-
   .route-ref {
-    display: block;
     overflow: hidden;
     color: var(--text);
     font-family: var(--mono);
@@ -236,22 +190,14 @@
     stroke-width: 1.25;
   }
 
-  .decision-meta {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin: 10px 2px 20px;
-    color: var(--text-faint);
-    font-family: var(--sans);
-    font-size: 11.5px;
-  }
-
   .method-label {
+    margin-left: auto;
     padding: 4px 8px;
     border-radius: 6px;
     background: var(--surface);
     color: var(--text-dim);
     font-family: var(--mono);
+    font-size: 11.5px;
   }
 
   .decision-actions {
