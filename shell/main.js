@@ -259,7 +259,8 @@ if (!app.requestSingleInstanceLock()) {
         submenu: [
           { role: "about" },
           { type: "separator" },
-          { label: "Hide PR Cockpit", accelerator: "Command+Q", click: hideAppFromDock },
+          { role: "hide" },
+          { label: "Hide from Dock", accelerator: "Command+Q", click: hideAppFromDock },
           { type: "separator" },
           { label: "Quit PR Cockpit", click: quitPrCockpit },
         ],
