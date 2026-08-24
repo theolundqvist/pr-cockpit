@@ -76,8 +76,8 @@ test("installs and safely refreshes a loopback systemd user service", async () =
     );
 
     const unit = readFileSync(join(configuredHome, ".config/systemd/user/pr-cockpit.service"), "utf8");
-    expect(unit).toContain(`WorkingDirectory="${resolvedRoot}"`);
-    expect(unit).toContain(`EnvironmentFile="${envFile}"`);
+    expect(unit).toContain(`WorkingDirectory=${resolvedRoot}`);
+    expect(unit).toContain(`EnvironmentFile=${envFile}`);
     expect(unit).toContain(`Environment="COCKPIT_ROOT=${resolvedRoot}"`);
     expect(unit).toContain(`Environment="COCKPIT_GH_BIN=${bin}/gh"`);
     expect(unit).toContain(`ExecStart="${bin}/bun" "${resolvedRoot}/server/main.ts"`);
