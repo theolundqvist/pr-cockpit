@@ -1331,6 +1331,15 @@
     const pendingEvents = pendingComments.map((mutation) => ({ kind: "pending-comment", id: `pending-comment-${mutation.id}`, mutation }));
     return prefs.newestCommentsFirst ? [...pendingEvents, ...orderedEvents.reverse()] : [...orderedEvents, ...pendingEvents];
   });
+  const FAILED_CI_STATES = new Set(["FAILURE", "ERROR"]);
+  const RUNNING_CI_STATES = new Set(["PENDING", "EXPECTED"]);
+
+  function commitCiLabel(state) {
+    if (state === "SUCCESS") return "Checks passed";
+    if (FAILED_CI_STATES.has(state)) return "Checks failed";
+    if (RUNNING_CI_STATES.has(state)) return "Checks running";
+    return "No workflow runs";
+  }
 
   let threadSplit = $derived(anchorThreads(files, pr?.reviewThreads.nodes ?? []));
   let unresolvedTotal = $derived(
@@ -2477,38 +2486,59 @@
             {#each timeline as event (event.id)}
               {#if event.kind === "commit"}
                 {@const lines = commitLineCounts[event.oid] ?? (event.additions === null ? null : { additions: event.additions, deletions: event.deletions, skippedTests: false, testsOnly: false })}
-                <button
-                  class="commit-row"
-                  class:clickable={event.parentOid}
-                  disabled={!event.parentOid}
-                  title={event.parentOid ? "View this commit's changes" : ""}
-                  onclick={() => selectCommit(event.oid)}
-                >
-                  <span class="commit-glyph"></span>
-                  <Avatar login={event.author} url={event.avatarUrl} size={16} />
-                  <span class="commit-headline">{event.headline}</span>
-                  <span
-                    class="commit-lines"
-                    class:tests-only={lines?.testsOnly}
-                    title={lines?.testsOnly ? "Only test files changed" : lines?.skippedTests ? "Lines changed outside test files" : "Lines changed"}
+                {@const when = relativeTime(event.at)}
+                <div class="commit-row" class:clickable={event.parentOid}>
+                  <button
+                    class="commit-row-main"
+                    disabled={!event.parentOid}
+                    title={event.parentOid ? "View this commit's changes" : ""}
+                    onclick={() => selectCommit(event.oid)}
                   >
-                    {#if lines}
-                      <b class="add">+{lines.additions}</b><b class="del">−{lines.deletions}</b>
-                    {/if}
-                  </span>
-                  {#if event.ciState === "SUCCESS"}
-                    <span class="commit-ci pass" aria-label="Checks passed" title="Checks passed">
+                    <span class="commit-glyph"></span>
+                    <Avatar login={event.author} url={event.avatarUrl} size={16} />
+                    <span class="commit-headline">{event.headline}</span>
+                    <span
+                      class="commit-lines"
+                      class:tests-only={lines?.testsOnly}
+                      title={lines?.testsOnly ? "Only test files changed" : lines?.skippedTests ? "Lines changed outside test files" : "Lines changed"}
+                    >
+                      {#if lines}
+                        <b class="add">+{lines.additions}</b><b class="del">−{lines.deletions}</b>
+                      {/if}
+                    </span>
+                  </button>
+                  <a
+                    class="commit-ci"
+                    class:pass={event.ciState === "SUCCESS"}
+                    class:fail={FAILED_CI_STATES.has(event.ciState)}
+                    class:running={RUNNING_CI_STATES.has(event.ciState)}
+                    class:neutral={!event.ciState}
+                    href="https://github.com/{repo}/commit/{event.oid}/checks"
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label="{commitCiLabel(event.ciState)} for {event.oid.slice(0, 7)}. View workflow runs"
+                    title="{commitCiLabel(event.ciState)} · View workflow runs for {event.oid.slice(0, 7)}"
+                  >
+                    {#if event.ciState === "SUCCESS"}
                       <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5"></circle><path d="m4.8 8 2 2 4.4-4.4"></path></svg>
-                    </span>
-                  {:else if event.ciState === "FAILURE" || event.ciState === "ERROR"}
-                    <span class="commit-ci fail" aria-label="Checks failed" title="Checks failed">
+                    {:else if FAILED_CI_STATES.has(event.ciState)}
                       <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5"></circle><path d="m5.5 5.5 5 5m0-5-5 5"></path></svg>
-                    </span>
-                  {:else}
-                    <span class="commit-ci" aria-hidden="true"></span>
-                  {/if}
-                  <span class="when">{relativeTime(event.at)}</span>
-                </button>
+                    {:else if RUNNING_CI_STATES.has(event.ciState)}
+                      <span class="commit-ci-dot" aria-hidden="true"></span>
+                    {:else}
+                      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5"></circle><path d="M5.5 8h5"></path></svg>
+                    {/if}
+                  </a>
+                  <button
+                    class="when commit-when"
+                    disabled={!event.parentOid}
+                    title={event.parentOid ? "View this commit's changes" : ""}
+                    aria-label="View changes from {when} ago"
+                    onclick={() => selectCommit(event.oid)}
+                  >
+                    {when}
+                  </button>
+                </div>
               {:else if event.kind === "thread"}
                 <Thread thread={event.thread} {...threadProps(event.thread)} />
               {:else if event.kind === "pending-comment"}
@@ -3834,9 +3864,26 @@
     text-align: left;
     cursor: default;
   }
+  .commit-row-main {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+    padding: 0;
+    color: inherit;
+    font: inherit;
+    background: none;
+    border: 0;
+    text-align: left;
+    cursor: default;
+  }
   .commit-row.clickable {
     cursor: pointer;
     border-radius: 6px;
+  }
+  .commit-row.clickable .commit-row-main {
+    cursor: pointer;
   }
   .commit-row.clickable:hover {
     background: var(--hunk-hover);
@@ -3898,12 +3945,36 @@
   .commit-ci.fail {
     color: var(--fail);
   }
+  .commit-ci.running {
+    color: var(--review);
+  }
+  .commit-ci.neutral {
+    color: var(--text-faint);
+  }
+  .commit-ci-dot {
+    width: 8px;
+    height: 8px;
+    margin: auto;
+    border-radius: 50%;
+    background: currentColor;
+  }
+  .commit-ci:hover {
+    filter: brightness(1.15);
+  }
   .commit-row .when {
     flex: none;
     min-width: 30px;
-    text-align: right;
+    padding: 0;
     color: var(--text-faint);
+    font: inherit;
     font-size: 11px;
+    text-align: right;
+    background: none;
+    border: 0;
+    opacity: 1;
+  }
+  .commit-row.clickable .commit-when {
+    cursor: pointer;
   }
   .event-head .author {
     color: var(--text);
