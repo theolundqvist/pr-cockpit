@@ -63,19 +63,18 @@ test("installs and safely refreshes a loopback systemd user service", async () =
     expect(first.stderr).toBe("");
     expect(first.stdout).toContain("user lingering is disabled");
 
-    const configuredHome = home;
     const resolvedRoot = realpathSync(root);
-    const envFile = join(configuredHome, ".config/pr-cockpit/server.env");
+    const envFile = join(home, ".config/pr-cockpit/server.env");
     const originalEnv = readFileSync(envFile, "utf8");
     expect(originalEnv).toBe(
-      `COCKPIT_DATA_DIR="${configuredHome}/.local/share/pr-cockpit"\n` +
+      `COCKPIT_DATA_DIR="${home}/.local/share/pr-cockpit"\n` +
       "COCKPIT_PORT=4820\n" +
       'COCKPIT_REPOS="acme/app,acme/api"\n' +
       'COCKPIT_ALLOWED_ORIGINS="https://cockpit.example.ts.net,https://cockpit.example.com"\n' +
       "COCKPIT_UPDATE_DISABLED=1\n",
     );
 
-    const unit = readFileSync(join(configuredHome, ".config/systemd/user/pr-cockpit.service"), "utf8");
+    const unit = readFileSync(join(home, ".config/systemd/user/pr-cockpit.service"), "utf8");
     expect(unit).toContain(`WorkingDirectory=${resolvedRoot}`);
     expect(unit).toContain(`EnvironmentFile=${envFile}`);
     expect(unit).toContain(`Environment="COCKPIT_ROOT=${resolvedRoot}"`);

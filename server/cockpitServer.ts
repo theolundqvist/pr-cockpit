@@ -4,7 +4,6 @@ type FetchHandler = (request: Request) => Response | Promise<Response>;
 
 const UNSAFE_BROWSER_METHODS: Record<string, true> = { POST: true, PUT: true, PATCH: true, DELETE: true };
 
-/** Parses a comma-separated list of exact HTTP(S) origins, failing fast on anything malformed. */
 function parseAllowedOrigins(configured: string | undefined): Set<string> {
   const origins = new Set<string>();
   if (configured === undefined) return origins;
