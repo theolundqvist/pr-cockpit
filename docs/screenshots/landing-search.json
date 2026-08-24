@@ -26,7 +26,7 @@
     "width": 1180,
     "height": 886,
     "frameRate": 30,
-    "durationSeconds": 7.866,
+    "durationSeconds": 4.966,
     "colorSpace": "bt709",
     "mp4Crf": 18,
     "webmCrf": 24,
@@ -35,12 +35,12 @@
   "video": {
     "path": "docs/screenshots/landing-search.webm",
     "codec": "vp9",
-    "bytes": 326423
+    "bytes": 293323
   },
   "fallback": {
     "path": "docs/screenshots/landing-search.mp4",
     "codec": "h264",
-    "bytes": 494683
+    "bytes": 519101
   },
   "poster": {
     "path": "docs/screenshots/landing-search-poster.png",
