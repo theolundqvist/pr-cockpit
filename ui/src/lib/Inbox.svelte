@@ -2353,6 +2353,11 @@
       grid-template-columns: repeat(2, minmax(0, 1fr));
       align-items: start;
     }
+    .quick-actions-panel {
+      grid-column: 1 / -1;
+      justify-self: center;
+      width: min(100%, 480px);
+    }
     .saved-views {
       grid-column: 1 / -1;
     }
