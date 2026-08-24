@@ -2648,7 +2648,7 @@
                   {/if}
                 {:else if mergeGate.action === "update" || updateMutation}
                   {#if updateMutation?.state === "pending"}
-                    <button class="merge-btn" disabled>updating…</button>
+                    <button class="merge-btn update-action" disabled>updating…</button>
                   {:else if updateMutation?.state === "failed"}
                     <MutationFailure
                       action="update branch"
@@ -2657,7 +2657,7 @@
                       onDiscard={() => handleDiscard(updateMutation.id)}
                     />
                   {:else}
-                    <button class="merge-btn" onclick={submitUpdateBranch}>update branch</button>
+                    <button class="merge-btn update-action" onclick={submitUpdateBranch}>update branch</button>
                   {/if}
                 {/if}
                 {#if !pr.isDraft && mergeGate.action !== "merge" && !mergeMutation}
@@ -5680,6 +5680,16 @@
     box-shadow: var(--shadow-control-outlined);
     color: var(--fail);
   }
+  .merge-btn.update-action {
+    background: var(--panel);
+    box-shadow: var(--shadow-control-outlined);
+    color: var(--text);
+  }
+  .merge-btn.update-action:disabled {
+    background: var(--disabled-bg);
+    box-shadow: none;
+    color: var(--disabled-fg);
+  }
   .merge-btn.blocked {
     border: 0;
     background: var(--fail-bg);
@@ -5720,6 +5730,9 @@
     }
     .merge-btn.fail:hover:not(:disabled) {
       background: color-mix(in srgb, var(--fail-bg) 38%, var(--panel));
+    }
+    .merge-btn.update-action:hover:not(:disabled) {
+      background: var(--surface);
     }
     .merge-btn.blocked:hover:not(:disabled) {
       background: color-mix(in srgb, var(--fail-bg) 72%, var(--fail) 12%);
