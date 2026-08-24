@@ -48,6 +48,7 @@
   import { quotaImpact } from "./quotaImpact.js";
   import QuotaMergeModal from "./QuotaMergeModal.svelte";
   import MergeDecisionDialog from "./MergeDecisionDialog.svelte";
+  import SplitButton from "./SplitButton.svelte";
   import DiffView from "./DiffView.svelte";
   import FileHistory from "./FileHistory.svelte";
   import Telescope from "./Telescope.svelte";
@@ -62,6 +63,11 @@
   import Reactions from "./Reactions.svelte";
   import UserPicker from "./UserPicker.svelte";
   import CurrentBranchBadge from "./CurrentBranchBadge.svelte";
+  const VERDICT_OPTIONS = [
+    { value: "APPROVE", label: "Approve", tone: "green" },
+    { value: "COMMENT", label: "Comment", tone: "neutral" },
+    { value: "REQUEST_CHANGES", label: "Request changes", tone: "red" },
+  ];
 
   let { repo, number, tab, historyPath = null, historySymbol = null, refreshRevision = 0 } = $props();
   let handledRefreshRevision = refreshRevision;
@@ -138,6 +144,7 @@
     forceMergeConfirm = false;
     closeConfirm = false;
     mergeMenuOpen = false;
+    reviewMenuOpen = false;
     editingTitle = false;
     editingBody = false;
     localBranchBusy = false;
@@ -600,9 +607,14 @@
   let verdictEvent = $state("APPROVE");
   let verdictBody = $state("");
   let verdictSubmitting = $state(false);
+  let verdictBodyFocused = $state(false);
+  let reviewMenuOpen = $state(false);
   let verdictMutation = $derived(mutations.find((m) => m.kind === "review-verdict"));
+  let selectedVerdict = $derived(VERDICT_OPTIONS.find((option) => option.value === verdictEvent) ?? VERDICT_OPTIONS[0]);
 
   async function submitVerdict() {
+    if (verdictSubmitting) return;
+    reviewMenuOpen = false;
     verdictSubmitting = true;
     try {
       await enqueueMutation(repo, number, { kind: "review-verdict", event: verdictEvent, body: verdictBody });
@@ -611,6 +623,13 @@
     } finally {
       verdictSubmitting = false;
     }
+  }
+
+  function onVerdictKeydown(e) {
+    if (e.isComposing || e.shiftKey || e.altKey) return;
+    if (!(e.metaKey || e.ctrlKey) || e.key !== "Enter") return;
+    e.preventDefault();
+    submitVerdict();
   }
 
   let mergeMutation = $derived(mutations.find((m) => m.kind === "merge"));
@@ -1774,6 +1793,13 @@
       }
       if (rangeOpen) return;
       if (historyOpen) return;
+      if (reviewMenuOpen) {
+        if (e.key === "Escape") {
+          reviewMenuOpen = false;
+          e.preventDefault();
+        }
+        return;
+      }
       if (mergeMenuOpen) {
         if (e.key === "Escape") {
           mergeMenuOpen = false;
@@ -1865,11 +1891,7 @@
       } else if (tab === "conversation" && e.key === "c") {
         focusTarget("#composer-input");
       } else if (tab === "conversation" && e.key === "v" && !mergedState) {
-        if (pr.viewerIsAuthor) {
-          showFlash("Can't review your own PR — GitHub blocks self-approval.");
-        } else {
-          focusTarget("#verdict-control");
-        }
+        focusTarget("#verdict-control");
       } else if (e.key === "r") {
         revealReply();
       } else if (e.key === "e") {
@@ -1919,9 +1941,10 @@
       holdScrollRelease(document.querySelector(".page"));
     }
     function onPointerDown(e) {
-      if (!mergeMenuOpen) return;
-      if (e.target instanceof Element && e.target.closest(".merge-split")) return;
+      if (!mergeMenuOpen && !reviewMenuOpen) return;
+      if (e.target instanceof Element && e.target.closest("[data-split-action]")) return;
       mergeMenuOpen = false;
+      reviewMenuOpen = false;
     }
     function onKeyUp(e) {
       if (e.code === "KeyJ" || e.code === "ArrowDown") {
@@ -2605,8 +2628,15 @@
               <h3 class="side-title">Actions</h3>
               <div class="actions">
                 {#snippet mergeControl(enabled)}
-                  <div class="merge-split">
-                    <button class="merge-btn merge-main" class:blocked={enabled && mergeBlockedByQuota} disabled={!enabled} onclick={() => requestMerge()}>
+                  <SplitButton
+                    tone={enabled && mergeBlockedByQuota ? "blocked" : "green"}
+                    open={mergeMenuOpen}
+                    mainDisabled={!enabled}
+                    optionsLabel="Merge options"
+                    onMain={() => requestMerge()}
+                    onToggle={() => ((reviewMenuOpen = false), (mergeMenuOpen = !mergeMenuOpen))}
+                  >
+                    {#snippet main()}
                       <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
                         <circle cx="6" cy="6" r="2.5"></circle>
                         <circle cx="18" cy="18" r="2.5"></circle>
@@ -2615,12 +2645,8 @@
                       <span>Merge</span>
                       <span class="action-method">{mergeMethodLabel}</span>
                       {#if enabled}<Kbd keys="m" />{/if}
-                    </button>
-                    <button class="merge-btn merge-caret" class:open={mergeMenuOpen} aria-label="Merge options" aria-expanded={mergeMenuOpen} aria-haspopup="menu" onclick={() => (mergeMenuOpen = !mergeMenuOpen)}>
-                      {#if mergeMenuOpen}<Kbd keys="esc" />{/if}
-                      <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"></path></svg>
-                    </button>
-                    {#if mergeMenuOpen}
+                    {/snippet}
+                    {#snippet menu()}
                       <div class="merge-menu" role="menu">
                         {#each mergeMethods as method}
                           <button
@@ -2668,8 +2694,8 @@
                           </button>
                         {/if}
                       </div>
-                    {/if}
-                  </div>
+                    {/snippet}
+                  </SplitButton>
                 {/snippet}
                 {#if pr.isDraft}
                   {#if readyMutation?.state === "pending"}
@@ -2832,9 +2858,6 @@
           {#if !mergedState}
             <div class="side-block">
               <h3 class="side-title">Review</h3>
-              {#if pr.viewerIsAuthor}
-                <div class="own-pr-note">Your PR — approve / request changes post as a comment.</div>
-              {/if}
               {#if verdictMutation}
                 <div class="verdict-badge">
                   <MutationBadge
@@ -2844,19 +2867,47 @@
                   />
                 </div>
               {/if}
-              <div class="verdict-select-wrap">
-                <select id="verdict-control" class="verdict-select" bind:value={verdictEvent}>
-                  <option value="APPROVE">Approve</option>
-                  <option value="REQUEST_CHANGES">Request changes</option>
-                  <option value="COMMENT">Comment</option>
-                </select>
-                {#if tab === "conversation" && !pr.viewerIsAuthor}<span class="verdict-key"><Kbd keys="v" /></span>{/if}
-                <span class="verdict-select-chevron"><Chevron size={16} /></span>
+              <div class="verdict-body-wrap">
+                <textarea
+                  id="verdict-control"
+                  class="verdict-body"
+                  placeholder="Optional body…"
+                  bind:value={verdictBody}
+                  onkeydown={onVerdictKeydown}
+                  onfocus={() => (verdictBodyFocused = true)}
+                  onblur={() => (verdictBodyFocused = false)}
+                ></textarea>
+                {#if tab === "conversation"}<span class="verdict-key"><Kbd keys="v" /></span>{/if}
               </div>
-              <textarea class="verdict-body" placeholder="Optional body…" bind:value={verdictBody}></textarea>
-              <button class="btn wide" disabled={verdictSubmitting} onclick={submitVerdict}>
-                {verdictSubmitting ? "Submitting…" : "Submit review"}
-              </button>
+              <SplitButton
+                tone={selectedVerdict.tone}
+                open={reviewMenuOpen}
+                mainDisabled={verdictSubmitting}
+                caretDisabled={verdictSubmitting}
+                optionsLabel="Review options"
+                onMain={submitVerdict}
+                onToggle={() => ((mergeMenuOpen = false), (reviewMenuOpen = !reviewMenuOpen))}
+              >
+                {#snippet main()}
+                  <span>{verdictSubmitting ? "Submitting…" : selectedVerdict.label}</span>
+                  {#if !verdictSubmitting && verdictBodyFocused}<Kbd keys={["cmd", "enter"]} />{/if}
+                {/snippet}
+                {#snippet menu()}
+                  <div class="merge-menu review-menu" role="menu">
+                    {#each VERDICT_OPTIONS as option}
+                      {#if option.value !== verdictEvent}
+                        <button
+                          role="menuitem"
+                          class:danger={option.tone === "red"}
+                          onclick={() => ((verdictEvent = option.value), (reviewMenuOpen = false))}
+                        >
+                          {option.label}
+                        </button>
+                      {/if}
+                    {/each}
+                  </div>
+                {/snippet}
+              </SplitButton>
             </div>
           {/if}
 
@@ -3363,20 +3414,6 @@
   .actions .merge-btn {
     width: 100%;
     padding: 6px 12px;
-  }
-  .merge-split {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 34px;
-    position: relative;
-  }
-  .actions .merge-split .merge-main {
-    border-radius: 6px 0 0 6px;
-  }
-  .actions .merge-split .merge-caret {
-    width: 34px;
-    border-left: 0;
-    border-radius: 0 6px 6px 0;
-    padding: 6px;
   }
   .merge-menu {
     position: absolute;
@@ -4343,33 +4380,6 @@
     margin-bottom: 8px;
     font-family: var(--sans);
     font-size: 11px;
-  }
-  .verdict-select {
-    width: 100%;
-    background: var(--panel-raised);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    color: var(--text);
-    font-size: 12.5px;
-    padding: 6px 8px;
-    margin-bottom: 8px;
-  }
-  .verdict-body {
-    width: 100%;
-    resize: vertical;
-    min-height: 50px;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    color: var(--text);
-    font-size: 12.5px;
-    padding: 8px;
-    margin-bottom: 8px;
-  }
-  .verdict-body:focus,
-  .verdict-select:focus {
-    outline: none;
-    border-color: var(--text-faint);
   }
 
   /* Shared detail primitives: one strong header surface, then calm working space. */
@@ -5741,13 +5751,6 @@
     background: var(--brand-disabled);
     color: var(--on-brand);
   }
-  .merge-split .merge-btn {
-    background: light-dark(#1f883d, #238636);
-  }
-  .merge-split .merge-btn:disabled {
-    background: color-mix(in srgb, light-dark(#1f883d, #238636) 38%, var(--bg));
-    color: var(--on-brand);
-  }
   .composer .btn {
     height: 36px;
     background: var(--link);
@@ -5759,22 +5762,6 @@
     box-shadow: none;
     color: var(--on-brand);
   }
-  .actions .merge-split .merge-main {
-    border-radius: 999px 0 0 999px;
-  }
-  .actions .merge-split .merge-caret {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-left: 1px solid color-mix(in srgb, #fff 24%, transparent);
-    border-radius: 0 999px 999px 0;
-  }
-  .actions .merge-split .merge-caret.open {
-    width: auto;
-    gap: 4px;
-    padding: 0 6px;
-  }
-  .merge-main,
   .close-action {
     display: flex;
     align-items: center;
@@ -5844,9 +5831,6 @@
     .merge-btn:hover:not(:disabled) {
       background: var(--brand-hover);
       filter: none;
-    }
-    .merge-split .merge-btn:hover:not(:disabled):not(.blocked) {
-      background: light-dark(#1a7f37, #2ea043);
     }
     .composer .btn:hover:not(:disabled) {
       background: var(--brand-hover);
@@ -5919,7 +5903,6 @@
       background: var(--brand-hover);
     }
   }
-  .verdict-select,
   .verdict-body,
   .composer textarea,
   .prompt-input {
@@ -5929,51 +5912,18 @@
     font-family: var(--sans);
     font-size: 14px;
   }
-  .verdict-select-wrap {
+  .verdict-body-wrap {
     position: relative;
     margin-bottom: 8px;
-    border-radius: 999px;
-    background: var(--panel);
-    box-shadow: var(--shadow-control-outlined);
-  }
-  .verdict-select {
-    appearance: none;
-    display: block;
-    height: 36px;
-    margin: 0;
-    padding: 0 72px 0 14px;
-    border: 0;
-    border-radius: inherit;
-    background: transparent;
-    box-shadow: none;
-    font-weight: 500;
-  }
-  .verdict-select-chevron {
-    position: absolute;
-    top: 50%;
-    right: 13px;
-    pointer-events: none;
-    transform: translateY(-50%);
-  }
-  .verdict-key {
-    position: absolute;
-    top: 50%;
-    right: 36px;
-    display: inline-flex;
-    pointer-events: none;
-    transform: translateY(-50%);
-  }
-  .verdict-select-wrap:focus-within {
-    box-shadow: 0 0 0 3px var(--focus-ring), var(--shadow-control-outlined);
-  }
-  .verdict-select:focus {
-    border: 0;
-    box-shadow: none;
   }
   .verdict-body {
-    height: 36px;
-    min-height: 36px;
-    padding: 7px 12px;
+    width: 100%;
+    resize: vertical;
+    color: var(--text);
+    height: 58px;
+    min-height: 58px;
+    margin: 0;
+    padding: 8px 42px 8px 12px;
     border: 0;
     border-radius: var(--radius-md);
     background: var(--panel);
@@ -5982,10 +5932,15 @@
   .verdict-body::-webkit-resizer {
     opacity: 0;
   }
-  @media (hover: hover) and (pointer: fine) {
-    .verdict-select-wrap:hover {
-      background: var(--surface);
-    }
+  .verdict-key {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    display: inline-flex;
+    pointer-events: none;
+  }
+  .review-menu {
+    min-width: 180px;
   }
   .detail-frame.files-tab > .detail {
     --files-content-left: 0px;
