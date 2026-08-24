@@ -1235,25 +1235,64 @@ export interface RunJob {
   run_id: number;
   run_attempt: number;
   head_sha: string;
+  head_branch?: string;
+  workflow_name?: string;
   name: string;
   status: string;
   conclusion: string | null;
   started_at: string | null;
   completed_at: string | null;
   html_url: string | null;
+  runner_name?: string | null;
+  runner_group_name?: string | null;
+  labels?: string[];
   steps: RunJobStep[];
 }
 
-// filter=latest is GitHub's default and drops jobs superseded by a re-run attempt
-export async function fetchRunJobs(repo: string, runId: number): Promise<RunJob[]> {
+export interface WorkflowRun {
+  id: number;
+  run_attempt: number;
+  head_sha: string;
+  head_branch: string;
+  name: string;
+  status: string;
+  conclusion: string | null;
+  updated_at: string;
+  html_url: string | null;
+}
+
+export async function fetchWorkflowRuns(repo: string, headSha: string): Promise<WorkflowRun[]> {
+  const token = await ghToken();
+  const runs: WorkflowRun[] = [];
+  for (let page = 1;; page++) {
+    const res = await fetch(`https://api.github.com/repos/${repo}/actions/runs?head_sha=${encodeURIComponent(headSha)}&per_page=100&page=${page}`, {
+      headers: { Authorization: `bearer ${token}`, Accept: "application/vnd.github+json" },
+    });
+    if (!res.ok) throw new Error(`workflow runs fetch failed: ${res.status} ${await res.text()}`);
+    const payload = (await res.json()) as { workflow_runs?: WorkflowRun[] };
+    const batch = payload.workflow_runs ?? [];
+    runs.push(...batch);
+    if (batch.length < 100) return runs;
+  }
+}
+
+export async function fetchRunJobs(repo: string, runId: number, attempt?: number): Promise<RunJob[]> {
   if (mockGithub) return mockGithub.runJobs(repo, runId);
   const token = await ghToken();
-  const res = await fetch(`https://api.github.com/repos/${repo}/actions/runs/${runId}/jobs?per_page=100&filter=latest`, {
-    headers: { Authorization: `bearer ${token}`, Accept: "application/vnd.github+json" },
-  });
-  if (!res.ok) throw new Error(`run jobs fetch failed: ${res.status} ${await res.text()}`);
-  const payload = (await res.json()) as { jobs?: RunJob[] };
-  return payload.jobs ?? [];
+  const jobs: RunJob[] = [];
+  for (let page = 1;; page++) {
+    const endpoint = attempt === undefined
+      ? `https://api.github.com/repos/${repo}/actions/runs/${runId}/jobs?per_page=100&filter=latest&page=${page}`
+      : `https://api.github.com/repos/${repo}/actions/runs/${runId}/attempts/${attempt}/jobs?per_page=100&page=${page}`;
+    const res = await fetch(endpoint, {
+      headers: { Authorization: `bearer ${token}`, Accept: "application/vnd.github+json" },
+    });
+    if (!res.ok) throw new Error(`run jobs fetch failed: ${res.status} ${await res.text()}`);
+    const payload = (await res.json()) as { jobs?: RunJob[] };
+    const batch = payload.jobs ?? [];
+    jobs.push(...batch);
+    if (batch.length < 100) return jobs;
+  }
 }
 
 // The logs endpoint answers 302 with a Location that expires after a minute, and that storage host

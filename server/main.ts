@@ -1,4 +1,4 @@
-import { db, failInterruptedMutations } from "./db.ts";
+import { db, failInterruptedMutations, resetActiveActionsLeaseBootstraps } from "./db.ts";
 import { recoverRefreshingMutations } from "./mutations.ts";
 import { seedSettings } from "./settings.ts";
 import { startPoller } from "./poller.ts";
@@ -11,6 +11,7 @@ import { startWebhooks } from "./webhooks.ts";
 import { buildFetchHandler } from "./http.ts";
 import { installMockNetworkGuard, isMockGithub, seedMockDatabase } from "./mockGithub.ts";
 import { startCockpitServer } from "./cockpitServer.ts";
+import { resumeActionsLeases } from "./runLogs.ts";
 
 const port = Number(Bun.env.COCKPIT_PORT ?? 4820);
 
@@ -23,10 +24,14 @@ try {
   } else {
     failInterruptedMutations();
     await recoverRefreshingMutations();
+    resetActiveActionsLeaseBootstraps();
   }
 
   const fetchHandler = buildFetchHandler(port);
   startCockpitServer(port, fetchHandler);
+  if (!isMockGithub) {
+    void resumeActionsLeases().catch((error) => console.error("failed to resume Actions leases:", error));
+  }
 
   if (!isMockGithub) {
     startForwarders(port);

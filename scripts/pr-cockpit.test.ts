@@ -341,6 +341,39 @@ test("resolve rejects PR resource query options", async () => {
 });
 
 
+test("jobs and full logs activate the lease before their cache-only GET", async () => {
+  const requests: Array<{ method: string; path: string; full: string | null }> = [];
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const url = new URL(request.url);
+      requests.push({ method: request.method, path: url.pathname, full: url.searchParams.get("full") });
+      return new Response(url.pathname.endsWith("actions-lease") ? "" : "cached\n");
+    },
+  });
+  try {
+    for (const args of [
+      ["owner/repo#17", "--jobs"],
+      ["owner/repo#17", "--logs", "--full"],
+    ]) {
+      const process = Bun.spawn([join(import.meta.dir, "pr-cockpit"), ...args], {
+        env: { ...Bun.env, COCKPIT_PORT: String(server.port) },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(await process.exited).toBe(0);
+    }
+    expect(requests).toEqual([
+      { method: "POST", path: "/api/agent/pr/owner/repo/17/actions-lease", full: null },
+      { method: "GET", path: "/api/agent/pr/owner/repo/17/jobs", full: null },
+      { method: "POST", path: "/api/agent/pr/owner/repo/17/actions-lease", full: null },
+      { method: "GET", path: "/api/agent/pr/owner/repo/17/logs", full: "1" },
+    ]);
+  } finally {
+    server.stop(true);
+  }
+});
+
 test("update resolves an installed symlink to its checkout and rejects extra arguments", async () => {
   const root = mkdtempSync(join(tmpdir(), "pr-cockpit-update-"));
   const scripts = join(root, "scripts");

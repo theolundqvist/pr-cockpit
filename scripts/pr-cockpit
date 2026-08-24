@@ -24,8 +24,10 @@ Commands:
   update              fast-forward, rebuild, and reconcile the installed app
 
 Options:
+  --jobs              cached Actions jobs, including queued and running state
   --json              machine-readable Cockpit status
   --diff              cached unified diff
+  --full              with --logs, return the complete stored log instead of its 256 KB tail
   --file PATH         file contents at the PR head
   --logs [CHECK]      cached Actions job logs for failed and cancelled checks
   --new-since DATE    only comments at or after DATE
@@ -60,6 +62,7 @@ if [[ "${1:-}" = "listen" || "${1:-}" = "resolve" ]]; then
   shift
 fi
 
+full="0"
 ref=""
 mode="summary"
 file_path=""
@@ -74,6 +77,10 @@ while (($#)); do
       [[ "$mode" = "summary" ]] || usage
       mode="json"
       ;;
+    --jobs)
+      [[ "$mode" = "summary" ]] || usage
+      mode="jobs"
+      ;;
     --diff)
       [[ "$mode" = "summary" ]] || usage
       mode="diff"
@@ -86,6 +93,9 @@ while (($#)); do
         shift
         check_name="$1"
       fi
+      ;;
+    --full)
+      full="1"
       ;;
     --file)
       [[ "$mode" = "summary" && $# -gt 1 ]] || usage
@@ -123,6 +133,7 @@ while (($#)); do
 done
 [[ -z "$since" || "$mode" = "summary" || "$mode" = "json" ]] || usage
 [[ "$comments" = "1" || "$mode" = "summary" || "$mode" = "json" ]] || usage
+[[ "$full" = "0" || "$mode" = "logs" ]] || usage
 [[ -n "$ref" || "$command" != "resolve" ]] || usage
 [[ "$command" != "resolve" || ( "$mode" = "summary" && -z "$since" && "$comments" = "1" && "$thread_handle" =~ ^[0-9a-f]{10}$ ) ]] || usage
 
@@ -314,6 +325,13 @@ wait_for_pr_change() {
     [[ "$current" = "$previous" ]] || return 0
   done
 }
+activate_actions_lease() {
+  curl --noproxy '*' -sS --fail-with-body -X POST -H "X-PR-Cockpit-CLI: 1" "$base_url/actions-lease" >/dev/null
+}
+
+if [[ "$mode" = "jobs" || "$mode" = "logs" || ( "$command" = "listen" && "$listen_scope" != "comments" ) ]]; then
+  activate_actions_lease
+fi
 
 if [[ "$command" = "listen" ]]; then
   [[ -n "$since" ]] || since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -339,6 +357,11 @@ case "$mode" in
     curl --noproxy '*' -sS --fail-with-body "${args[@]}" "$base_url"
     ;;
   diff) curl --noproxy '*' -sS --fail-with-body "$base_url/diff" ;;
+  jobs) curl --noproxy '*' -sS --fail-with-body "$base_url/jobs" ;;
   file) curl --noproxy '*' -sS --fail-with-body --get --data-urlencode "path=$file_path" "$base_url/file" ;;
-  logs) curl --noproxy '*' -sS --fail-with-body --get --data-urlencode "check=$check_name" "$base_url/logs" ;;
+  logs)
+    args=(--get --data-urlencode "check=$check_name")
+    [[ "$full" = "0" ]] || args+=(--data-urlencode "full=1")
+    curl --noproxy '*' -sS --fail-with-body "${args[@]}" "$base_url/logs"
+    ;;
 esac

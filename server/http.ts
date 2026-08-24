@@ -94,7 +94,7 @@ import { createTmuxFocusHandler } from "./tmuxFocus.ts";
 import type { TmuxFocusHandler } from "./tmuxFocus.ts";
 import { needsMeRank } from "./rank.ts";
 import { invalidateInbox, invalidatePr } from "./rendererInvalidation.ts";
-import { cachedJobLogs, formatJobLogs, syncRunJobs } from "./runLogs.ts";
+import { activateActionsLease, cachedJobLogs, formatJobLogs, formatRunJobs } from "./runLogs.ts";
 const cockpitRoot = process.cwd();
 
 function json(data: unknown, status = 200): Response {
@@ -770,6 +770,9 @@ function formatPrAgentDigest(summary: PrAgentSummary, includeComments: boolean, 
       lines.push(`Read a cached log with \`pr-cockpit ${summary.ref} --logs [check name]\`.`);
     }
   }
+  if (summary.ci.running > 0) {
+    lines.push(`Inspect queued and running Actions state with \`pr-cockpit ${summary.ref} --jobs\`.`);
+  }
   if (includeComments) {
     const commentLines = summary.newComments.length > 0
       ? summary.newComments.map(newCommentLine)
@@ -826,6 +829,9 @@ export function formatPrAgentSummary(summary: PrAgentSummary, options: AgentSumm
   }
   if (summary.ci.checks.some((check) => check.logBytes !== null)) {
     lines.push("", `Read a cached log with \`pr-cockpit ${summary.ref} --logs [check name]\` instead of polling GitHub Actions.`);
+  }
+  if (summary.ci.running > 0) {
+    lines.push("", `Inspect queued and running Actions state with \`pr-cockpit ${summary.ref} --jobs\` instead of polling GitHub Actions.`);
   }
 
   if (includeComments && summary.newCommentsSince) {
@@ -1156,26 +1162,42 @@ async function handleAgentPrDiff(owner: string, repo: string, number: string, ur
   return handlePrDiff(owner, repo, number, url);
 }
 
-async function handleAgentPrLogs(owner: string, repo: string, number: string, url: URL): Promise<Response> {
+function cachedActionsContext(owner: string, repo: string, number: string): {
+  repoName: string;
+  num: number;
+  headSha: string;
+} | Response {
   if (!validPrReference(owner, repo, number)) return json({ error: "invalid PR reference" }, 400);
   const repoName = `${owner}/${repo}`;
   const num = Number(number);
   const cached = getPr(repoName, num) ?? getCachedPrDetail(repoName, num);
   if (!cached) return json({ error: "PR is not cached yet" }, 404);
   const detail = JSON.parse(cached.detail_json) as PrDetail;
-  const check = url.searchParams.get("check") ?? undefined;
+  return { repoName, num, headSha: detail.headRefOid };
+}
 
-  let entries = cachedJobLogs(repoName, detail.headRefOid, check);
-  if (entries.every((entry) => entry.body === null)) {
-    // an agent asking for a log outright is worth the REST reserve the background sync protects
-    try {
-      await syncRunJobs(repoName, detail, { background: false });
-    } catch (err) {
-      console.error(`run job sync failed for ${repoName}#${num}:`, err);
-    }
-    entries = cachedJobLogs(repoName, detail.headRefOid, check);
-  }
-  return new Response(formatJobLogs(detail.headRefOid, entries), {
+async function handleActionsLease(owner: string, repo: string, number: string): Promise<Response> {
+  const context = cachedActionsContext(owner, repo, number);
+  if (context instanceof Response) return context;
+  await activateActionsLease(context.repoName, context.num, context.headSha);
+  return json({ ok: true });
+}
+
+function handleAgentPrJobs(owner: string, repo: string, number: string): Response {
+  const context = cachedActionsContext(owner, repo, number);
+  if (context instanceof Response) return context;
+  return new Response(formatRunJobs(context.headSha, listRunJobs(context.repoName, context.headSha)), {
+    headers: { "content-type": "text/plain; charset=utf-8" },
+  });
+}
+
+async function handleAgentPrLogs(owner: string, repo: string, number: string, url: URL): Promise<Response> {
+  const context = cachedActionsContext(owner, repo, number);
+  if (context instanceof Response) return context;
+  const check = url.searchParams.get("check") ?? undefined;
+  const full = url.searchParams.get("full") === "1";
+  const entries = await cachedJobLogs(context.repoName, context.headSha, check, full);
+  return new Response(formatJobLogs(context.headSha, entries, full), {
     headers: { "content-type": "text/plain; charset=utf-8" },
   });
 }
@@ -1640,6 +1662,7 @@ const GITHUB_APP_EVENTS = [
   "status",
   "push",
   "workflow_run",
+  "workflow_job",
 ];
 
 function handleGithubAppStart(url: URL, port: number): Response {
@@ -2128,10 +2151,25 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       parts[2] === "pr"
     ) {
       if (parts[6] === "diff") return handleAgentPrDiff(parts[3]!, parts[4]!, parts[5]!, url);
+      if (parts[6] === "jobs") return handleAgentPrJobs(parts[3]!, parts[4]!, parts[5]!);
       if (parts[6] === "logs") return handleAgentPrLogs(parts[3]!, parts[4]!, parts[5]!, url);
       if (parts[6] === "file") return handleAgentPrFile(parts[3]!, parts[4]!, parts[5]!, url);
     }
     const trustedCliHost = /^(?:127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(req.headers.get("host") ?? url.host);
+    if (
+      req.method === "POST" &&
+      parts.length === 7 &&
+      parts[0] === "api" &&
+      parts[1] === "agent" &&
+      parts[2] === "pr" &&
+      parts[6] === "actions-lease"
+    ) {
+      const trustedCliHost = /^(?:127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(req.headers.get("host") ?? url.host);
+      if (!trustedCliHost || req.headers.get("x-pr-cockpit-cli") !== "1") {
+        return json({ error: "trusted CLI request required" }, 403);
+      }
+      return handleActionsLease(parts[3]!, parts[4]!, parts[5]!);
+    }
     if (
       req.method === "POST" &&
       parts.length === 8 &&

@@ -71,6 +71,9 @@ The installer adds the open-source `pr-cockpit` CLI. It reads the same local cac
 pr-cockpit owner/repo#123                    # state, checks, unresolved threads
 pr-cockpit owner/repo#123 --diff             # cached diff
 pr-cockpit owner/repo#123 --file src/app.ts  # full file at the PR head
+pr-cockpit owner/repo#123 --jobs             # cached queued, running, and completed jobs
+pr-cockpit owner/repo#123 --logs [check]     # cached failed and cancelled logs
+pr-cockpit owner/repo#123 --logs --full      # complete stored logs
 pr-cockpit resolve owner/repo#123 HANDLE     # resolve a review thread
 pr-cockpit update                            # fast-forward and rebuild
 ```
@@ -88,7 +91,7 @@ pr-cockpit listen owner/repo#123
 ![GitHub webhooks reach the local PR Cockpit server through a relay; the server keeps SQLite and the UI warm and serves agents over CLI and API](docs/screenshots/landing-under-the-hood.png)
 
 - **GitHub is authoritative.** The local database is a warm read model, not a fork of pull-request state.
-- **The relay carries markers, not pull-request payloads.** The local server fetches only what changed directly from GitHub.
+- **The relay carries markers, not pull-request payloads.** It also carries compact Actions run and job state, including runner assignment, but never full pull-request payloads or job logs.
 - **Writes stay authenticated.** Comments, reviews, edits, thread resolution, and merges use the existing GitHub CLI login.
 - **Humans and agents share one cache.** The app uses WebSocket invalidations; the CLI and API expose the same refreshed state.
 

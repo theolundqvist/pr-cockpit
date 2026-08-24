@@ -2,6 +2,7 @@ import { getPr } from "./db.ts";
 import { ghToken } from "./github.ts";
 import { pollOnce, refreshPr } from "./poller.ts";
 import { relayConfig } from "./settings.ts";
+import { ingestActionsState, type CompactJob, type CompactRun } from "./runLogs.ts";
 
 const POLL_MS = 5_000;
 const ERROR_BACKOFF_MS = 60_000;
@@ -13,6 +14,8 @@ interface Marker {
   repo: string;
   number: number | null;
   event: string;
+  run?: CompactRun;
+  job?: CompactJob;
 }
 
 let cursor: number | null = null;
@@ -59,6 +62,10 @@ async function tick(): Promise<void> {
   let needFullPoll = false;
   const refreshed = new Set<string>();
   for (const m of events) {
+    if (m.run || m.job) {
+      await ingestActionsState(m.repo, { run: m.run, job: m.job });
+      continue;
+    }
     if (m.number === null) {
       needFullPoll = true;
       continue;

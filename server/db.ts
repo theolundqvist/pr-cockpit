@@ -148,18 +148,52 @@ CREATE TABLE IF NOT EXISTS review_rescores (
   PRIMARY KEY (repo, number, reviewer, review_sha, head_sha)
 );
 
+CREATE TABLE IF NOT EXISTS workflow_runs (
+  repo TEXT NOT NULL,
+  run_id INTEGER NOT NULL,
+  run_attempt INTEGER NOT NULL,
+  pr_number INTEGER NOT NULL,
+  head_sha TEXT NOT NULL,
+  head_branch TEXT NOT NULL,
+  workflow_name TEXT NOT NULL,
+  status TEXT NOT NULL,
+  conclusion TEXT,
+  event_at TEXT NOT NULL,
+  html_url TEXT,
+  jobs_fetched_at TEXT,
+  reconciled_at TEXT,
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY (repo, run_id, run_attempt)
+);
+
+CREATE INDEX IF NOT EXISTS workflow_runs_pr_idx ON workflow_runs (repo, pr_number, head_sha);
+
+CREATE TABLE IF NOT EXISTS actions_leases (
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  head_sha TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  bootstrapped_at TEXT,
+  PRIMARY KEY (repo, number)
+);
+
 CREATE TABLE IF NOT EXISTS run_jobs (
   repo TEXT NOT NULL,
   job_id INTEGER NOT NULL,
   run_id INTEGER NOT NULL,
   run_attempt INTEGER NOT NULL,
   head_sha TEXT NOT NULL,
+  head_branch TEXT NOT NULL DEFAULT '',
+  workflow_name TEXT NOT NULL DEFAULT '',
   name TEXT NOT NULL,
   status TEXT NOT NULL,
   conclusion TEXT,
   started_at TEXT,
   completed_at TEXT,
   html_url TEXT,
+  runner_name TEXT,
+  runner_group_name TEXT,
+  labels_json TEXT NOT NULL DEFAULT '[]',
   failed_step TEXT,
   log_gz BLOB,
   log_bytes INTEGER,
@@ -169,8 +203,21 @@ CREATE TABLE IF NOT EXISTS run_jobs (
   PRIMARY KEY (repo, job_id)
 );
 
-CREATE INDEX IF NOT EXISTS run_jobs_sha_idx ON run_jobs (repo, head_sha);
+CREATE INDEX IF NOT EXISTS run_jobs_sha_idx ON run_jobs (repo, head_sha, run_id, run_attempt);
 `);
+
+const runJobColumns = db.query("PRAGMA table_info(run_jobs)").all() as Array<{ name: string }>;
+for (const [name, definition] of [
+  ["head_branch", "TEXT NOT NULL DEFAULT ''"],
+  ["workflow_name", "TEXT NOT NULL DEFAULT ''"],
+  ["runner_name", "TEXT"],
+  ["runner_group_name", "TEXT"],
+  ["labels_json", "TEXT NOT NULL DEFAULT '[]'"],
+] as const) {
+  if (!runJobColumns.some((column) => column.name === name)) {
+    db.exec(`ALTER TABLE run_jobs ADD COLUMN ${name} ${definition}`);
+  }
+}
 
 const prsColumns = db.query("PRAGMA table_info(prs)").all() as Array<{ name: string }>;
 if (!prsColumns.some((c) => c.name === "merge_state_status")) {
@@ -280,6 +327,8 @@ db.exec("DELETE FROM pr_webhook_activity WHERE received_at < datetime('now', '-3
 db.exec("DELETE FROM diffs WHERE fetched_at < datetime('now', '-30 days')");
 // Job rows and their logs are re-fetchable and only useful while the PR head is current.
 db.exec("DELETE FROM run_jobs WHERE fetched_at < datetime('now', '-30 days')");
+db.exec("DELETE FROM workflow_runs WHERE fetched_at < datetime('now', '-30 days')");
+db.exec("DELETE FROM actions_leases WHERE expires_at < datetime('now')");
 
 export interface PrRow {
   repo: string;
@@ -531,6 +580,16 @@ export function openPrNumbersForBranch(repo: string, branch: string): number[] {
   return openPrNumbersForBranchStmt.all(repo, branch, branch).map((row) => row.number);
 }
 
+export function openPrForAction(repo: string, headSha: string, headRef: string): PrRow | null {
+  return db.prepare<PrRow, [string, string, string, string, string]>(`
+    SELECT * FROM prs
+    WHERE repo = ? AND state NOT IN ('MERGED', 'CLOSED')
+      AND (head_sha = ? OR (head_sha != ? AND head_ref = ?))
+    ORDER BY head_sha = ? DESC, updated_at DESC
+    LIMIT 1
+  `).get(repo, headSha, headSha, headRef, headSha) ?? null;
+}
+
 const lastWebhookAtForPrStmt = db.prepare<{ received_at: string }, [string, number]>(
   "SELECT received_at FROM pr_webhook_activity WHERE repo = ? AND number = ?",
 );
@@ -637,18 +696,40 @@ export function saveFileContents(sha: string, path: string, content: string): vo
   saveFileContentsStmt.run(sha, path, content);
 }
 
+export interface WorkflowRunRow {
+  repo: string;
+  run_id: number;
+  run_attempt: number;
+  pr_number: number;
+  head_sha: string;
+  head_branch: string;
+  workflow_name: string;
+  status: string;
+  conclusion: string | null;
+  event_at: string;
+  html_url: string | null;
+  jobs_fetched_at: string | null;
+  reconciled_at: string | null;
+  fetched_at: string;
+}
+
 export interface RunJobRow {
   repo: string;
   job_id: number;
   run_id: number;
   run_attempt: number;
   head_sha: string;
+  head_branch: string;
+  workflow_name: string;
   name: string;
   status: string;
   conclusion: string | null;
   started_at: string | null;
   completed_at: string | null;
   html_url: string | null;
+  runner_name: string | null;
+  runner_group_name: string | null;
+  labels_json: string;
   failed_step: string | null;
   log_bytes: number | null;
   log_truncated: number;
@@ -656,47 +737,103 @@ export interface RunJobRow {
   fetched_at: string;
 }
 
-// A re-queued job keeps its id, so metadata is replaced while a log already on disk is kept.
-const upsertRunJobStmt = db.prepare(
-  `INSERT INTO run_jobs (
-    repo, job_id, run_id, run_attempt, head_sha, name, status, conclusion,
-    started_at, completed_at, html_url, failed_step, fetched_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-  ON CONFLICT (repo, job_id) DO UPDATE SET
-    run_attempt = excluded.run_attempt,
-    head_sha = excluded.head_sha,
-    name = excluded.name,
-    status = excluded.status,
-    conclusion = excluded.conclusion,
-    started_at = excluded.started_at,
-    completed_at = excluded.completed_at,
-    html_url = excluded.html_url,
-    failed_step = excluded.failed_step,
-    fetched_at = datetime('now')`,
-);
+const runStateRank = (status: string): number =>
+  status === "completed" ? 2 : status === "in_progress" ? 1 : 0;
+const jobStateRank = (status: string): number =>
+  status === "completed" ? 2 : status === "in_progress" ? 1 : 0;
 
-export function upsertRunJob(job: Omit<RunJobRow, "log_bytes" | "log_truncated" | "log_error" | "fetched_at">): void {
-  upsertRunJobStmt.run(
-    job.repo,
-    job.job_id,
-    job.run_id,
-    job.run_attempt,
-    job.head_sha,
-    job.name,
-    job.status,
-    job.conclusion,
-    job.started_at,
-    job.completed_at,
-    job.html_url,
-    job.failed_step,
+const getWorkflowRunStmt = db.prepare<WorkflowRunRow, [string, number, number]>(
+  "SELECT * FROM workflow_runs WHERE repo = ? AND run_id = ? AND run_attempt = ?",
+);
+const upsertWorkflowRunStmt = db.prepare(`
+  INSERT INTO workflow_runs (
+    repo, run_id, run_attempt, pr_number, head_sha, head_branch, workflow_name,
+    status, conclusion, event_at, html_url, fetched_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  ON CONFLICT (repo, run_id, run_attempt) DO UPDATE SET
+    pr_number = excluded.pr_number, head_sha = excluded.head_sha, head_branch = excluded.head_branch,
+    workflow_name = excluded.workflow_name, status = excluded.status, conclusion = excluded.conclusion,
+    event_at = excluded.event_at, html_url = excluded.html_url, fetched_at = datetime('now')
+`);
+
+export function upsertWorkflowRun(run: Omit<WorkflowRunRow, "jobs_fetched_at" | "reconciled_at" | "fetched_at">): boolean {
+  const latest = db.prepare<{ attempt: number | null }, [string, number]>(
+    "SELECT MAX(run_attempt) AS attempt FROM workflow_runs WHERE repo = ? AND run_id = ?",
+  ).get(run.repo, run.run_id)?.attempt;
+  if (latest !== null && latest !== undefined && run.run_attempt < latest) return false;
+  const current = getWorkflowRunStmt.get(run.repo, run.run_id, run.run_attempt);
+  if (current) {
+    const incomingRank = runStateRank(run.status);
+    const currentRank = runStateRank(current.status);
+    if (incomingRank < currentRank) return false;
+    if (incomingRank === currentRank && Date.parse(run.event_at) < Date.parse(current.event_at)) return false;
+  }
+  db.prepare("DELETE FROM run_jobs WHERE repo = ? AND run_id = ? AND run_attempt < ?")
+    .run(run.repo, run.run_id, run.run_attempt);
+  upsertWorkflowRunStmt.run(
+    run.repo, run.run_id, run.run_attempt, run.pr_number, run.head_sha, run.head_branch,
+    run.workflow_name, run.status, run.conclusion, run.event_at, run.html_url,
   );
+  return true;
+}
+
+const getRunJobStmt = db.prepare<RunJobRow, [string, number]>(
+  `SELECT repo, job_id, run_id, run_attempt, head_sha, head_branch, workflow_name, name,
+    status, conclusion, started_at, completed_at, html_url, runner_name, runner_group_name,
+    labels_json, failed_step, log_bytes, log_truncated, log_error, fetched_at
+   FROM run_jobs WHERE repo = ? AND job_id = ?`,
+);
+const upsertRunJobStmt = db.prepare(`
+  INSERT INTO run_jobs (
+    repo, job_id, run_id, run_attempt, head_sha, head_branch, workflow_name, name,
+    status, conclusion, started_at, completed_at, html_url, runner_name, runner_group_name,
+    labels_json, failed_step, fetched_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  ON CONFLICT (repo, job_id) DO UPDATE SET
+    run_id = excluded.run_id, run_attempt = excluded.run_attempt, head_sha = excluded.head_sha,
+    head_branch = excluded.head_branch, workflow_name = excluded.workflow_name, name = excluded.name,
+    status = excluded.status, conclusion = excluded.conclusion, started_at = excluded.started_at,
+    completed_at = excluded.completed_at, html_url = excluded.html_url, runner_name = excluded.runner_name,
+    runner_group_name = excluded.runner_group_name, labels_json = excluded.labels_json,
+    failed_step = excluded.failed_step, fetched_at = datetime('now')
+`);
+
+export function upsertRunJob(job: Omit<RunJobRow, "log_bytes" | "log_truncated" | "log_error" | "fetched_at">): boolean {
+  const latest = db.prepare<{ attempt: number | null }, [string, number]>(
+    "SELECT MAX(run_attempt) AS attempt FROM workflow_runs WHERE repo = ? AND run_id = ?",
+  ).get(job.repo, job.run_id)?.attempt;
+  if (latest !== null && latest !== undefined && job.run_attempt < latest) return false;
+  const current = getRunJobStmt.get(job.repo, job.job_id);
+  if (current && job.run_attempt < current.run_attempt) return false;
+  if (current && job.run_attempt === current.run_attempt) {
+    const incomingRank = jobStateRank(job.status);
+    const currentRank = jobStateRank(current.status);
+    if (incomingRank < currentRank) return false;
+    const incomingAt = job.completed_at ?? job.started_at;
+    const currentAt = current.completed_at ?? current.started_at;
+    if (incomingRank === currentRank && incomingAt !== null && currentAt !== null && Date.parse(incomingAt) < Date.parse(currentAt)) return false;
+  }
+  upsertRunJobStmt.run(
+    job.repo, job.job_id, job.run_id, job.run_attempt, job.head_sha, job.head_branch,
+    job.workflow_name, job.name, job.status, job.conclusion, job.started_at, job.completed_at,
+    job.html_url, job.runner_name, job.runner_group_name, job.labels_json, job.failed_step,
+  );
+  return true;
 }
 
 const listRunJobsStmt = db.prepare<RunJobRow, [string, string]>(
-  `SELECT repo, job_id, run_id, run_attempt, head_sha, name, status, conclusion,
-    started_at, completed_at, html_url, failed_step, log_bytes, log_truncated, log_error, fetched_at
-  FROM run_jobs WHERE repo = ? AND head_sha = ?
-  ORDER BY completed_at DESC, job_id DESC`,
+  `SELECT j.repo, j.job_id, j.run_id, j.run_attempt, j.head_sha, j.head_branch,
+    j.workflow_name, j.name, j.status, j.conclusion, j.started_at, j.completed_at,
+    j.html_url, j.runner_name, j.runner_group_name, j.labels_json, j.failed_step,
+    j.log_bytes, j.log_truncated, j.log_error, j.fetched_at
+   FROM run_jobs j
+   WHERE j.repo = ? AND j.head_sha = ?
+     AND NOT EXISTS (
+       SELECT 1 FROM run_jobs newer
+       WHERE newer.repo = j.repo AND newer.run_id = j.run_id
+         AND newer.head_sha = j.head_sha AND newer.run_attempt > j.run_attempt
+     )
+   ORDER BY j.completed_at DESC, j.job_id DESC`,
 );
 
 export function listRunJobs(repo: string, headSha: string): RunJobRow[] {
@@ -712,19 +849,83 @@ export function getRunJobLog(repo: string, jobId: number): Uint8Array | null {
 }
 
 const saveRunJobLogStmt = db.prepare(
-  "UPDATE run_jobs SET log_gz = ?, log_bytes = ?, log_truncated = ?, log_error = NULL WHERE repo = ? AND job_id = ?",
+  `UPDATE run_jobs SET log_gz = ?, log_bytes = ?, log_truncated = 0, log_error = NULL
+   WHERE repo = ? AND job_id = ? AND run_id = ? AND run_attempt = ? AND head_sha = ?`,
 );
 
-export function saveRunJobLog(repo: string, jobId: number, gz: Uint8Array, bytes: number, truncated: boolean): void {
-  saveRunJobLogStmt.run(gz, bytes, truncated ? 1 : 0, repo, jobId);
+export function saveRunJobLog(
+  repo: string, jobId: number, runId: number, runAttempt: number, headSha: string,
+  gz: Uint8Array, bytes: number,
+): boolean {
+  return saveRunJobLogStmt.run(gz, bytes, repo, jobId, runId, runAttempt, headSha).changes > 0;
 }
 
 const saveRunJobLogErrorStmt = db.prepare(
-  "UPDATE run_jobs SET log_error = ? WHERE repo = ? AND job_id = ?",
+  "UPDATE run_jobs SET log_error = ? WHERE repo = ? AND job_id = ? AND run_attempt = ?",
 );
 
-export function saveRunJobLogError(repo: string, jobId: number, error: string): void {
-  saveRunJobLogErrorStmt.run(error, repo, jobId);
+export function saveRunJobLogError(repo: string, jobId: number, runAttempt: number, error: string): void {
+  saveRunJobLogErrorStmt.run(error, repo, jobId, runAttempt);
+}
+
+export function markWorkflowRunJobsFetched(repo: string, runId: number, runAttempt: number): void {
+  db.prepare("UPDATE workflow_runs SET jobs_fetched_at = datetime('now') WHERE repo = ? AND run_id = ? AND run_attempt = ?")
+    .run(repo, runId, runAttempt);
+}
+
+export function markWorkflowRunReconciled(repo: string, runId: number, runAttempt: number): void {
+  db.prepare("UPDATE workflow_runs SET reconciled_at = datetime('now') WHERE repo = ? AND run_id = ? AND run_attempt = ?")
+    .run(repo, runId, runAttempt);
+}
+
+export function workflowRunsForLease(repo: string, number: number, headSha: string): WorkflowRunRow[] {
+  return db.prepare<WorkflowRunRow, [string, number, string]>(
+    "SELECT * FROM workflow_runs WHERE repo = ? AND pr_number = ? AND head_sha = ? ORDER BY run_id, run_attempt",
+  ).all(repo, number, headSha);
+}
+
+export interface ActionsLeaseRow {
+  repo: string;
+  number: number;
+  head_sha: string;
+  expires_at: string;
+  bootstrapped_at: string | null;
+}
+
+export function actionsLease(repo: string, number: number): ActionsLeaseRow | null {
+  return db.prepare<ActionsLeaseRow, [string, number]>(
+    "SELECT * FROM actions_leases WHERE repo = ? AND number = ? AND expires_at > datetime('now')",
+  ).get(repo, number) ?? null;
+}
+
+export function renewActionsLease(repo: string, number: number, headSha: string): ActionsLeaseRow {
+  db.prepare(`
+    INSERT INTO actions_leases (repo, number, head_sha, expires_at, bootstrapped_at)
+    VALUES (?, ?, ?, datetime('now', '+72 hours'), NULL)
+    ON CONFLICT (repo, number) DO UPDATE SET
+      head_sha = excluded.head_sha, expires_at = excluded.expires_at,
+      bootstrapped_at = CASE
+        WHEN actions_leases.head_sha = excluded.head_sha AND actions_leases.expires_at > datetime('now')
+        THEN actions_leases.bootstrapped_at
+        ELSE NULL
+      END
+  `).run(repo, number, headSha);
+  return actionsLease(repo, number)!;
+}
+
+export function markActionsLeaseBootstrapped(repo: string, number: number, headSha: string): void {
+  db.prepare("UPDATE actions_leases SET bootstrapped_at = datetime('now') WHERE repo = ? AND number = ? AND head_sha = ?")
+    .run(repo, number, headSha);
+}
+
+export function resetActiveActionsLeaseBootstraps(): void {
+  db.prepare("UPDATE actions_leases SET bootstrapped_at = NULL WHERE expires_at > datetime('now')").run();
+}
+
+export function activeActionsLeases(): ActionsLeaseRow[] {
+  return db.prepare<ActionsLeaseRow, []>(
+    "SELECT * FROM actions_leases WHERE expires_at > datetime('now') ORDER BY repo, number",
+  ).all();
 }
 
 export interface MutationRow {

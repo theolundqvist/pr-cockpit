@@ -1,120 +1,357 @@
-import { gunzipSync, gzipSync } from "node:zlib";
-import { checkState } from "./checkState.ts";
-import { getRunJobLog, listRunJobs, saveRunJobLog, saveRunJobLogError, upsertRunJob, type RunJobRow } from "./db.ts";
-import { fetchGithubQuota, fetchJobLog, fetchRunJobs, type PrDetail, type RunJob } from "./github.ts";
+import { gzip, gunzip } from "node:zlib";
+import { promisify } from "node:util";
+import {
+  activeActionsLeases,
+  actionsLease,
+  getRunJobLog,
+  listRunJobs,
+  markActionsLeaseBootstrapped,
+  markWorkflowRunJobsFetched,
+  markWorkflowRunReconciled,
+  openPrForAction,
+  renewActionsLease,
+  saveRunJobLog,
+  saveRunJobLogError,
+  upsertRunJob,
+  upsertWorkflowRun,
+  workflowRunsForLease,
+  type RunJobRow,
+} from "./db.ts";
+import {
+  fetchGithubQuota,
+  fetchJobLog,
+  fetchRunJobs,
+  fetchWorkflowRuns,
+  type RunJob,
+  type WorkflowRun,
+} from "./github.ts";
 
-// A 256 KB tail carried the failure evidence in every one of 14 sampled real failures on
-// scape-app/scape, the largest of which was 603 KB raw.
+const gzipAsync = promisify(gzip);
+const gunzipAsync = promisify(gunzip);
+
 export const JOB_LOG_TAIL_BYTES = 262_144;
-// Log downloads spend the same REST pool as merges and diffs, so background fetching stops early.
 export const REST_BACKGROUND_RESERVE = 500;
-const RUN_FETCH_CONCURRENCY = 4;
-// success and skipped jobs have no reader; a null conclusion means the job never finished
-const LOG_WORTHY_CONCLUSION: Record<string, true> = {
-  failure: true,
-  cancelled: true,
-  timed_out: true,
-  action_required: true,
-  neutral: true,
-};
-
+const LOG_WORTHY_CONCLUSION = new Set(["failure", "cancelled", "timed_out", "action_required", "neutral"]);
 const TIMESTAMP_LINE_RE = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z /gm;
-// ANSI SGR codes; \u001b is a control character by definition
 const ANSI_RE = /\u001b\[[0-9;]*m/g;
 
-export interface JobLogFetchers {
+export interface CompactRun {
+  id: number;
+  attempt: number;
+  headSha: string;
+  headBranch: string;
+  workflowName: string;
+  status: string;
+  conclusion: string | null;
+  eventAt: string;
+  htmlUrl: string | null;
+}
+
+export interface CompactJob {
+  id: number;
+  runId: number;
+  attempt: number;
+  headSha: string;
+  headBranch: string;
+  workflowName: string;
+  name: string;
+  status: string;
+  conclusion: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  htmlUrl: string | null;
+  runnerName: string | null;
+  runnerGroupName: string | null;
+  labels: string[];
+  failedStep: string | null;
+}
+
+export interface ActionsFetchers {
+  fetchWorkflowRuns: typeof fetchWorkflowRuns;
   fetchRunJobs: typeof fetchRunJobs;
   fetchJobLog: typeof fetchJobLog;
   restRemaining: () => Promise<number>;
 }
 
-const liveFetchers: JobLogFetchers = {
+const liveFetchers: ActionsFetchers = {
+  fetchWorkflowRuns,
   fetchRunJobs,
   fetchJobLog,
   restRemaining: async () => (await fetchGithubQuota()).rest.remaining,
 };
+const activations = new Map<string, { headSha: string; promise: Promise<void> }>();
+const reconciliations = new Map<string, { background: boolean; terminal: boolean; promise: Promise<boolean> }>();
 
-export function cleanJobLog(text: string): { body: string; truncated: boolean } {
-  const plain = text.replace(/^\uFEFF/, "").replace(TIMESTAMP_LINE_RE, "").replace(ANSI_RE, "");
-  if (Buffer.byteLength(plain) <= JOB_LOG_TAIL_BYTES) return { body: plain, truncated: false };
-  const tail = Buffer.from(plain).subarray(-JOB_LOG_TAIL_BYTES).toString();
-  // a byte cut lands mid-line, and half a line reads as corrupt output rather than a tail
-  const firstBreak = tail.indexOf("\n");
-  return { body: firstBreak === -1 ? tail : tail.slice(firstBreak + 1), truncated: true };
+export function cleanJobLog(text: string): string {
+  return text.replace(/^\uFEFF/, "").replace(TIMESTAMP_LINE_RE, "").replace(ANSI_RE, "");
 }
 
-// The run a check belongs to is the only contractual route to its job ids: GitHub documents
-// details_url as an arbitrary integrator URL, so its /job/<id> shape must never be parsed.
-export function failingRunIds(detail: PrDetail): number[] {
-  const nodes = detail.lastCommit?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
-  const runIds = new Set<number>();
-  for (const check of nodes) {
-    if (check.__typename !== "CheckRun") continue;
-    const state = checkState(check);
-    if (state !== "failed" && state !== "cancelled") continue;
-    const runId = check.checkSuite?.workflowRun?.databaseId;
-    if (typeof runId === "number") runIds.add(runId);
-  }
-  return [...runIds];
+function compactRun(run: WorkflowRun): CompactRun {
+  return {
+    id: run.id,
+    attempt: run.run_attempt ?? 1,
+    headSha: run.head_sha,
+    headBranch: run.head_branch,
+    workflowName: run.name,
+    status: run.status,
+    conclusion: run.conclusion,
+    eventAt: run.updated_at,
+    htmlUrl: run.html_url,
+  };
 }
 
-function storeJob(repo: string, job: RunJob): void {
-  upsertRunJob({
-    repo,
-    job_id: job.id,
-    run_id: job.run_id,
-    run_attempt: job.run_attempt ?? 1,
-    head_sha: job.head_sha,
+function compactJob(job: RunJob, run?: CompactRun): CompactJob {
+  return {
+    id: job.id,
+    runId: job.run_id,
+    attempt: job.run_attempt ?? run?.attempt ?? 1,
+    headSha: job.head_sha || run?.headSha || "",
+    headBranch: job.head_branch ?? run?.headBranch ?? "",
+    workflowName: job.workflow_name ?? run?.workflowName ?? "",
     name: job.name,
     status: job.status,
     conclusion: job.conclusion,
-    started_at: job.started_at,
-    completed_at: job.completed_at,
-    html_url: job.html_url,
-    failed_step: job.steps?.find((step) => step.conclusion === "failure")?.name ?? null,
+    startedAt: job.started_at,
+    completedAt: job.completed_at,
+    htmlUrl: job.html_url,
+    runnerName: job.runner_name ?? null,
+    runnerGroupName: job.runner_group_name ?? null,
+    labels: job.labels ?? [],
+    failedStep: job.steps?.find((step) => step.conclusion === "failure")?.name ?? null,
+  };
+}
+
+export function compactActionsPayload(event: string, payload: any): { run?: CompactRun; job?: CompactJob } | null {
+  if (event === "workflow_run" && payload.workflow_run) {
+    const raw = payload.workflow_run;
+    if (typeof raw.id !== "number" || typeof raw.head_sha !== "string" || typeof raw.status !== "string") return null;
+    return {
+      run: {
+        id: raw.id,
+        attempt: raw.run_attempt ?? 1,
+        headSha: raw.head_sha,
+        headBranch: raw.head_branch ?? "",
+        workflowName: raw.name ?? raw.workflow_name ?? "",
+        status: raw.status,
+        conclusion: raw.conclusion ?? null,
+        eventAt: raw.updated_at ?? raw.run_started_at ?? "",
+        htmlUrl: raw.html_url ?? null,
+      },
+    };
+  }
+  if (event === "workflow_job" && payload.workflow_job) {
+    const raw = payload.workflow_job;
+    if (
+      typeof raw.id !== "number" ||
+      typeof raw.run_id !== "number" ||
+      typeof raw.name !== "string" ||
+      typeof raw.status !== "string"
+    ) return null;
+    return {
+      job: {
+        id: raw.id,
+        runId: raw.run_id,
+        attempt: raw.run_attempt ?? 1,
+        headSha: raw.head_sha ?? payload.workflow_run?.head_sha ?? "",
+        headBranch: raw.head_branch ?? payload.workflow_run?.head_branch ?? "",
+        workflowName: raw.workflow_name ?? payload.workflow_run?.name ?? "",
+        name: raw.name,
+        status: raw.status,
+        conclusion: raw.conclusion ?? null,
+        startedAt: raw.started_at ?? null,
+        completedAt: raw.completed_at ?? null,
+        htmlUrl: raw.html_url ?? null,
+        runnerName: raw.runner_name ?? null,
+        runnerGroupName: raw.runner_group_name ?? null,
+        labels: raw.labels ?? [],
+        failedStep: raw.steps?.find((step: any) => step.conclusion === "failure")?.name ?? null,
+      },
+    };
+  }
+  return null;
+}
+
+function storeRun(repo: string, number: number, run: CompactRun): boolean {
+  return upsertWorkflowRun({
+    repo, run_id: run.id, run_attempt: run.attempt, pr_number: number, head_sha: run.headSha,
+    head_branch: run.headBranch, workflow_name: run.workflowName, status: run.status,
+    conclusion: run.conclusion, event_at: run.eventAt, html_url: run.htmlUrl,
   });
 }
 
-async function storeJobLog(repo: string, job: RunJob, fetchers: JobLogFetchers): Promise<void> {
-  try {
-    const { body, truncated } = cleanJobLog(await fetchers.fetchJobLog(repo, job.id));
-    saveRunJobLog(repo, job.id, gzipSync(body), Buffer.byteLength(body), truncated);
-  } catch (err) {
-    saveRunJobLogError(repo, job.id, err instanceof Error ? err.message : String(err));
-  }
+function storeJob(repo: string, job: CompactJob): boolean {
+  return upsertRunJob({
+    repo, job_id: job.id, run_id: job.runId, run_attempt: job.attempt, head_sha: job.headSha,
+    head_branch: job.headBranch, workflow_name: job.workflowName, name: job.name, status: job.status,
+    conclusion: job.conclusion, started_at: job.startedAt, completed_at: job.completedAt,
+    html_url: job.htmlUrl, runner_name: job.runnerName, runner_group_name: job.runnerGroupName,
+    labels_json: JSON.stringify(job.labels), failed_step: job.failedStep,
+  });
 }
 
-async function syncRun(repo: string, runId: number, fetchers: JobLogFetchers, background: boolean): Promise<void> {
-  const jobs = await fetchers.fetchRunJobs(repo, runId);
-  const wanted: RunJob[] = [];
-  for (const job of jobs) {
-    storeJob(repo, job);
-    const logged = job.status === "completed" && job.conclusion !== null && LOG_WORTHY_CONCLUSION[job.conclusion] === true;
-    if (logged && !getRunJobLog(repo, job.id)) wanted.push(job);
-  }
-  if (wanted.length === 0) return;
+async function fetchLogs(repo: string, jobs: CompactJob[], fetchers: ActionsFetchers, background: boolean): Promise<boolean> {
+  const wanted = jobs.filter((job) =>
+    job.status === "completed" && job.conclusion !== null &&
+    LOG_WORTHY_CONCLUSION.has(job.conclusion) && getRunJobLog(repo, job.id) === null
+  );
+  if (wanted.length === 0) return true;
   if (background && (await fetchers.restRemaining()) - wanted.length < REST_BACKGROUND_RESERVE) {
-    for (const job of wanted) saveRunJobLogError(repo, job.id, "log not fetched: REST quota reserved for actions");
-    return;
+    for (const job of wanted) saveRunJobLogError(repo, job.id, job.attempt, "log not fetched: REST quota reserved for actions");
+    return false;
   }
-  for (const job of wanted) await storeJobLog(repo, job, fetchers);
-}
-
-// Runs are fetched in parallel while each run's own logs are fetched serially: a run contributes at
-// most one in-flight download, which keeps a 30-job matrix from opening 30 sockets at once.
-export async function syncRunJobs(
-  repo: string,
-  detail: PrDetail,
-  { background = true, fetchers = liveFetchers }: { background?: boolean; fetchers?: JobLogFetchers } = {},
-): Promise<void> {
-  const runIds = failingRunIds(detail);
-  for (let index = 0; index < runIds.length; index += RUN_FETCH_CONCURRENCY) {
-    const wave = runIds.slice(index, index + RUN_FETCH_CONCURRENCY);
-    const settled = await Promise.allSettled(wave.map((runId) => syncRun(repo, runId, fetchers, background)));
-    for (const result of settled) {
-      if (result.status === "rejected") console.error(`run job sync failed for ${repo}:`, result.reason);
+  let complete = true;
+  for (const job of wanted) {
+    try {
+      const body = cleanJobLog(await fetchers.fetchJobLog(repo, job.id));
+      const compressed = await gzipAsync(body);
+      saveRunJobLog(repo, job.id, job.runId, job.attempt, job.headSha, compressed, Buffer.byteLength(body));
+    } catch (error) {
+      complete = false;
+      saveRunJobLogError(repo, job.id, job.attempt, error instanceof Error ? error.message : String(error));
     }
   }
+  return complete;
+}
+async function reconcileRun(repo: string, run: CompactRun, fetchers: ActionsFetchers, background: boolean): Promise<boolean> {
+  if (background && await fetchers.restRemaining() <= REST_BACKGROUND_RESERVE) return false;
+  const jobs = (await fetchers.fetchRunJobs(repo, run.id, run.status === "completed" ? run.attempt : undefined))
+    .map((job) => compactJob(job, run));
+  for (const job of jobs) storeJob(repo, job);
+  markWorkflowRunJobsFetched(repo, run.id, run.attempt);
+  if (!(await fetchLogs(repo, jobs, fetchers, background))) return false;
+  if (run.status === "completed") markWorkflowRunReconciled(repo, run.id, run.attempt);
+  return true;
+}
+
+function queueReconciliation(
+  repo: string,
+  run: CompactRun,
+  fetchers: ActionsFetchers,
+  background: boolean,
+): Promise<boolean> {
+  const key = `${repo}:${run.id}:${run.attempt}`;
+  const pending = reconciliations.get(key);
+  if (pending) {
+    const terminalFollowup = run.status === "completed" && !pending.terminal;
+    const explicitFollowup = !background && pending.background;
+    if (!terminalFollowup && !explicitFollowup) return pending.promise;
+    const start = pending.promise.then((complete) => {
+      if (terminalFollowup || (explicitFollowup && !complete)) {
+        return reconcileRun(repo, run, fetchers, background);
+      }
+      return complete;
+    });
+    let entry: { background: boolean; terminal: boolean; promise: Promise<boolean> };
+    entry = {
+      background,
+      terminal: pending.terminal || run.status === "completed",
+      promise: start.finally(() => {
+        if (reconciliations.get(key) === entry) reconciliations.delete(key);
+      }),
+    };
+    reconciliations.set(key, entry);
+    return entry.promise;
+  }
+  const start = reconcileRun(repo, run, fetchers, background);
+  let entry: { background: boolean; terminal: boolean; promise: Promise<boolean> };
+  entry = {
+    background,
+    terminal: run.status === "completed",
+    promise: start.finally(() => {
+      if (reconciliations.get(key) === entry) reconciliations.delete(key);
+    }),
+  };
+  reconciliations.set(key, entry);
+  return entry.promise;
+}
+
+async function repairActionsLease(repo: string, number: number, headSha: string, fetchers: ActionsFetchers): Promise<void> {
+  const lease = actionsLease(repo, number);
+  if (!lease || lease.head_sha !== headSha) return;
+  if (lease.bootstrapped_at === null) {
+    const runs = await fetchers.fetchWorkflowRuns(repo, headSha);
+    for (const raw of runs) storeRun(repo, number, compactRun(raw));
+    for (const raw of runs) {
+      const run = compactRun(raw);
+      if (run.status !== "completed") await queueReconciliation(repo, run, fetchers, false);
+    }
+    markActionsLeaseBootstrapped(repo, number, headSha);
+  }
+  for (const row of workflowRunsForLease(repo, number, headSha)) {
+    if (row.status !== "completed" || row.reconciled_at !== null) continue;
+    await queueReconciliation(repo, {
+      id: row.run_id, attempt: row.run_attempt, headSha: row.head_sha, headBranch: row.head_branch,
+      workflowName: row.workflow_name, status: row.status, conclusion: row.conclusion,
+      eventAt: row.event_at, htmlUrl: row.html_url,
+    }, fetchers, false);
+  }
+}
+
+function queueActionsLease(
+  repo: string,
+  number: number,
+  headSha: string,
+  fetchers: ActionsFetchers,
+): Promise<void> {
+  const key = `${repo}#${number}`;
+  const pending = activations.get(key);
+  if (pending?.headSha === headSha) return pending.promise;
+  const start = pending
+    ? pending.promise.catch(() => {}).then(() => repairActionsLease(repo, number, headSha, fetchers))
+    : repairActionsLease(repo, number, headSha, fetchers);
+  let entry: { headSha: string; promise: Promise<void> };
+  entry = {
+    headSha,
+    promise: start.finally(() => {
+      if (activations.get(key) === entry) activations.delete(key);
+    }),
+  };
+  activations.set(key, entry);
+  return entry.promise;
+}
+
+export function activateActionsLease(
+  repo: string,
+  number: number,
+  headSha: string,
+  fetchers: ActionsFetchers = liveFetchers,
+): Promise<void> {
+  renewActionsLease(repo, number, headSha);
+  return queueActionsLease(repo, number, headSha, fetchers);
+}
+
+export async function resumeActionsLeases(fetchers: ActionsFetchers = liveFetchers): Promise<void> {
+  const failures: unknown[] = [];
+  for (const lease of activeActionsLeases()) {
+    try {
+      await queueActionsLease(lease.repo, lease.number, lease.head_sha, fetchers);
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) throw new AggregateError(failures, "failed to resume Actions leases");
+}
+
+export async function ingestActionsState(
+  repo: string,
+  state: { run?: CompactRun; job?: CompactJob },
+  fetchers: ActionsFetchers = liveFetchers,
+): Promise<boolean> {
+  const item = state.run ?? state.job;
+  if (!item) return false;
+  const pr = openPrForAction(repo, item.headSha, item.headBranch);
+  if (!pr) return false;
+  if (state.run) {
+    const changed = storeRun(repo, pr.number, state.run);
+    const lease = actionsLease(repo, pr.number);
+    if (changed && lease?.head_sha === pr.head_sha && state.run.status === "completed") {
+      const row = workflowRunsForLease(repo, pr.number, pr.head_sha)
+        .find((candidate) => candidate.run_id === state.run!.id && candidate.run_attempt === state.run!.attempt);
+      if (row?.reconciled_at === null) await queueReconciliation(repo, state.run, fetchers, true);
+    }
+    return changed;
+  }
+  return storeJob(repo, state.job!);
 }
 
 export interface CachedJobLog {
@@ -122,24 +359,45 @@ export interface CachedJobLog {
   body: string | null;
 }
 
-export function cachedJobLogs(repo: string, headSha: string, checkName?: string): CachedJobLog[] {
-  const jobs = listRunJobs(repo, headSha).filter((job) => job.conclusion !== "success" && job.conclusion !== "skipped");
-  const matched = checkName
-    ? jobs.filter((job) => job.name.toLowerCase().includes(checkName.toLowerCase()))
-    : jobs;
-  return matched.map((job) => {
-    const gz = getRunJobLog(repo, job.job_id);
-    return { job, body: gz ? gunzipSync(gz).toString() : null };
-  });
+function tail(text: string): string {
+  if (Buffer.byteLength(text) <= JOB_LOG_TAIL_BYTES) return text;
+  const value = Buffer.from(text).subarray(-JOB_LOG_TAIL_BYTES).toString();
+  const firstBreak = value.indexOf("\n");
+  return firstBreak === -1 ? value : value.slice(firstBreak + 1);
 }
 
-export function formatJobLogs(headSha: string, entries: CachedJobLog[]): string {
+export async function cachedJobLogs(repo: string, headSha: string, checkName?: string, full = false): Promise<CachedJobLog[]> {
+  const jobs = listRunJobs(repo, headSha).filter((job) => job.conclusion !== "success" && job.conclusion !== "skipped");
+  const matched = checkName ? jobs.filter((job) => job.name.toLowerCase().includes(checkName.toLowerCase())) : jobs;
+  const entries: CachedJobLog[] = [];
+  for (const job of matched) {
+    const gz = getRunJobLog(repo, job.job_id);
+    const complete = gz ? (await gunzipAsync(gz)).toString() : null;
+    entries.push({ job, body: complete === null || full ? complete : tail(complete) });
+  }
+  return entries;
+}
+
+export function formatRunJobs(headSha: string, jobs: RunJobRow[]): string {
+  if (jobs.length === 0) return `No cached Actions jobs for ${headSha}.\n`;
+  const rows = jobs.map((job) => {
+    const labels = (JSON.parse(job.labels_json) as string[]).join(", ");
+    const scheduling = job.runner_name
+      ? ` · runner ${job.runner_group_name ? `${job.runner_group_name}/` : ""}${job.runner_name}`
+      : labels ? ` · requested ${labels}` : "";
+    return `- ${job.workflow_name ? `${job.workflow_name} / ` : ""}${job.name}: ${job.conclusion ?? job.status}${scheduling}`;
+  });
+  return `Cached Actions jobs for ${headSha}\n\n${rows.join("\n")}\n`;
+}
+
+export function formatJobLogs(headSha: string, entries: CachedJobLog[], full = false): string {
   if (entries.length === 0) return `No cached jobs for ${headSha}. Nothing failed, or the run has not finished.\n`;
   const sections = entries.map(({ job, body }) => {
     const facts = [
       job.conclusion ?? job.status,
       job.failed_step ? `failed step: ${job.failed_step}` : null,
-      job.log_truncated === 1 ? `truncated to the last ${JOB_LOG_TAIL_BYTES / 1024} KB` : null,
+      !full && job.log_bytes !== null && job.log_bytes > JOB_LOG_TAIL_BYTES ? `last ${JOB_LOG_TAIL_BYTES / 1024} KB` : null,
+      job.log_truncated === 1 ? "legacy truncated log" : null,
       job.html_url,
     ].filter((fact) => fact !== null);
     const text = body ?? `no log cached: ${job.log_error ?? "job is not complete"}`;

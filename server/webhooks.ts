@@ -18,6 +18,7 @@ import { eligibleWebhookRepos, forwarderStatuses, reconcileForwarders, wantedRep
 import { prKeyOf } from "./prKey.ts";
 import { backgroundPollAllowed, refreshPr } from "./poller.ts";
 import { listWorktrees } from "./worktreeScan.ts";
+import { compactActionsPayload, ingestActionsState } from "./runLogs.ts";
 
 const REVIEW_POLL_INTERVAL_MS = 1_800_000;
 
@@ -155,6 +156,12 @@ async function handleHook(req: Request, refresh: typeof refreshPr): Promise<Resp
   const { repo, number } = extractHookRepoAndNumber(body);
   if (!repo) return new Response("ignored");
   if (!eligibleWebhookRepos().has(repo)) return new Response("ignored");
+
+  const actions = compactActionsPayload(event, body);
+  if (actions) {
+    await ingestActionsState(repo, actions);
+    return new Response("ok");
+  }
 
   const receivedAt = new Date().toISOString();
   if (event === "push") {

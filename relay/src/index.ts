@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { compactActions, deliveredCursor, type CompactJob, type CompactRun } from "./compactActions.ts";
 
 interface Env {
   WEBHOOK_SECRET: string;
@@ -11,6 +12,8 @@ interface Marker {
   repo: string;
   number: number | null;
   event: string;
+  run?: CompactRun;
+  job?: CompactJob;
 }
 
 interface Coverage {
@@ -100,7 +103,7 @@ export class Events extends DurableObject<Env> {
       const verdict = this.cachedVerdict(tokenHash, e.repo);
       if (verdict !== undefined) verdicts[e.repo] = verdict;
     }
-    return { latest: this.seq, events, verdicts };
+    return { latest: deliveredCursor(this.seq, events), events, verdicts };
   }
 
   async putVerdicts(tokenHash: string, verdicts: Record<string, boolean>): Promise<void> {
@@ -148,9 +151,12 @@ function prNumber(payload: any): number | null {
     payload.issue?.number ??
     payload.check_run?.pull_requests?.[0]?.number ??
     payload.check_suite?.pull_requests?.[0]?.number ??
+    payload.workflow_run?.pull_requests?.[0]?.number ??
+    payload.workflow_job?.pull_requests?.[0]?.number ??
     null
   );
 }
+
 
 async function sha256Hex(text: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
@@ -195,6 +201,7 @@ export default {
         repo,
         number: prNumber(payload),
         event,
+        ...compactActions(event, payload),
       });
       return new Response("ok");
     }
