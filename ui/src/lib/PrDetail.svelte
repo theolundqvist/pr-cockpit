@@ -2271,12 +2271,14 @@
       {/if}
 
       <nav class="tabs">
-        <a class="tab" class:active={tab === "conversation"} href="#/pr/{repo}/{number}" onclick={(event) => guardTabNavigation(event, "conversation")}>Conversation</a>
+        <a class="tab" class:active={tab === "conversation"} href="#/pr/{repo}/{number}" onclick={(event) => guardTabNavigation(event, "conversation")}>
+          Conversation <Kbd keys="d" />
+        </a>
         <a class="tab" class:active={tab === "files"} href="#/pr/{repo}/{number}/files">
-          Files {#if diffState === "ready"}<span class="tab-count">{treeFiles.length}</span>{/if}
+          Files {#if diffState === "ready"}<span class="tab-count">{treeFiles.length}</span>{/if} <Kbd keys="d" />
         </a>
         <a class="tab" class:active={tab === "agents"} href="#/pr/{repo}/{number}/agents" onclick={(event) => guardTabNavigation(event, "agents")}>
-          Agents {#if agent?.state === "running"}<span class="tab-count">1</span>{/if}
+          Agents {#if agent?.state === "running"}<span class="tab-count">1</span>{/if} <Kbd keys="⌘3" />
         </a>
       </nav>
 
@@ -3436,6 +3438,9 @@
     margin-bottom: 24px;
   }
   .tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     font-size: 12.5px;
     letter-spacing: 0.03em;
     text-transform: uppercase;

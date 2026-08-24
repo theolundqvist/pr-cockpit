@@ -1,6 +1,7 @@
 <script>
   import { relativeTime } from "./time.js";
   import Chevron from "./Chevron.svelte";
+  import Kbd from "./Kbd.svelte";
 
   let { commits, rangeKey, showSince, sinceLabel, onSelect, open = $bindable(false) } = $props();
 
@@ -118,6 +119,7 @@
 <div class="rangepicker" bind:this={rootEl}>
   <button class="rp-trigger" aria-haspopup="listbox" aria-expanded={open} onclick={() => (open ? close() : (open = true))}>
     <span class="rp-label">{currentLabel}</span>
+    <Kbd keys="c" />
     <Chevron />
   </button>
   {#if open}
