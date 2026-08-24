@@ -5,7 +5,8 @@
   "scripts": {
     "start": "scripts/cockpit",
     "check:worktree-runtime": "bun scripts/check-worktree-runtime.ts",
-    "check:release": "bun scripts/check-release.ts"
+    "check:release": "bun scripts/check-release.ts",
+    "screenshots:landing": "cd ui && bun run build && cd .. && bun scripts/shoot-snapshot.mjs --snapshot server/mockData/microsoft-vscode --out .scratch/landing-real --viewport 1600x1200 --theme light --profile landing && bun scripts/shoot-views.mjs --out .scratch/landing-agent --filter detail-agent-prompt --sizes 1200x900 --theme light && bun scripts/frame-landing-assets.mjs"
   },
   "devDependencies": {
     "@types/bun": "latest",

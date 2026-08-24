@@ -6,7 +6,7 @@
       "height": 900,
       "theme": "light",
       "treatment": "bare app window, radius and shadow applied by the page",
-      "source": "cropped out of the committed wallpaper-framed asset; the .scratch capture named in frame-landing-assets.mjs has since drifted from what shipped",
+      "source": ".scratch/landing-real/inbox-light.png",
       "scenario": "microsoft/vscode frozen inbox"
     },
     {
@@ -15,7 +15,7 @@
       "height": 900,
       "theme": "light",
       "treatment": "bare app window, radius and shadow applied by the page",
-      "source": "cropped out of the committed wallpaper-framed asset; the .scratch capture named in frame-landing-assets.mjs has since drifted from what shipped",
+      "source": ".scratch/landing-real/editing-light.png",
       "scenario": "microsoft/vscode#331804 editor at changed line 192"
     },
     {
@@ -24,7 +24,7 @@
       "height": 900,
       "theme": "light",
       "treatment": "bare app window, radius and shadow applied by the page",
-      "source": "cropped out of the committed wallpaper-framed asset; the .scratch capture named in frame-landing-assets.mjs has since drifted from what shipped",
+      "source": ".scratch/landing-agent/1200x900/light/detail-agent-prompt.png",
       "scenario": "fixture/cockpit#101 actual p prompt"
     },
     {
@@ -33,7 +33,7 @@
       "height": 900,
       "theme": "light",
       "treatment": "bare app window, radius and shadow applied by the page",
-      "source": "cropped out of the committed wallpaper-framed asset; the .scratch capture named in frame-landing-assets.mjs has since drifted from what shipped",
+      "source": ".scratch/landing-real/history-light.png",
       "scenario": "microsoft/vscode#331804 file history"
     },
     {
@@ -42,7 +42,7 @@
       "height": 900,
       "theme": "light",
       "treatment": "bare app window, radius and shadow applied by the page",
-      "source": "cropped out of the committed wallpaper-framed asset; the .scratch capture named in frame-landing-assets.mjs has since drifted from what shipped",
+      "source": ".scratch/landing-real/revert-menu-light.png",
       "scenario": "microsoft/vscode#331771 clean unified hunk context menu"
     },
     {
