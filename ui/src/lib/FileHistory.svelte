@@ -3,6 +3,7 @@
   import { parseDiff } from "./diff.js";
   import { fetchFileHistory, fetchFileHistoryDiff } from "./api.js";
   import { relativeTime } from "./time.js";
+  import Kbd from "./Kbd.svelte";
 
   let { repo, path, base, baseSha = null, symbol = null, open = false, currentFile = null, currentPr, onClose, layout = "split" } = $props();
 
@@ -181,7 +182,7 @@
     <div class="fh-head">
       <button class="fh-back" onclick={close}>← Back</button>
       <span class="fh-title">{symbol ? "History mentioning" : "History"} · {#if symbol}<span class="fh-symbol mono">{symbol}</span>{" · "}{/if}<span class="fh-path mono">{path}</span> on <span class="mono">{base}</span></span>
-      <button class="fh-esc" onclick={close} aria-label="Close">esc</button>
+      <button class="fh-esc" onclick={close} aria-label="Close"><Kbd keys="esc" /></button>
     </div>
 
     {#if status === "loading"}
@@ -334,18 +335,11 @@
   }
   .fh-esc {
     flex: none;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    color: var(--text-dim);
-    font-size: 11px;
-    padding: 4px 10px;
+    padding: 0;
+    border: 0;
+    background: transparent;
     cursor: pointer;
     -webkit-app-region: no-drag;
-  }
-  .fh-esc:hover {
-    color: var(--text);
-    border-color: var(--text-faint);
   }
   .fh-state {
     padding: 24px;

@@ -119,14 +119,15 @@
 <div class="rangepicker" bind:this={rootEl}>
   <button class="rp-trigger" aria-haspopup="listbox" aria-expanded={open} onclick={() => (open ? close() : (open = true))}>
     <span class="rp-label">{currentLabel}</span>
-    <Kbd keys="c" />
+    {#if open}<Kbd keys="esc" />{:else}<Kbd keys="c" />{/if}
     <Chevron />
   </button>
   {#if open}
     <div class="rp-popover" role="listbox">
       {#each fixedRows as row, i}
         <button class="rp-row fixed" class:active={activeIdx === i} onmouseenter={() => (activeIdx = i)} onclick={() => pick(row.key)}>
-          {row.label}
+          <span>{row.label}</span>
+          {#if activeIdx === i}<Kbd keys="enter" />{/if}
         </button>
       {/each}
       {#if ordered.length}
@@ -148,6 +149,7 @@
             <span class="rp-sha">{c.abbreviatedOid}</span>
             <span class="rp-msg">{c.messageHeadline}</span>
             <span class="rp-time">{relativeTime(c.committedDate)}</span>
+            {#if activeIdx === fixedRows.length + i}<Kbd keys="enter" />{/if}
           </button>
         {/each}
         <div class="rp-hint">Drag, or press Space + J/K, to select a range</div>

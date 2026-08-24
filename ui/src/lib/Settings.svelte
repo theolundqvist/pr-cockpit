@@ -7,6 +7,7 @@
   import { scrollStep, scrollPage, scrollEdge } from "./scroll.js";
   import KeyBar from "./KeyBar.svelte";
   import ShortcutInput from "./ShortcutInput.svelte";
+  import Kbd from "./Kbd.svelte";
   import { SETTINGS_SECTION_KEY, SETTINGS_SECTIONS, normalizeSettingsSection } from "./settingsSections.js";
   let { onRunSetup, section = "general" } = $props();
 
@@ -628,7 +629,10 @@
       {/if}
 
       <div class="actions">
-        <button class="btn" disabled={saving || keybindClash || agentKeybindIssues.size > 0} onclick={save}>{saving ? "Saving…" : "Save"}</button>
+        <button class="btn" disabled={saving || keybindClash || agentKeybindIssues.size > 0} onclick={save}>
+          {saving ? "Saving…" : "Save"}
+          {#if !saving && !keybindClash && agentKeybindIssues.size === 0}<Kbd keys={["cmd", "s"]} />{/if}
+        </button>
         {#if saved}<span class="saved">Saved</span>{/if}
       </div>
       </div>
@@ -1258,6 +1262,10 @@
     background: var(--surface);
   }
   .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
     min-height: 32px;
     padding-inline: 14px;
     border: 0;

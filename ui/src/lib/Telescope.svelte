@@ -431,10 +431,10 @@
     <div class="ts-side">
       <div class="ts-tabs">
         <button class="ts-tab" class:on={mode === "search"} onclick={() => activate("search")}>
-          search <Kbd keys={["cmd", "shift", "f"]} />
+          search {#if mode !== "search"}<Kbd keys={["cmd", "shift", "f"]} />{/if}
         </button>
         <button class="ts-tab" class:on={mode === "files"} onclick={() => activate("files")}>
-          files <Kbd keys={["cmd", "p"]} />
+          files {#if mode !== "files"}<Kbd keys={["cmd", "p"]} />{/if}
         </button>
         {#if mode === "defs"}
           <span class="ts-tab on ts-tab-defs" title="definitions of {defsSymbol}">defs: {defsSymbol}</span>
@@ -487,6 +487,7 @@
                 <span class="ts-path">{group.path}</span>
                 {#if item.changed}<span class="ts-diff badge review">diff</span>{/if}
               {/if}
+              {#if item.index === selected}<Kbd keys="enter" />{/if}
             </button>
           {/each}
         {/each}
@@ -494,19 +495,22 @@
     </div>
     <div class="ts-main">
       <div class="ts-bar">
-        <button class="ts-nav" disabled={histIndex <= 0} onclick={goBack} title="Back (⌘[)" aria-label="Back">←</button>
-        <button
-          class="ts-nav"
-          disabled={histIndex >= hist.length - 1}
-          onclick={goForward}
-          title="Forward (⌘])"
-          aria-label="Forward">→</button
-        >
+        <button class="ts-nav shortcut" disabled={histIndex <= 0} onclick={goBack} title="Back" aria-label="Back">
+          <span aria-hidden="true">←</span>
+          {#if histIndex > 0}<Kbd keys={["cmd", "["]} />{/if}
+        </button>
+        <button class="ts-nav shortcut" disabled={histIndex >= hist.length - 1} onclick={goForward} title="Forward" aria-label="Forward">
+          <span aria-hidden="true">→</span>
+          {#if histIndex < hist.length - 1}<Kbd keys={["cmd", "]"]} />{/if}
+        </button>
         <span class="ts-loc" title={view?.path}>
           {#if view}{view.path}{#if view.line != null}:{view.line}{/if}{:else}no file{/if}
         </span>
         <span class="ts-hint">ctrl+click → definition · right-click → mention history</span>
-        <button class="ts-nav" onclick={close} title="Close (esc)" aria-label="Close">✕</button>
+        <button class="ts-nav shortcut" onclick={close} title="Close" aria-label="Close">
+          <span aria-hidden="true">✕</span>
+          <Kbd keys="esc" />
+        </button>
       </div>
       <div
         class="ts-editor mono"
@@ -751,6 +755,11 @@
     color: var(--text-dim);
     font-size: 15px;
     cursor: pointer;
+  }
+  .ts-nav.shortcut {
+    width: auto;
+    padding: 0 4px;
+    gap: 4px;
   }
   .ts-nav:hover:not(:disabled) {
     background: var(--panel-raised);

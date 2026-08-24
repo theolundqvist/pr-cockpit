@@ -173,6 +173,7 @@
               <path d="m14.5 6-6 6 6 6" />
             </svg>
             <span>Back to inbox</span>
+            <span class="nav-kbd"><Kbd keys="esc" /></span>
           </a>
           <span class="nav-label settings-nav-label">Settings</span>
           {#each SETTINGS_SECTIONS as section}
@@ -225,6 +226,7 @@
             <path transform="translate(-1.43 -0.5)" d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2 2-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.04 1.56V20.2h-2.8v-.1A1.7 1.7 0 0 0 11 18.54a1.7 1.7 0 0 0-1.88.34l-.06.06-2-2 .06-.06A1.7 1.7 0 0 0 7.46 15a1.7 1.7 0 0 0-1.56-1.04h-.1v-2.8h.1A1.7 1.7 0 0 0 7.46 10a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2-2 .06.06A1.7 1.7 0 0 0 11 6.46a1.7 1.7 0 0 0 1.04-1.56v-.1h2.8v.1A1.7 1.7 0 0 0 15.88 6.46a1.7 1.7 0 0 0 1.88-.34l.06-.06 2 2-.06.06A1.7 1.7 0 0 0 19.4 10a1.7 1.7 0 0 0 1.56 1.04h.1v2.8h-.1A1.7 1.7 0 0 0 19.4 15Z" />
           </svg>
           <span>Settings</span>
+          <span class="nav-kbd"><Kbd keys={["cmd", ","]} /></span>
         </a>
         {/if}
       </nav>

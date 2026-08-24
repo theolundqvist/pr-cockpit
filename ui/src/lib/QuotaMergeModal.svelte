@@ -1,5 +1,6 @@
 <script>
   import { quotaOutLabel } from "./quotaImpact.js";
+  import Kbd from "./Kbd.svelte";
 
   let { number, url, impact, onClose } = $props();
 
@@ -22,7 +23,9 @@
     </p>
     <div class="qm-actions">
       <button class="qm-btn primary" type="button" onclick={openGithub}>Merge on GitHub</button>
-      <button class="qm-btn" type="button" onclick={onClose}>Cancel</button>
+      <button class="qm-btn shortcut-action" type="button" onclick={onClose}>
+        Cancel <Kbd keys="enter" /><span aria-hidden="true">/</span><Kbd keys="esc" />
+      </button>
     </div>
   </div>
 </div>
@@ -82,6 +85,12 @@
     font-size: 14px;
     font-weight: 500;
     transition: background-color 140ms ease, transform 140ms var(--ease-out);
+  }
+  .shortcut-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
   }
 
   .qm-btn.primary {

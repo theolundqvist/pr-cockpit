@@ -1,5 +1,6 @@
 <script>
   import { cancelHoldScroll } from "./scroll.js";
+  import Kbd from "./Kbd.svelte";
 
   let open = $state(false);
   let query = $state("");
@@ -126,9 +127,15 @@
   <div class="find-bar">
     <input bind:this={inputEl} bind:value={query} oninput={search} placeholder="Find" spellcheck="false" autocomplete="off" />
     <span class="count" class:none={query && !count}>{count ? `${current + 1}/${count}` : query ? "0" : ""}</span>
-    <button class="nav" title="previous" onclick={() => cycle(-1)}>↑</button>
-    <button class="nav" title="next" onclick={() => cycle(1)}>↓</button>
-    <button class="nav" title="close" onclick={close}>esc</button>
+    <button class="nav" title="Previous match" aria-label="Previous match" disabled={!count} onclick={() => cycle(-1)}>
+      <span aria-hidden="true">↑</span>
+      {#if count}<Kbd keys={["shift", "enter"]} />{/if}
+    </button>
+    <button class="nav" title="Next match" aria-label="Next match" disabled={!count} onclick={() => cycle(1)}>
+      <span aria-hidden="true">↓</span>
+      {#if count}<Kbd keys="enter" />{/if}
+    </button>
+    <button class="nav" title="Close" aria-label="Close" onclick={close}><Kbd keys="esc" /></button>
   </div>
 {/if}
 
@@ -167,6 +174,10 @@
     color: var(--fail);
   }
   .nav {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
     background: none;
     border: none;
     color: var(--text-dim);
@@ -195,6 +206,10 @@
     min-width: 24px;
     min-height: 24px;
     border-radius: 6px;
+  }
+  .nav:disabled {
+    opacity: 0.4;
+    cursor: default;
   }
   @media (hover: hover) and (pointer: fine) {
     .nav:hover {

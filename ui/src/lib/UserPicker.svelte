@@ -1,5 +1,6 @@
 <script>
   import Avatar from "./Avatar.svelte";
+  import Kbd from "./Kbd.svelte";
 
   let { title, users, current, onPick, onClose } = $props();
 
@@ -68,6 +69,7 @@
             <Avatar login={user.login} url={user.avatarUrl} size={18} />
             <span class="picker-login">{user.login}</span>
             {#if current.has(user.login)}<span class="picker-added">added</span>{/if}
+            {#if i === index}<Kbd keys="enter" />{/if}
           </button>
         {/each}
       {/if}

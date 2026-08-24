@@ -104,7 +104,7 @@
       </button>
       <button class="decision-button primary" class:danger={force} type="button" aria-label={force ? "Force-merge pull request" : "Merge pull request"} data-primary onclick={onConfirm}>
         <span>{force ? "Force-merge" : "Merge pull request"}</span>
-        {#if !force}<Kbd keys="enter" />{/if}
+        <Kbd keys="enter" />
       </button>
     </div>
   </div>

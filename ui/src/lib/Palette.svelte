@@ -4,6 +4,7 @@
   import { isTypingTarget } from "./dom.js";
   import { isRecordingShortcut } from "./shortcutCapture.js";
   import { prKey } from "./prKey.js";
+  import Kbd from "./Kbd.svelte";
 
   let { standalone = false } = $props();
 
@@ -236,6 +237,7 @@
             {#if result.rankTone}
               <span class="pr-rank {result.rankTone}"></span>
             {/if}
+            {#if i === selected}<Kbd keys="enter" />{/if}
           </button>
         {:else}
           <div class="palette-empty">{query.trim() ? "No matching PRs" : "Type to search"}</div>

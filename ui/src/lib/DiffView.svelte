@@ -11,6 +11,7 @@
   import { fetchFileContents } from "./api.js";
   import { columnWithin, createDefinitionHover, tokenAtPoint } from "./wordAtPoint.js";
   import Chevron from "./Chevron.svelte";
+  import Kbd from "./Kbd.svelte";
 
   let {
     files,
@@ -32,6 +33,7 @@
     base = null,
     onOpenHistory = null,
     onLookupDefinition = null,
+    historyShortcutPath = null,
     layout = "split",
   } = $props();
 
@@ -875,10 +877,11 @@
             use:focusOnMount
           ></textarea>
           <div class="compose-actions">
-            <button class="cbtn primary" disabled={!draft.trim() || submitting} onclick={submitInline}>
+            <button class="cbtn primary shortcut-action" disabled={!draft.trim() || submitting} onclick={submitInline}>
               {submitting ? "Posting…" : "Comment"}
+              {#if draft.trim() && !submitting}<Kbd keys={["cmd", "enter"]} />{/if}
             </button>
-            <button class="cbtn ghost" onclick={cancelInline}>Cancel</button>
+            <button class="cbtn ghost shortcut-action" onclick={cancelInline}>Cancel <Kbd keys="esc" /></button>
           </div>
         </div>
       {/if}
@@ -1047,7 +1050,9 @@
           </button>
         {/if}
         {#if onOpenHistory && base}
-          <button class="whole-btn" onclick={() => onOpenHistory(file.path)}>History</button>
+          <button class="whole-btn shortcut-action" onclick={() => onOpenHistory(file.path)}>
+            History {#if file.path === historyShortcutPath}<Kbd keys="h" />{/if}
+          </button>
         {/if}
       </div>
       {#if !isCollapsed && fileEditor?.path === file.path}
@@ -1260,6 +1265,12 @@
     font-size: 11.5px;
     padding: 0 12px;
     cursor: pointer;
+  }
+  .shortcut-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
   }
   .whole-btn:hover:not(:disabled) {
     background: var(--hunk-hover);

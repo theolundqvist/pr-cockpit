@@ -1,6 +1,7 @@
 <script>
   import { fetchAuthStatus, fetchOnboardingRepos, fetchRelayCoverage, fetchSettings, refreshInbox, saveSettings } from "./api.js";
   import { relativeTime } from "./time.js";
+  import Kbd from "./Kbd.svelte";
 
   let { onDone, onCancel = null } = $props();
 
@@ -308,12 +309,14 @@
           spellcheck="false"
           autocomplete="off"
         />
-        <button class="secondary" type="button" onclick={addManual}>Add</button>
+        <button class="secondary shortcut-action" type="button" onclick={addManual}>
+          Add <span class="manual-key"><Kbd keys="enter" /></span>
+        </button>
       </div>
       {#if manualError}<p class="field-error" role="alert">{manualError}</p>{/if}
 
       <div class="actions">
-        <button class="secondary" type="button" onclick={() => (step = 1)}>Back</button>
+        <button class="secondary shortcut-action" type="button" onclick={() => (step = 1)}>Back <Kbd keys="esc" /></button>
         <button class="primary" type="submit" disabled={!chosen.length}>Continue{chosen.length ? ` with ${chosen.length}` : ""}</button>
       </div>
     {:else if step === 3}
@@ -356,7 +359,7 @@
       {/if}
 
       <div class="actions">
-        <button class="secondary" type="button" onclick={() => (stopCoveragePolling(), step = 2)}>Back</button>
+        <button class="secondary shortcut-action" type="button" onclick={() => (stopCoveragePolling(), step = 2)}>Back <Kbd keys="esc" /></button>
         <button class="primary" type="submit" disabled={!coverageConfirmed && !skippedLive}>Continue</button>
       </div>
     {:else}
@@ -629,6 +632,18 @@
     justify-content: flex-end;
     gap: 10px;
     margin-top: 24px;
+  }
+  .shortcut-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+  }
+  .manual-key {
+    display: none;
+  }
+  .manual-add:focus-within .manual-key {
+    display: inline-flex;
   }
   .primary,
   .secondary {

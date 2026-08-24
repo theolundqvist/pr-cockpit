@@ -5,6 +5,7 @@
   import Avatar from "./Avatar.svelte";
   import Reactions from "./Reactions.svelte";
   import Chevron from "./Chevron.svelte";
+  import Kbd from "./Kbd.svelte";
 
   let { thread, pending, onReply, onToggleResolve, onRetry, onDiscard, inline = false } = $props();
 
@@ -145,14 +146,22 @@
     {/each}
     <div class="reply">
       <textarea placeholder="Reply…" data-reply-for={thread.id} bind:value={replyDraft} onkeydown={onReplyKeydown}></textarea>
-      <button class="btn" disabled={!replyDraft.trim() || replySubmitting} onclick={submitReply}>
+      <button class="btn shortcut-action" disabled={!replyDraft.trim() || replySubmitting} onclick={submitReply}>
         {replySubmitting ? "Posting…" : "Reply"}
+        {#if replyDraft.trim() && !replySubmitting}<Kbd keys={["cmd", "enter"]} />{/if}
       </button>
     </div>
   </div>
 {/if}
 
 <style>
+  .shortcut-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+  }
+
   .thread {
     border: 1px solid var(--border);
     border-radius: 8px;

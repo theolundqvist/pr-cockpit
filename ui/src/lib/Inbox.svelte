@@ -852,10 +852,12 @@
 
     <div class="view-tabs" role="tablist" aria-label="List view">
       <button class="view-tab" role="tab" aria-selected={view === "open"} class:active={view === "open"} onclick={() => showView("open")}>
-        Open<span class="view-tab-count">{prs.length}</span>
+        Open
+        <span class="view-tab-count">{prs.length}</span>
+        {#if view === "closed"}<Kbd keys="c" />{/if}
       </button>
       <button class="view-tab" role="tab" aria-selected={view === "closed"} class:active={view === "closed"} onclick={() => showView("closed")}>
-        Recently merged<kbd>C</kbd>
+        Recently merged {#if view === "open"}<Kbd keys="c" />{/if}
       </button>
     </div>
 
@@ -945,6 +947,7 @@
           </span>
         {/if}
         <span class="row-age mono">{relativeTime(pr.updatedAt)}</span>
+        {#if index === selected}<Kbd keys="enter" />{/if}
       </a>
     {/snippet}
 
@@ -1010,6 +1013,7 @@
           </div>
         </div>
         <span class="row-age mono" title={pr.terminalAt}>{relativeTime(pr.terminalAt)}</span>
+        {#if index === selected}<Kbd keys="enter" />{/if}
       </a>
     {/snippet}
 
@@ -1085,7 +1089,7 @@
                 </svg>
               </span>
               <span class="quick-action-label">Filter this queue</span>
-              <span class="quick-action-shortcut"><Kbd keys="/" label="Slash" /></span>
+              <span class="quick-action-shortcut">{#if !filterOpen}<Kbd keys={["/"]} label="Slash" />{/if}</span>
             </button>
             <button class="quick-action" type="button" onclick={toggleArchived}>
               <span class="quick-action-icon" aria-hidden="true">
@@ -1094,7 +1098,7 @@
                 </svg>
               </span>
               <span class="quick-action-label">{showArchived ? "Hide archived" : "Show archived"}</span>
-              <span class="quick-action-shortcut"><Kbd keys="a" label="A" /></span>
+              <span class="quick-action-shortcut">{#if !filterOpen}<Kbd keys="a" label="A" />{/if}</span>
             </button>
           {/if}
         </section>
@@ -1111,7 +1115,7 @@
             {#each savedViews as v, i (v.name)}
               <div class="view-item" class:active={activeView === v.name}>
                 <button class="view-apply" onclick={() => applyView(v.query)}>
-                  {#if i < 9}<span class="view-key mono">{i + 1}</span>{/if}
+                  {#if !filterOpen && i < 9 && activeView !== v.name}<Kbd keys={`${i + 1}`} />{/if}
                   <span class="view-name" title={v.query}>{v.name}</span>
                   <span class="view-count">{viewCount(v)}</span>
                 </button>
@@ -1203,12 +1207,6 @@
   }
   .view-item.active .view-apply {
     color: var(--text);
-  }
-  .view-key {
-    flex: 0 0 auto;
-    font-size: 10px;
-    color: var(--text-faint);
-    width: 10px;
   }
   .view-name {
     flex: 1;
@@ -1716,7 +1714,7 @@
     background: var(--surface);
     color: var(--text);
   }
-  .view-tab kbd,
+  .view-tab :global(.kbd),
   .view-tab-count {
     color: color-mix(in srgb, var(--text-dim) 80%, transparent);
     font-family: var(--sans);
@@ -1842,12 +1840,10 @@
     color: var(--text);
     font-weight: 600;
   }
-  .view-key,
   .view-count {
     color: var(--text-faint);
     font-size: 9.5px;
   }
-  .view-key { width: 9px; }
   .view-name {
     flex: 1;
     min-width: 0;

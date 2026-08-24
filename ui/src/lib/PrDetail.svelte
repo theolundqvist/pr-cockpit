@@ -1760,6 +1760,9 @@
         if (e.key === "Escape") {
           mergeMenuOpen = false;
           e.preventDefault();
+        } else if (e.key === "M" && forceMergeAvailable && liveState && !mergeMutation) {
+          requestMerge(true);
+          e.preventDefault();
         }
         return;
       }
@@ -1998,14 +2001,10 @@
                   use:focusAndSelect
                 />
                 <button type="submit" class="title-editor-action title-save" disabled={!titleDraft.trim()} aria-label="Save pull request title" title="Save title">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <path d="m5 12 4 4L19 6" />
-                  </svg>
+                  {#if titleDraft.trim()}<Kbd keys="enter" />{/if}
                 </button>
                 <button type="button" class="title-editor-action" aria-label="Cancel renaming pull request" title="Cancel" onclick={cancelEditTitle}>
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
-                    <path d="M6 6l12 12M18 6 6 18" />
-                  </svg>
+                  <Kbd keys="esc" />
                 </button>
               </form>
             {:else}
@@ -2297,8 +2296,8 @@
               />
             </div>
             {#if testFiles.length && diffState === "ready"}
-              <button class="toolbar-btn" onclick={toggleTests}>
-                {testsHidden ? "show" : "hide"} {testFiles.length} test file{testFiles.length > 1 ? "s" : ""}
+              <button class="toolbar-btn shortcut-action" onclick={toggleTests}>
+                {testsHidden ? "show" : "hide"} {testFiles.length} test file{testFiles.length > 1 ? "s" : ""} <Kbd keys="x" />
               </button>
             {/if}
           </div>
@@ -2342,6 +2341,7 @@
                 onDiscardMutation={handleDiscard}
                 base={pr.baseRefName}
                 onOpenHistory={openFileHistory}
+                historyShortcutPath={files[fileIndex]?.path}
                 onLookupDefinition={(symbol, fromPath, position) => telescope?.openDefinition(symbol, fromPath, position)}
                 editable={fileEditable}
                 onCommitFileEdit={commitFileEdit}
@@ -2437,9 +2437,11 @@
                   <textarea bind:value={bodyDraft} onkeydown={onBodyEditKey} use:sizeToTextOnMount></textarea>
                   <div class="body-editor-actions">
                     <span class="body-editor-hint">⌘⏎ to save</span>
-                    <button class="link" disabled={!bodyDraft.trim()} onclick={saveBody}>save</button>
+                    <button class="link shortcut-action" disabled={!bodyDraft.trim()} onclick={saveBody}>
+                      save {#if bodyDraft.trim()}<Kbd keys={["cmd", "enter"]} />{/if}
+                    </button>
                     <span class="body-editor-dot">·</span>
-                    <button class="link" onclick={() => (editingBody = false)}>cancel</button>
+                    <button class="link shortcut-action" onclick={() => (editingBody = false)}>cancel <Kbd keys="esc" /></button>
                   </div>
                 </div>
               {:else}
@@ -2450,7 +2452,7 @@
                     {#if editBodyMutation.error}<span class="mut-error">{editBodyMutation.error}</span>{/if}
                   </div>
                 {:else}
-                  <button class="link body-edit" onclick={startEditBody}>Edit</button>
+                  <button class="link body-edit shortcut-action" onclick={startEditBody}>Edit <Kbd keys={["shift", "e"]} /></button>
                 {/if}
                 <Reactions reactions={pr.reactions} />
               {/if}
@@ -2460,8 +2462,9 @@
           {#snippet commentComposer(atTop = false)}
             <div class="composer" class:composer-top={atTop}>
               <textarea id="composer-input" placeholder="Leave a comment…" bind:value={commentDraft} onkeydown={onCommentKeydown}></textarea>
-              <button class="btn" disabled={!commentDraft.trim() || commentSubmitting} onclick={submitComment}>
+              <button class="btn shortcut-action" disabled={!commentDraft.trim() || commentSubmitting} onclick={submitComment}>
                 {commentSubmitting ? "Posting…" : "Comment"}
+                {#if commentDraft.trim() && !commentSubmitting}<Kbd keys={["cmd", "enter"]} />{/if}
               </button>
             </div>
           {/snippet}
@@ -2565,8 +2568,10 @@
                       </svg>
                       <span>Merge</span>
                       <span class="action-method">{mergeMethodLabel}</span>
+                      {#if enabled}<Kbd keys="m" />{/if}
                     </button>
-                    <button class="merge-btn merge-caret" aria-label="Merge options" aria-expanded={mergeMenuOpen} aria-haspopup="menu" onclick={() => (mergeMenuOpen = !mergeMenuOpen)}>
+                    <button class="merge-btn merge-caret" class:open={mergeMenuOpen} aria-label="Merge options" aria-expanded={mergeMenuOpen} aria-haspopup="menu" onclick={() => (mergeMenuOpen = !mergeMenuOpen)}>
+                      {#if mergeMenuOpen}<Kbd keys="esc" />{/if}
                       <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"></path></svg>
                     </button>
                     {#if mergeMenuOpen}
@@ -2613,7 +2618,7 @@
                             }}
                           >
                             <span>Force merge now</span>
-                            <span>M</span>
+                            <Kbd keys="M" />
                           </button>
                         {/if}
                       </div>
@@ -2657,7 +2662,7 @@
                       onDiscard={() => handleDiscard(updateMutation.id)}
                     />
                   {:else}
-                    <button class="merge-btn update-action" onclick={submitUpdateBranch}>update branch</button>
+                    <button class="merge-btn update-action shortcut-action" onclick={submitUpdateBranch}>update branch <Kbd keys="u" /></button>
                   {/if}
                 {/if}
                 {#if !pr.isDraft && mergeGate.action !== "merge" && !mergeMutation}
@@ -2690,6 +2695,7 @@
                         <path d="m9 9 6 6m0-6-6 6"></path>
                       </svg>
                       <span>Close pull request</span>
+                      {#if tab !== "files"}<Kbd keys="x" />{/if}
                     </button>
                   {/if}
                 {/if}
@@ -2698,13 +2704,13 @@
           {/if}
           {#if agentRuns.length || !prIsGreen}
             <div class="side-block">
-              <h3 class="side-title">
-                Agents
-                {#if keybindAgents.some((a) => a.id === "autofix")}<span class="side-key"><Kbd keys={keybindAgents.find((a) => a.id === "autofix").keybind} /></span>{/if}
-              </h3>
+              <h3 class="side-title">Agents</h3>
               {#if !prIsGreen}
-                <button class="btn wide" disabled={autofixBusy || agent?.state === "running"} onclick={() => (autofixConfirm = true)}>
+                <button class="btn wide shortcut-action" disabled={autofixBusy || agent?.state === "running"} onclick={() => (autofixConfirm = true)}>
                   {autofixBusy ? "Starting…" : "Auto-fix"}
+                  {#if !autofixBusy && agent?.state !== "running" && keybindAgents.some((a) => a.id === "autofix")}
+                    <Kbd keys={keybindAgents.find((a) => a.id === "autofix").keybind} />
+                  {/if}
                 </button>
               {/if}
               {#if autofixError}<span class="mut-error">{autofixError}</span>{/if}
@@ -2797,6 +2803,7 @@
                 <option value="REQUEST_CHANGES">Request changes</option>
                 <option value="COMMENT">Comment</option>
               </select>
+              {#if tab === "conversation" && !pr.viewerIsAuthor}<span class="verdict-key"><Kbd keys="v" /></span>{/if}
               <span class="verdict-select-chevron"><Chevron size={16} /></span>
             </div>
             <textarea class="verdict-body" placeholder="Optional body…" bind:value={verdictBody}></textarea>
@@ -5592,6 +5599,12 @@
     font-size: 14px;
     font-weight: 500;
   }
+  .shortcut-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+  }
   .btn:disabled,
   .retry-btn:disabled,
   .cbtn:disabled,
@@ -5650,6 +5663,11 @@
     justify-content: center;
     border-left: 1px solid color-mix(in srgb, #fff 24%, transparent);
     border-radius: 0 999px 999px 0;
+  }
+  .actions .merge-split .merge-caret.open {
+    width: auto;
+    gap: 4px;
+    padding: 0 6px;
   }
   .merge-main,
   .close-action {
@@ -5818,7 +5836,7 @@
     display: block;
     height: 36px;
     margin: 0;
-    padding: 0 40px 0 14px;
+    padding: 0 72px 0 14px;
     border: 0;
     border-radius: inherit;
     background: transparent;
@@ -5829,6 +5847,14 @@
     position: absolute;
     top: 50%;
     right: 13px;
+    pointer-events: none;
+    transform: translateY(-50%);
+  }
+  .verdict-key {
+    position: absolute;
+    top: 50%;
+    right: 36px;
+    display: inline-flex;
     pointer-events: none;
     transform: translateY(-50%);
   }
