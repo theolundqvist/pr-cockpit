@@ -885,7 +885,7 @@
   let ciFixConfirm = $state(false);
 
   async function submitAutofix() {
-    if (autofixBusy || agent?.state === "running" || prIsGreen) return;
+    if (autofixBusy || agent?.state === "running" || prIsGreen || mergedState) return;
     autofixBusy = true;
     autofixError = null;
     try {
@@ -999,6 +999,7 @@
   });
 
   let liveState = $derived(!!pr && pr.state.toUpperCase() === "OPEN");
+  let mergedState = $derived(!!pr && pr.state.toUpperCase() === "MERGED");
   let onLocalBranch = $derived(!!pr && pr.localBranch === pr.headRefName);
   let hasConflicts = $derived(!!pr && (pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "DIRTY"));
 
@@ -1348,10 +1349,10 @@
   let prIsGreen = $derived(mergeGate.action === "merge" && unresolvedTotal === 0);
   let autofixDef = $derived(keybindAgents.find((a) => a.id === "autofix"));
   let fixShortcutTarget = $derived.by(() => {
-    if (!autofixDef || agent?.state === "running") return null;
+    if (!autofixDef || agent?.state === "running" || mergedState) return null;
     if (failingChecks.length && !ciFixBusy) return "ci";
     if (hasConflicts && conflictFilesState === "ready" && !conflictResolveBusy) return "conflict";
-    if (!prIsGreen && !autofixBusy) return "autofix";
+    if (!mergedState && !prIsGreen && !autofixBusy) return "autofix";
     return null;
   });
 
@@ -1863,7 +1864,7 @@
         rangeOpen = true;
       } else if (tab === "conversation" && e.key === "c") {
         focusTarget("#composer-input");
-      } else if (tab === "conversation" && e.key === "v") {
+      } else if (tab === "conversation" && e.key === "v" && !mergedState) {
         if (pr.viewerIsAuthor) {
           showFlash("Can't review your own PR — GitHub blocks self-approval.");
         } else {
@@ -1901,7 +1902,7 @@
         if (def.id === "fixer") {
           if (!autoMergeMutation) autoMergeConfirm = true;
         } else if (def.id === "autofix") {
-          if (!autofixBusy && agent?.state !== "running" && !prIsGreen) autofixConfirm = true;
+          if (!autofixBusy && agent?.state !== "running" && !prIsGreen && !mergedState) autofixConfirm = true;
         } else if (def.id === "rescorer") {
           if (!customBusy) customConfirm = def;
         } else if (!customBusy && agent?.state !== "running") {
@@ -1954,7 +1955,7 @@
   let agentActionKeys = $derived(
     keybindAgents.flatMap((a) => {
       if (a.id === "fixer") return [];
-      if (a.id === "autofix") return agent?.state !== "running" && !prIsGreen ? [{ key: a.keybind, label: "auto-fix" }] : [];
+      if (a.id === "autofix") return agent?.state !== "running" && !prIsGreen && !mergedState ? [{ key: a.keybind, label: "auto-fix" }] : [];
       if (a.id === "rescorer") return [{ key: a.keybind, label: "re-score" }];
       return agent?.state !== "running" ? [{ key: a.keybind, label: a.name || "custom agent" }] : [];
     }),
@@ -1965,7 +1966,7 @@
     { key: "r", label: "reply" },
     { key: "e", label: "editor" },
     ...(pr?.body ? [{ key: "⇧E", label: "edit description" }] : []),
-    ...(pr?.viewerIsAuthor ? [] : [{ key: "v", label: "review" }]),
+    ...(!mergedState && !pr?.viewerIsAuthor ? [{ key: "v", label: "review" }] : []),
     { key: "s", label: "assign" },
     { key: "q", label: "request review" },
     { key: "p", label: "prompt agent" },
@@ -2747,10 +2748,10 @@
               </div>
             </div>
           {/if}
-          {#if agentRuns.length || !prIsGreen}
+          {#if agentRuns.length || (!prIsGreen && !mergedState)}
             <div class="side-block">
               <h3 class="side-title">Agents</h3>
-              {#if !prIsGreen}
+              {#if !prIsGreen && !mergedState}
                 <button class="btn wide shortcut-action" disabled={autofixBusy || agent?.state === "running"} onclick={() => (autofixConfirm = true)}>
                   {autofixBusy ? "Starting…" : "Auto-fix"}
                   {#if fixShortcutTarget === "autofix"}
@@ -2828,34 +2829,36 @@
               {/if}
             </div>
           {/if}
-          <div class="side-block">
-            <h3 class="side-title">Review</h3>
-            {#if pr.viewerIsAuthor}
-              <div class="own-pr-note">Your PR — approve / request changes post as a comment.</div>
-            {/if}
-            {#if verdictMutation}
-              <div class="verdict-badge">
-                <MutationBadge
-                  state={verdictMutation.state}
-                  onRetry={() => handleRetry(verdictMutation.id)}
-                  onDiscard={() => handleDiscard(verdictMutation.id)}
-                />
+          {#if !mergedState}
+            <div class="side-block">
+              <h3 class="side-title">Review</h3>
+              {#if pr.viewerIsAuthor}
+                <div class="own-pr-note">Your PR — approve / request changes post as a comment.</div>
+              {/if}
+              {#if verdictMutation}
+                <div class="verdict-badge">
+                  <MutationBadge
+                    state={verdictMutation.state}
+                    onRetry={() => handleRetry(verdictMutation.id)}
+                    onDiscard={() => handleDiscard(verdictMutation.id)}
+                  />
+                </div>
+              {/if}
+              <div class="verdict-select-wrap">
+                <select id="verdict-control" class="verdict-select" bind:value={verdictEvent}>
+                  <option value="APPROVE">Approve</option>
+                  <option value="REQUEST_CHANGES">Request changes</option>
+                  <option value="COMMENT">Comment</option>
+                </select>
+                {#if tab === "conversation" && !pr.viewerIsAuthor}<span class="verdict-key"><Kbd keys="v" /></span>{/if}
+                <span class="verdict-select-chevron"><Chevron size={16} /></span>
               </div>
-            {/if}
-            <div class="verdict-select-wrap">
-              <select id="verdict-control" class="verdict-select" bind:value={verdictEvent}>
-                <option value="APPROVE">Approve</option>
-                <option value="REQUEST_CHANGES">Request changes</option>
-                <option value="COMMENT">Comment</option>
-              </select>
-              {#if tab === "conversation" && !pr.viewerIsAuthor}<span class="verdict-key"><Kbd keys="v" /></span>{/if}
-              <span class="verdict-select-chevron"><Chevron size={16} /></span>
+              <textarea class="verdict-body" placeholder="Optional body…" bind:value={verdictBody}></textarea>
+              <button class="btn wide" disabled={verdictSubmitting} onclick={submitVerdict}>
+                {verdictSubmitting ? "Submitting…" : "Submit review"}
+              </button>
             </div>
-            <textarea class="verdict-body" placeholder="Optional body…" bind:value={verdictBody}></textarea>
-            <button class="btn wide" disabled={verdictSubmitting} onclick={submitVerdict}>
-              {verdictSubmitting ? "Submitting…" : "Submit review"}
-            </button>
-          </div>
+          {/if}
 
           <div class="side-block">
             <h3 class="side-title">Reviewers <span class="side-key"><Kbd keys="q" /></span></h3>
