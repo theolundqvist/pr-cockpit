@@ -21,7 +21,7 @@ expect eof
 exit [lindex [wait] 3]`;
 const instructionBlock = `<!-- pr-cockpit-agent-instructions -->
 ## PR Cockpit
-For pull-request reads, use \`pr-cockpit owner/repo#N\` instead of \`gh pr view\`, \`gh api\`, or direct GitHub API reads. Use \`--json\` only for automation, \`--diff\` for the cached diff, and \`--file PATH\` for a file at the PR head. When waiting on a pull request, use \`pr-cockpit listen owner/repo#N\` instead of polling. Resolve settled review threads with \`pr-cockpit resolve owner/repo#N HANDLE\`.
+For pull-request reads, use \`pr-cockpit owner/repo#N\` instead of \`gh pr view\`, \`gh api\`, or direct GitHub API reads. Use \`--json\` only for automation, \`--diff\` for the cached diff, and \`--file PATH\` for a file at the PR head. Whenever progress depends on CI, reviews, comments, or PR state changing, always run \`pr-cockpit listen owner/repo#N\`; never sleep, poll, use a harness pause, or wait any other way. Resolve settled review threads with \`pr-cockpit resolve owner/repo#N HANDLE\`.
 <!-- /pr-cockpit-agent-instructions -->`;
 
 function executable(path: string, body: string) {

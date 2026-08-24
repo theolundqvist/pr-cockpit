@@ -108,16 +108,25 @@ describe("mergeStepText", () => {
 });
 
 describe("defaultFixerTemplate", () => {
-  test("includes an update-branch step for a BEHIND mergeStateStatus", () => {
-    expect(defaultFixerTemplate()).toContain("gh pr update-branch");
+  test("uses cached PR state and event-driven waiting", () => {
+    const template = defaultFixerTemplate();
+    expect(template).toContain("gh pr update-branch");
+    expect(template).toContain("pr-cockpit {{REPO}}#{{PR_NUMBER}}");
+    expect(template).toContain("pr-cockpit listen {{REPO}}#{{PR_NUMBER}}");
+    expect(template).not.toContain("gh pr view");
+    expect(template).not.toContain("gh run view");
   });
 });
 
 describe("defaultAutofixTemplate", () => {
-  test("includes an update-branch step for a BEHIND mergeStateStatus so a green-but-behind PR isn't a no-op loop", () => {
+  test("uses cached PR state and event-driven waiting while preserving update-branch handling", () => {
     const template = defaultAutofixTemplate();
     expect(template).toContain("BEHIND");
     expect(template).toContain("gh pr update-branch");
+    expect(template).toContain("pr-cockpit {{REPO}}#{{PR_NUMBER}}");
+    expect(template).toContain("pr-cockpit listen {{REPO}}#{{PR_NUMBER}}");
+    expect(template).not.toContain("gh pr view");
+    expect(template).not.toContain("gh run view");
   });
 });
 
