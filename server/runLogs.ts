@@ -367,7 +367,9 @@ function tail(text: string): string {
 }
 
 export async function cachedJobLogs(repo: string, headSha: string, checkName?: string, full = false): Promise<CachedJobLog[]> {
-  const jobs = listRunJobs(repo, headSha).filter((job) => job.conclusion !== "success" && job.conclusion !== "skipped");
+  const jobs = listRunJobs(repo, headSha).filter((job) =>
+    job.status === "completed" && job.conclusion !== null && LOG_WORTHY_CONCLUSION.has(job.conclusion)
+  );
   const matched = checkName ? jobs.filter((job) => job.name.toLowerCase().includes(checkName.toLowerCase())) : jobs;
   const entries: CachedJobLog[] = [];
   for (const job of matched) {

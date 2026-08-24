@@ -133,10 +133,11 @@ test("concurrent activation bootstraps once and terminal attempts reconcile once
     ]);
     const first = JSON.parse(JSON.stringify(calls));
     await actions.activateActionsLease("acme/app", 7, head, fetchers);
-    const tail = (await actions.cachedJobLogs("acme/app", head))[0].body;
+    const cached = await actions.cachedJobLogs("acme/app", head);
+    const tail = cached[0].body;
     const full = (await actions.cachedJobLogs("acme/app", head, undefined, true))[0].body;
     console.log(JSON.stringify({
-      first, after: calls, bytes: dbm.db.query("SELECT log_bytes,log_truncated FROM run_jobs WHERE job_id=110").get(),
+      first, after: calls, cachedJobs: cached.map(({ job }) => job.job_id), bytes: dbm.db.query("SELECT log_bytes,log_truncated FROM run_jobs WHERE job_id=110").get(),
       tailBytes: Buffer.byteLength(tail), fullBytes: Buffer.byteLength(full),
       cleaned: !full.includes("2026-08-24T10:00:00.000Z") && !full.includes("\\u001b[31m"),
       reconciled: dbm.db.query("SELECT reconciled_at IS NOT NULL AS done FROM workflow_runs WHERE run_id=11").get().done,
@@ -144,6 +145,7 @@ test("concurrent activation bootstraps once and terminal attempts reconcile once
   `);
   expect(result.first).toEqual({ runs: 1, jobs: [[10, null], [11, 1]], logs: [110] });
   expect(result.after).toEqual(result.first);
+  expect(result.cachedJobs).toEqual([110]);
   expect(result.bytes.log_truncated).toBe(0);
   expect(result.tailBytes).toBeLessThanOrEqual(262_144);
   expect(result.fullBytes).toBe(result.bytes.log_bytes);
