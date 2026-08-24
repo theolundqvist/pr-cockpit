@@ -18,7 +18,7 @@
 <style>
   .keybar {
     position: fixed;
-    left: var(--app-rail-width, 0px);
+    left: 0;
     right: 0;
     bottom: 0;
     height: 38px;
@@ -33,7 +33,9 @@
   .keybar-content {
     display: flex;
     box-sizing: border-box;
-    width: min(var(--app-content-max-width, 1320px), 100%);
+    width: fit-content;
+    max-width: 100%;
+    justify-content: center;
     min-height: 100%;
     align-items: center;
     gap: 16px;
