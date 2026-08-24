@@ -5618,6 +5618,13 @@
     background: var(--brand-disabled);
     color: var(--on-brand);
   }
+  .merge-split .merge-btn {
+    background: light-dark(#1f883d, #238636);
+  }
+  .merge-split .merge-btn:disabled {
+    background: color-mix(in srgb, light-dark(#1f883d, #238636) 38%, var(--bg));
+    color: var(--on-brand);
+  }
   .composer .btn {
     height: 36px;
     background: var(--link);
@@ -5699,6 +5706,9 @@
     .merge-btn:hover:not(:disabled) {
       background: var(--brand-hover);
       filter: none;
+    }
+    .merge-split .merge-btn:hover:not(:disabled):not(.blocked) {
+      background: light-dark(#1a7f37, #2ea043);
     }
     .composer .btn:hover:not(:disabled) {
       background: var(--brand-hover);
