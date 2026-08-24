@@ -113,6 +113,32 @@
     return section.querySelector(".file-diff-content > .hunks, .file-diff-content > .binary, .file-diff-content > div");
   }
 
+  function scrollParent(el) {
+    for (let node = el.parentElement; node; node = node.parentElement) {
+      const overflowY = getComputedStyle(node).overflowY;
+      if ((overflowY === "auto" || overflowY === "scroll") && node.scrollHeight > node.clientHeight) return node;
+    }
+    return null;
+  }
+
+  // collapsing a file removes document height above the reader; hold its sticky header where it sat so the next files stay in place
+  async function keepingHeaderPlace(event, file, run) {
+    const head = event.currentTarget.closest(".file-head-row");
+    const scroller = collapsed.has(file.path) ? null : head && scrollParent(head);
+    const target = scroller ? head.getBoundingClientRect().top : 0;
+    run();
+    if (!scroller) return;
+    await tick();
+    // estimated placeholder heights (content-visibility) settle over the next frames; re-align until they stop moving
+    let frames = 8;
+    const settle = () => {
+      const delta = head.getBoundingClientRect().top - target;
+      if (delta) scroller.scrollTop += delta;
+      if (--frames > 0) requestAnimationFrame(settle);
+    };
+    settle();
+  }
+
   function editPlacement(section, lineEl, column = 0) {
     const line = Number(lineEl?.dataset.newLine);
     if (!Number.isInteger(line) || line <= 0) return null;
@@ -1017,7 +1043,10 @@
     {@const whole = wholeFile.get(file.path)}
     <section class="file" class:collapsed={isCollapsed} id="diff-file-{i}" style="--est-h:{estimateHeight(file, isCollapsed, whole)}px" use:nearViewport={file.path}>
       <div class="file-head-row">
-        <button class="file-head mono" onclick={() => (fileEditor?.path === file.path ? finishFileEdit() : onToggleFile(file))}>
+        <button
+          class="file-head mono"
+          onclick={(event) => (fileEditor?.path === file.path ? finishFileEdit() : keepingHeaderPlace(event, file, () => onToggleFile(file)))}
+        >
           <Chevron direction={isCollapsed ? "right" : "down"} />
           <span class="file-path">{file.path}</span>
           <span
@@ -1059,7 +1088,7 @@
             class:active={isViewed}
             aria-pressed={isViewed}
             aria-label={isViewed ? "Mark file unviewed" : "Mark file viewed"}
-            onclick={() => onToggleViewed(file)}
+            onclick={(event) => keepingHeaderPlace(event, file, () => onToggleViewed(file))}
           >
             <span class="viewed-check" aria-hidden="true">{isViewed ? "✓" : ""}</span>
             <span class="viewed-label">Viewed</span>
