@@ -31,7 +31,7 @@ const gunzipAsync = promisify(gunzip);
 
 export const JOB_LOG_TAIL_BYTES = 262_144;
 export const REST_BACKGROUND_RESERVE = 500;
-const LOG_WORTHY_CONCLUSION = new Set(["failure", "cancelled", "timed_out", "action_required", "neutral"]);
+const LOG_WORTHY_CONCLUSION = new Set(["failure", "cancelled", "timed_out", "action_required", "neutral", "startup_failure", "stale"]);
 const TIMESTAMP_LINE_RE = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z /gm;
 const ANSI_RE = /\u001b\[[0-9;]*m/g;
 

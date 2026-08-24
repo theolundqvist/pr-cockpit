@@ -119,7 +119,11 @@ test("concurrent activation bootstraps once and terminal attempts reconcile once
       fetchRunJobs: async (_repo, id, attempt) => {
         calls.jobs.push([id, attempt ?? null]);
         return id === 10 ? [job(100, 10, "in_progress", null)] : [
-          job(110, 11, "completed", "failure"), job(111, 11, "completed", "success"), job(112, 11, "completed", "skipped"),
+          job(110, 11, "completed", "failure"),
+          job(111, 11, "completed", "success"),
+          job(112, 11, "completed", "skipped"),
+          job(113, 11, "completed", "startup_failure"),
+          job(114, 11, "completed", "stale"),
         ];
       },
       fetchJobLog: async (_repo, id) => { calls.logs.push(id); return huge; },
@@ -137,15 +141,15 @@ test("concurrent activation bootstraps once and terminal attempts reconcile once
     const tail = cached[0].body;
     const full = (await actions.cachedJobLogs("acme/app", head, undefined, true))[0].body;
     console.log(JSON.stringify({
-      first, after: calls, cachedJobs: cached.map(({ job }) => job.job_id), bytes: dbm.db.query("SELECT log_bytes,log_truncated FROM run_jobs WHERE job_id=110").get(),
+      first, after: calls, cachedJobs: cached.map(({ job }) => job.job_id).sort((a, b) => a - b), bytes: dbm.db.query("SELECT log_bytes,log_truncated FROM run_jobs WHERE job_id=110").get(),
       tailBytes: Buffer.byteLength(tail), fullBytes: Buffer.byteLength(full),
       cleaned: !full.includes("2026-08-24T10:00:00.000Z") && !full.includes("\\u001b[31m"),
       reconciled: dbm.db.query("SELECT reconciled_at IS NOT NULL AS done FROM workflow_runs WHERE run_id=11").get().done,
     }));
   `);
-  expect(result.first).toEqual({ runs: 1, jobs: [[10, null], [11, 1]], logs: [110] });
+  expect(result.first).toEqual({ runs: 1, jobs: [[10, null], [11, 1]], logs: [110, 113, 114] });
   expect(result.after).toEqual(result.first);
-  expect(result.cachedJobs).toEqual([110]);
+  expect(result.cachedJobs).toEqual([110, 113, 114]);
   expect(result.bytes.log_truncated).toBe(0);
   expect(result.tailBytes).toBeLessThanOrEqual(262_144);
   expect(result.fullBytes).toBe(result.bytes.log_bytes);
