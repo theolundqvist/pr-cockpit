@@ -24,6 +24,9 @@ if ! pull_reason="$("$root/scripts/update-pull" 2>&1 >/dev/null)"; then
   echo "UPDATE_FAILED ${pull_reason:-pull failed}" >&2
   exit 1
 fi
+if [[ -n "${pull_reason:-}" ]]; then
+  echo "pr-cockpit: $pull_reason"
+fi
 
 # Pull ok: the shell may quit and hand off now. Only past here does a failure relaunch the previous version.
 echo "PULL_OK"

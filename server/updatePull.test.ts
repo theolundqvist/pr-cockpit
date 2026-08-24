@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -29,6 +29,7 @@ function makeCheckout(): { work: string; origin: string; cleanup: () => void } {
   git(seed, ["config", "user.email", "t@t.t"]);
   git(seed, ["config", "user.name", "t"]);
   commit(seed, "app.ts", "v1");
+  commit(seed, "other.ts", "o1");
   git(seed, ["remote", "add", "origin", origin]);
   git(seed, ["push", "-q", "origin", "main"]);
 
@@ -91,6 +92,33 @@ describe("update-pull", () => {
     expect(r.stdout).toBe("updated");
     const after = Bun.spawnSync(["git", "-C", work, "rev-parse", "HEAD"]).stdout.toString().trim();
     expect(after).not.toBe(before);
+  });
+
+  test("colliding uncommitted edit is preserved on a branch and update succeeds", () => {
+    const { work, origin } = checkout();
+    writeFileSync(join(work, "app.ts"), "v1-local-edit");
+    advanceOrigin(origin);
+    const r = run(work);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toBe("updated");
+    expect(r.stderr).toContain("moved aside to branch local-edits-");
+    expect(readFileSync(join(work, "app.ts"), "utf8")).toBe("v2-remote");
+    const branch = r.stderr.match(/branch (local-edits-\S+)/)?.[1];
+    expect(branch).toBeTruthy();
+    const shown = Bun.spawnSync(["git", "-C", work, "show", `${branch}:app.ts`]).stdout.toString();
+    expect(shown).toBe("v1-local-edit");
+  });
+
+  test("non-colliding uncommitted edit survives the fast-forward in place", () => {
+    const { work, origin } = checkout();
+    writeFileSync(join(work, "other.ts"), "o1-local-edit");
+    advanceOrigin(origin);
+    const r = run(work);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toBe("updated");
+    expect(readFileSync(join(work, "other.ts"), "utf8")).toBe("o1-local-edit");
+    const branches = Bun.spawnSync(["git", "-C", work, "branch", "--list", "local-edits-*"]).stdout.toString().trim();
+    expect(branches).toBe("");
   });
 
   test("diverged history fails without touching the working tree", () => {

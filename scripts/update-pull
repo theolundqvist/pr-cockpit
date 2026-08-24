@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Fetch + fast-forward, treating up-to-date and local-ahead as a clean no-op. exit 0 = safe to restart
+# Fetch + fast-forward, treating up-to-date and local-ahead as a clean no-op. Uncommitted tracked
+# edits never block: if they collide with the incoming update they are preserved on a
+# local-edits-<timestamp> branch and the checkout is reset before retrying. exit 0 = safe to restart
 # ("noop"/"updated" on stdout); exit 1 = do not restart, reason on stderr, working tree untouched.
 set -Eeuo pipefail
 
@@ -31,10 +33,23 @@ fi
 
 # HEAD is an ancestor of origin: clean fast-forward
 if git merge-base --is-ancestor HEAD "$remote"; then
-  if git merge --ff-only --quiet "$remote"; then
+  if merge_err="$(git merge --ff-only --quiet "$remote" 2>&1)"; then
     echo "updated"
     exit 0
   fi
+  # ff refused: uncommitted tracked edits collide with incoming files. Preserve them on a
+  # branch (stash create commits index+tree without touching either), clean, retry.
+  if snapshot="$(git stash create "local edits before update")" && [[ -n "$snapshot" ]]; then
+    backup="local-edits-$(date -u +%Y%m%d-%H%M%S)"
+    git branch "$backup" "$snapshot"
+    git reset --hard --quiet HEAD
+    if git merge --ff-only --quiet "$remote"; then
+      echo "updated"
+      echo "uncommitted local edits were moved aside to branch $backup" >&2
+      exit 0
+    fi
+  fi
+  if [[ -n "$merge_err" ]]; then echo "$merge_err" >&2; fi
   echo "fast-forward merge failed" >&2
   exit 1
 fi
