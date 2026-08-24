@@ -690,6 +690,8 @@ query($owner: String!, $name: String!, $number: Int!) {
             abbreviatedOid
             messageHeadline
             committedDate
+            additions
+            deletions
             statusCheckRollup { state }
             author { name user { login avatarUrl } }
             parents(first: 1) { nodes { oid } }
@@ -841,6 +843,8 @@ type PrDetailShape<Rx> = {
         abbreviatedOid: string;
         messageHeadline: string;
         committedDate: string;
+        additions?: number;
+        deletions?: number;
         statusCheckRollup?: { state: string } | null;
         author: { name: string | null; user: { login: string; avatarUrl: string } | null } | null;
         parents: { nodes: Array<{ oid: string }> };

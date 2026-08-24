@@ -219,6 +219,14 @@ export type MirrorDiffResult =
   | { status: "missing-commit" }
   | { status: "diff-failed" };
 
+export type CommitFileStat = { path: string; additions: number; deletions: number };
+
+export type MirrorCommitStatsResult =
+  | { status: "ok"; commits: Array<{ sha: string; files: CommitFileStat[] }> }
+  | { status: "no-mirror" }
+  | { status: "missing-commit" }
+  | { status: "stats-failed" };
+
 export type MirrorFileResult =
   | { status: "ok"; content: string }
   | { status: "no-mirror" }
@@ -295,6 +303,53 @@ export async function diffFromMirror(
   const dir = mirrorDir(repo);
   if (!(await Bun.file(`${dir}/HEAD`).exists())) return { status: "no-mirror" };
   return diffFromGitDir(dir, base, head, mode);
+}
+
+export async function commitStatsFromGitDir(
+  gitDir: string,
+  base: string,
+  head: string,
+): Promise<Exclude<MirrorCommitStatsResult, { status: "no-mirror" }>> {
+  if (!(await commitExists(gitDir, base)) || !(await commitExists(gitDir, head))) return { status: "missing-commit" };
+  // one walk yields every commit's per-file counts; \x1e delimits records so headline text can never look like a row
+  const result = await git([
+    "--git-dir",
+    gitDir,
+    "log",
+    "--no-renames",
+    "--numstat",
+    "--format=%x1e%H",
+    `${base}..${head}`,
+  ]);
+  if (!result.ok) return { status: "stats-failed" };
+  const commits: Array<{ sha: string; files: CommitFileStat[] }> = [];
+  for (const record of result.stdout.split("\x1e")) {
+    const lines = record.split("\n").filter((line) => line !== "");
+    const sha = lines.shift();
+    if (sha === undefined) continue;
+    const files: CommitFileStat[] = [];
+    for (const line of lines) {
+      const [added, removed, ...rest] = line.split("\t");
+      const path = rest.join("\t");
+      if (path === "") continue;
+      // binary files report "-" for both counts
+      files.push({ path, additions: Number(added) || 0, deletions: Number(removed) || 0 });
+    }
+    // merges carry no numstat rows; omitting them lets the client fall back to GitHub's own totals
+    if (files.length > 0) commits.push({ sha, files });
+  }
+  return { status: "ok", commits };
+}
+
+export async function commitStatsFromMirror(
+  repo: string,
+  base: string,
+  head: string,
+): Promise<MirrorCommitStatsResult> {
+  touch(repo);
+  const dir = mirrorDir(repo);
+  if (!(await Bun.file(`${dir}/HEAD`).exists())) return { status: "no-mirror" };
+  return commitStatsFromGitDir(dir, base, head);
 }
 
 export async function fileFromGitDir(

@@ -38,6 +38,12 @@ export async function fetchPrDetail(repo, number) {
   return res.json();
 }
 
+export async function fetchPrCommitStats(repo, number) {
+  const res = await fetch(`/api/pr/${repo}/${number}/commit-stats`);
+  if (!res.ok) throw new Error(`commit-stats ${res.status}`);
+  return res.json();
+}
+
 export async function fetchPrDetails(keys) {
   const res = await fetch(`/api/pr-details?keys=${encodeURIComponent(keys.join(","))}`);
   if (!res.ok) throw new Error(`pr-details ${res.status}`);

@@ -5,6 +5,7 @@
     fetchPrDiff,
     commitPrFileEdit,
     fetchConflictFiles,
+    fetchPrCommitStats,
     fetchMutations,
     enqueueMutation,
     retryMutation,
@@ -90,6 +91,8 @@
   let conflictFiles = $state([]);
   let conflictFilesState = $state("idle");
   let conflictFilesError = $state(null);
+  let commitFileStats = $state({});
+  let loadedCommitStatsKey = "";
   let loadedConflictKey = "";
 
   const TREE_WIDTH_KEY = "pr-cockpit:file-tree-width";
@@ -1029,6 +1032,25 @@
     loadConflictFiles(key);
   });
 
+  $effect(() => {
+    const key = pr ? `${repo}#${number}#${pr.headRefOid}#${pr.baseRefOid ?? ""}` : "";
+    if (!key) {
+      loadedCommitStatsKey = "";
+      commitFileStats = {};
+      return;
+    }
+    if (key === loadedCommitStatsKey) return;
+    loadedCommitStatsKey = key;
+    fetchPrCommitStats(repo, number).then(
+      (res) => {
+        if (key !== loadedCommitStatsKey) return;
+        commitFileStats = res.commits ?? {};
+      },
+      // the timeline falls back to the per-commit totals GitHub already gave us
+      () => {},
+    );
+  });
+
   let rollup = $derived(pr?.lastCommit.nodes[0]?.commit.statusCheckRollup ?? null);
 
   let checks = $derived.by(() => buildChecks(rollup));
@@ -1297,7 +1319,8 @@
         author: commit.author?.user?.login ?? commit.author?.name ?? null,
         avatarUrl: commit.author?.user?.avatarUrl,
         headline: commit.messageHeadline,
-        sha: commit.abbreviatedOid,
+        additions: commit.additions ?? null,
+        deletions: commit.deletions ?? null,
         oid: commit.oid,
         parentOid: commit.parents?.nodes?.[0]?.oid ?? null,
         ciState: commit.statusCheckRollup?.state ?? null,
@@ -1340,6 +1363,28 @@
   let nonTestDeletions = $derived(nonTestFiles.reduce((sum, f) => sum + f.deletions, 0));
   let testsHidden = $derived(testFiles.length > 0 && testFiles.every((f) => collapsedFiles.has(f.path)));
   let treeFiles = $derived(testsHidden ? files.filter((f) => !testPattern.test(f.path)) : files);
+
+  // Counts exclude test files, matching the header's headline numbers. A commit that touched nothing
+  // else would read as an empty +0 −0, so it reports its test counts muted instead.
+  let commitLineCounts = $derived.by(() => {
+    const counts = {};
+    for (const [sha, fileList] of Object.entries(commitFileStats)) {
+      const totals = { additions: 0, deletions: 0, skippedTests: false, testsOnly: false };
+      const tests = { additions: 0, deletions: 0 };
+      for (const file of fileList) {
+        const bucket = testPattern.test(file.path) ? tests : totals;
+        bucket.additions += file.additions;
+        bucket.deletions += file.deletions;
+        if (bucket === tests) totals.skippedTests = true;
+      }
+      if (totals.additions === 0 && totals.deletions === 0 && totals.skippedTests) {
+        counts[sha] = { additions: tests.additions, deletions: tests.deletions, skippedTests: false, testsOnly: true };
+        continue;
+      }
+      counts[sha] = totals;
+    }
+    return counts;
+  });
 
   $effect(() => {
     if (tab !== "files" || diffState !== "ready" || treeFiles.length === 0) return;
@@ -2426,6 +2471,7 @@
             {/if}
             {#each timeline as event (event.id)}
               {#if event.kind === "commit"}
+                {@const lines = commitLineCounts[event.oid] ?? (event.additions === null ? null : { additions: event.additions, deletions: event.deletions, skippedTests: false, testsOnly: false })}
                 <button
                   class="commit-row"
                   class:clickable={event.parentOid}
@@ -2436,7 +2482,15 @@
                   <span class="commit-glyph"></span>
                   <Avatar login={event.author} url={event.avatarUrl} size={16} />
                   <span class="commit-headline">{event.headline}</span>
-                  <span class="commit-sha">{event.sha}</span>
+                  <span
+                    class="commit-lines"
+                    class:tests-only={lines?.testsOnly}
+                    title={lines?.testsOnly ? "Only test files changed" : lines?.skippedTests ? "Lines changed outside test files" : "Lines changed"}
+                  >
+                    {#if lines}
+                      <b class="add">+{lines.additions}</b><b class="del">−{lines.deletions}</b>
+                    {/if}
+                  </span>
                   {#if event.ciState === "SUCCESS"}
                     <span class="commit-ci pass" aria-label="Checks passed" title="Checks passed">
                       <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5"></circle><path d="m4.8 8 2 2 4.4-4.4"></path></svg>
@@ -2445,6 +2499,8 @@
                     <span class="commit-ci fail" aria-label="Checks failed" title="Checks failed">
                       <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5"></circle><path d="m5.5 5.5 5 5m0-5-5 5"></path></svg>
                     </span>
+                  {:else}
+                    <span class="commit-ci" aria-hidden="true"></span>
                   {/if}
                   <span class="when">{relativeTime(event.at)}</span>
                 </button>
@@ -3789,10 +3845,25 @@
     white-space: nowrap;
     color: var(--text);
   }
-  .commit-sha {
+  .commit-lines {
     flex: none;
-    color: var(--text-faint);
+    display: flex;
+    gap: 6px;
+    justify-content: flex-end;
+    min-width: 92px;
     font-family: var(--mono);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+  .commit-lines .add {
+    color: var(--ready);
+  }
+  .commit-lines .del {
+    color: var(--fail);
+  }
+  .commit-lines.tests-only .add,
+  .commit-lines.tests-only .del {
+    color: var(--text-faint);
   }
   .commit-ci {
     display: inline-flex;
@@ -3817,6 +3888,8 @@
   }
   .commit-row .when {
     flex: none;
+    min-width: 30px;
+    text-align: right;
     color: var(--text-faint);
     font-size: 11px;
   }

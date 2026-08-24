@@ -100,8 +100,8 @@ function baseDetail(number: number, overrides: Partial<PrDetail> = {}): PrDetail
     lastCommit: { nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS", contexts: { nodes: passingChecks } } } }] },
     commitList: {
       nodes: [
-        { commit: { oid: sha(number, 1), abbreviatedOid: sha(number, 1).slice(0, 7), messageHeadline: "Lay the groundwork", committedDate: at(180), author: { name: "Theodor", user: author(VIEWER) }, parents: { nodes: [{ oid: sha(number, 9) }] } } },
-        { commit: { oid: head, abbreviatedOid: head.slice(0, 7), messageHeadline: "Finish the fixture", committedDate: at(60), author: { name: "Theodor", user: author(VIEWER) }, parents: { nodes: [{ oid: sha(number, 1) }] } } },
+        { commit: { oid: sha(number, 1), abbreviatedOid: sha(number, 1).slice(0, 7), messageHeadline: "Lay the groundwork", committedDate: at(180), additions: 128, deletions: 14, author: { name: "Theodor", user: author(VIEWER) }, parents: { nodes: [{ oid: sha(number, 9) }] } } },
+        { commit: { oid: head, abbreviatedOid: head.slice(0, 7), messageHeadline: "Finish the fixture", committedDate: at(60), additions: 37, deletions: 52, author: { name: "Theodor", user: author(VIEWER) }, parents: { nodes: [{ oid: sha(number, 1) }] } } },
       ],
     },
     labels: { nodes: [{ name: "agentic" }, { name: "ui" }] },

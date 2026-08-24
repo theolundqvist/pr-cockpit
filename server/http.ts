@@ -56,7 +56,7 @@ import {
   type PrCommentSince,
   type PrDetail,
 } from "./github.ts";
-import { conflictFilesFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError } from "./mirror.ts";
+import { type CommitFileStat, commitStatsFromMirror, conflictFilesFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError } from "./mirror.ts";
 import { checkState, type CheckState } from "./checkState.ts";
 import { currentBaseRef, discardMutation, enqueueMutation, mutationsForPr, retryMutation, type MutationPayload } from "./mutations.ts";
 import { isMergeMethod, mergeMethodFor, mergeMethodSourceFor, setMergeMethodPreference } from "./mergeMethod.ts";
@@ -1016,6 +1016,32 @@ async function handlePrConflicts(owner: string, repo: string, number: string): P
     console.error(`conflict merge-tree failed for ${repoName}#${num}: ${result.error}`);
   }
   return json({ error: "couldn't determine conflict files" }, 503);
+}
+
+// Per-commit file counts for the timeline. The mirror is the only source of per-commit file lists;
+// when it has nothing to say the client falls back to the GraphQL per-commit totals.
+async function handlePrCommitStats(owner: string, repo: string, number: string): Promise<Response> {
+  if (!validPrReference(owner, repo, number)) return json({ error: "invalid PR reference" }, 400);
+  const repoName = `${owner}/${repo}`;
+  const num = Number(number);
+  const ctx = resolvePrContext(repoName, num);
+  if (!ctx) return json({ error: "PR is not cached yet" }, 404);
+  if (isMockGithub || !ctx.baseSha) return json({ commits: {} });
+
+  let result = await commitStatsFromMirror(repoName, ctx.baseSha, ctx.headSha);
+  if (result.status === "missing-commit") {
+    try {
+      await fetchMirror(repoName, INCREMENTAL_FETCH_TIMEOUT_MS);
+      result = await commitStatsFromMirror(repoName, ctx.baseSha, ctx.headSha);
+    } catch (err) {
+      console.error(`commit stats mirror fetch failed for ${repoName}#${num}:`, err);
+      return json({ commits: {} });
+    }
+  }
+  if (result.status !== "ok") return json({ commits: {} });
+  const commits: Record<string, CommitFileStat[]> = {};
+  for (const commit of result.commits) commits[commit.sha] = commit.files;
+  return json({ commits });
 }
 
 async function handlePrDiff(owner: string, repo: string, number: string, url: URL): Promise<Response> {
@@ -2074,6 +2100,15 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       parts[5] === "conflicts"
     ) {
       return handlePrConflicts(parts[2]!, parts[3]!, parts[4]!);
+    }
+    if (
+      req.method === "GET" &&
+      parts.length === 6 &&
+      parts[0] === "api" &&
+      parts[1] === "pr" &&
+      parts[5] === "commit-stats"
+    ) {
+      return handlePrCommitStats(parts[2]!, parts[3]!, parts[4]!);
     }
     if (
       req.method === "GET" &&

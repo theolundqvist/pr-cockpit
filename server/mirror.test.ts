@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { conflictFilesFromGitDir, diffFromGitDir, fileFromGitDir } from "./mirror.ts";
+import { commitStatsFromGitDir, conflictFilesFromGitDir, diffFromGitDir, fileFromGitDir } from "./mirror.ts";
 
 const cleanup: string[] = [];
 afterEach(() => {
@@ -80,6 +80,65 @@ describe("fileFromGitDir", () => {
     expect(await fileFromGitDir(join(root, ".git"), "HEAD", "missing.ts")).toEqual({
       status: "not-found",
     });
+  });
+});
+
+describe("commitStatsFromGitDir", () => {
+  test("attributes per-file counts to each commit and skips merges", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pr-cockpit-commit-stats-"));
+    cleanup.push(root);
+    git(root, "init", "-b", "main");
+    git(root, "config", "user.name", "PR Cockpit Test");
+    git(root, "config", "user.email", "pr-cockpit@example.test");
+    await Bun.write(join(root, "app.ts"), "one\n");
+    git(root, "add", "app.ts");
+    git(root, "commit", "-m", "base");
+    const base = Bun.spawnSync(["git", "-C", root, "rev-parse", "HEAD"]).stdout.toString().trim();
+
+    git(root, "switch", "-c", "topic");
+    await Bun.write(join(root, "app.ts"), "one\ntwo\nthree\n");
+    await Bun.write(join(root, "app.test.ts"), "spec\n");
+    git(root, "add", "app.test.ts");
+    git(root, "commit", "-am", "grow app and add spec");
+    const first = Bun.spawnSync(["git", "-C", root, "rev-parse", "HEAD"]).stdout.toString().trim();
+
+    await Bun.write(join(root, "app.ts"), "one\n");
+    git(root, "commit", "-am", "shrink app");
+    const second = Bun.spawnSync(["git", "-C", root, "rev-parse", "HEAD"]).stdout.toString().trim();
+
+    git(root, "switch", "main");
+    await Bun.write(join(root, "readme.md"), "docs\n");
+    git(root, "add", "readme.md");
+    git(root, "commit", "-m", "base moves on");
+    git(root, "switch", "topic");
+    git(root, "merge", "--no-edit", "main");
+    const merge = Bun.spawnSync(["git", "-C", root, "rev-parse", "HEAD"]).stdout.toString().trim();
+
+    const result = await commitStatsFromGitDir(join(root, ".git"), base, "topic");
+
+    if (result.status !== "ok") throw new Error(`expected ok, got ${result.status}`);
+    const bySha = new Map(result.commits.map((commit) => [commit.sha, commit.files]));
+
+    expect(bySha.get(first)).toEqual([
+      { path: "app.test.ts", additions: 1, deletions: 0 },
+      { path: "app.ts", additions: 2, deletions: 0 },
+    ]);
+    expect(bySha.get(second)).toEqual([{ path: "app.ts", additions: 0, deletions: 2 }]);
+    expect(bySha.has(merge)).toBe(false);
+  });
+
+  test("reports a missing commit instead of guessing", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pr-cockpit-commit-stats-missing-"));
+    cleanup.push(root);
+    git(root, "init", "-b", "main");
+    git(root, "config", "user.name", "PR Cockpit Test");
+    git(root, "config", "user.email", "pr-cockpit@example.test");
+    await Bun.write(join(root, "app.ts"), "one\n");
+    git(root, "add", "app.ts");
+    git(root, "commit", "-m", "base");
+
+    const result = await commitStatsFromGitDir(join(root, ".git"), "main", "0".repeat(40));
+    expect(result).toEqual({ status: "missing-commit" });
   });
 });
 
