@@ -2454,14 +2454,15 @@
                   </div>
                 </div>
               {:else}
-                <div class="md" use:imageFallback use:mermaidDiagrams={theme.name + "" + displayBody}>{@html renderMarkdown(displayBody)}</div>
+                {#if !editBodyMutation}
+                  <button class="link body-edit shortcut-action" onclick={startEditBody}>Edit <Kbd keys={["shift", "e"]} /></button>
+                {/if}
+                <div class="md" use:imageFallback use:mermaidDiagrams={theme.name + "" + displayBody}>{@html renderMarkdown(displayBody)}</div>
                 {#if editBodyMutation}
                   <div class="body-mut">
                     <MutationBadge state={editBodyMutation.state} onRetry={() => handleRetry(editBodyMutation.id)} onDiscard={() => handleDiscard(editBodyMutation.id)} />
                     {#if editBodyMutation.error}<span class="mut-error">{editBodyMutation.error}</span>{/if}
                   </div>
-                {:else}
-                  <button class="link body-edit shortcut-action" onclick={startEditBody}>Edit <Kbd keys={["shift", "e"]} /></button>
                 {/if}
                 <Reactions reactions={pr.reactions} />
               {/if}
@@ -3760,10 +3761,19 @@
     gap: 8px;
     margin-top: 8px;
   }
-  .body-edit {
-    position: absolute;
-    top: 12px;
-    right: 14px;
+  .body-card .body-edit {
+    float: right;
+    min-height: 28px;
+    margin: -4px -4px 4px 10px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-dim);
+    font-family: var(--sans);
+    font-size: 11px;
+    text-decoration: none;
+    cursor: pointer;
     opacity: 0;
     transition: opacity 0.12s ease;
   }
@@ -3771,18 +3781,20 @@
   .body-edit:focus-visible {
     opacity: 1;
   }
-  .body-edit,
   .body-editor .link {
-    background: none;
+    padding: 0;
     border: none;
+    background: none;
     color: var(--text-dim);
     font-family: var(--sans);
     font-size: 11px;
-    cursor: pointer;
-    padding: 0;
     text-decoration: underline;
+    cursor: pointer;
   }
-  .body-edit:hover,
+  .body-card .body-edit:hover:not(:disabled) {
+    background: var(--surface-hover);
+    color: var(--text);
+  }
   .body-editor .link:hover {
     color: var(--text);
   }
