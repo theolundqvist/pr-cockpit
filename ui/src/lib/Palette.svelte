@@ -204,10 +204,7 @@
   <div class="scrim" class:standalone onmousedown={close}>
     <div class="palette" class:standalone onmousedown={(e) => e.stopPropagation()}>
       {#if standalone}
-        <div class="palette-standalone-head">
-          <span class="ui-eyebrow">PR Cockpit</span>
-          <span>Find a pull request</span>
-        </div>
+        <div class="palette-standalone-head">Find a pull request</div>
       {/if}
       <div class="palette-input-row">
         <svg class="palette-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
@@ -330,9 +327,6 @@
     font-size: 9.5px;
   }
   .palette-standalone-head {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
     padding: 18px 18px 10px;
     color: var(--text);
     font-size: 19px;
