@@ -2,28 +2,62 @@ import { setRendererInvalidationPublisher } from "./rendererInvalidation.ts";
 
 type FetchHandler = (request: Request) => Response | Promise<Response>;
 
-function rendererOriginAllowed(request: Request): boolean {
-  const origin = request.headers.get("origin");
-  if (origin === null) return true;
-  try {
-    const url = new URL(origin);
-    return (url.protocol === "http:" || url.protocol === "https:")
-      && (url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]");
-  } catch {
-    return false;
+const UNSAFE_BROWSER_METHODS: Record<string, true> = { POST: true, PUT: true, PATCH: true, DELETE: true };
+
+/** Parses a comma-separated list of exact HTTP(S) origins, failing fast on anything malformed. */
+function parseAllowedOrigins(configured: string | undefined): Set<string> {
+  const origins = new Set<string>();
+  if (configured === undefined) return origins;
+  for (const entry of configured.split(",")) {
+    const value = entry.trim();
+    if (value === "") continue;
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      throw new Error(`COCKPIT_ALLOWED_ORIGINS entry is not a valid URL: ${value}`);
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      throw new Error(`COCKPIT_ALLOWED_ORIGINS entry must be an HTTP(S) origin: ${value}`);
+    }
+    if (url.origin !== value) {
+      throw new Error(`COCKPIT_ALLOWED_ORIGINS entry must be an exact origin like ${url.origin}: ${value}`);
+    }
+    origins.add(url.origin);
   }
+  return origins;
 }
 
-export function startCockpitServer(port: number, fetchHandler: FetchHandler) {
+function buildOriginPolicy(configured: string | undefined): (request: Request) => boolean {
+  const allowedOrigins = parseAllowedOrigins(configured);
+  return (request) => {
+    const origin = request.headers.get("origin");
+    if (origin === null) return request.headers.get("sec-fetch-site") !== "cross-site";
+    if (allowedOrigins.has(origin)) return true;
+    try {
+      const url = new URL(origin);
+      return (url.protocol === "http:" || url.protocol === "https:")
+        && (url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]");
+    } catch {
+      return false;
+    }
+  };
+}
+
+export function startCockpitServer(port: number, fetchHandler: FetchHandler, allowedOrigins?: string) {
+  const originAllowed = buildOriginPolicy(allowedOrigins ?? Bun.env.COCKPIT_ALLOWED_ORIGINS);
   const server = Bun.serve({
     port,
     hostname: "127.0.0.1",
     fetch(request, bunServer) {
       if (new URL(request.url).pathname === "/api/events") {
-        if (!rendererOriginAllowed(request)) return new Response("Forbidden", { status: 403 });
+        if (!originAllowed(request)) return new Response("Forbidden", { status: 403 });
         return bunServer.upgrade(request)
           ? undefined
           : new Response("WebSocket upgrade required", { status: 426 });
+      }
+      if (UNSAFE_BROWSER_METHODS[request.method] && !originAllowed(request)) {
+        return new Response("Forbidden", { status: 403 });
       }
       return fetchHandler(request);
     },

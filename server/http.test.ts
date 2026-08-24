@@ -187,6 +187,26 @@ describe("health", () => {
   });
 });
 
+describe("hosted update policy", () => {
+  test("hides updates and rejects update requests when updates are disabled", async () => {
+    const previous = process.env.COCKPIT_UPDATE_DISABLED;
+    process.env.COCKPIT_UPDATE_DISABLED = "1";
+    try {
+      const fetchHandler = buildFetchHandler(4820);
+      const versionResponse = await fetchHandler(new Request("http://127.0.0.1:4820/api/version"));
+      const updateResponse = await fetchHandler(new Request("http://127.0.0.1:4820/api/update", { method: "POST" }));
+
+      expect(versionResponse.status).toBe(200);
+      expect(await versionResponse.json()).toMatchObject({ updateAvailable: false });
+      expect(updateResponse.status).toBe(403);
+      expect(await updateResponse.json()).toEqual({ error: "updates are disabled for this installation" });
+    } finally {
+      if (previous === undefined) delete process.env.COCKPIT_UPDATE_DISABLED;
+      else process.env.COCKPIT_UPDATE_DISABLED = previous;
+    }
+  });
+});
+
 describe("PR link bridge", () => {
   const fetchHandler = buildFetchHandler(4820);
 

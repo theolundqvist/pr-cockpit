@@ -6,6 +6,10 @@ let updateAvailable = false;
 // server, so a client seeing this change knows a new build is on disk and a reload is safe.
 const bootRev = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: repoRoot }).stdout.toString().trim();
 
+export function updatesEnabled(): boolean {
+  return process.env.COCKPIT_UPDATE_DISABLED !== "1";
+}
+
 async function checkForUpdate(): Promise<void> {
   try {
     const fetchProc = Bun.spawn(["git", "fetch", "--quiet", "origin", "main"], {
@@ -30,7 +34,7 @@ async function checkForUpdate(): Promise<void> {
 }
 
 export function isUpdateAvailable(): boolean {
-  return updateAvailable;
+  return updatesEnabled() && updateAvailable;
 }
 
 export function runningRev(): string {
@@ -38,6 +42,7 @@ export function runningRev(): string {
 }
 
 export function startUpdateCheck(): void {
+  if (!updatesEnabled()) return;
   checkForUpdate();
   setInterval(checkForUpdate, CHECK_INTERVAL_MS);
 }

@@ -100,6 +100,24 @@ curl -fsSL https://raw.githubusercontent.com/theolundqvist/pr-cockpit/main/scrip
 
 The installer checks macOS prerequisites, asks before installing anything, shows each stage, and opens the four-step setup. Only after installation succeeds does it optionally offer to teach local coding assistants to use the cache-aware CLI. Run `pr-cockpit update` to upgrade. A legacy private installation is replaced while local pull-request data and settings are preserved.
 
+### Linux server (private remote access)
+
+From a clone on the Linux host, install the loopback-only systemd user service:
+
+```sh
+./scripts/install-linux
+```
+
+Edit `~/.config/pr-cockpit/server.env`, then run `systemctl --user restart pr-cockpit.service`. To update the checkout and rebuild the UI without replacing that file, run `git pull && ./scripts/install-linux` again.
+
+For SSH access, leave TCP port 4820 closed and tunnel it instead:
+
+```sh
+ssh -N -L 4820:127.0.0.1:4820 user@host
+```
+
+Then open `http://127.0.0.1:4820`. For browser access through Tailscale Serve or Cloudflare Access, add each exact external origin to the comma-separated `COCKPIT_ALLOWED_ORIGINS` value in `server.env` (for example, `COCKPIT_ALLOWED_ORIGINS="https://cockpit.example.ts.net,https://cockpit.example.com"`) and restart the service. Tailscale Serve in front of the loopback service is preferred; never bind PR Cockpit publicly or expose port 4820.
+
 ## Start in four steps
 
 1. Connect your existing GitHub CLI login.

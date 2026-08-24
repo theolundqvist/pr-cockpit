@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+
+if [[ "$(uname -s)" != "Linux" ]]; then
+  echo "pr-cockpit: scripts/install-linux only supports Linux" >&2
+  exit 1
+fi
+
+missing=0
+for command_name in bun git gh curl systemctl; do
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    echo "pr-cockpit: $command_name not found" >&2
+    missing=1
+  fi
+done
+if [[ "$missing" -ne 0 ]]; then
+  exit 1
+fi
+if ! gh auth status >/dev/null 2>&1; then
+  echo "pr-cockpit: gh is installed but not authenticated — run 'gh auth login'" >&2
+  exit 1
+fi
+
+bun_bin="$(command -v bun)"
+git_bin="$(command -v git)"
+gh_bin="$(command -v gh)"
+curl_bin="$(command -v curl)"
+systemctl_bin="$(command -v systemctl)"
+
+quiet_log=""
+cleanup_quiet_log() {
+  [[ -z "$quiet_log" ]] || rm -f "$quiet_log"
+}
+trap cleanup_quiet_log EXIT
+
+quiet_in() {
+  local label="$1"
+  local directory="$2"
+  local status
+  shift 2
+  quiet_log="$(mktemp "${TMPDIR:-/tmp}/pr-cockpit-linux-install.XXXXXX")"
+  if (cd "$directory" && "$@") >"$quiet_log" 2>&1; then
+    rm -f "$quiet_log"
+    quiet_log=""
+    return 0
+  fi
+  status=$?
+  echo "pr-cockpit: $label failed" >&2
+  cat "$quiet_log" >&2
+  rm -f "$quiet_log"
+  quiet_log=""
+  return "$status"
+}
+
+echo "pr-cockpit: installing dependencies..."
+quiet_in "root dependency install" "$root" "$bun_bin" install
+quiet_in "UI dependency install" "$root/ui" "$bun_bin" install
+
+echo "pr-cockpit: building UI..."
+quiet_in "UI build" "$root/ui" "$bun_bin" run build
+
+config_dir="$HOME/.config/pr-cockpit"
+env_file="$config_dir/server.env"
+default_data_dir="$HOME/.local/share/pr-cockpit"
+data_dir="${COCKPIT_DATA_DIR:-$default_data_dir}"
+if [[ "$data_dir" != /* ]]; then
+  echo "pr-cockpit: COCKPIT_DATA_DIR must be an absolute path" >&2
+  exit 1
+fi
+mkdir -p "$config_dir" "$data_dir"
+
+env_quote() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '"%s"' "$value"
+}
+
+if [[ ! -f "$env_file" ]]; then
+  {
+    printf 'COCKPIT_DATA_DIR=%s\n' "$(env_quote "$data_dir")"
+    printf 'COCKPIT_PORT=4820\n'
+    if [[ -n "${COCKPIT_REPOS:-}" ]]; then
+      printf 'COCKPIT_REPOS=%s\n' "$(env_quote "$COCKPIT_REPOS")"
+    fi
+    if [[ -n "${COCKPIT_ALLOWED_ORIGINS:-}" ]]; then
+      printf 'COCKPIT_ALLOWED_ORIGINS=%s\n' "$(env_quote "$COCKPIT_ALLOWED_ORIGINS")"
+    fi
+    printf 'COCKPIT_UPDATE_DISABLED=1\n'
+  } > "$env_file"
+  chmod 600 "$env_file"
+  echo "pr-cockpit: created $env_file"
+else
+  echo "pr-cockpit: preserving existing $env_file"
+fi
+
+unit_dir="$HOME/.config/systemd/user"
+unit_file="$unit_dir/pr-cockpit.service"
+mkdir -p "$unit_dir"
+
+unit_quote() {
+  local value="$1"
+  value="${value//%/%%}"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '"%s"' "$value"
+}
+
+xdg_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+xdg_config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+service_path="$(dirname "$bun_bin"):$(dirname "$gh_bin"):$(dirname "$git_bin"):$(dirname "$curl_bin"):/usr/local/bin:/usr/bin:/bin"
+
+cat > "$unit_file" <<UNIT
+[Unit]
+Description=PR Cockpit
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$(unit_quote "$root")
+EnvironmentFile=$(unit_quote "$env_file")
+Environment=$(unit_quote "COCKPIT_ROOT=$root")
+Environment=$(unit_quote "COCKPIT_GH_BIN=$gh_bin")
+Environment=$(unit_quote "COCKPIT_UPDATE_DISABLED=1")
+Environment=$(unit_quote "PATH=$service_path")
+Environment=$(unit_quote "XDG_DATA_HOME=$xdg_data_home")
+Environment=$(unit_quote "XDG_CONFIG_HOME=$xdg_config_home")
+ExecStart=$(unit_quote "$bun_bin") $(unit_quote "$root/server/main.ts")
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+UNIT
+
+echo "pr-cockpit: installing systemd user service..."
+"$systemctl_bin" --user daemon-reload
+if "$systemctl_bin" --user is-active --quiet pr-cockpit.service; then
+  "$systemctl_bin" --user restart pr-cockpit.service
+else
+  "$systemctl_bin" --user enable --now pr-cockpit.service
+fi
+
+health_port=4820
+while IFS='=' read -r key value; do
+  if [[ "$key" == "COCKPIT_PORT" ]]; then
+    value="${value#\"}"
+    value="${value%\"}"
+    value="${value#\'}"
+    value="${value%\'}"
+    if [[ "$value" =~ ^[0-9]+$ ]]; then
+      health_port="$value"
+    fi
+  fi
+done < "$env_file"
+
+healthy=0
+for _ in $(seq 1 50); do
+  health="$("$curl_bin" --fail --silent --show-error --max-time 2 "http://127.0.0.1:$health_port/healthz" 2>/dev/null || true)"
+  if [[ "$health" == *"\"root\":\"$root\""* ]]; then
+    healthy=1
+    break
+  fi
+  sleep 0.2
+done
+if [[ "$healthy" -ne 1 ]]; then
+  echo "pr-cockpit: service did not become healthy; inspect it with: journalctl --user -u pr-cockpit.service" >&2
+  exit 1
+fi
+
+user_name="$(id -un)"
+if command -v loginctl >/dev/null 2>&1; then
+  linger="$(loginctl show-user "$user_name" --property=Linger --value 2>/dev/null || true)"
+  if [[ "$linger" != "yes" ]]; then
+    echo "pr-cockpit: user lingering is disabled; the service may stop after logout. Enable it with: sudo loginctl enable-linger $user_name"
+  fi
+else
+  echo "pr-cockpit: could not check user lingering because loginctl is unavailable"
+fi
+
+echo "pr-cockpit: healthy at http://127.0.0.1:$health_port"
+echo "pr-cockpit: configuration: $env_file"

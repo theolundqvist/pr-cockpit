@@ -81,7 +81,7 @@ import {
   type AgentRow,
 } from "./agents.ts";
 import { defaultRescorePrompt, effectiveRescoreScore, maybeRescore, shouldAutoRescore } from "./rescorer.ts";
-import { isUpdateAvailable, runningRev } from "./version.ts";
+import { isUpdateAvailable, runningRev, updatesEnabled } from "./version.ts";
 import { spawn } from "node:child_process";
 import { repoUsersCached } from "./repoUsers.ts";
 import { matchesQuery, parseQuery, wantsHistoricalPrs } from "./query.ts";
@@ -1706,6 +1706,9 @@ let updateSpawned = false;
 
 // mirrors the shell's updateAndRestart gating: resolves only once the pull settles, success or failure
 function handleUpdate(): Promise<Response> {
+  if (!updatesEnabled()) {
+    return Promise.resolve(json({ error: "updates are disabled for this installation" }, 403));
+  }
   if (updateSpawned) return Promise.resolve(json({ ok: true }));
   updateSpawned = true;
   const root = `${import.meta.dir}/..`;
