@@ -205,7 +205,7 @@
   <div class="scrim" class:standalone onmousedown={close}>
     <div class="palette" class:standalone onmousedown={(e) => e.stopPropagation()}>
       {#if standalone}
-        <div class="palette-standalone-head">Find a pull request</div>
+        <div class="palette-standalone-head">Find PR</div>
       {/if}
       <div class="palette-input-row">
         <svg class="palette-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
@@ -216,7 +216,7 @@
           class="palette-input"
           bind:this={inputEl}
           bind:value={query}
-          placeholder="Jump to a PR — title, #number, or branch…"
+          placeholder="PR, branch, or #"
           spellcheck="false"
           autocomplete="off"
         />
@@ -240,7 +240,7 @@
             {#if i === selected}<Kbd keys="enter" />{/if}
           </button>
         {:else}
-          <div class="palette-empty">{query.trim() ? "No matching PRs" : "Type to search"}</div>
+          <div class="palette-empty">{query.trim() ? "No matching PRs" : ""}</div>
         {/each}
       </div>
     </div>

@@ -3027,7 +3027,7 @@
 
     {#if pickerMode}
       <UserPicker
-        title={pickerMode === "assign" ? "Assign people" : "Request review from"}
+        title={pickerMode === "assign" ? "Assign" : "Reviewers"}
         users={repoUsers}
         current={pickerMode === "assign" ? assignedLogins : requestedLogins}
         onPick={pickerMode === "assign" ? submitAssign : submitRequestReviewer}
@@ -3036,15 +3036,15 @@
     {/if}
 
     {#if quotaMergeModal}
-      <QuotaMergeModal {number} url={pr.url} impact={quotaStatus} onClose={() => (quotaMergeModal = false)} />
+      <QuotaMergeModal url={pr.url} impact={quotaStatus} onClose={() => (quotaMergeModal = false)} />
     {/if}
 
     {#if promptOpen}
       <div class="prompt-overlay" role="presentation" onclick={() => (promptOpen = false)}>
-        <div class="prompt-box" role="presentation" onclick={(e) => e.stopPropagation()}>
+        <div class="prompt-box" role="dialog" aria-modal="true" aria-label={`Agent prompt for pull request #${number}`} tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
           <div class="prompt-head">
-            <span class="prompt-title">prompt an agent on #{number}</span>
-            <span class="prompt-sub">runs opus in the PR worktree · does what you say · pushes</span>
+            <span class="prompt-title">Agent prompt</span>
+            <span class="prompt-pr">#{number}</span>
           </div>
           <textarea
             class="prompt-input"
@@ -3052,11 +3052,20 @@
             onkeydown={onPromptKey}
             use:focusOnMount
             disabled={promptBusy}
-            placeholder="e.g. remove the comments you just added"
+            placeholder="What should change?"
             spellcheck="false"
           ></textarea>
           {#if promptError}<div class="prompt-error">{promptError}</div>{/if}
-          <div class="prompt-keys"><Kbd keys="enter" /> launch · <Kbd keys={["shift", "enter"]} /> newline · <Kbd keys="esc" /> cancel</div>
+          <div class="prompt-footer">
+            <span class="prompt-newline"><Kbd keys={["shift", "enter"]} /> newline</span>
+            <div class="prompt-actions">
+              <button class="prompt-button" type="button" onclick={() => (promptOpen = false)}>Cancel <Kbd keys="esc" /></button>
+              <button class="prompt-button primary" type="button" disabled={!promptText.trim() || promptBusy} onclick={submitPrompt}>
+                {promptBusy ? "Launching…" : "Launch"}
+                {#if !promptBusy}<Kbd keys="enter" />{/if}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     {/if}
@@ -3064,7 +3073,6 @@
     {#if mergeConfirm || forceMergeConfirm}
       <MergeDecisionDialog
         {number}
-        title={pr.title}
         headRef={pr.headRefName}
         baseRef={pr.baseRefName}
         methodLabel={mergeMethodLabel}
@@ -3231,34 +3239,34 @@
     background: var(--overlay-bg);
   }
   .prompt-box {
-    width: min(640px, calc(var(--general-width) - 48px));
+    width: min(520px, calc(var(--general-width) - 48px));
     background: var(--panel-raised);
     border: 1px solid var(--border);
     border-radius: 12px;
-    padding: 18px;
+    padding: 16px;
     box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
   }
   .prompt-head {
     display: flex;
-    flex-direction: column;
-    gap: 3px;
+    align-items: center;
+    gap: 8px;
     margin-bottom: 12px;
   }
   .prompt-title {
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--text-dim);
+    color: var(--text);
+    font-size: 16px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
   }
-  .prompt-sub {
-    font-size: 11.5px;
+  .prompt-pr {
     color: var(--text-faint);
+    font-family: var(--mono);
+    font-size: 12px;
   }
   .prompt-input {
     width: 100%;
     box-sizing: border-box;
-    min-height: 96px;
+    min-height: 88px;
     resize: vertical;
     background: var(--panel);
     border: 1px solid var(--border);
@@ -3281,10 +3289,47 @@
     font-size: 12px;
     margin-top: 8px;
   }
-  .prompt-keys {
+  .prompt-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 12px;
+  }
+  .prompt-newline {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     color: var(--text-faint);
     font-size: 11px;
-    margin-top: 10px;
+  }
+  .prompt-actions {
+    display: flex;
+    gap: 8px;
+  }
+  .prompt-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 32px;
+    padding: 0 13px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--surface);
+    box-shadow: var(--shadow-control-outlined);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .prompt-button.primary {
+    background: var(--link);
+    box-shadow: var(--shadow-control-filled);
+    color: var(--on-brand);
+  }
+  .prompt-button:disabled {
+    opacity: 0.45;
   }
   .copied-flash {
     position: fixed;

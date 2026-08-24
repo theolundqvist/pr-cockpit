@@ -10,9 +10,9 @@
       .filter((a) => a.trigger === "keybind" && a.enabled && a.keybind)
       .map((a) => {
         if (a.id === "fixer") return { key: a.keybind, label: "auto-merge" };
-        if (a.id === "autofix") return { key: a.keybind, label: "auto-fix (or bulk auto-fix a selected range, from inbox)" };
-        if (a.id === "rescorer") return { key: a.keybind, label: "re-score Greptile review" };
-        return { key: a.keybind, label: `${a.name || "custom agent"} (custom agent)` };
+        if (a.id === "autofix") return { key: a.keybind, label: "auto-fix" };
+        if (a.id === "rescorer") return { key: a.keybind, label: "re-score review" };
+        return { key: a.keybind, label: a.name || "custom agent" };
       }),
   );
 
@@ -25,10 +25,10 @@
         { key: "⇧H / ⇧L", label: "back / forward" },
         { key: "⌘,", label: "settings" },
         { key: "⌘+ / ⌘- / ⌘0", label: "zoom in / out / reset" },
-        { key: "j / k", label: "move selection / scroll" },
-        { key: "⇧J / ⇧K", label: "next / prev file (files tab) · select range (inbox)" },
-        { key: "gg / G", label: "jump to top / bottom" },
-        { key: "1-9", label: "apply saved view" },
+        { key: "j / k", label: "move" },
+        { key: "⇧J / ⇧K", label: "next / previous file or PR" },
+        { key: "gg / G", label: "top / bottom" },
+        { key: "1-9", label: "saved view" },
         { key: "esc", label: "back / close" },
       ],
     },
@@ -37,11 +37,11 @@
       items: [
         { key: "⏎", label: "open PR" },
         { key: "d", label: "toggle files / conversation" },
-        { key: "⌘1 / ⌘2 / ⌘3", label: "switch tab: conversation / files / agents" },
-        { key: "c", label: "comment (conversation) / changes range (files tab)" },
+        { key: "⌘1 / ⌘2 / ⌘3", label: "conversation / files / agents" },
+        { key: "c", label: "comment / changes range" },
         { key: "r", label: "reply" },
-        { key: "e", label: "open editor (or archive, from inbox)" },
-        { key: "⇧E", label: "edit description (conversation tab)" },
+        { key: "e", label: "editor / archive" },
+        { key: "⇧E", label: "edit description" },
         { key: "v", label: "review" },
         { key: "s", label: "assign" },
         { key: "q", label: "request review" },
@@ -50,8 +50,8 @@
         { key: "⇧M", label: "force merge" },
         { key: "⇧C", label: "close PR" },
         { key: "u", label: "update branch" },
-        { key: "x", label: "close PR · toggle tests (files tab)" },
-        { key: "h", label: "file history on base branch (files tab)" },
+        { key: "x", label: "close / tests" },
+        { key: "h", label: "file history" },
         { key: "o", label: "open on github" },
         { key: "⇧T", label: "focus terminal" },
         { key: "z", label: "undo archive" },
@@ -62,9 +62,9 @@
     {
       title: "Views",
       items: [
-        { key: "A", label: "toggle archived (list view)" },
-        { key: "C", label: "recently merged/closed (list view)" },
-        { key: "⌘F", label: "open filter" },
+        { key: "A", label: "archived" },
+        { key: "C", label: "recently merged / closed" },
+        { key: "⌘F", label: "filter" },
       ],
     },
   ];
@@ -94,8 +94,8 @@
   <div class="scrim" onmousedown={() => (open = false)}>
     <div class="sheet" onmousedown={(e) => e.stopPropagation()}>
       <div class="sheet-head">
-        <span>Keyboard shortcuts</span>
-        <span class="sheet-hint">esc to close</span>
+        <span>Shortcuts</span>
+        <span class="sheet-hint"><Kbd keys="esc" /></span>
       </div>
       <div class="sheet-body">
         {#each GROUPS as group}
