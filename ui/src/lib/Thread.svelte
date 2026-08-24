@@ -174,6 +174,7 @@
   .thread.conversation-thread {
     margin-bottom: 14px;
     padding: 16px 18px;
+    box-shadow: var(--shadow-surface);
   }
   .summary-row {
     display: flex;

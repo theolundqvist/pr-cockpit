@@ -5570,7 +5570,7 @@
     padding: 18px;
     border: 0;
     border-radius: var(--radius-lg);
-    background: var(--panel);
+    background: color-mix(in srgb, var(--panel) 88%, var(--surface));
     box-shadow: var(--shadow-surface);
   }
   .side-block {
@@ -5578,7 +5578,7 @@
     padding: 14px;
     border: 0;
     border-radius: var(--radius-lg);
-    background: var(--panel);
+    background: color-mix(in srgb, var(--panel) 88%, var(--surface));
     box-shadow: var(--shadow-surface);
   }
   .side-block + .side-block {
@@ -5594,9 +5594,14 @@
   .event,
   .run-row,
   .diff-status {
-    border-color: var(--border-soft);
+    border-color: var(--border);
     border-radius: var(--radius-md);
-    box-shadow: none;
+    background: color-mix(in srgb, var(--panel) 88%, var(--surface));
+  }
+  .event:not(.activity-event),
+  .run-row,
+  .diff-status {
+    box-shadow: var(--shadow-surface);
   }
   .event-head {
     background: color-mix(in srgb, var(--surface) 56%, transparent);
@@ -5604,9 +5609,9 @@
   .event {
     margin-bottom: 8px;
     overflow: hidden;
-    border-color: var(--border-soft);
+    border-color: var(--border);
     border-radius: 10px;
-    background: var(--panel);
+    background: color-mix(in srgb, var(--panel) 88%, var(--surface));
   }
   .event-head {
     min-height: 40px;
@@ -5653,7 +5658,7 @@
   .greptile-event :global(.md) {
     color: var(--text-dim);
     font-size: 13.5px;
-    line-height: 1.52;
+    line-height: 1.65;
   }
   .greptile-event :global(.md h1),
   .greptile-event :global(.md h2),
