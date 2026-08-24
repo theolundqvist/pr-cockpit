@@ -120,6 +120,7 @@ export function seedSettings(): void {
   if (getSetting("per_view_window_size") === null) setSetting("per_view_window_size", "false");
   if (getSetting("per_view_window_position") === null) setSetting("per_view_window_position", "false");
   if (getSetting("theme") === null) setSetting("theme", "system");
+  if (getSetting("font_interface") === null) setSetting("font_interface", "default");
   // the single "font" preference became one toggle per surface; carry the old choice onto all three
   const legacyFont = normalizeFontPreference(getSetting("font"));
   for (const key of ["font_ui", "font_code", "font_comments"]) {
@@ -192,6 +193,7 @@ export interface Settings {
   per_view_window_size: boolean;
   per_view_window_position: boolean;
   theme: ThemePreference;
+  font_interface: FontPreference;
   font_ui: FontPreference;
   font_code: FontPreference;
   font_comments: FontPreference;
@@ -223,6 +225,7 @@ export function readSettings(): Settings {
     per_view_window_size: getSetting("per_view_window_size") === "true",
     per_view_window_position: getSetting("per_view_window_position") === "true",
     theme: normalizeThemePreference(getSetting("theme")),
+    font_interface: normalizeFontPreference(getSetting("font_interface")),
     font_ui: normalizeFontPreference(getSetting("font_ui")),
     font_code: normalizeFontPreference(getSetting("font_code")),
     font_comments: normalizeFontPreference(getSetting("font_comments")),
@@ -255,6 +258,7 @@ export function writeSettings(
     per_view_window_size: boolean;
     per_view_window_position: boolean;
     theme: string;
+    font_interface: string;
     font_ui: string;
     font_code: string;
     font_comments: string;
@@ -284,6 +288,7 @@ export function writeSettings(
   if (patch.per_view_window_size !== undefined) setSetting("per_view_window_size", patch.per_view_window_size ? "true" : "false");
   if (patch.per_view_window_position !== undefined) setSetting("per_view_window_position", patch.per_view_window_position ? "true" : "false");
   if (patch.theme !== undefined) setSetting("theme", normalizeThemePreference(patch.theme));
+  if (patch.font_interface !== undefined) setSetting("font_interface", normalizeFontPreference(patch.font_interface));
   if (patch.font_ui !== undefined) setSetting("font_ui", normalizeFontPreference(patch.font_ui));
   if (patch.font_code !== undefined) setSetting("font_code", normalizeFontPreference(patch.font_code));
   if (patch.font_comments !== undefined) setSetting("font_comments", normalizeFontPreference(patch.font_comments));

@@ -1538,6 +1538,7 @@ async function handlePutSettings(req: Request): Promise<Response> {
     per_view_window_size: boolean;
     per_view_window_position: boolean;
     theme: string;
+    font_interface: string;
     font_ui: string;
     font_code: string;
     font_comments: string;

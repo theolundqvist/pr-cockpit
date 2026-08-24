@@ -17,6 +17,7 @@
   let perViewWindowSize = $state(false);
   let perViewWindowPosition = $state(false);
   let themeName = $state("system");
+  let fontInterface = $state("default");
   let fontUi = $state("default");
   let fontCode = $state("default");
   let fontComments = $state("default");
@@ -113,6 +114,7 @@
     perViewWindowSize = s.per_view_window_size;
     perViewWindowPosition = s.per_view_window_position;
     themeName = s.theme;
+    fontInterface = s.font_interface;
     fontUi = s.font_ui;
     fontCode = s.font_code;
     fontComments = s.font_comments;
@@ -197,6 +199,7 @@
         per_view_window_size: perViewWindowSize,
         per_view_window_position: perViewWindowPosition,
         theme: themeName,
+        font_interface: fontInterface,
         font_ui: fontUi,
         font_code: fontCode,
         font_comments: fontComments,
@@ -225,7 +228,7 @@
       });
       apply(next);
       setTheme(themeName);
-      setFonts(fontUi, fontCode, fontComments);
+      setFonts(fontInterface, fontUi, fontCode, fontComments);
       setCodeTheme(codeTheme);
       setScales(generalScale, diffScale);
       setPrefs(next);
@@ -326,8 +329,50 @@
             <input class="input narrow" type="number" min="60" step="10" bind:value={pollInterval} />
           </label>
 
+          <div class="field field-wide">
+            <span class="label">Team sync</span>
+            <span class="hint">Relay URL — pushes PR webhook events to every teammate's cockpit; empty means off</span>
+            <input class="input mono" bind:value={relayUrl} spellcheck="false" autocomplete="off" />
+            {#if relayStatusText}
+              <span class="hint relay-status">{relayStatusText}</span>
+            {/if}
+            {#if relayCoverage?.appExists === false}
+              <button class="btn relay-setup" type="button" disabled={!relayOrg} onclick={openGithubAppSetup}>Set up GitHub App…</button>
+            {/if}
+            {#if relayInfo?.url && relayCoverage}
+              <div class="coverage-list">
+                {#each configuredRepos as repo}
+                  <div class="coverage-row">
+                    <span class="coverage-repo">{repo}</span>
+                    {#if relayCoverage.repos?.[repo] === true}
+                      <span class="coverage-live">live push ✓</span>
+                    {:else if relayCoverage.repos?.[repo] === false}
+                      <span class="coverage-polling">polling only</span>
+                      {#if relayCoverage.appExists}
+                        <button class="link-btn" type="button" onclick={() => window.open(relayCoverage.installUrl, "_blank", "noopener")}>Install app</button>
+                      {/if}
+                    {:else}
+                      <span class="coverage-polling">coverage unknown — relay didn't answer</span>
+                    {/if}
+                  </div>
+                {/each}
+                {#if relayCoverage.appExists && relayCoverage.repos && configuredRepos.some((r) => relayCoverage.repos[r] === false)}
+                  <span class="hint">Org admins install; members can request it from an admin via the same page</span>
+                {/if}
+              </div>
+            {/if}
+          </div>
+        </div>
+      {/if}
+
+      {#if activeTab === "appearance"}
+        <div class="settings-intro">
+          <span class="ui-eyebrow">Appearance</span>
+          <p>Choose the typography, color, scale and window chrome used across the cockpit.</p>
+        </div>
+        <div class="settings-grid">
           <label class="field">
-            <span class="label">Appearance</span>
+            <span class="label">Theme</span>
             <span class="hint">System follows this Mac automatically</span>
             <select class="input narrow" bind:value={themeName}>
               <option value="system">System</option>
@@ -337,8 +382,17 @@
           </label>
 
           <label class="field">
+            <span class="label">Interface font</span>
+            <span class="hint">Titles, labels, buttons and list chrome</span>
+            <select class="input narrow" bind:value={fontInterface}>
+              <option value="default">Default</option>
+              <option value="alacritty">Alacritty — 0xProto</option>
+            </select>
+          </label>
+
+          <label class="field">
             <span class="label">Technical UI font</span>
-            <span class="hint">Used for branches, paths, commit IDs, shortcuts and logs</span>
+            <span class="hint">Branches, paths, commit IDs and logs</span>
             <select class="input narrow" bind:value={fontUi}>
               <option value="default">Default</option>
               <option value="alacritty">Alacritty — 0xProto</option>
@@ -407,40 +461,6 @@
               <span class="hint">Restores the screen position you last used for the list and PR views</span>
             </span>
           </label>
-
-          <div class="field field-wide">
-            <span class="label">Team sync</span>
-            <span class="hint">Relay URL — pushes PR webhook events to every teammate's cockpit; empty means off</span>
-            <input class="input mono" bind:value={relayUrl} spellcheck="false" autocomplete="off" />
-            {#if relayStatusText}
-              <span class="hint relay-status">{relayStatusText}</span>
-            {/if}
-            {#if relayCoverage?.appExists === false}
-              <button class="btn relay-setup" type="button" disabled={!relayOrg} onclick={openGithubAppSetup}>Set up GitHub App…</button>
-            {/if}
-            {#if relayInfo?.url && relayCoverage}
-              <div class="coverage-list">
-                {#each configuredRepos as repo}
-                  <div class="coverage-row">
-                    <span class="coverage-repo">{repo}</span>
-                    {#if relayCoverage.repos?.[repo] === true}
-                      <span class="coverage-live">live push ✓</span>
-                    {:else if relayCoverage.repos?.[repo] === false}
-                      <span class="coverage-polling">polling only</span>
-                      {#if relayCoverage.appExists}
-                        <button class="link-btn" type="button" onclick={() => window.open(relayCoverage.installUrl, "_blank", "noopener")}>Install app</button>
-                      {/if}
-                    {:else}
-                      <span class="coverage-polling">coverage unknown — relay didn't answer</span>
-                    {/if}
-                  </div>
-                {/each}
-                {#if relayCoverage.appExists && relayCoverage.repos && configuredRepos.some((r) => relayCoverage.repos[r] === false)}
-                  <span class="hint">Org admins install; members can request it from an admin via the same page</span>
-                {/if}
-              </div>
-            {/if}
-          </div>
         </div>
       {/if}
 

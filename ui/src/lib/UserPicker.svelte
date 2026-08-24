@@ -168,7 +168,7 @@
   }
   .picker-hint kbd {
     color: color-mix(in srgb, var(--text-dim) 80%, transparent);
-    font-family: system-ui, -apple-system, sans-serif;
+    font-family: var(--sans);
     font-weight: 500;
   }
 

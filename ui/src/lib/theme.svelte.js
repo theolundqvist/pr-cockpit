@@ -64,9 +64,10 @@ export function setCodeTheme(value) {
   theme.shiki = SHIKI_THEMES[theme.codeTheme][theme.name];
 }
 
-export function setFonts(ui, code, comments) {
+export function setFonts(interfaceFont, ui, code, comments) {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
+  root.setAttribute("data-font-interface", normalizeFont(interfaceFont));
   root.setAttribute("data-font-ui", normalizeFont(ui));
   root.setAttribute("data-font-code", normalizeFont(code));
   root.setAttribute("data-font-comments", normalizeFont(comments));
@@ -93,7 +94,7 @@ let observingSystemTheme = false;
 export function initTheme() {
   setTheme("system");
   setCodeTheme("github");
-  setFonts("default", "default", "default");
+  setFonts("default", "default", "default", "default");
   setScales(100, 100);
   if (!observingSystemTheme && typeof window !== "undefined") {
     const query = window.matchMedia?.("(prefers-color-scheme: dark)");
@@ -105,7 +106,7 @@ export function initTheme() {
   fetchSettings()
     .then((settings) => {
       setCodeTheme(settings.code_theme);
-      setFonts(settings.font_ui, settings.font_code, settings.font_comments);
+      setFonts(settings.font_interface, settings.font_ui, settings.font_code, settings.font_comments);
       setScales(settings.general_scale, settings.diff_scale);
       setTheme(settings.theme);
     })

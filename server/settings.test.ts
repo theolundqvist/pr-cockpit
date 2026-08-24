@@ -133,9 +133,9 @@ test("window and diff layout settings persist independently", async () => {
     const positionOnly = writeSettings({ per_view_window_position: true });
     const both = writeSettings({ per_view_window_size: true });
     const unified = writeSettings({ diff_layout: "unified" });
-    const appearance = writeSettings({ font_code: "alacritty", code_theme: "catppuccin", general_scale: 125, diff_scale: 150 });
+    const appearance = writeSettings({ font_interface: "alacritty", font_code: "alacritty", code_theme: "catppuccin", general_scale: 125, diff_scale: 150 });
     // a database seeded before the split carries its single font choice onto all three surfaces
-    db.query("delete from settings where key in ('font_ui','font_code','font_comments')").run();
+    db.query("delete from settings where key in ('font_interface','font_ui','font_code','font_comments')").run();
     db.query("insert or replace into settings (key, value) values ('font', 'alacritty')").run();
     seedSettings();
     const migrated = readSettings();
@@ -159,6 +159,7 @@ test("window and diff layout settings persist independently", async () => {
     expect(result.initial.per_view_window_size).toBe(false);
     expect(result.initial.per_view_window_position).toBe(false);
     expect(result.initial.diff_layout).toBe("split");
+    expect(result.initial.font_interface).toBe("default");
     expect(result.initial.font_ui).toBe("default");
     expect(result.initial.font_code).toBe("default");
     expect(result.initial.font_comments).toBe("default");
@@ -172,9 +173,11 @@ test("window and diff layout settings persist independently", async () => {
     expect(result.unified.diff_layout).toBe("unified");
     expect(result.unified.per_view_window_size).toBe(true);
     expect(result.unified.per_view_window_position).toBe(true);
+    expect(result.appearance.font_interface).toBe("alacritty");
     expect(result.appearance.font_code).toBe("alacritty");
     expect(result.appearance.font_ui).toBe("default");
     expect(result.appearance.font_comments).toBe("default");
+    expect(result.migrated.font_interface).toBe("default");
     expect(result.migrated.font_ui).toBe("alacritty");
     expect(result.migrated.font_code).toBe("alacritty");
     expect(result.migrated.font_comments).toBe("alacritty");

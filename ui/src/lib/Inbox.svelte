@@ -1383,7 +1383,7 @@
     opacity: 0.8;
   }
   .copied-flash kbd {
-    font-family: system-ui, -apple-system, sans-serif;
+    font-family: var(--sans);
     font-size: 11px;
     font-weight: 500;
     padding: 0 6px;
@@ -1719,7 +1719,7 @@
   .view-tab kbd,
   .view-tab-count {
     color: color-mix(in srgb, var(--text-dim) 80%, transparent);
-    font-family: system-ui, -apple-system, sans-serif;
+    font-family: var(--sans);
     font-size: 11px;
     font-weight: 500;
   }

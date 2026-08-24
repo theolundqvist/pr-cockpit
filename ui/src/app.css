@@ -120,6 +120,10 @@
   --scroll-hover: #bebebe;
 }
 
+[data-font-interface="alacritty"] {
+  --sans: var(--alacritty);
+}
+
 [data-font-ui="alacritty"] {
   --mono: var(--alacritty);
 }
@@ -307,7 +311,7 @@ kbd {
   background: color-mix(in srgb, var(--surface-hover) 50%, transparent);
   box-shadow: none;
   color: color-mix(in srgb, var(--text-dim) 80%, transparent);
-  font-family: system-ui, -apple-system, sans-serif;
+  font-family: var(--sans);
   font-size: 11px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
@@ -403,7 +407,7 @@ kbd {
   background: color-mix(in srgb, var(--surface-hover) 50%, transparent);
   box-shadow: none;
   color: color-mix(in srgb, var(--text-dim) 80%, transparent);
-  font-family: system-ui, -apple-system, sans-serif;
+  font-family: var(--sans);
   font-size: 11px;
   font-weight: 500;
   line-height: 1;

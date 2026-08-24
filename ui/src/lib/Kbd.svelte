@@ -106,7 +106,7 @@
     border-radius: 6px;
     background: color-mix(in srgb, var(--surface-hover) 50%, transparent);
     color: color-mix(in srgb, var(--text-dim) 80%, transparent);
-    font-family: system-ui, -apple-system, sans-serif;
+    font-family: var(--sans);
     font-size: 11px;
     font-weight: 400;
     font-variant-numeric: tabular-nums;
