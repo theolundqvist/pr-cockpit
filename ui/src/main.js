@@ -6,7 +6,9 @@ import { initPrefs } from "./lib/prefs.svelte.js";
 import { initCodeHighlight } from "./lib/codeHighlight.svelte.js";
 import { initHistory } from "./lib/history.svelte.js";
 import { initQuota } from "./lib/quota.svelte.js";
+import { initNativePalette } from "./lib/nativePalette.js";
 
+initNativePalette();
 initTheme();
 initPrefs();
 initCodeHighlight();

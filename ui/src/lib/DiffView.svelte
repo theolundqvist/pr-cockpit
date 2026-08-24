@@ -10,6 +10,7 @@
   import { buildWholeFile, buildGapRows, fileUsesSplitLayout, hunkOldOffset, revertHunk, splitDiffRows } from "./diff.js";
   import { fetchFileContents } from "./api.js";
   import { columnWithin, createDefinitionHover, tokenAtPoint } from "./wordAtPoint.js";
+  import Chevron from "./Chevron.svelte";
 
   let {
     files,
@@ -857,28 +858,27 @@
     <div class="inline-compose">
       {#each pendingByLine.get(key) ?? [] as m (m.id)}
         <div class="ip">
-          <div class="ip-head mono">
+          <div class="ip-head">
             <span class="ip-author">you</span>
             <MutationBadge state={m.state} onRetry={() => onRetryMutation(m.id)} onDiscard={() => onDiscardMutation(m.id)} />
           </div>
-          {#if m.state === "failed" && m.error}<div class="ip-error mono">{m.error}</div>{/if}
+          {#if m.state === "failed" && m.error}<div class="ip-error">{m.error}</div>{/if}
           <div class="md">{@html renderMarkdown(m.payload.body)}</div>
         </div>
       {/each}
       {#if openKey === key}
         <div class="compose">
           <textarea
-            class="mono"
             placeholder={openCtx?.startLine ? `Comment on lines ${openCtx.startLine}–${target.line}…` : `Comment on line ${target.line}…`}
             bind:value={draft}
             onkeydown={composerKey}
             use:focusOnMount
           ></textarea>
           <div class="compose-actions">
-            <button class="cbtn mono" disabled={!draft.trim() || submitting} onclick={submitInline}>
+            <button class="cbtn primary" disabled={!draft.trim() || submitting} onclick={submitInline}>
               {submitting ? "Posting…" : "Comment"}
             </button>
-            <button class="cbtn ghost mono" onclick={cancelInline}>Cancel</button>
+            <button class="cbtn ghost" onclick={cancelInline}>Cancel</button>
           </div>
         </div>
       {/if}
@@ -985,10 +985,10 @@
     {@const isCollapsed = collapsed.has(file.path)}
     {@const isViewed = viewed.has(file.path)}
     {@const whole = wholeFile.get(file.path)}
-    <section class="file" id="diff-file-{i}" style="--est-h:{estimateHeight(file, isCollapsed, whole)}px" use:nearViewport={file.path}>
+    <section class="file" class:collapsed={isCollapsed} id="diff-file-{i}" style="--est-h:{estimateHeight(file, isCollapsed, whole)}px" use:nearViewport={file.path}>
       <div class="file-head-row">
         <button class="file-head mono" onclick={() => (fileEditor?.path === file.path ? finishFileEdit() : onToggleFile(file))}>
-          <span class="caret">{isCollapsed ? "▸" : "▾"}</span>
+          <Chevron direction={isCollapsed ? "right" : "down"} />
           <span class="file-path">{file.path}</span>
           <span
             class="path-copy"
@@ -1015,17 +1015,17 @@
         {#if fileEditor?.path === file.path}
           <div class="file-editor-actions file-editor-header-actions">
             {#if fileEditor.phase === "editing"}
-              <button class="cbtn mono" onclick={finishFileEdit}>{fileEditSpan ? "Review changes" : "Close"}</button>
+              <button class="cbtn" onclick={finishFileEdit}>{fileEditSpan ? "Review changes" : "Close"}</button>
             {:else if fileEditor.phase === "loading" || fileEditor.phase === "error"}
-              <button class="cbtn ghost mono" onclick={discardFileEdit}>Close</button>
+              <button class="cbtn ghost" onclick={discardFileEdit}>Close</button>
             {/if}
           </div>
         {:else if !isCollapsed && editable && !file.isBinary && !file.isDeleted}
-          <button class="whole-btn file-edit-btn mono" onclick={(event) => startFileEdit(file, toolbarEditPlacement(event.currentTarget))}>edit</button>
+          <button class="whole-btn file-edit-btn" onclick={(event) => startFileEdit(file, toolbarEditPlacement(event.currentTarget))}>Edit</button>
         {/if}
         {#if onToggleViewed}
           <button
-            class="viewed-btn mono"
+            class="viewed-btn"
             class:active={isViewed}
             aria-pressed={isViewed}
             aria-label={isViewed ? "Mark file unviewed" : "Mark file viewed"}
@@ -1036,7 +1036,7 @@
           </button>
         {/if}
         {#if !isCollapsed && !file.isBinary && !file.isDeleted}
-          <button class="whole-btn mono" disabled={whole?.status === "loading"} onclick={() => toggleWholeFile(file)}>
+          <button class="whole-btn" disabled={whole?.status === "loading"} onclick={() => toggleWholeFile(file)}>
             {whole?.status === "ready"
               ? "hunks"
               : whole?.status === "loading"
@@ -1047,16 +1047,16 @@
           </button>
         {/if}
         {#if onOpenHistory && base}
-          <button class="whole-btn mono" onclick={() => onOpenHistory(file.path)}>history</button>
+          <button class="whole-btn" onclick={() => onOpenHistory(file.path)}>History</button>
         {/if}
       </div>
       {#if !isCollapsed && fileEditor?.path === file.path}
         {#if fileEditor.phase === "loading"}
-          <div class="file-editor-state mono" style="height:{fileEditor.bodyHeight}px">
+          <div class="file-editor-state" style="height:{fileEditor.bodyHeight}px">
             <span>loading full file…</span>
           </div>
         {:else if fileEditor.phase === "error"}
-          <div class="file-editor-state mono" style="height:{fileEditor.bodyHeight}px">
+          <div class="file-editor-state" style="height:{fileEditor.bodyHeight}px">
             <div class="file-edit-error" role="alert">{fileEditor.error}</div>
           </div>
         {:else if fileEditor.phase === "editing"}
@@ -1073,7 +1073,7 @@
                 onFinish={finishFileEdit}
               />
             </div>
-            {#if fileEditor.error}<div class="file-edit-error file-editor-overlay-error mono" role="alert">{fileEditor.error}</div>{/if}
+            {#if fileEditor.error}<div class="file-edit-error file-editor-overlay-error" role="alert">{fileEditor.error}</div>{/if}
           </div>
         {:else}
           <div class="file-editor file-edit-review">
@@ -1088,7 +1088,7 @@
                 {#if fileEditSpan.afterContext !== null}<div class="file-edit-context"> {fileEditSpan.afterContext}</div>{/if}
               </div>
             {/if}
-            <label class="file-edit-message mono">
+            <label class="file-edit-message">
               Commit message
               <input
                 bind:value={fileEditor.message}
@@ -1096,13 +1096,13 @@
                 disabled={fileEditor.phase === "committing"}
               />
             </label>
-            {#if fileEditor.error}<div class="file-edit-error mono" role="alert">{fileEditor.error}</div>{/if}
+            {#if fileEditor.error}<div class="file-edit-error" role="alert">{fileEditor.error}</div>{/if}
             <div class="file-editor-actions">
-              <button class="cbtn ghost mono" disabled={fileEditor.phase === "committing"} onclick={returnToFileEdit}>Back</button>
-              <button class="cbtn mono" disabled={fileEditor.phase === "committing" || !fileEditor.message.trim()} onclick={commitFileEdit}>
+              <button class="cbtn ghost" disabled={fileEditor.phase === "committing"} onclick={returnToFileEdit}>Back</button>
+              <button class="cbtn primary" disabled={fileEditor.phase === "committing" || !fileEditor.message.trim()} onclick={commitFileEdit}>
                 {fileEditor.phase === "committing" ? "Committing…" : "Commit to PR"}
               </button>
-              <button class="cbtn ghost mono" disabled={fileEditor.phase === "committing"} onclick={discardFileEdit}>Ignore changes</button>
+              <button class="cbtn ghost" disabled={fileEditor.phase === "committing"} onclick={discardFileEdit}>Ignore changes</button>
             </div>
           </div>
         {/if}
@@ -1112,7 +1112,7 @@
         {#if !hotPaths.has(file.path)}
         <div style="height:{estimateHeight(file, false, whole) - HEAD_H}px"></div>
       {:else if file.isBinary}
-        <div class="binary mono">Binary file not shown</div>
+        <div class="binary">Binary file not shown</div>
       {:else if whole?.status === "ready"}
         <div
           class="hunks mono"
@@ -1170,10 +1170,10 @@
       oncontextmenu={(event) => event.preventDefault()}
     >
       {#if editMenu.canEdit}
-        <button class="mono" role="menuitem" use:focusOnMount onclick={startContextEdit}>Edit here</button>
-        {#if editMenu.hunk}<button class="mono" role="menuitem" onclick={startContextRevert}>Revert hunk</button>{/if}
+        <button role="menuitem" use:focusOnMount onclick={startContextEdit}>Edit here</button>
+        {#if editMenu.hunk}<button role="menuitem" onclick={startContextRevert}>Revert hunk</button>{/if}
       {:else if editMenu.hunk}
-        <button class="mono" role="menuitem" use:focusOnMount onclick={startContextRevert}>Revert hunk</button>
+        <button role="menuitem" use:focusOnMount onclick={startContextRevert}>Revert hunk</button>
       {/if}
     </div>
   {/if}
@@ -1185,7 +1185,7 @@
     max-width: 100%;
   }
   .file {
-    border: 1px solid var(--border);
+    border: 0;
     border-radius: 8px;
     margin-bottom: 16px;
     background: var(--panel);
@@ -1268,11 +1268,6 @@
   .whole-btn:disabled {
     cursor: default;
     color: var(--text-faint);
-  }
-  .caret {
-    flex: none;
-    color: var(--text-faint);
-    font-size: 9px;
   }
   .file-path {
     flex: 0 1 auto;
@@ -1479,6 +1474,9 @@
   .hunk-head.expandable {
     cursor: pointer;
   }
+  .hunks > .hunk-head:first-child {
+    border-top: 0;
+  }
   .hunk-head.expandable:hover {
     background: var(--hunk-hover);
     color: var(--text-dim);
@@ -1668,6 +1666,11 @@
     background: none;
     color: var(--text-dim);
   }
+  .cbtn.primary {
+    background: var(--link);
+    box-shadow: var(--shadow-control-filled);
+    color: var(--on-brand);
+  }
   .ip {
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -1692,34 +1695,58 @@
   }
 
   .file {
-    border-radius: 12px;
-    margin-bottom: 20px;
-    box-shadow: var(--shadow-xs);
+    border: 0;
+    border-radius: 8px;
+    margin-bottom: 24px;
+    box-shadow: var(--shadow-surface);
     overflow: visible;
   }
   .file-head-row {
-    min-height: 42px;
-    background: var(--surface);
-    border-radius: 11px 11px 0 0;
+    min-height: 40px;
+    align-items: center;
+    padding: 3px 4px;
+    background: color-mix(in srgb, var(--surface) 62%, transparent);
+    border-color: var(--border-soft);
+    border-radius: 7px 7px 0 0;
+  }
+  .file.collapsed .file-head-row {
+    border-bottom: 0;
+    border-radius: 8px;
   }
   .file-head {
-    padding: 9px 14px;
+    min-height: 32px;
+    padding: 0 10px;
+    border-radius: 8px;
     font-family: var(--sans);
-    font-weight: 600;
-    letter-spacing: -0.008em;
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0;
   }
   .whole-btn,
   .viewed-btn {
+    min-height: 28px;
+    margin: 0 1px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
     font-family: var(--sans);
-    font-size: 11.5px;
+    font-size: 12px;
+    font-weight: 500;
   }
   @media (hover: hover) and (pointer: fine) {
     .file-head:hover,
     .whole-btn:hover:not(:disabled),
     .viewed-btn:hover {
-      background: var(--surface-hover);
+      background: var(--ghost-hover);
       color: var(--text);
     }
+  }
+  .file-head:active,
+  .whole-btn:active:not(:disabled),
+  .viewed-btn:active {
+    transform: none;
+    background: var(--ghost-pressed);
   }
   @media (max-width: 660px) {
     .viewed-label {
@@ -1742,14 +1769,50 @@
     box-shadow: 0 0 0 3px var(--focus-ring);
   }
   .cbtn {
-    min-height: 28px;
-    border-radius: 7px;
-    background: var(--panel);
-    border-color: var(--border);
-    box-shadow: var(--shadow-xs);
+    min-height: 32px;
+    padding: 0 13px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--surface);
+    box-shadow: var(--shadow-control-outlined);
+    font-family: var(--sans);
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .cbtn.ghost {
+    background: transparent;
+    box-shadow: none;
+    color: var(--text);
+  }
+  .cbtn:disabled {
+    background: var(--disabled-bg);
+    box-shadow: none;
+    color: var(--disabled-fg);
+    opacity: 1;
+  }
+  .cbtn.primary:disabled {
+    background: var(--brand-disabled);
+    color: var(--on-brand);
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .cbtn:hover:not(:disabled) {
+      background: var(--surface-hover);
+      border-color: transparent;
+    }
+    .cbtn.ghost:hover:not(:disabled) {
+      background: var(--ghost-hover);
+    }
+    .cbtn.primary:hover:not(:disabled) {
+      background: var(--brand-hover);
+    }
+  }
+  .cbtn:active:not(:disabled),
+  .whole-btn:active:not(:disabled) {
+    transform: scale(0.99);
   }
   .ip {
-    border-radius: 9px;
-    box-shadow: var(--shadow-xs);
+    border-color: var(--border-soft);
+    border-radius: 8px;
+    box-shadow: none;
   }
 </style>

@@ -1,4 +1,5 @@
 <script>
+  import Kbd from "./Kbd.svelte";
   import { isTypingTarget } from "./dom.js";
   import { prefs } from "./prefs.svelte.js";
 
@@ -91,7 +92,7 @@
 
 {#if open}
   <div class="scrim" onmousedown={() => (open = false)}>
-    <div class="sheet mono" onmousedown={(e) => e.stopPropagation()}>
+    <div class="sheet" onmousedown={(e) => e.stopPropagation()}>
       <div class="sheet-head">
         <span>Keyboard shortcuts</span>
         <span class="sheet-hint">esc to close</span>
@@ -102,7 +103,7 @@
             <div class="sheet-group-title">{group.title}</div>
             {#each group.title === "PR actions" ? [...group.items, ...agentItems] : group.items as item}
               <div class="sheet-row">
-                <kbd>{item.key}</kbd>
+                <span class="sheet-shortcut"><Kbd keys={item.key} /></span>
                 <span class="sheet-label">{item.label}</span>
               </div>
             {/each}
@@ -170,18 +171,9 @@
     gap: 10px;
     padding: 4px 0;
   }
-  .sheet-row kbd {
-    flex: none;
-    min-width: 40px;
-    text-align: center;
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--text-dim);
-    background: var(--panel-raised);
-    border: 1px solid var(--border);
-    border-bottom-width: 2px;
-    border-radius: 4px;
-    padding: 1px 6px;
+  .sheet-shortcut {
+    display: inline-flex;
+    min-width: 86px;
   }
   .sheet-label {
     font-size: 12.5px;
@@ -213,14 +205,6 @@
     letter-spacing: 0.01em;
     text-transform: none;
     color: var(--text-dim);
-  }
-  .sheet-row kbd {
-    color: var(--text-dim);
-    background: var(--surface);
-    border-color: var(--border);
-    border-bottom-width: 1px;
-    border-radius: 5px;
-    box-shadow: var(--shadow-xs);
   }
   .sheet-label {
     color: var(--text-dim);

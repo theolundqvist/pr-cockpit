@@ -48,7 +48,8 @@
     font-size: 12.5px;
   }
   .count {
-    font-family: var(--mono);
+    font-family: var(--sans);
+    font-variant-numeric: tabular-nums;
     font-size: 11.5px;
     color: var(--text-dim);
   }

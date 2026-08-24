@@ -1,10 +1,11 @@
-const { app, BrowserWindow, shell, Menu, globalShortcut, Tray, nativeTheme, ipcMain } = require("electron");
+const { app, BrowserWindow, shell, Menu, globalShortcut, Tray, nativeTheme, systemPreferences, ipcMain } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const { spawn, execSync } = require("child_process");
 const { windowBoundsForPersistence, windowBoundsForRestore } = require("./windowBounds");
 const { launchEditorTerminal } = require("./editorLaunch");
+const { getNativePalette } = require("./nativePalette");
 
 app.setName("PR Cockpit");
 
@@ -110,7 +111,7 @@ function normalizeThemePreference(value) {
 
 function windowBackgroundColor() {
   const isLight = shellThemePreference === "light" || (shellThemePreference === "system" && !nativeTheme.shouldUseDarkColors);
-  return isLight ? "#ffffff" : "#0a0d12";
+  return isLight ? "#ffffff" : "#171717";
 }
 
 function syncWindowBackground() {
@@ -124,7 +125,19 @@ function applyShellSettings(data) {
   perViewSizeEnabled = data.per_view_window_size === true;
   perViewPositionEnabled = data.per_view_window_position === true;
   shellThemePreference = normalizeThemePreference(data.theme);
+  nativeTheme.themeSource = shellThemePreference;
   syncWindowBackground();
+}
+
+function currentNativePalette() {
+  return getNativePalette(systemPreferences);
+}
+
+function broadcastNativePalette() {
+  const palette = currentNativePalette();
+  for (const window of [win, paletteWin]) {
+    if (palette && window && !window.isDestroyed()) window.webContents.send("cockpit:native-palette-changed", palette);
+  }
 }
 
 let updating = false;
@@ -460,6 +473,7 @@ if (!app.requestSingleInstanceLock()) {
       const result = await launchEditorTerminal(checkout, target, editorTarget?.line ?? null, win.getBounds());
       return result.error ? { error: `editor launch failed: ${result.error}` } : result;
     });
+    ipcMain.handle("cockpit:native-palette", () => currentNativePalette());
 
     // Settings only tune background + per-view bounds; fetch them off the first-paint path and apply on arrival.
     fetchSettings()
@@ -477,6 +491,7 @@ if (!app.requestSingleInstanceLock()) {
 
     nativeTheme.on("updated", () => {
       if (shellThemePreference === "system") syncWindowBackground();
+      broadcastNativePalette();
     });
 
     tray = new Tray(path.join(__dirname, "..", "assets", "tray-iconTemplate.png"));
@@ -650,7 +665,7 @@ if (!app.requestSingleInstanceLock()) {
       transparent: true,
       hasShadow: false,
       backgroundColor: "#00000000",
-      webPreferences: { sandbox: true },
+      webPreferences: { sandbox: true, preload: path.join(__dirname, "preload.js") },
     });
     let paletteReady = false;
     let paletteRetryTimer = null;
@@ -764,6 +779,7 @@ if (!app.requestSingleInstanceLock()) {
     async function applyShortcuts() {
       const settings = await fetchSettings();
       shellThemePreference = normalizeThemePreference(settings?.theme);
+      nativeTheme.themeSource = shellThemePreference;
       syncWindowBackground();
       if (!isManaged) return; // dev instance: don't steal the installed app's global shortcuts
       const openApp = settings?.keybind_open_app || DEFAULT_OPEN_APP;

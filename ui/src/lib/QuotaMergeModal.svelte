@@ -15,12 +15,12 @@
 
 <div class="qm-backdrop" onclick={onClose} role="presentation">
   <div class="qm" role="dialog" aria-modal="true" aria-label="Merge blocked by GitHub quota" onclick={(e) => e.stopPropagation()}>
-    <div class="qm-title mono">{quotaOutLabel(impact)}</div>
+    <div class="qm-title">{quotaOutLabel(impact)}</div>
     <p class="qm-body">
       Cockpit cannot merge #{number} right now: the merge needs GitHub API calls that would fail.
       Quota returns at <strong>{clock(impact.restoresAt)}</strong>, after which merging works here again.
     </p>
-    <div class="qm-actions mono">
+    <div class="qm-actions">
       <button class="qm-btn primary" type="button" onclick={openGithub}>Merge on GitHub</button>
       <button class="qm-btn" type="button" onclick={onClose}>Cancel</button>
     </div>
@@ -71,23 +71,32 @@
   }
 
   .qm-btn {
-    min-height: 30px;
-    padding: 5px 13px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--panel-raised);
-    color: var(--text-dim);
-    font-family: var(--mono);
-    font-size: 12px;
+    min-height: 32px;
+    padding: 0 13px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--surface);
+    box-shadow: var(--shadow-control-outlined);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    font-weight: 500;
+    transition: background-color 140ms ease, transform 140ms var(--ease-out);
   }
 
   .qm-btn.primary {
-    border-color: var(--link);
-    background: var(--link-bg);
-    color: var(--link);
+    background: var(--link);
+    box-shadow: var(--shadow-control-filled);
+    color: var(--on-brand);
   }
 
   .qm-btn:hover {
-    filter: brightness(1.08);
+    background: var(--surface-hover);
+  }
+  .qm-btn.primary:hover {
+    background: var(--brand-hover);
+  }
+  .qm-btn:active {
+    transform: scale(0.99);
   }
 </style>

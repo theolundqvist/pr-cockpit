@@ -2,12 +2,19 @@
   import { history, goBack, goForward } from "./history.svelte.js";
   import { isTypingTarget } from "./dom.js";
 
+  let { backFallback = null } = $props();
+
+  function navigateBack() {
+    if (backFallback) location.hash = backFallback;
+    else if (history.canBack) goBack();
+  }
+
   $effect(() => {
     function onKey(e) {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (isTypingTarget(e.target)) return;
       if (e.key === "H") {
-        goBack();
+        navigateBack();
         e.preventDefault();
       } else if (e.key === "L") {
         goForward();
@@ -20,7 +27,13 @@
 </script>
 
 <div class="histnav">
-  <button class="arrow" disabled={!history.canBack} onclick={goBack} title="Back (⇧H)" aria-label="Back">←</button>
+  <button
+    class="arrow"
+    disabled={!history.canBack && !backFallback}
+    onclick={navigateBack}
+    title={backFallback ? "Back to inbox (⇧H)" : "Back (⇧H)"}
+    aria-label={backFallback ? "Back to inbox" : "Back"}
+  >←</button>
   <button class="arrow" disabled={!history.canForward} onclick={goForward} title="Forward (⇧L)" aria-label="Forward">→</button>
 </div>
 

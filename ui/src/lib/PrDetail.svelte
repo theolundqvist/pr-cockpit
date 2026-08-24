@@ -37,6 +37,7 @@
   import { prefs } from "./prefs.svelte.js";
   import { timedFlag } from "./timedFlag.svelte.js";
   import { showFlash } from "./flash.svelte.js";
+  import Chevron from "./Chevron.svelte";
   import { greptileReviewMeta, greptileStatus, KNOWN_BOT_LOGINS } from "./greptileStatus.js";
   import { prKeyOf } from "./prKey.js";
   import { getDetail, cacheDetail } from "./detailCache.js";
@@ -45,11 +46,13 @@
   import { quota } from "./quota.svelte.js";
   import { quotaImpact } from "./quotaImpact.js";
   import QuotaMergeModal from "./QuotaMergeModal.svelte";
+  import MergeDecisionDialog from "./MergeDecisionDialog.svelte";
   import DiffView from "./DiffView.svelte";
   import FileHistory from "./FileHistory.svelte";
   import Telescope from "./Telescope.svelte";
   import RangePicker from "./RangePicker.svelte";
   import FileTree from "./FileTree.svelte";
+  import Kbd from "./Kbd.svelte";
   import Thread from "./Thread.svelte";
   import MutationBadge from "./MutationBadge.svelte";
   import MutationFailure from "./MutationFailure.svelte";
@@ -456,7 +459,7 @@
   }
 
   async function submitComment() {
-    if (!commentDraft.trim()) return;
+    if (commentSubmitting || !commentDraft.trim()) return;
     commentSubmitting = true;
     try {
       await enqueueMutation(repo, number, { kind: "comment", body: commentDraft });
@@ -465,6 +468,13 @@
     } finally {
       commentSubmitting = false;
     }
+  }
+
+  function onCommentKeydown(e) {
+    if (e.isComposing || e.shiftKey || e.altKey) return;
+    if (!(e.metaKey || e.ctrlKey) || e.key !== "Enter") return;
+    e.preventDefault();
+    submitComment();
   }
 
   async function submitReply(rootCommentId, body) {
@@ -618,8 +628,20 @@
       quotaMergeModal = true;
       return;
     }
-    if (force) forceMergeConfirm = true;
-    else mergeConfirm = true;
+    mergeMenuOpen = false;
+    forceMergeConfirm = force;
+    mergeConfirm = !force;
+  }
+
+  function cancelMergeDecision() {
+    mergeConfirm = false;
+    forceMergeConfirm = false;
+  }
+
+  async function confirmMergeDecision() {
+    const force = forceMergeConfirm;
+    cancelMergeDecision();
+    await submitMerge(force);
   }
 
   const mergeMethods = [
@@ -1020,10 +1042,10 @@
 
   let ci = $derived.by(() => {
     const s = rollup?.state;
-    if (s === "SUCCESS") return { sym: "✓", tone: "ready", text: "CI passing" };
-    if (s === "FAILURE" || s === "ERROR") return { sym: "✗", tone: "fail", text: "CI failing" };
-    if (s === "PENDING") return { sym: "◷", tone: "wait", text: "CI running" };
-    return { sym: "·", tone: "wait", text: "no CI" };
+    if (s === "SUCCESS") return { icon: "success", tone: "ready", text: "All checks passed" };
+    if (s === "FAILURE" || s === "ERROR") return { icon: "failure", tone: "fail", text: "Checks failed" };
+    if (s === "PENDING") return { icon: "pending", tone: "wait", text: "Checks running" };
+    return { icon: "neutral", tone: "wait", text: "No checks" };
   });
 
   let ciDetail = $derived.by(() => {
@@ -1031,11 +1053,11 @@
     const passed = checkCounts.success ?? 0;
     const failing = checkCounts.failing ?? 0;
     const pending = (checkCounts.queued ?? 0) + (checkCounts.expected ?? 0) + (checkCounts.in_progress ?? 0);
-    if (rollup?.state === "SUCCESS") return total ? `${passed} of ${total} checks passed` : "All reported checks passed";
+    if (rollup?.state === "SUCCESS") return total ? `${total} check${total === 1 ? "" : "s"}` : "Complete";
     if (rollup?.state === "FAILURE" || rollup?.state === "ERROR") {
       return `${failing || 1} failing${passed ? ` · ${passed} passed` : ""}`;
     }
-    if (rollup?.state === "PENDING") return `${pending || total} check${(pending || total) === 1 ? "" : "s"} still running`;
+    if (rollup?.state === "PENDING") return `${pending || total} check${(pending || total) === 1 ? "" : "s"} remaining`;
     return "No checks have been reported";
   });
 
@@ -1067,10 +1089,6 @@
   let mergeGate = $derived.by(() => evalMergeGate(pr, rollup?.state ?? null));
 
   let forceMergeAvailable = $derived.by(() => evalForceMerge(pr, mergeGate));
-
-  async function submitForceMerge() {
-    await submitMerge(true);
-  }
 
   let updateMutation = $derived(mutations.find((m) => m.kind === "update-branch"));
 
@@ -1700,18 +1718,7 @@
         }
         return;
       }
-      if (mergeConfirm) {
-        if (e.key === "Enter") submitMerge();
-        mergeConfirm = false;
-        e.preventDefault();
-        return;
-      }
-      if (forceMergeConfirm) {
-        if (e.key === "Enter") submitForceMerge();
-        forceMergeConfirm = false;
-        e.preventDefault();
-        return;
-      }
+      if (mergeConfirm || forceMergeConfirm) return;
       if (closeConfirm) {
         if (e.key === "Enter") submitClose();
         closeConfirm = false;
@@ -1929,42 +1936,9 @@
 <div class="page">
   {#if error}
     <div class="load">{error}</div>
-  {:else if !pr}
-    {#if showLoading}
-      <div class="detail loading-detail" aria-busy="true">
-        <a class="back mono" href="#/">← inbox</a>
-        <header class="pr-head loading-head">
-          <div class="pr-head-top">
-            <div class="pr-title-copy">
-              <span class="ui-eyebrow">Pull request #{number}</span>
-              {#if loadingSummary}
-                <div class="pr-title-row"><h1>{loadingSummary.title}</h1></div>
-                <div class="sub mono">
-                  <span class="chip badge wait">{loadingSummary.state}</span>
-                  <span>{loadingSummary.author}</span>
-                </div>
-              {:else}
-                <div class="loading-title-placeholder"></div>
-              {/if}
-            </div>
-          </div>
-        </header>
-        <div class="loading-status mono" role="status">
-          <span class="loading-spinner" aria-hidden="true"></span>
-          Fetching live GitHub details…
-        </div>
-        <div class="loading-card" aria-hidden="true">
-          <span class="loading-line wide"></span>
-          <span class="loading-line"></span>
-          <span class="loading-line medium"></span>
-        </div>
-      </div>
-    {/if}
-  {:else}
+  {:else if pr}
     <div class="detail-frame" class:conversation-tab={tab === "conversation"} class:files-tab={tab === "files"}>
     <div class="detail" style="--tree-width: {treeWidth}px">
-      <a class="back mono" href="#/">← inbox</a>
-
       <header class="pr-head">
         <div class="pr-head-top">
           <div class="pr-title-copy">
@@ -1993,7 +1967,7 @@
               <div class="pr-title-row">
                 <h1>{displayTitle}</h1>
                 {#if editTitleMutation}
-                  <div class="title-mutation mono">
+                  <div class="title-mutation">
                     <MutationBadge state={editTitleMutation.state} pendingLabel="SAVING…" onRetry={() => handleRetry(editTitleMutation.id)} onDiscard={() => handleDiscard(editTitleMutation.id)} />
                     {#if editTitleMutation.error}<span class="mut-error">{editTitleMutation.error}</span>{/if}
                   </div>
@@ -2007,7 +1981,7 @@
                 {/if}
               </div>
             {/if}
-            <div class="sub mono">
+            <div class="sub">
               <span class="chip badge {stateChip.tone}">{stateChip.label}</span>
               <div class="branch-context" aria-label="{pr.headRefName} merges into {pr.baseRefName}">
                 {#if pr.baseBranchPrNumber}
@@ -2100,22 +2074,35 @@
         </div>
 
         <div class="pr-head-foot">
-          <div class="pr-owner mono">
+          <div class="pr-owner">
             <Avatar login={pr.author?.login} url={pr.author?.avatarUrl} size={18} />
             <span>{pr.author?.login ?? "ghost"}</span>
           </div>
           {#if pr.labels.nodes.length}
             <div class="labels">
               {#each pr.labels.nodes as label}
-                <span class="label mono">{label.name}</span>
+                <span class="label">{label.name}</span>
               {/each}
             </div>
           {/if}
           {#if liveState}
             <div class="ci-summary {ci.tone}" role="status" aria-label={`${ci.text}. ${ciDetail}`}>
-              <span class="ci-summary-icon" aria-hidden="true">{ci.sym}</span>
-              <strong>{ci.text}</strong>
-              <span class="ci-summary-detail mono">{ciDetail}</span>
+              <span class="ci-summary-icon" aria-hidden="true">
+                {#if ci.icon === "success"}
+                  <svg class="status-success" viewBox="0 0 14 14">
+                    <circle cx="7" cy="7" r="6.5"></circle>
+                    <path d="m3.9 7.1 2 2 4.25-4.25"></path>
+                  </svg>
+                {:else if ci.icon === "failure"}
+                  <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"></circle><path d="m5.5 5.5 5 5m0-5-5 5"></path></svg>
+                {:else if ci.icon === "pending"}
+                  <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 4.5V8l2.4 1.5"></path></svg>
+                {:else}
+                  <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"></circle><path d="M5.5 8h5"></path></svg>
+                {/if}
+              </span>
+              <span class="ci-summary-label">{ci.text}</span>
+              <span class="ci-summary-detail">{ciDetail}</span>
             </div>
           {/if}
         </div>
@@ -2123,10 +2110,15 @@
         {#if liveState && failingChecks.length}
           <section class="ci-failure-alert" aria-label="Failing CI checks">
             <div class="ci-failure-head">
-              <span class="ci-failure-icon" aria-hidden="true">✕</span>
+              <span class="ci-failure-icon" aria-hidden="true">
+                <svg viewBox="0 0 16 16"><path d="m5.25 5.25 5.5 5.5m0-5.5-5.5 5.5"></path></svg>
+              </span>
               <div class="ci-failure-copy">
-                <strong>{failingChecks.length} failing check{failingChecks.length === 1 ? "" : "s"}</strong>
-                <span>Open the exact logs below or copy a ready-to-fix prompt.</span>
+                <div class="attention-title">
+                  <strong>{failingChecks.length} failing check{failingChecks.length === 1 ? "" : "s"}</strong>
+                  <span class="attention-chip attention-label">Action required</span>
+                </div>
+                <span class="attention-description">Open the exact logs below or copy a ready-to-fix prompt.</span>
               </div>
               <div class="ci-failure-actions">
                 <button class="ci-copy-button" onclick={copyCiFixPrompt}>
@@ -2141,12 +2133,12 @@
                 </button>
               </div>
             </div>
-            <ul class="ci-failure-list mono">
+            <ul class="ci-failure-list">
               {#each failingChecks as check}
                 <li>
                   <span class="ci-failure-check">
                     <strong title={check.name}>{check.name}</strong>
-                    {#if check.required}<span class="ci-required">required</span>{/if}
+                    {#if check.required}<span class="attention-chip ci-required">Required</span>{/if}
                     <span>{check.status}</span>
                   </span>
                   {#if check.url}
@@ -2157,17 +2149,22 @@
                 </li>
               {/each}
             </ul>
-            {#if ciFixError}<div class="ci-failure-error mono">{ciFixError}</div>{/if}
+            {#if ciFixError}<div class="ci-failure-error">{ciFixError}</div>{/if}
           </section>
         {/if}
 
         {#if liveState && hasConflicts}
           <section class="conflict-alert" aria-label="Merge conflicts">
             <div class="conflict-alert-main">
-              <span class="conflict-alert-icon" aria-hidden="true">!</span>
+              <span class="conflict-alert-icon" aria-hidden="true">
+                <svg viewBox="0 0 16 16"><path d="M8 4.25v4.5M8 11.5h.01"></path></svg>
+              </span>
               <div class="conflict-alert-copy">
-                <strong>{conflictFilesState === "ready" && conflictFiles.length ? `Merge conflicts in ${conflictFiles.length} file${conflictFiles.length === 1 ? "" : "s"}` : "Merge conflicts"}</strong>
-                <span>This PR cannot merge until they are resolved.</span>
+                <div class="attention-title">
+                  <strong>{conflictFilesState === "ready" && conflictFiles.length ? `Merge conflicts in ${conflictFiles.length} file${conflictFiles.length === 1 ? "" : "s"}` : "Merge conflicts"}</strong>
+                  <span class="attention-chip attention-label">Action required</span>
+                </div>
+                <span class="attention-description">This PR cannot merge until they are resolved.</span>
               </div>
               {#if conflictFilesState === "ready"}
                 <div class="conflict-actions">
@@ -2186,11 +2183,11 @@
             </div>
 
             {#if conflictFilesState === "loading"}
-              <div class="conflict-alert-note mono">Finding conflicting files…</div>
+              <div class="conflict-alert-note">Finding conflicting files…</div>
             {:else if conflictFilesState === "error"}
-              <div class="conflict-alert-error mono">
+              <div class="conflict-alert-error">
                 <span>{conflictFilesError}</span>
-                <button class="link mono" onclick={() => loadConflictFiles(loadedConflictKey)}>retry</button>
+                <button class="link" onclick={() => loadConflictFiles(loadedConflictKey)}>Retry</button>
               </div>
             {:else if conflictFilesState === "ready"}
               {#if conflictFiles.length}
@@ -2200,35 +2197,35 @@
                   {/each}
                 </ul>
               {:else}
-                <div class="conflict-alert-note mono">Repository-level conflict · no individual paths reported</div>
+                <div class="conflict-alert-note">Repository-level conflict · no individual paths reported</div>
               {/if}
             {/if}
-            {#if conflictResolveError}<div class="conflict-alert-error mono">{conflictResolveError}</div>{/if}
+            {#if conflictResolveError}<div class="conflict-alert-error">{conflictResolveError}</div>{/if}
           </section>
         {/if}
       </header>
 
       {#if anchorInList}
-        <button class="since-banner mono" onclick={viewSinceChanges}>
+        <button class="since-banner" onclick={viewSinceChanges}>
           {newCommitCount} new commit{newCommitCount === 1 ? "" : "s"} since your last visit — view changes
         </button>
       {:else if anchorRewritten}
         {#if rewriteFallback}
-          <div class="since-banner rewritten note mono">
+          <div class="since-banner rewritten note">
             branch was rewritten since your last visit — your last-seen commit is no longer available, showing all changes
           </div>
         {:else if rangeKey === "since"}
-          <div class="since-banner rewritten note mono">
+          <div class="since-banner rewritten note">
             branch was rewritten since your last visit — comparing against your last-seen commit
           </div>
         {:else}
-          <button class="since-banner rewritten mono" onclick={viewSinceChanges}>
+          <button class="since-banner rewritten" onclick={viewSinceChanges}>
             branch was rewritten since your last visit — compare against your last-seen commit
           </button>
         {/if}
       {/if}
 
-      <nav class="tabs mono">
+      <nav class="tabs">
         <a class="tab" class:active={tab === "conversation"} href="#/pr/{repo}/{number}" onclick={(event) => guardTabNavigation(event, "conversation")}>Conversation</a>
         <a class="tab" class:active={tab === "files"} href="#/pr/{repo}/{number}/files">
           Files {#if diffState === "ready"}<span class="tab-count">{treeFiles.length}</span>{/if}
@@ -2240,8 +2237,9 @@
 
       {#if tab === "files"}
         <div class="files-layout">
-          <div class="files-toolbar mono">
+          <div class="files-toolbar">
             <div class="toolbar-left">
+              <span class="toolbar-label">Compare</span>
               <RangePicker
                 {commits}
                 {rangeKey}
@@ -2250,7 +2248,6 @@
                 onSelect={selectRange}
                 bind:open={rangeOpen}
               />
-              {#if diffState === "ready"}<span class="fcount">{treeFiles.length} file{treeFiles.length === 1 ? "" : "s"}</span>{/if}
             </div>
             {#if testFiles.length && diffState === "ready"}
               <button class="toolbar-btn" onclick={toggleTests}>
@@ -2259,22 +2256,26 @@
             {/if}
           </div>
           <aside class="tree-pane">
+            <div class="file-nav-head">
+              <span>Changed files</span>
+              {#if diffState === "ready"}<span class="fcount">{treeFiles.length}</span>{/if}
+            </div>
             <FileTree files={treeFiles} {selectedPath} onSelect={selectFileByPath} />
           </aside>
           <div class="tree-resizer" role="separator" aria-orientation="vertical" onpointerdown={startTreeResize}></div>
           <div class="diff-pane">
             {#if churnBaseRef && rangeKey === "since" && diffState === "ready"}
-              <div class="churn-note mono">merged in {churnBaseRef} since your visit — its churn is hidden, showing only this PR's changes</div>
+              <div class="churn-note">Merged in <span class="mono">{churnBaseRef}</span> since your visit — its churn is hidden, showing only this PR's changes</div>
             {/if}
             {#if diffState === "error"}
-              <div class="diff-status mono">
-                couldn't load this diff.
-                <button class="retry-btn" onclick={retryDiff}>retry</button>
+              <div class="diff-status">
+                Couldn’t load this diff.
+                <button class="retry-btn" onclick={retryDiff}>Retry</button>
               </div>
             {:else if diffState === "building"}
-              <div class="diff-status mono">preparing diff…</div>
+              <div class="diff-status">Preparing diff…</div>
             {:else if files.length === 0}
-              <div class="diff-status mono">no changes in this range.</div>
+              <div class="diff-status">No changes in this range.</div>
             {:else}
               <DiffView
                 bind:this={diffView}
@@ -2307,23 +2308,23 @@
           <aside class="runs-pane">
             {#each agentRuns as run (run.id)}
               <button class="run-row" class:active={selectedRunId === run.id} onclick={() => selectRun(run.id)}>
-                <div class="run-row-top mono">
+                <div class="run-row-top">
                   <span class="badge {runTone(run)}">{runLabel(run)} {run.state}</span>
                   <span class="run-time">{relativeTime(run.started_at)}</span>
                 </div>
-                <div class="run-brief mono">{run.brief}</div>
+                <div class="run-brief">{run.brief}</div>
               </button>
             {:else}
-              <div class="side-empty mono">no agent runs yet</div>
+              <div class="side-empty">No agent runs yet</div>
             {/each}
           </aside>
           <div class="run-detail">
             {#if !selectedRunId}
-              <div class="side-empty mono">select a run</div>
+              <div class="side-empty">Select a run</div>
             {:else if runDetailLoading}
-              <div class="side-empty mono">loading…</div>
+              <div class="side-empty">Loading…</div>
             {:else if runDetail}
-              <div class="run-detail-head mono">
+              <div class="run-detail-head">
                 <span class="badge {runTone(runDetail.run)}">{runLabel(runDetail.run)} {runDetail.run.state}</span>
                 <span class="run-time">
                   {relativeTime(runDetail.run.started_at)}
@@ -2340,7 +2341,7 @@
                 {/if}
                 <button class="link" onclick={() => (showRawLog = !showRawLog)}>{showRawLog ? "hide raw log" : "raw log"}</button>
               </div>
-              <div class="run-detail-brief mono">{runDetail.run.brief}</div>
+              <div class="run-detail-brief">{runDetail.run.brief}</div>
               {#if showRawLog}
                 <pre class="am-log mono">{runDetail.rawLog || "no log"}</pre>
               {:else}
@@ -2375,7 +2376,7 @@
                 </div>
               {/if}
             {:else}
-              <div class="side-empty mono">couldn't load this run</div>
+              <div class="side-empty">Couldn’t load this run</div>
             {/if}
           </div>
         </div>
@@ -2386,8 +2387,8 @@
             <section class="card body-card">
               {#if editingBody}
                 <div class="composer body-editor">
-                  <textarea class="mono" bind:value={bodyDraft} onkeydown={onBodyEditKey} use:sizeToTextOnMount></textarea>
-                  <div class="body-editor-actions mono">
+                  <textarea bind:value={bodyDraft} onkeydown={onBodyEditKey} use:sizeToTextOnMount></textarea>
+                  <div class="body-editor-actions">
                     <span class="body-editor-hint">⌘⏎ to save</span>
                     <button class="link" disabled={!bodyDraft.trim()} onclick={saveBody}>save</button>
                     <span class="body-editor-dot">·</span>
@@ -2397,12 +2398,12 @@
               {:else}
                 <div class="md" use:imageFallback use:mermaidDiagrams={theme.name + "" + displayBody}>{@html renderMarkdown(displayBody)}</div>
                 {#if editBodyMutation}
-                  <div class="body-mut mono">
+                  <div class="body-mut">
                     <MutationBadge state={editBodyMutation.state} onRetry={() => handleRetry(editBodyMutation.id)} onDiscard={() => handleDiscard(editBodyMutation.id)} />
                     {#if editBodyMutation.error}<span class="mut-error">{editBodyMutation.error}</span>{/if}
                   </div>
                 {:else}
-                  <button class="link body-edit mono" onclick={startEditBody}>edit</button>
+                  <button class="link body-edit" onclick={startEditBody}>Edit</button>
                 {/if}
                 <Reactions reactions={pr.reactions} />
               {/if}
@@ -2411,22 +2412,22 @@
 
           {#snippet commentComposer(atTop = false)}
             <div class="composer" class:composer-top={atTop}>
-              <textarea id="composer-input" class="mono" placeholder="Leave a comment…" bind:value={commentDraft}></textarea>
-              <button class="btn mono" disabled={!commentDraft.trim() || commentSubmitting} onclick={submitComment}>
+              <textarea id="composer-input" placeholder="Leave a comment…" bind:value={commentDraft} onkeydown={onCommentKeydown}></textarea>
+              <button class="btn" disabled={!commentDraft.trim() || commentSubmitting} onclick={submitComment}>
                 {commentSubmitting ? "Posting…" : "Comment"}
               </button>
             </div>
           {/snippet}
 
           <section class="block">
-            <h2 class="block-title mono">Conversation</h2>
+            <h2 class="block-title">Conversation</h2>
             {#if prefs.newestCommentsFirst}
               {@render commentComposer(true)}
             {/if}
             {#each timeline as event (event.id)}
               {#if event.kind === "commit"}
                 <button
-                  class="commit-row mono"
+                  class="commit-row"
                   class:clickable={event.parentOid}
                   disabled={!event.parentOid}
                   title={event.parentOid ? "View this commit's changes" : ""}
@@ -2451,7 +2452,7 @@
                 <Thread thread={event.thread} {...threadProps(event.thread)} />
               {:else if event.kind === "pending-comment"}
                 <div class="event">
-                  <div class="event-head mono">
+                  <div class="event-head">
                     <span class="author">you</span>
                     <MutationBadge state={event.mutation.state} onRetry={() => handleRetry(event.mutation.id)} onDiscard={() => handleDiscard(event.mutation.id)} />
                   </div>
@@ -2460,8 +2461,12 @@
                   </div>
                 </div>
               {:else}
-                <div class="event">
-                  <div class="event-head mono">
+                <div
+                  class="event"
+                  class:activity-event={event.kind === "review" && !event.body && !event.reactions?.length}
+                  class:greptile-event={event.author === "greptile-apps"}
+                >
+                  <div class="event-head">
                     <Avatar login={event.author} url={event.avatarUrl} />
                     <span class="author">{event.author ?? "ghost"}</span>
                     {#if event.kind === "review"}
@@ -2469,12 +2474,14 @@
                     {/if}
                     <span class="when">{relativeTime(event.at)}</span>
                   </div>
-                  <div class="event-body">
-                    {#if event.body}
+                  {#if event.body || event.reactions?.length}
+                    <div class="event-body">
+                      {#if event.body}
                       <div class="md" use:imageFallback use:mermaidDiagrams={theme.name + " " + event.body}>{@html renderMarkdown(event.body)}</div>
-                    {/if}
-                    <Reactions reactions={event.reactions} />
-                  </div>
+                      {/if}
+                      <Reactions reactions={event.reactions} />
+                    </div>
+                  {/if}
                 </div>
               {/if}
             {/each}
@@ -2488,12 +2495,22 @@
         <aside class="right">
           {#if liveState}
             <div class="side-block">
-              <h3 class="side-title mono">Actions</h3>
-              <div class="actions mono">
+              <h3 class="side-title">Actions</h3>
+              <div class="actions">
                 {#snippet mergeControl(enabled)}
                   <div class="merge-split">
-                    <button class="merge-btn merge-main" class:blocked={enabled && mergeBlockedByQuota} disabled={!enabled} onclick={() => requestMerge()}>merge ({mergeMethodLabel})</button>
-                    <button class="merge-btn merge-caret" aria-label="Merge options" aria-expanded={mergeMenuOpen} aria-haspopup="menu" onclick={() => (mergeMenuOpen = !mergeMenuOpen)}>⌄</button>
+                    <button class="merge-btn merge-main" class:blocked={enabled && mergeBlockedByQuota} disabled={!enabled} onclick={() => requestMerge()}>
+                      <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <circle cx="6" cy="6" r="2.5"></circle>
+                        <circle cx="18" cy="18" r="2.5"></circle>
+                        <path d="M6 8.5V13a5 5 0 0 0 5 5h4.5"></path>
+                      </svg>
+                      <span>Merge</span>
+                      <span class="action-method">{mergeMethodLabel}</span>
+                    </button>
+                    <button class="merge-btn merge-caret" aria-label="Merge options" aria-expanded={mergeMenuOpen} aria-haspopup="menu" onclick={() => (mergeMenuOpen = !mergeMenuOpen)}>
+                      <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"></path></svg>
+                    </button>
                     {#if mergeMenuOpen}
                       <div class="merge-menu" role="menu">
                         {#each mergeMethods as method}
@@ -2505,7 +2522,9 @@
                             onclick={() => chooseMergeMethod(method.value)}
                           >
                             <span>{method.label}</span>
-                            {#if pr.mergeMethod === method.value}<span>✓</span>{/if}
+                            {#if pr.mergeMethod === method.value}
+                              <svg class="menu-check" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8 3 3 7-7"></path></svg>
+                            {/if}
                           </button>
                         {/each}
                         <div class="merge-menu-separator"></div>
@@ -2515,7 +2534,14 @@
                           </button>
                         {:else if githubAutoMergeMutation?.state !== "failed"}
                           <button role="menuitem" onclick={() => submitGithubAutoMerge(!githubAutoMergeEnabled)}>
-                            <span>{githubAutoMergeEnabled ? "Disable GitHub auto-merge" : "Enable GitHub auto-merge"}</span>
+                            <span class="merge-menu-label">
+                              <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                                <path d="M20 7v5h-5"></path>
+                                <path d="M4 17v-5h5"></path>
+                                <path d="M6.1 8.5A7 7 0 0 1 18.8 10M17.9 15.5A7 7 0 0 1 5.2 14"></path>
+                              </svg>
+                              <span>{githubAutoMergeEnabled ? "Disable GitHub auto-merge" : "Enable GitHub auto-merge"}</span>
+                            </span>
                           </button>
                         {/if}
                         {#if forceMergeAvailable && mergeGate.action !== "merge" && !mergeMutation}
@@ -2600,7 +2626,13 @@
                       onDiscard={() => handleDiscard(closeMutation.id)}
                     />
                   {:else}
-                    <button class="merge-btn fail" onclick={() => (closeConfirm = true)}>close PR (x)</button>
+                    <button class="merge-btn fail close-action" onclick={() => (closeConfirm = true)}>
+                      <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <circle cx="12" cy="12" r="8.5"></circle>
+                        <path d="m9 9 6 6m0-6-6 6"></path>
+                      </svg>
+                      <span>Close pull request</span>
+                    </button>
                   {/if}
                 {/if}
               </div>
@@ -2608,12 +2640,12 @@
           {/if}
           {#if agentRuns.length || !prIsGreen}
             <div class="side-block">
-              <h3 class="side-title mono">
+              <h3 class="side-title">
                 Agents
-                {#if keybindAgents.some((a) => a.id === "autofix")}<kbd class="side-key">{keybindAgents.find((a) => a.id === "autofix").keybind}</kbd>{/if}
+                {#if keybindAgents.some((a) => a.id === "autofix")}<span class="side-key"><Kbd keys={keybindAgents.find((a) => a.id === "autofix").keybind} /></span>{/if}
               </h3>
               {#if !prIsGreen}
-                <button class="btn wide mono" disabled={autofixBusy || agent?.state === "running"} onclick={() => (autofixConfirm = true)}>
+                <button class="btn wide" disabled={autofixBusy || agent?.state === "running"} onclick={() => (autofixConfirm = true)}>
                   {autofixBusy ? "Starting…" : "Auto-fix"}
                 </button>
               {/if}
@@ -2623,7 +2655,7 @@
                 <div class="agent-list">
                   {#each agentRuns as run (run.id)}
                     <a
-                      class="agent-item mono {runHealth(run)}"
+                      class="agent-item {runHealth(run)}"
                       href="#/pr/{repo}/{number}/agents"
                       title={run.brief}
                       onclick={() => selectRun(run.id)}
@@ -2639,15 +2671,15 @@
           {/if}
           {#if pr.autoMergeEnabled || agent?.kind === "fixer" || autoMergeMutation || githubAutoMergeEnabled || githubAutoMergeMutation}
             <div class="side-block">
-              <h3 class="side-title mono">Auto-merge</h3>
+              <h3 class="side-title">Auto-merge</h3>
               {#if githubAutoMergeEnabled || githubAutoMergeMutation}
-                <div class="am-row mono">
+                <div class="am-row">
                   <span class="badge {githubAutoMergeEnabled ? 'ready' : 'wait'}">GitHub {githubAutoMergeEnabled ? "armed" : "updating"}</span>
                   {#if pr.autoMergeRequest?.mergeMethod}<span class="am-time">{pr.autoMergeRequest.mergeMethod.toLowerCase()}</span>{/if}
                 </div>
               {/if}
               {#if autoMergeMutation}
-                <div class="am-mut mono">
+                <div class="am-mut">
                   <MutationBadge
                     state={autoMergeMutation.state}
                     onRetry={() => handleRetry(autoMergeMutation.id)}
@@ -2657,7 +2689,7 @@
                 </div>
               {/if}
               {#if pr.autoMergeEnabled || agent?.kind === "fixer"}
-              <div class="am-row mono">
+              <div class="am-row">
                 <span class="badge {pr.autoMergeEnabled ? 'ready' : 'wait'}">bot {pr.autoMergeEnabled ? "armed" : "off"}</span>
                 {#if agent?.kind === "fixer"}
                   <span class="badge {agent.state === 'running' ? 'review' : agent.state === 'killed' ? 'fail' : 'wait'}">
@@ -2667,7 +2699,7 @@
                 {/if}
               </div>
               {#if agent?.kind === "fixer"}
-                <div class="am-actions mono">
+                <div class="am-actions">
                   <button class="link" onclick={toggleAgentLog}>{showAgentLog ? "hide log" : "view log"}</button>
                   {#if agent.state === "running"}
                     {#if killConfirm}
@@ -2682,15 +2714,15 @@
                   <pre class="am-log mono">{agentLog ?? "no log yet"}</pre>
                 {/if}
               {:else}
-                <div class="side-empty mono">no fixer agent</div>
+                <div class="side-empty">No fixer agent</div>
               {/if}
               {/if}
             </div>
           {/if}
           <div class="side-block">
-            <h3 class="side-title mono">Review</h3>
+            <h3 class="side-title">Review</h3>
             {#if pr.viewerIsAuthor}
-              <div class="own-pr-note mono">Your PR — approve / request changes post as a comment.</div>
+              <div class="own-pr-note">Your PR — approve / request changes post as a comment.</div>
             {/if}
             {#if verdictMutation}
               <div class="verdict-badge">
@@ -2701,22 +2733,25 @@
                 />
               </div>
             {/if}
-            <select id="verdict-control" class="verdict-select mono" bind:value={verdictEvent}>
-              <option value="APPROVE">Approve</option>
-              <option value="REQUEST_CHANGES">Request changes</option>
-              <option value="COMMENT">Comment</option>
-            </select>
-            <textarea class="verdict-body mono" placeholder="Optional body…" bind:value={verdictBody}></textarea>
-            <button class="btn wide mono" disabled={verdictSubmitting} onclick={submitVerdict}>
+            <div class="verdict-select-wrap">
+              <select id="verdict-control" class="verdict-select" bind:value={verdictEvent}>
+                <option value="APPROVE">Approve</option>
+                <option value="REQUEST_CHANGES">Request changes</option>
+                <option value="COMMENT">Comment</option>
+              </select>
+              <span class="verdict-select-chevron"><Chevron size={16} /></span>
+            </div>
+            <textarea class="verdict-body" placeholder="Optional body…" bind:value={verdictBody}></textarea>
+            <button class="btn wide" disabled={verdictSubmitting} onclick={submitVerdict}>
               {verdictSubmitting ? "Submitting…" : "Submit review"}
             </button>
           </div>
 
           <div class="side-block">
-            <h3 class="side-title mono">Reviewers <kbd class="side-key">q</kbd></h3>
+            <h3 class="side-title">Reviewers <span class="side-key"><Kbd keys="q" /></span></h3>
             {#if reviewers.length || pendingReviewers.length}
               {#each reviewers as reviewer}
-                <div class="reviewer mono">
+                <div class="reviewer">
                   <Avatar login={reviewer.login} url={reviewer.avatarUrl} size={16} />
                   <span class="badge {reviewTone(reviewer.state)}">{stateLabel(reviewer.state)}</span>
                   <span class="reviewer-login" title={reviewer.login}>{reviewer.login}</span>
@@ -2746,7 +2781,7 @@
               {/each}
               {#each pendingReviewers as m}
                 {#each m.payload.logins.filter((l) => !requestedByServer.has(l)) as login (login)}
-                  <div class="reviewer mono pending-person">
+                  <div class="reviewer pending-person">
                     <Avatar {login} url={avatarFor(login)} size={16} />
                     <span>{login}</span>
                     <MutationBadge state={m.state} onRetry={() => handleRetry(m.id)} onDiscard={() => handleDiscard(m.id)} />
@@ -2754,22 +2789,22 @@
                 {/each}
               {/each}
             {:else}
-              <div class="side-empty mono">none</div>
+              <div class="side-empty">None</div>
             {/if}
           </div>
 
           <div class="side-block">
-            <h3 class="side-title mono">Assignees <kbd class="side-key">s</kbd></h3>
+            <h3 class="side-title">Assignees <span class="side-key"><Kbd keys="s" /></span></h3>
             {#if pr.assignees.nodes.length || pendingAssign.length}
               {#each pr.assignees.nodes as assignee}
-                <div class="reviewer mono">
+                <div class="reviewer">
                   <Avatar login={assignee.login} url={avatarFor(assignee.login)} size={16} />
                   <span>{assignee.login}</span>
                 </div>
               {/each}
               {#each pendingAssign as m}
                 {#each m.payload.logins.filter((l) => !assignedByServer.has(l)) as login (login)}
-                  <div class="reviewer mono pending-person">
+                  <div class="reviewer pending-person">
                     <Avatar {login} url={avatarFor(login)} size={16} />
                     <span>{login}</span>
                     <MutationBadge state={m.state} onRetry={() => handleRetry(m.id)} onDiscard={() => handleDiscard(m.id)} />
@@ -2777,25 +2812,25 @@
                 {/each}
               {/each}
             {:else}
-              <div class="side-empty mono">none</div>
+              <div class="side-empty">None</div>
             {/if}
           </div>
 
           <div class="side-block">
-            <h3 class="side-title mono">Checks <span class="dim">{checks.length}</span></h3>
+            <h3 class="side-title">Checks <span class="dim">{checks.length}</span></h3>
             {#if checks.length}
               {#if checkSummary}
-                <div class="check-summary mono">{checkSummary}</div>
+                <div class="check-summary">{checkSummary}</div>
               {/if}
               {#each checkSections as { section, rows }}
                 {@const collapsible = section === "successful" && hasFailing}
                 {@const collapsed = collapsible && !showSuccessful}
                 {#if collapsible}
-                  <button class="check-sec-head mono" onclick={() => (showSuccessful = !showSuccessful)}>
-                    <span class="sec-caret">{showSuccessful ? "▾" : "▸"}</span>{rows.length} {section}
+                  <button class="check-sec-head" onclick={() => (showSuccessful = !showSuccessful)}>
+                    <Chevron direction={showSuccessful ? "down" : "right"} size={12} />{rows.length} {section}
                   </button>
                 {:else}
-                  <div class="check-sec-head mono static">{rows.length} {section}</div>
+                  <div class="check-sec-head static">{rows.length} {section}</div>
                 {/if}
                 {#if !collapsed}
                   {#each rows as check}
@@ -2804,7 +2839,7 @@
                       href={check.url}
                       target="_blank"
                       rel="noreferrer"
-                      class="check mono"
+                      class="check"
                     >
                       <span class="check-row">
                         <span class="check-dot {check.dot}"></span>
@@ -2817,7 +2852,7 @@
                 {/if}
               {/each}
             {:else}
-              <div class="side-empty mono">none</div>
+              <div class="side-empty">None</div>
             {/if}
           </div>
         </aside>
@@ -2842,13 +2877,13 @@
 
     {#if promptOpen}
       <div class="prompt-overlay" role="presentation" onclick={() => (promptOpen = false)}>
-        <div class="prompt-box mono" role="presentation" onclick={(e) => e.stopPropagation()}>
+        <div class="prompt-box" role="presentation" onclick={(e) => e.stopPropagation()}>
           <div class="prompt-head">
             <span class="prompt-title">prompt an agent on #{number}</span>
             <span class="prompt-sub">runs opus in the PR worktree · does what you say · pushes</span>
           </div>
           <textarea
-            class="prompt-input mono"
+            class="prompt-input"
             bind:value={promptText}
             onkeydown={onPromptKey}
             use:focusOnMount
@@ -2856,64 +2891,65 @@
             placeholder="e.g. remove the comments you just added"
             spellcheck="false"
           ></textarea>
-          {#if promptError}<div class="prompt-error mono">{promptError}</div>{/if}
-          <div class="prompt-keys mono"><kbd>enter</kbd> launch · <kbd>shift+enter</kbd> newline · <kbd>esc</kbd> cancel</div>
+          {#if promptError}<div class="prompt-error">{promptError}</div>{/if}
+          <div class="prompt-keys"><Kbd keys="enter" /> launch · <Kbd keys={["shift", "enter"]} /> newline · <Kbd keys="esc" /> cancel</div>
         </div>
       </div>
     {/if}
 
-    {#if mergeConfirm}
-      <div class="keybar merge-confirm mono">
-        <span>merge PR #{number} into <strong>{pr.baseRefName}</strong> ({mergeMethodLabel})?</span>
-        <span class="confirm-keys"><kbd>enter</kbd> confirm · <kbd>esc</kbd> cancel</span>
-      </div>
-    {:else if forceMergeConfirm}
-      <div class="keybar merge-confirm force-confirm mono">
-        <span>force-merge PR #{number} into <strong>{pr.baseRefName}</strong> ({mergeMethodLabel})? Required approvals will be bypassed.</span>
-        <span class="confirm-keys"><kbd>enter</kbd> confirm · <kbd>esc</kbd> cancel</span>
-      </div>
+    {#if mergeConfirm || forceMergeConfirm}
+      <MergeDecisionDialog
+        {number}
+        title={pr.title}
+        headRef={pr.headRefName}
+        baseRef={pr.baseRefName}
+        methodLabel={mergeMethodLabel}
+        force={forceMergeConfirm}
+        onConfirm={confirmMergeDecision}
+        onCancel={cancelMergeDecision}
+      />
     {:else if closeConfirm}
-      <div class="keybar merge-confirm close-confirm mono">
+      <div class="keybar merge-confirm close-confirm">
         <span>close PR #{number}?</span>
-        <span class="confirm-keys"><kbd>enter</kbd> confirm · <kbd>esc</kbd> cancel</span>
+        <span class="confirm-keys"><Kbd keys="enter" /> confirm · <Kbd keys="esc" /> cancel</span>
       </div>
     {:else if peopleFlash.value}
-      <div class="keybar merge-flash mono">{peopleFlash.value}</div>
+      <div class="keybar merge-flash">{peopleFlash.value}</div>
     {:else if autoMergeConfirm}
-      <div class="keybar merge-confirm mono">
+      <div class="keybar merge-confirm">
         <span>
           {pr.autoMergeEnabled
             ? `disarm auto-merge bot for #${number}?`
             : `arm auto-merge bot + fixer agent for #${number}?`}
         </span>
-        <span class="confirm-keys"><kbd>enter</kbd> confirm · <kbd>esc</kbd> cancel</span>
+        <span class="confirm-keys"><Kbd keys="enter" /> confirm · <Kbd keys="esc" /> cancel</span>
       </div>
     {:else if autofixConfirm}
-      <div class="keybar merge-confirm mono">
+      <div class="keybar merge-confirm">
         <span>arm auto-fix agent for #{number}?</span>
-        <span class="confirm-keys"><kbd>enter</kbd> confirm · <kbd>esc</kbd> cancel</span>
+        <span class="confirm-keys"><Kbd keys="enter" /> confirm · <Kbd keys="esc" /> cancel</span>
       </div>
     {:else if ciFixConfirm}
-      <div class="keybar merge-confirm mono">
+      <div class="keybar merge-confirm">
         <span>launch an agent to fix {failingChecks.length} failing CI check{failingChecks.length === 1 ? "" : "s"} on {pr.headRefName}?</span>
-        <span class="confirm-keys"><kbd>enter</kbd> confirm · <kbd>esc</kbd> cancel</span>
+        <span class="confirm-keys"><Kbd keys="enter" /> confirm · <Kbd keys="esc" /> cancel</span>
       </div>
     {:else if conflictResolveConfirm}
-      <div class="keybar merge-confirm mono">
+      <div class="keybar merge-confirm">
         <span>{conflictFiles.length ? `resolve conflicts in ${conflictFiles.length} file${conflictFiles.length === 1 ? "" : "s"}` : "resolve repository-level conflict"} and push to {pr.headRefName}?</span>
-        <span class="confirm-keys"><kbd>enter</kbd> confirm · <kbd>esc</kbd> cancel</span>
+        <span class="confirm-keys"><Kbd keys="enter" /> confirm · <Kbd keys="esc" /> cancel</span>
       </div>
     {:else if customConfirm}
-      <div class="keybar merge-confirm mono">
+      <div class="keybar merge-confirm">
         <span>{customConfirm.id === "rescorer" ? `re-score #${number}?` : `arm "${customConfirm.name || "custom"}" agent for #${number}?`}</span>
-        <span class="confirm-keys"><kbd>enter</kbd> confirm · <kbd>esc</kbd> cancel</span>
+        <span class="confirm-keys"><Kbd keys="enter" /> confirm · <Kbd keys="esc" /> cancel</span>
       </div>
     {:else if mergeFlash.value}
-      <div class="keybar merge-flash mono">{mergeFlash.value}</div>
+      <div class="keybar merge-flash">{mergeFlash.value}</div>
     {:else if branchCopied.value}
-      <div class="keybar copied-flash mono">copied branch name</div>
+      <div class="keybar copied-flash">Copied branch name</div>
     {:else if copied.value}
-      <div class="keybar copied-flash mono">{copied.value}</div>
+      <div class="keybar copied-flash">{copied.value}</div>
     {:else}
       <KeyBar keys={tab === "files" ? filesKeys : tab === "agents" ? agentsKeys : conversationKeys} />
     {/if}
@@ -2931,6 +2967,41 @@
       layout={prefs.diffLayout}
       onClose={closeFileHistory}
     />
+  {:else if showLoading}
+    <div class="detail-frame loading-frame" class:conversation-tab={tab === "conversation"} class:files-tab={tab === "files"} aria-busy="true">
+      <div class="detail loading-detail" style="--tree-width: {treeWidth}px">
+        {#if loadingSummary}
+          <header class="pr-head loading-head">
+            <div class="pr-head-top">
+              <div class="pr-title-copy">
+                <span class="ui-eyebrow">Pull request #{number}</span>
+                <div class="pr-title-row"><h1>{loadingSummary.title}</h1></div>
+                <div class="sub loading-sub">
+                  <span class="chip badge wait">{loadingSummary.isDraft ? "DRAFT" : loadingSummary.state}</span>
+                </div>
+              </div>
+              <div class="pr-metrics loading-layout-reserve" aria-hidden="true">
+                <div class="pr-metric"><span>Changed</span><strong>+0 −0</strong><em>+0 −0</em></div>
+                <div class="pr-metric"><span>Files</span><strong>0</strong></div>
+                <div class="pr-metric"><span>Commits</span><strong>0</strong></div>
+              </div>
+            </div>
+            <div class="pr-head-foot">
+              <div class="pr-owner">
+                <Avatar login={loadingSummary.author} size={18} />
+                <span>{loadingSummary.author}</span>
+              </div>
+              <div class="labels loading-layout-reserve" aria-hidden="true"><span class="label">label</span></div>
+              <div class="ci-summary loading-layout-reserve" aria-hidden="true"><span>CI status</span></div>
+            </div>
+          </header>
+        {/if}
+        <div class="loading-status" role="status" aria-live="polite">
+          <span class="loading-spinner" aria-hidden="true"></span>
+          <span>Fetching live GitHub details…</span>
+        </div>
+      </div>
+    </div>
   {/if}
 </div>
 
@@ -2951,7 +3022,7 @@
   }
   .load {
     color: var(--text-dim);
-    font-family: var(--mono);
+    font-family: var(--sans);
     padding-top: 80px;
   }
   .detail {
@@ -2985,16 +3056,6 @@
   }
   .merge-confirm.close-confirm {
     border-top-color: var(--fail);
-  }
-  .merge-confirm kbd {
-    font-size: 11px;
-    color: var(--text-dim);
-    background: var(--panel-raised);
-    border: 1px solid var(--border);
-    border-bottom-width: 2px;
-    border-radius: 4px;
-    padding: 1px 6px;
-    margin-right: 2px;
   }
   .prompt-overlay {
     position: fixed;
@@ -3061,15 +3122,6 @@
     font-size: 11px;
     margin-top: 10px;
   }
-  .prompt-keys kbd {
-    color: var(--text-dim);
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-bottom-width: 2px;
-    border-radius: 4px;
-    padding: 1px 6px;
-    margin-right: 2px;
-  }
   .copied-flash {
     position: fixed;
     left: 0;
@@ -3112,16 +3164,6 @@
     color: var(--text-faint);
     margin-bottom: 10px;
     line-height: 1.4;
-  }
-  .back {
-    display: inline-block;
-    color: var(--text-faint);
-    text-decoration: none;
-    font-size: 12.5px;
-    margin-bottom: 20px;
-  }
-  .back:hover {
-    color: var(--text-dim);
   }
   .pr-head {
     border-bottom: 1px solid var(--border);
@@ -3178,7 +3220,7 @@
     border: 1px solid var(--ready);
     border-radius: 6px;
     color: var(--ready);
-    font-family: var(--mono);
+    font-family: var(--sans);
     font-size: 12px;
     padding: 3px 10px;
     cursor: pointer;
@@ -3229,28 +3271,44 @@
     right: 0;
     z-index: 20;
     min-width: 220px;
-    padding: 4px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--surface);
-    box-shadow: 0 8px 24px rgb(0 0 0 / 28%);
+    padding: 6px;
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-md);
+    background: var(--panel);
+    box-shadow: var(--shadow-dialog);
   }
   .merge-menu button {
     display: flex;
+    align-items: center;
     width: 100%;
     justify-content: space-between;
+    gap: 10px;
     border: 0;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     background: transparent;
     color: var(--text);
     font: inherit;
-    padding: 7px 8px;
+    padding: 8px 9px;
     cursor: pointer;
     text-align: left;
   }
   .merge-menu button:hover,
   .merge-menu button.active {
-    background: var(--panel-raised);
+    background: var(--surface);
+  }
+  .merge-menu-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .menu-check {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
   .merge-menu-separator {
     height: 1px;
@@ -3556,7 +3614,7 @@
     border: 1px solid var(--border);
     border-radius: 6px;
     color: var(--text);
-    font-family: var(--mono);
+    font-family: var(--sans);
     font-size: 12px;
     padding: 4px 12px;
     cursor: pointer;
@@ -3564,18 +3622,12 @@
   .retry-btn:hover {
     border-color: var(--text-faint);
   }
-  .files-toolbar .fcount {
-    font-size: 12px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--text-faint);
-  }
   .toolbar-btn {
     background: var(--panel-raised);
     border: 1px solid var(--border);
     border-radius: 6px;
     color: var(--text-dim);
-    font-family: var(--mono);
+    font-family: var(--sans);
     font-size: 12px;
     padding: 4px 10px;
     cursor: pointer;
@@ -3626,7 +3678,7 @@
     background: none;
     border: none;
     color: var(--text-dim);
-    font-family: var(--mono);
+    font-family: var(--sans);
     font-size: 11px;
     cursor: pointer;
     padding: 0;
@@ -3740,6 +3792,7 @@
   .commit-sha {
     flex: none;
     color: var(--text-faint);
+    font-family: var(--mono);
   }
   .commit-ci {
     display: inline-flex;
@@ -3787,13 +3840,17 @@
     flex: 1;
     min-width: 0;
     resize: vertical;
-    min-height: 60px;
+    height: 36px;
+    min-height: 36px;
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 8px;
     color: var(--text);
     font-size: 13px;
-    padding: 10px 12px;
+    padding: 7px 12px;
+  }
+  .composer textarea::-webkit-resizer {
+    opacity: 0;
   }
   .composer textarea:focus {
     outline: none;
@@ -3847,13 +3904,7 @@
   }
   .side-key {
     margin-left: auto;
-    font-family: inherit;
-    font-size: 10px;
-    letter-spacing: 0;
-    color: var(--text-faint);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 0 5px;
+    display: inline-flex;
   }
   .agent-list {
     display: flex;
@@ -3971,7 +4022,7 @@
     align-items: center;
     gap: 5px;
     width: 100%;
-    font-family: var(--mono);
+    font-family: var(--sans);
     font-size: 10px;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -3987,9 +4038,6 @@
   }
   button.check-sec-head:hover {
     color: var(--text-dim);
-  }
-  .sec-caret {
-    font-size: 8px;
   }
   .check {
     display: flex;
@@ -4080,7 +4128,7 @@
     background: none;
     border: none;
     color: var(--text-dim);
-    font-family: var(--mono);
+    font-family: var(--sans);
     font-size: 11px;
     cursor: pointer;
     padding: 0;
@@ -4108,7 +4156,7 @@
   }
   .verdict-badge {
     margin-bottom: 8px;
-    font-family: var(--mono);
+    font-family: var(--sans);
     font-size: 11px;
   }
   .verdict-select {
@@ -4153,82 +4201,42 @@
     padding-top: 104px;
   }
   .loading-detail {
-    max-width: 1320px;
+    width: 100%;
   }
   .loading-head {
-    min-height: 158px;
+    min-height: 0;
   }
-  .loading-title-placeholder {
-    width: min(620px, 72vw);
-    height: 34px;
-    margin-top: 10px;
-    border-radius: 8px;
-    background: var(--surface);
+  .loading-sub {
+    min-height: 28px;
+  }
+  .loading-layout-reserve {
+    visibility: hidden;
+    pointer-events: none;
   }
   .loading-status {
     display: flex;
+    min-height: 96px;
     align-items: center;
+    justify-content: center;
     gap: 10px;
-    margin: 24px 0 14px;
     color: var(--text-dim);
     font-size: 12px;
   }
   .loading-spinner {
     width: 14px;
     height: 14px;
+    flex: none;
     border: 2px solid var(--border);
     border-top-color: var(--link);
     border-radius: 50%;
     animation: loading-spin 700ms linear infinite;
   }
-  .loading-card {
-    display: grid;
-    gap: 12px;
-    padding: 24px;
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    background: var(--panel);
-  }
-  .loading-line {
-    width: 48%;
-    height: 12px;
-    border-radius: 6px;
-    background: linear-gradient(90deg, var(--surface) 0%, var(--panel-raised) 50%, var(--surface) 100%);
-    background-size: 200% 100%;
-    animation: loading-shimmer 1.2s ease-in-out infinite;
-  }
-  .loading-line.wide {
-    width: 82%;
-  }
-  .loading-line.medium {
-    width: 64%;
-  }
   @keyframes loading-spin {
     to { transform: rotate(360deg); }
   }
-  @keyframes loading-shimmer {
-    from { background-position: 200% 0; }
-    to { background-position: -200% 0; }
-  }
   @media (prefers-reduced-motion: reduce) {
-    .loading-spinner,
-    .loading-line {
+    .loading-spinner {
       animation: none;
-    }
-  }
-  .back {
-    display: inline-flex;
-    align-items: center;
-    min-height: 28px;
-    padding: 0 8px;
-    margin: 0 0 12px -8px;
-    border-radius: 7px;
-    color: var(--text-dim);
-  }
-  @media (hover: hover) and (pointer: fine) {
-    .back:hover {
-      color: var(--text);
-      background: var(--surface);
     }
   }
   .pr-head {
@@ -4419,7 +4427,7 @@
     }
   }
   .branch-action:active:not(:disabled) {
-    transform: scale(0.98);
+    transform: scale(0.99);
   }
   .pr-metrics {
     display: grid;
@@ -4476,68 +4484,105 @@
   .ci-summary {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    min-height: 26px;
+    gap: 7px;
+    min-height: 28px;
     margin-left: auto;
-    padding: 0 9px;
-    border: 1px solid var(--border);
+    padding: 0 10px 0 7px;
+    border: 0;
     border-radius: 999px;
     background: var(--surface);
-    font-size: 11px;
+    color: var(--text-dim);
+    box-shadow: var(--shadow-control-hairline);
+    font-size: 12px;
     white-space: nowrap;
   }
-  .ci-summary.ready {
-    color: var(--ready);
-    border-color: color-mix(in srgb, var(--ready) 35%, var(--border));
-    background: var(--ready-bg);
-  }
-  .ci-summary.fail {
-    color: var(--fail);
-    border-color: color-mix(in srgb, var(--fail) 40%, var(--border));
-    background: var(--fail-bg);
-  }
-  .ci-summary.wait {
-    color: var(--wait);
-    background: var(--wait-bg);
-  }
   .ci-summary-icon {
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 16px;
+    height: 16px;
+    color: var(--text-faint);
   }
-  .ci-summary strong {
-    font-weight: 650;
+  .ci-summary.ready .ci-summary-icon {
+    color: var(--ready);
+  }
+  .ci-summary.fail .ci-summary-icon {
+    color: var(--native-red);
+  }
+  .ci-summary-icon svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .ci-summary-icon .status-success circle {
+    fill: currentColor;
+    stroke: none;
+  }
+  .ci-summary-icon .status-success path {
+    stroke: var(--native-on-accent);
+    stroke-width: 1.4;
+  }
+  .ci-summary-label {
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 400;
   }
   .ci-summary-detail {
-    color: var(--text-dim);
-    font-size: 9.5px;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--text-faint);
+    font-size: 10.5px;
+  }
+  .ci-summary-detail::before {
+    width: 2px;
+    height: 2px;
+    border-radius: 50%;
+    background: currentColor;
+    content: "";
   }
   .ci-failure-alert {
     margin-top: 12px;
-    border: 1px solid color-mix(in srgb, var(--fail) 38%, var(--border));
-    border-radius: 10px;
-    background: color-mix(in srgb, var(--fail-bg) 72%, var(--panel));
+    border: 0;
+    border-radius: var(--radius-lg);
+    background: var(--panel);
+    box-shadow: var(--shadow-surface);
     overflow: hidden;
   }
   .ci-failure-head {
     display: flex;
     align-items: center;
     gap: 9px;
-    min-height: 42px;
-    padding: 6px 8px 6px 11px;
+    min-height: 46px;
+    padding: 8px 12px;
   }
   .ci-failure-icon {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     flex: none;
-    width: 20px;
-    height: 20px;
+    width: 22px;
+    height: 22px;
     border-radius: 50%;
-    background: var(--fail);
-    color: var(--panel);
-    font-size: 9px;
-    font-weight: 700;
+    background: var(--fail-bg);
+    color: color-mix(in srgb, var(--fail) 78%, var(--text-dim));
+    box-shadow: none;
+  }
+  .ci-failure-icon svg,
+  .conflict-alert-icon svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
   .ci-failure-copy {
     display: flex;
@@ -4548,7 +4593,7 @@
   }
   .ci-failure-copy strong {
     flex: none;
-    color: var(--fail);
+    color: var(--text);
     font-size: 12.5px;
     font-weight: 650;
   }
@@ -4556,30 +4601,56 @@
     color: var(--text-dim);
     font-size: 10.5px;
   }
+  .attention-title {
+    display: flex;
+    align-items: center;
+    flex: none;
+    min-width: 0;
+    gap: 6px;
+  }
+  .attention-title .attention-chip,
+  .ci-failure-check .attention-chip {
+    flex: none;
+    padding: 2px 6px;
+    border-radius: 999px;
+    font-size: 9px;
+    font-weight: 400;
+    letter-spacing: 0;
+    line-height: 1.25;
+    text-transform: none;
+  }
+  .ci-failure-copy .attention-label,
+  .conflict-alert-copy .attention-label {
+    background: var(--fail-bg);
+    color: var(--fail);
+  }
   .ci-copy-button,
   .conflict-copy-button {
     flex: none;
+    min-width: 112px;
     min-height: 28px;
     padding: 0 10px;
-    border: 1px solid color-mix(in srgb, var(--fail) 55%, var(--border));
+    border: 0;
     border-radius: 7px;
-    background: var(--panel);
-    color: var(--fail);
+    background: var(--surface);
+    color: var(--text-dim);
     font-family: var(--sans);
     font-size: 11px;
     font-weight: 650;
+    text-align: center;
     cursor: pointer;
     transition: transform 120ms var(--ease-out), background 120ms ease;
   }
   @media (hover: hover) and (pointer: fine) {
     .ci-copy-button:hover,
     .conflict-copy-button:hover {
-      background: var(--panel-raised);
+      background: var(--surface-hover);
+      color: var(--text);
     }
   }
   .ci-copy-button:active,
   .conflict-copy-button:active {
-    transform: scale(0.97);
+    transform: scale(0.99);
   }
   .ci-failure-actions {
     display: flex;
@@ -4589,24 +4660,24 @@
   .ci-agent-button {
     min-height: 28px;
     padding: 0 10px;
-    border: 1px solid var(--fail);
+    border: 0;
     border-radius: 7px;
-    background: var(--fail);
-    color: var(--panel);
+    background: var(--native-accent);
+    color: var(--on-brand);
     font-family: var(--sans);
     font-size: 11px;
     font-weight: 650;
     cursor: pointer;
-    box-shadow: 0 1px 2px color-mix(in srgb, var(--fail) 25%, transparent);
-    transition: transform 120ms var(--ease-out), filter 120ms ease;
+    box-shadow: var(--shadow-control-filled);
+    transition: transform 120ms var(--ease-out), background-color 120ms ease;
   }
   @media (hover: hover) and (pointer: fine) {
     .ci-agent-button:hover:not(:disabled) {
-      filter: brightness(1.08);
+      background: var(--brand-hover);
     }
   }
   .ci-agent-button:active:not(:disabled) {
-    transform: scale(0.97);
+    transform: scale(0.99);
   }
   .ci-agent-button:disabled {
     cursor: default;
@@ -4617,7 +4688,7 @@
     flex-direction: column;
     list-style: none;
     margin: 0;
-    padding: 0 11px 7px 40px;
+    padding: 0 12px 9px 43px;
   }
   .ci-failure-list li {
     display: flex;
@@ -4625,7 +4696,7 @@
     min-width: 0;
     gap: 10px;
     min-height: 27px;
-    border-top: 1px solid color-mix(in srgb, var(--fail) 16%, var(--border-soft));
+    border-top: 1px solid var(--border-soft);
     font-size: 10px;
   }
   .ci-failure-check {
@@ -4646,19 +4717,13 @@
     white-space: nowrap;
   }
   .ci-required {
-    flex: none;
-    padding: 0 4px;
-    border-radius: 3px;
     background: var(--review-bg);
     color: var(--review);
-    font-size: 8px;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
   }
   .ci-failure-list a,
   .ci-location {
     flex: none;
-    color: var(--fail);
+    color: var(--link);
     font-size: 10px;
     text-decoration: none;
   }
@@ -4666,21 +4731,24 @@
     text-decoration: underline;
   }
   .ci-failure-error {
-    padding: 0 11px 8px 40px;
+    padding: 0 12px 9px 43px;
     color: var(--fail);
     font-size: 10px;
   }
   .conflict-alert {
     margin-top: 12px;
-    padding: 11px 12px;
-    border: 1px solid color-mix(in srgb, var(--fail) 42%, var(--border));
-    border-radius: 10px;
-    background: var(--fail-bg);
+    border: 0;
+    border-radius: var(--radius-lg);
+    background: var(--panel);
+    box-shadow: var(--shadow-surface);
+    overflow: hidden;
   }
   .conflict-alert-main {
     display: flex;
     align-items: center;
     gap: 9px;
+    min-height: 46px;
+    padding: 8px 12px;
   }
   .conflict-alert-icon {
     display: inline-flex;
@@ -4689,12 +4757,10 @@
     flex: none;
     width: 22px;
     height: 22px;
-    border: 1px solid var(--fail);
     border-radius: 50%;
-    color: var(--fail);
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 700;
+    background: var(--fail-bg);
+    color: color-mix(in srgb, var(--fail) 78%, var(--text-dim));
+    box-shadow: none;
   }
   .conflict-alert-copy {
     display: flex;
@@ -4705,7 +4771,7 @@
   }
   .conflict-alert-copy strong {
     flex: none;
-    color: var(--fail);
+    color: var(--text);
     font-size: 12.5px;
     font-weight: 650;
   }
@@ -4723,24 +4789,24 @@
     flex: none;
     min-height: 28px;
     padding: 0 11px;
-    border: 1px solid var(--fail);
+    border: 0;
     border-radius: 7px;
-    background: var(--fail);
-    color: var(--panel);
+    background: var(--native-accent);
+    color: var(--on-brand);
     font-family: var(--sans);
     font-size: 11px;
     font-weight: 650;
     cursor: pointer;
-    box-shadow: 0 1px 2px color-mix(in srgb, var(--fail) 34%, transparent);
-    transition: transform 120ms var(--ease-out), filter 120ms ease;
+    box-shadow: var(--shadow-control-filled);
+    transition: transform 120ms var(--ease-out), background-color 120ms ease;
   }
   @media (hover: hover) and (pointer: fine) {
     .conflict-primary:hover:not(:disabled) {
-      filter: brightness(1.08);
+      background: var(--brand-hover);
     }
   }
   .conflict-primary:active:not(:disabled) {
-    transform: scale(0.97);
+    transform: scale(0.99);
   }
   .conflict-primary:disabled {
     opacity: 0.58;
@@ -4753,13 +4819,13 @@
     max-height: 74px;
     overflow-y: auto;
     list-style: none;
-    margin: 8px 0 0 31px;
-    padding: 0;
+    margin: 0;
+    padding: 0 12px 9px 43px;
   }
   .conflict-file-list li {
     max-width: 100%;
     padding: 2px 6px;
-    border: 1px solid color-mix(in srgb, var(--fail) 22%, var(--border));
+    border: 1px solid var(--border-soft);
     border-radius: 5px;
     background: color-mix(in srgb, var(--panel) 82%, transparent);
     color: var(--text-dim);
@@ -4769,7 +4835,8 @@
   }
   .conflict-alert-note,
   .conflict-alert-error {
-    margin: 7px 0 0 31px;
+    margin: 0;
+    padding: 0 12px 10px 43px;
     color: var(--text-dim);
     font-size: 9.5px;
     line-height: 1.4;
@@ -4802,10 +4869,10 @@
     background: var(--ready);
     border-color: var(--ready);
     border-radius: 7px;
-    color: #fff;
+    color: var(--on-ready);
     font-family: var(--sans);
     font-weight: 600;
-    box-shadow: 0 1px 1px rgb(19 150 78 / 0.22);
+    box-shadow: 0 1px 1px color-mix(in srgb, var(--ready) 22%, transparent);
   }
   .merge-btn.fail {
     background: var(--fail-bg);
@@ -4818,9 +4885,6 @@
     border-color: var(--fail);
     color: var(--fail);
     box-shadow: none;
-  }
-  .merge-confirm.force-confirm {
-    border-top-color: var(--fail);
   }
   .since-banner {
     min-height: 40px;
@@ -4981,9 +5045,6 @@
     max-width: none;
     --files-content-left: calc(max(160px, min(var(--tree-width), 35%)) + 18px);
   }
-  .detail-frame.files-tab .back {
-    margin-left: calc(var(--files-content-left) - 8px);
-  }
   .detail-frame.files-tab .pr-head,
   .detail-frame.files-tab .since-banner {
     width: calc(100% - var(--files-content-left));
@@ -4992,7 +5053,7 @@
   .detail-frame.files-tab .tabs {
     margin-left: var(--files-content-left);
   }
-  @media (max-width: 820px) {
+  @media (max-width: 940px) {
     .detail-frame.files-tab > .detail {
       --files-content-left: 0px;
     }
@@ -5076,19 +5137,23 @@
       display: none;
     }
     .ci-failure-head {
+      display: grid;
+      grid-template-columns: 22px minmax(0, 1fr);
       align-items: flex-start;
-      flex-wrap: wrap;
+      column-gap: 9px;
+      row-gap: 7px;
       padding: 9px 10px;
     }
     .ci-failure-copy {
       align-items: flex-start;
-      flex-basis: calc(100% - 29px);
       flex-direction: column;
+      grid-column: 2;
       gap: 1px;
     }
     .ci-failure-actions {
+      grid-column: 2;
       width: 100%;
-      margin-left: 29px;
+      margin-left: 0;
     }
     .ci-copy-button,
     .ci-agent-button {
@@ -5110,18 +5175,23 @@
       width: 100%;
     }
     .conflict-alert-main {
+      display: grid;
+      grid-template-columns: 22px minmax(0, 1fr);
       align-items: flex-start;
-      flex-wrap: wrap;
+      column-gap: 9px;
+      row-gap: 7px;
+      padding: 9px 10px;
     }
     .conflict-alert-copy {
       align-items: flex-start;
-      flex-basis: calc(100% - 31px);
       flex-direction: column;
+      grid-column: 2;
       gap: 1px;
     }
     .conflict-actions {
+      grid-column: 2;
       width: 100%;
-      margin-left: 31px;
+      margin-left: 0;
     }
     .conflict-copy-button,
     .conflict-primary {
@@ -5131,6 +5201,672 @@
     .conflict-alert-note,
     .conflict-alert-error {
       margin-left: 0;
+      padding-right: 10px;
+      padding-left: 39px;
+    }
+    .right {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  /* Scape Desktop visual language: the PR is the surface, not a stack of cards. */
+  .page {
+    padding: 0 32px 88px;
+  }
+  .detail {
+    padding-top: 18px;
+  }
+  .pr-head {
+    padding: 10px 0 22px;
+    margin-bottom: 14px;
+    border: 0;
+    border-bottom: 1px solid var(--border-soft);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  .pr-head-top {
+    gap: 32px;
+  }
+  h1,
+  .pr-title-row h1 {
+    margin-bottom: 10px;
+    font-size: 24px;
+    font-weight: 500;
+    line-height: 30px;
+    letter-spacing: -0.025em;
+  }
+  .sub {
+    font-family: var(--sans);
+    font-size: 12px;
+    line-height: 16px;
+  }
+  .branch-name {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 500;
+  }
+  .pr-metrics {
+    display: flex;
+    gap: 0;
+    padding: 12px 0;
+    border-radius: var(--radius-lg);
+    background: var(--panel);
+    box-shadow: var(--shadow-surface);
+  }
+  .pr-metric {
+    min-width: 76px;
+    padding: 2px 14px;
+    border: 0;
+    border-left: 1px solid var(--border-soft);
+    border-radius: 0;
+    background: transparent;
+  }
+  .pr-metric span {
+    margin-bottom: 3px;
+    font-size: 12px;
+    line-height: 16px;
+  }
+  .pr-metric strong {
+    font-size: 12px;
+    line-height: 16px;
+  }
+  .pr-head-foot {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top-color: var(--border-soft);
+  }
+  .ci-summary {
+    gap: 8px;
+    min-height: 32px;
+    padding-inline: 11px;
+    border: 0;
+    border-radius: 999px;
+    font-size: 13px;
+    box-shadow: var(--shadow-xs);
+  }
+  .ci-summary-icon {
+    width: 14px;
+    height: 14px;
+  }
+  .ci-summary-icon svg {
+    display: block;
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .ci-summary-label {
+    font-size: 13px;
+    font-weight: 400;
+    letter-spacing: 0;
+  }
+  .ci-summary-detail {
+    margin-left: 1px;
+    color: var(--text-faint);
+    font-size: 12px;
+    font-weight: 400;
+    letter-spacing: -0.003em;
+  }
+  .ci-summary.fail .ci-summary-icon {
+    color: color-mix(in srgb, var(--fail) 72%, var(--text-dim));
+  }
+  .ci-summary.fail {
+    box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--fail) 34%, transparent), var(--shadow-control-filled);
+  }
+  .ci-summary.fail .ci-summary-detail {
+    color: color-mix(in srgb, var(--fail) 78%, var(--text-dim));
+  }
+  .tabs {
+    display: inline-flex;
+    width: fit-content;
+    gap: 4px;
+    margin: 0 0 26px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+  .tab {
+    display: inline-flex;
+    min-height: 32px;
+    align-items: center;
+    gap: 6px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--panel);
+    box-shadow: var(--shadow-control-outlined);
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 20px;
+    transition: background-color 140ms ease, box-shadow 140ms ease, transform 140ms var(--ease-out);
+  }
+  .tab.active {
+    border: 0;
+    background: var(--surface);
+    box-shadow: var(--shadow-control-selected);
+  }
+  .tab:active {
+    transform: scale(0.99);
+  }
+  .tab-count {
+    display: inline-flex;
+    min-width: 20px;
+    height: 20px;
+    align-items: center;
+    justify-content: center;
+    margin: 0;
+    padding: 0 6px;
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-control-hairline);
+    color: var(--text-dim);
+    font-size: 11px;
+    line-height: 1;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .tab:hover {
+      background: var(--surface);
+    }
+  }
+  .cols {
+    grid-template-columns: minmax(0, 1fr) minmax(240px, 264px);
+    gap: 32px;
+  }
+  .right {
+    gap: 0;
+  }
+  .card {
+    margin-bottom: 24px;
+    padding: 18px;
+    border: 0;
+    border-radius: var(--radius-lg);
+    background: var(--panel);
+    box-shadow: var(--shadow-surface);
+  }
+  .side-block {
+    margin: 0 0 12px;
+    padding: 14px;
+    border: 0;
+    border-radius: var(--radius-lg);
+    background: var(--panel);
+    box-shadow: var(--shadow-surface);
+  }
+  .side-block + .side-block {
+    padding-top: 14px;
+  }
+  .block-title,
+  .side-title {
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 20px;
+    letter-spacing: 0;
+  }
+  .event,
+  .run-row,
+  .diff-status {
+    border-color: var(--border-soft);
+    border-radius: var(--radius-md);
+    box-shadow: none;
+  }
+  .event-head {
+    background: color-mix(in srgb, var(--surface) 56%, transparent);
+  }
+  .event {
+    margin-bottom: 8px;
+    overflow: hidden;
+    border-color: var(--border-soft);
+    border-radius: 10px;
+    background: var(--panel);
+  }
+  .event-head {
+    min-height: 40px;
+    padding: 8px 12px;
+    border-bottom: 0;
+    background: transparent;
+    font-family: var(--sans);
+  }
+  .event-head .author {
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .event-head .when {
+    font-size: 12px;
+  }
+  .event-body {
+    padding: 0 14px 14px 38px;
+  }
+  .event.activity-event {
+    margin-bottom: 2px;
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+  .activity-event .event-head {
+    min-height: 34px;
+    padding: 5px 4px;
+  }
+  .activity-event .verdict {
+    margin-left: 2px;
+  }
+  .event.greptile-event {
+    border-color: color-mix(in srgb, var(--ready) 14%, var(--border-soft));
+    background: color-mix(in srgb, var(--ready-bg) 34%, var(--panel));
+  }
+  .greptile-event .event-head {
+    padding-bottom: 6px;
+  }
+  .greptile-event .event-body {
+    padding-top: 0;
+    padding-bottom: 16px;
+  }
+  .greptile-event :global(.md) {
+    color: var(--text-dim);
+    font-size: 13.5px;
+    line-height: 1.52;
+  }
+  .greptile-event :global(.md h1),
+  .greptile-event :global(.md h2),
+  .greptile-event :global(.md h3) {
+    margin: 12px 0 7px;
+    padding: 0;
+    border: 0;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .greptile-event :global(.md h1:first-child),
+  .greptile-event :global(.md h2:first-child),
+  .greptile-event :global(.md h3:first-child) {
+    margin-top: 0;
+  }
+  .greptile-event :global(.md p) {
+    margin-bottom: 8px;
+  }
+  .greptile-event :global(.md ul),
+  .greptile-event :global(.md ol) {
+    margin: 7px 0 10px;
+    padding-left: 19px;
+  }
+  .greptile-event :global(.md li) {
+    margin: 2px 0;
+  }
+  .label {
+    border-radius: var(--radius-sm);
+  }
+  .btn,
+  .retry-btn,
+  .cbtn,
+  .resolve-btn,
+  .merge-btn {
+    min-height: 32px;
+    padding-inline: 13px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--panel);
+    box-shadow: var(--shadow-control-outlined);
+    font-family: var(--sans);
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .btn:disabled,
+  .retry-btn:disabled,
+  .cbtn:disabled,
+  .resolve-btn:disabled,
+  .merge-btn:disabled {
+    background: var(--disabled-bg);
+    box-shadow: none;
+    color: var(--disabled-fg);
+    opacity: 1;
+  }
+  .toolbar-btn {
+    min-height: 28px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    box-shadow: none;
+    color: var(--text-dim);
+    font-family: var(--sans);
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .merge-btn {
+    background: var(--link);
+    color: var(--on-brand);
+    box-shadow: var(--shadow-control-filled);
+  }
+  .merge-btn:disabled {
+    background: var(--brand-disabled);
+    color: var(--on-brand);
+  }
+  .composer .btn {
+    height: 36px;
+    background: var(--link);
+    box-shadow: var(--shadow-control-filled);
+    color: var(--on-brand);
+  }
+  .composer .btn:disabled {
+    background: var(--brand-disabled);
+    box-shadow: none;
+    color: var(--on-brand);
+  }
+  .actions .merge-split .merge-main {
+    border-radius: 999px 0 0 999px;
+  }
+  .actions .merge-split .merge-caret {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-left: 1px solid color-mix(in srgb, #fff 24%, transparent);
+    border-radius: 0 999px 999px 0;
+  }
+  .merge-main,
+  .close-action {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+  }
+  .action-icon {
+    width: 14px;
+    height: 14px;
+    flex: none;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .action-method {
+    font-size: 12px;
+    font-weight: 450;
+    opacity: 0.78;
+    text-transform: capitalize;
+  }
+  .merge-btn.fail {
+    border: 0;
+    background: var(--panel);
+    box-shadow: var(--shadow-control-outlined);
+    color: var(--fail);
+  }
+  .merge-btn.blocked {
+    border: 0;
+    background: var(--fail-bg);
+    box-shadow: none;
+    color: var(--fail);
+  }
+  .link {
+    min-height: 28px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .link.danger {
+    color: var(--fail);
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .btn:hover:not(:disabled),
+    .retry-btn:hover:not(:disabled),
+    .cbtn:hover:not(:disabled),
+    .resolve-btn:hover:not(:disabled) {
+      background: var(--surface);
+      border-color: transparent;
+    }
+    .merge-btn:hover:not(:disabled) {
+      background: var(--brand-hover);
+      filter: none;
+    }
+    .composer .btn:hover:not(:disabled) {
+      background: var(--brand-hover);
+    }
+    .merge-btn.fail:hover:not(:disabled) {
+      background: color-mix(in srgb, var(--fail-bg) 38%, var(--panel));
+    }
+    .merge-btn.blocked:hover:not(:disabled) {
+      background: color-mix(in srgb, var(--fail-bg) 72%, var(--fail) 12%);
+    }
+    .toolbar-btn:hover,
+    .link:hover:not(:disabled) {
+      background: var(--ghost-hover);
+      border-color: transparent;
+      color: var(--text);
+    }
+    .link.danger:hover:not(:disabled) {
+      background: var(--fail-bg);
+      color: var(--fail);
+    }
+  }
+  .btn:active:not(:disabled),
+  .retry-btn:active:not(:disabled),
+  .cbtn:active:not(:disabled),
+  .resolve-btn:active:not(:disabled),
+  .merge-btn:active:not(:disabled) {
+    transform: scale(0.99);
+  }
+  .ci-copy-button,
+  .conflict-copy-button,
+  .ci-agent-button,
+  .conflict-primary {
+    min-height: 28px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 999px;
+    font-family: var(--sans);
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .ci-copy-button,
+  .conflict-copy-button {
+    background: color-mix(in srgb, var(--fail-bg) 78%, var(--panel));
+    box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--fail) 28%, transparent);
+    color: var(--fail);
+  }
+  .ci-agent-button {
+    background: var(--fail);
+    box-shadow: var(--shadow-control-filled);
+    color: var(--on-brand);
+  }
+  .conflict-primary {
+    background: var(--native-accent);
+    box-shadow: var(--shadow-control-filled);
+    color: var(--on-brand);
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .ci-copy-button:hover,
+    .conflict-copy-button:hover {
+      background: color-mix(in srgb, var(--fail-bg) 78%, var(--fail) 10%);
+      color: var(--fail);
+    }
+    .ci-agent-button:hover:not(:disabled) {
+      background: color-mix(in srgb, var(--fail) 88%, black);
+    }
+    .conflict-primary:hover:not(:disabled) {
+      background: var(--brand-hover);
+    }
+  }
+  .verdict-select,
+  .verdict-body,
+  .composer textarea,
+  .prompt-input {
+    border-color: transparent;
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    font-family: var(--sans);
+    font-size: 14px;
+  }
+  .verdict-select-wrap {
+    position: relative;
+    margin-bottom: 8px;
+    border-radius: 999px;
+    background: var(--panel);
+    box-shadow: var(--shadow-control-outlined);
+  }
+  .verdict-select {
+    appearance: none;
+    display: block;
+    height: 36px;
+    margin: 0;
+    padding: 0 40px 0 14px;
+    border: 0;
+    border-radius: inherit;
+    background: transparent;
+    box-shadow: none;
+    font-weight: 500;
+  }
+  .verdict-select-chevron {
+    position: absolute;
+    top: 50%;
+    right: 13px;
+    pointer-events: none;
+    transform: translateY(-50%);
+  }
+  .verdict-select-wrap:focus-within {
+    box-shadow: 0 0 0 3px var(--focus-ring), var(--shadow-control-outlined);
+  }
+  .verdict-select:focus {
+    border: 0;
+    box-shadow: none;
+  }
+  .verdict-body {
+    height: 36px;
+    min-height: 36px;
+    padding: 7px 12px;
+    border: 0;
+    border-radius: var(--radius-md);
+    background: var(--panel);
+    box-shadow: var(--shadow-control-outlined);
+  }
+  .verdict-body::-webkit-resizer {
+    opacity: 0;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .verdict-select-wrap:hover {
+      background: var(--surface);
+    }
+  }
+  .detail-frame.files-tab > .detail {
+    --files-content-left: 0px;
+  }
+  .detail-frame.files-tab .pr-head,
+  .detail-frame.files-tab .since-banner,
+  .detail-frame.files-tab .tabs {
+    width: 100%;
+    margin-left: 0;
+  }
+  .files-layout {
+    grid-template-columns: clamp(220px, var(--tree-width), 300px) 6px minmax(0, 1fr);
+  }
+  .files-toolbar {
+    grid-column: 1 / -1;
+    min-height: 41px;
+    margin: 0 0 18px;
+    padding: 0 0 12px;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .toolbar-left {
+    gap: 10px;
+  }
+  .toolbar-label {
+    color: var(--text-dim);
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 16px;
+  }
+  .tree-pane {
+    padding: 0 18px 0 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  .file-nav-head {
+    display: flex;
+    min-height: 32px;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 8px 8px;
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 20px;
+  }
+  .file-nav-head .fcount {
+    display: inline-flex;
+    min-width: 20px;
+    height: 20px;
+    align-items: center;
+    justify-content: center;
+    padding: 0 6px;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--surface-hover) 50%, transparent);
+    color: var(--text-dim);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+  .tree-resizer {
+    position: relative;
+    background: linear-gradient(to right, transparent 2px, var(--border-soft) 2px, var(--border-soft) 3px, transparent 3px);
+  }
+  .diff-pane {
+    padding-left: 20px;
+  }
+  .detail-frame.files-tab .pr-head,
+  .detail-frame.files-tab .since-banner,
+  .detail-frame.files-tab .tabs {
+    width: calc(100% - var(--files-content-left));
+  }
+  @media (max-width: 940px) {
+    .files-layout {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .files-toolbar,
+    .tree-pane,
+    .diff-pane {
+      grid-column: 1;
+    }
+    .tree-pane {
+      max-height: 240px;
+      padding: 0 0 18px;
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .diff-pane {
+      padding-left: 0;
+    }
+    .cols {
+      grid-template-columns: 1fr;
+    }
+    .pr-metrics {
+      width: 100%;
+    }
+    .right {
+      position: static;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 24px 32px;
+    }
+  }
+  @media (max-width: 660px) {
+    .page {
+      padding-inline: 14px;
+    }
+    .pr-head {
+      padding: 8px 0 18px;
+    }
+    .pr-metric {
+      padding-inline: 10px;
     }
     .right {
       grid-template-columns: 1fr;

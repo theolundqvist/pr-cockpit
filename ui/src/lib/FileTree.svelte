@@ -1,4 +1,6 @@
 <script>
+  import Chevron from "./Chevron.svelte";
+
   let { files, selectedPath, onSelect } = $props();
 
   const INDENT = 16;
@@ -84,7 +86,7 @@
   {#each [...node.dirs.values()] as dir (dir.path)}
     <button class="row dir" style="padding-left: {depth * INDENT + 8}px" onclick={() => toggleDir(dir.path)}>
       {@render rails(depth)}
-      <span class="caret">{collapsedDirs.has(dir.path) ? "▸" : "▾"}</span>
+      <Chevron direction={collapsedDirs.has(dir.path) ? "right" : "down"} size={12} />
       <span class="folder-icon"></span>
       <span class="name">{dir.name}</span>
       <span class="counts mono"><span class="add">+{dir.additions}</span><span class="del">−{dir.deletions}</span></span>
@@ -121,24 +123,36 @@
     position: relative;
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 7px;
     width: 100%;
     text-align: left;
     background: none;
     border: none;
     color: var(--text-dim);
+    font-family: var(--sans);
     font-size: 13px;
-    padding: 5px 8px;
+    font-weight: 400;
+    line-height: 18px;
+    padding: 0 8px;
     cursor: pointer;
-    border-radius: 5px;
+    border-radius: 8px;
     white-space: nowrap;
   }
   .row:hover {
-    background: var(--panel-raised);
+    background: var(--ghost-hover);
   }
   .file.selected {
-    background: var(--panel-raised);
+    background: var(--link-bg);
     color: var(--text);
+  }
+  .file.selected::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    width: 2px;
+    height: 16px;
+    border-radius: 999px;
+    background: var(--link);
   }
   .rails {
     position: absolute;
@@ -151,12 +165,6 @@
     bottom: 0;
     width: 1px;
     background: var(--border);
-  }
-  .caret {
-    flex: none;
-    width: 10px;
-    color: var(--text-faint);
-    font-size: 9px;
   }
   .folder-icon {
     flex: none;
@@ -178,6 +186,7 @@
   }
   .dir .name {
     color: var(--text-dim);
+    font-weight: 500;
     flex: 1;
     min-width: 0;
     direction: rtl;
@@ -220,19 +229,17 @@
   }
 
   .row {
-    min-height: 30px;
-    border: 1px solid transparent;
-    border-radius: 7px;
+    min-height: 32px;
+    border: 0;
+    border-radius: 8px;
   }
   @media (hover: hover) and (pointer: fine) {
     .row:hover {
-      background: var(--panel);
-      border-color: var(--border);
+      background: var(--ghost-hover);
     }
   }
   .file.selected {
-    background: var(--panel);
-    border-color: var(--border);
-    box-shadow: var(--shadow-xs);
+    background: var(--link-bg);
+    box-shadow: none;
   }
 </style>

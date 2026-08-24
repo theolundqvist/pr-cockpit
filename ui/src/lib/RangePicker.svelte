@@ -1,5 +1,6 @@
 <script>
   import { relativeTime } from "./time.js";
+  import Chevron from "./Chevron.svelte";
 
   let { commits, rangeKey, showSince, sinceLabel, onSelect, open = $bindable(false) } = $props();
 
@@ -115,14 +116,14 @@
 </script>
 
 <div class="rangepicker" bind:this={rootEl}>
-  <button class="rp-trigger mono" aria-haspopup="listbox" aria-expanded={open} onclick={() => (open ? close() : (open = true))}>
+  <button class="rp-trigger" aria-haspopup="listbox" aria-expanded={open} onclick={() => (open ? close() : (open = true))}>
     <span class="rp-label">{currentLabel}</span>
-    <span class="rp-caret">▾</span>
+    <Chevron />
   </button>
   {#if open}
     <div class="rp-popover" role="listbox">
       {#each fixedRows as row, i}
-        <button class="rp-row fixed mono" class:active={activeIdx === i} onmouseenter={() => (activeIdx = i)} onclick={() => pick(row.key)}>
+        <button class="rp-row fixed" class:active={activeIdx === i} onmouseenter={() => (activeIdx = i)} onclick={() => pick(row.key)}>
           {row.label}
         </button>
       {/each}
@@ -147,7 +148,7 @@
             <span class="rp-time">{relativeTime(c.committedDate)}</span>
           </button>
         {/each}
-        <div class="rp-hint mono">drag, or space + j/k, to select a range</div>
+        <div class="rp-hint">Drag, or press Space + J/K, to select a range</div>
       {/if}
     </div>
   {/if}
@@ -162,26 +163,25 @@
     align-items: center;
     gap: 8px;
     max-width: 340px;
-    background: var(--panel-raised);
-    border: 1px solid var(--border);
-    border-radius: 6px;
+    min-height: 32px;
+    padding: 0 12px;
+    background: var(--panel);
+    border: 0;
+    border-radius: 999px;
+    box-shadow: var(--shadow-control-outlined);
     color: var(--text);
-    font-size: 12px;
-    padding: 5px 10px;
+    font-family: var(--sans);
+    font-size: 14px;
+    font-weight: 500;
     cursor: pointer;
   }
   .rp-trigger:hover {
-    border-color: var(--text-faint);
+    background: var(--surface);
   }
   .rp-label {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .rp-caret {
-    flex: none;
-    color: var(--text-faint);
-    font-size: 9px;
   }
   .rp-popover {
     position: absolute;
@@ -249,11 +249,19 @@
   }
 
   .rp-trigger {
-    min-height: 30px;
-    border-radius: 7px;
-    background: var(--panel);
-    border-color: var(--border);
-    box-shadow: var(--shadow-xs);
+    min-height: 32px;
+    padding-inline: 12px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--surface);
+    box-shadow: var(--shadow-control-outlined);
+    transition: background-color 140ms ease, box-shadow 140ms ease, transform 140ms var(--ease-out);
+  }
+  .rp-trigger:hover {
+    background: var(--surface-hover);
+  }
+  .rp-trigger:active {
+    transform: scale(0.99);
   }
   .rp-popover {
     padding: 6px;

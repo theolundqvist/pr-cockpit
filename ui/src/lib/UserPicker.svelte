@@ -43,24 +43,24 @@
 
 <div class="picker-backdrop" onclick={onClose} onkeydown={null} role="presentation">
   <div class="picker" onclick={(e) => e.stopPropagation()} role="dialog" aria-label={title}>
-    <div class="picker-title mono">{title}</div>
+    <div class="picker-title">{title}</div>
     <input
       bind:this={inputEl}
       bind:value={query}
       onkeydown={onKey}
       use:mount
-      class="picker-input mono"
+      class="picker-input"
       placeholder="Filter people…"
       spellcheck="false"
       autocomplete="off"
     />
     <div class="picker-list">
       {#if filtered.length === 0}
-        <div class="picker-empty mono">no matches</div>
+        <div class="picker-empty">No matches</div>
       {:else}
         {#each filtered as user, i (user.login)}
           <button
-            class="picker-row mono"
+            class="picker-row"
             class:active={i === index}
             onmousemove={() => (index = i)}
             onclick={() => onPick(user.login)}
@@ -72,7 +72,7 @@
         {/each}
       {/if}
     </div>
-    <div class="picker-hint mono"><kbd>↑↓</kbd> move · <kbd>enter</kbd> toggle · <kbd>esc</kbd> close</div>
+    <div class="picker-hint"><kbd>↑↓</kbd> move · <kbd>enter</kbd> toggle · <kbd>esc</kbd> close</div>
   </div>
 </div>
 
@@ -167,8 +167,9 @@
     color: var(--text-faint);
   }
   .picker-hint kbd {
-    font-family: inherit;
-    color: var(--text-dim);
+    color: color-mix(in srgb, var(--text-dim) 80%, transparent);
+    font-family: system-ui, -apple-system, sans-serif;
+    font-weight: 500;
   }
 
   .picker-backdrop {

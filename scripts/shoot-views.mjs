@@ -26,6 +26,83 @@ const scenarios = [
     verify: async (page) => page.locator(".current-branch-badge").getByText("current", { exact: true }).waitFor(),
   },
   {
+    name: "inbox-palette",
+    route: "#/",
+    description: "Inline pull request palette with appearance-aware modal material and scrim.",
+    beforeGoto: async (page, { baseURL }) => {
+      const settings = await requestJson(`${baseURL}/api/settings`);
+      await page.route("**/api/settings", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ...settings, font_ui: "alacritty" }),
+      }));
+    },
+    ready: ".inbox-layout .queue-group",
+    interact: async (page) => page.getByRole("button", { name: /Find a pull request/ }).click(),
+    verify: async (page) => {
+      const palette = page.locator(".palette:not(.standalone)");
+      await palette.waitFor();
+      if (new URL(page.url()).hash !== "#/") throw new Error(`quick action navigated away from the inbox: ${page.url()}`);
+      const material = await palette.evaluate((node) => ({
+        theme: document.documentElement.dataset.theme,
+        scrim: getComputedStyle(node.parentElement).backgroundColor,
+        panel: getComputedStyle(node).backgroundColor,
+      }));
+      if (material.theme === "dark") {
+        const channels = material.scrim.match(/[\d.]+/g)?.map(Number) ?? [];
+        if (channels.slice(0, 3).some((channel) => channel > 2) || (channels[3] ?? 0) < 0.5) {
+          throw new Error(`dark palette scrim is washing out the app: ${material.scrim}`);
+        }
+      }
+      if (material.panel === "rgba(0, 0, 0, 0)") throw new Error("palette material is transparent");
+      await palette.locator(".pr-ref").first().waitFor();
+      const typography = await palette.evaluate((node) => ({
+        input: getComputedStyle(node.querySelector(".palette-input")).fontFamily,
+        ref: getComputedStyle(node.querySelector(".pr-ref")).fontFamily,
+        sans: getComputedStyle(document.documentElement).getPropertyValue("--sans").trim(),
+        mono: getComputedStyle(document.documentElement).getPropertyValue("--mono").trim(),
+      }));
+      if (typography.input === typography.ref || typography.sans === typography.mono) {
+        throw new Error(`ordinary palette copy still inherits the technical font: ${JSON.stringify(typography)}`);
+      }
+    },
+  },
+  {
+    name: "inbox-update-ready",
+    route: "#/",
+    description: "Update action aligned with the live push and full-sync status group.",
+    beforeGoto: async (page) => page.route("**/api/version", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ updateAvailable: true }),
+    })),
+    ready: ".head-right .update",
+    verify: async (page) => {
+      await page.getByRole("button", { name: "Install update", exact: true }).waitFor();
+      await page.locator(".sync-status").waitFor();
+    },
+  },
+  {
+    name: "inbox-api-quota",
+    route: "#/",
+    sidebar: true,
+    description: "Sidebar shows GitHub API health without exposing the unexplained 5,000-point ceiling as the primary label.",
+    beforeGoto: async (page, { baseURL }) => {
+      const settings = await requestJson(`${baseURL}/api/settings`);
+      await page.route("**/api/settings", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ...settings, hide_sidebar: false }),
+      }));
+      await quotaRoutes(page, { graphql: 3990, rest: 5000 });
+    },
+    ready: ".app-sidebar .quota-status",
+    verify: async (page) => {
+      await page.getByText("API healthy", { exact: true }).waitFor();
+      await page.getByText("80% available", { exact: true }).waitFor();
+    },
+  },
+  {
     name: "inbox-empty",
     route: "#/",
     description: "Inbox after every active fixture PR has been archived.",
@@ -92,7 +169,63 @@ const scenarios = [
   },
   {
     ...detail("detail-conversation", 101, "Green PR conversation with approvals, threads, comments, and successful checks."),
-    verify: async (page) => page.locator(".current-branch-badge").getByText("current", { exact: true }).waitFor(),
+    verify: async (page) => {
+      await page.locator(".current-branch-badge").getByText("current", { exact: true }).waitFor();
+      const backArrow = page.locator(".app-history").getByRole("button", { name: /Back/ });
+      await backArrow.waitFor();
+      if (await backArrow.isDisabled()) throw new Error("PR back arrow should retain an inbox fallback");
+      if (await page.locator(".detail .back").count()) throw new Error("PR view still renders a duplicate inline back control");
+      const detailUrl = page.url();
+      await backArrow.click();
+      await page.waitForFunction(() => location.hash === "#/");
+      await page.goto(detailUrl, { waitUntil: "domcontentloaded" });
+      await page.locator(".detail .pr-head").waitFor();
+    },
+  },
+  {
+    name: "detail-fetching-spinner",
+    route: `#/pr/${REPO}/101`,
+    description: "Uncached pull request while GitHub detail is pending, with its indexed header and spinner but no placeholder skeletons.",
+    ready: ".app-history",
+    beforeGoto: async (page) => page.route((url) => url.pathname === `/api/pr/${REPO}/101`, async (route) => {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 700));
+      await route.continue();
+    }),
+    interact: async (page) => page.waitForTimeout(350),
+    verify: async (page) => {
+      await page.locator(".loading-detail .pr-head h1").waitFor();
+      if (!(await page.locator(".loading-detail .pr-head h1").innerText()).trim()) throw new Error("PR fetching state did not render the indexed title");
+      const loadingHeader = await page.locator(".loading-detail .pr-head").boundingBox();
+      const loadingDetail = await page.locator(".loading-detail").boundingBox();
+      if (!loadingHeader || !loadingDetail || Math.abs(loadingHeader.x - loadingDetail.x) > 1 || Math.abs(loadingHeader.width - loadingDetail.width) > 1) {
+        throw new Error(`PR fetching header is not aligned to the detail column: ${JSON.stringify({ loadingHeader, loadingDetail })}`);
+      }
+      await page.getByText("Fetching live GitHub details…", { exact: true }).waitFor();
+      await page.locator(".loading-spinner").waitFor();
+      if (await page.locator(".loading-card, .loading-line, .loading-title-placeholder").count()) throw new Error("PR fetching state rendered placeholder skeletons");
+    },
+  },
+  {
+    name: "detail-loading-transition",
+    route: `#/pr/${REPO}/101`,
+    description: "The indexed PR header keeps the same geometry when full GitHub details replace it.",
+    beforeGoto: async (page) => page.route((url) => url.pathname === `/api/pr/${REPO}/101`, async (route) => {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 700));
+      await route.continue();
+    }),
+    ready: ".loading-detail .pr-head",
+    verify: async (page) => {
+      const loadingHeader = await page.locator(".loading-detail .pr-head").boundingBox();
+      const loadedHeaderNode = page.locator(".detail-frame:not(.loading-frame) .pr-head");
+      await loadedHeaderNode.waitFor();
+      const loadedHeader = await loadedHeaderNode.boundingBox();
+      if (!loadingHeader || !loadedHeader) throw new Error("PR header was not measurable across the loading transition");
+      for (const property of ["x", "y", "width", "height"]) {
+        if (Math.abs(loadingHeader[property] - loadedHeader[property]) > 1) {
+          throw new Error(`PR header shifted on load: ${property} ${loadingHeader[property]} -> ${loadedHeader[property]}`);
+        }
+      }
+    },
   },
   {
     ...detail("detail-title-rename", 101, "Inline pull request title rename with its queued optimistic state."),
@@ -166,6 +299,17 @@ const scenarios = [
     verify: async (page) => page.getByRole("button", { name: "Submit review", exact: true }).waitFor(),
   },
   {
+    ...detail("detail-review-timeline", 115, "Compact approval activity followed by a substantive automated review summary."),
+    interact: async (page) => page.locator(".greptile-event").scrollIntoViewIfNeeded(),
+    verify: async (page) => {
+      const approvals = page.locator(".activity-event");
+      if (await approvals.count() !== 2) throw new Error(`expected 2 compact approvals, found ${await approvals.count()}`);
+      if (await approvals.locator(".event-body").count()) throw new Error("bodyless approval rendered an empty event body");
+      await page.locator(".greptile-event").getByRole("heading", { name: "Greptile Summary", exact: true }).waitFor();
+      await page.locator(".greptile-event").getByText("Confidence Score: 5/5", { exact: true }).waitFor();
+    },
+  },
+  {
     ...detail("detail-reviewer-picker", 102, "Reviewer picker populated with deterministic repository users."),
     interact: async (page) => {
       await page.keyboard.press("q");
@@ -183,11 +327,43 @@ const scenarios = [
   },
   {
     ...detail("detail-merge-confirmation", 101, "Ordinary merge confirmation without submitting the merge."),
+    beforeGoto: async (page) => page.route("**/api/mutations**", (route) => {
+      if (route.request().method() === "POST") {
+        return route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ id: 9_101 }) });
+      }
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ mutations: [] }) });
+    }),
     interact: async (page) => {
       await page.keyboard.press("m");
-      await page.locator(".merge-confirm").waitFor();
+      await page.getByRole("alertdialog", { name: "Merge pull request #101?" }).waitFor();
     },
-    verify: async (page) => page.getByText(/merge PR #101 into/).waitFor(),
+    verify: async (page) => {
+      const dialog = page.getByRole("alertdialog", { name: "Merge pull request #101?" });
+      await dialog.getByText("fixture/pr-101", { exact: true }).waitFor();
+      await dialog.getByLabel("fixture/pr-101 into main").getByText("main", { exact: true }).waitFor();
+      const focusedLabel = await page.evaluate(() => document.activeElement?.getAttribute("aria-label"));
+      if (focusedLabel !== "Merge pull request") throw new Error(`unexpected initial merge-dialog focus: ${focusedLabel}`);
+      await page.keyboard.press("Tab");
+      const wrappedLabel = await page.evaluate(() => document.activeElement?.getAttribute("aria-label"));
+      if (wrappedLabel !== "Cancel merge") throw new Error(`merge-dialog focus did not wrap to cancel: ${wrappedLabel}`);
+      await page.keyboard.press("Shift+Tab");
+      const restoredLabel = await page.evaluate(() => document.activeElement?.getAttribute("aria-label"));
+      if (restoredLabel !== "Merge pull request") throw new Error(`merge-dialog reverse focus did not wrap: ${restoredLabel}`);
+      await page.keyboard.press("Escape");
+      await dialog.waitFor({ state: "detached" });
+      await page.keyboard.press("m");
+      await page.getByRole("alertdialog", { name: "Merge pull request #101?" }).waitFor();
+      const mergeRequestPending = page.waitForRequest((request) => request.method() === "POST" && request.url().endsWith("/api/mutations"));
+      await page.keyboard.press("Enter");
+      const mergeRequest = await mergeRequestPending;
+      const expectedPayload = { repo: REPO, number: 101, payload: { kind: "merge", force: false, baseRef: "main", method: "squash", source: "default" } };
+      if (JSON.stringify(mergeRequest.postDataJSON()) !== JSON.stringify(expectedPayload)) {
+        throw new Error(`unexpected keyboard merge payload: ${JSON.stringify(mergeRequest.postDataJSON())}`);
+      }
+      await dialog.waitFor({ state: "detached" });
+      await page.keyboard.press("m");
+      await page.getByRole("alertdialog", { name: "Merge pull request #101?" }).waitFor();
+    },
   },
   {
     ...detail("detail-close-confirmation", 101, "Close confirmation without closing the pull request."),
@@ -219,8 +395,9 @@ const scenarios = [
     ...detail("detail-conversation-blocked-admin", 112, "Branch-protection block with the admin force-merge confirmation visible.", "fixture/admin-cockpit"),
     interact: async (page) => {
       await page.keyboard.press("Shift+M");
-      await page.locator(".force-confirm").waitFor();
+      await page.getByRole("alertdialog", { name: "Force-merge pull request #112?" }).waitFor();
     },
+    verify: async (page) => page.getByText("Required approvals will be bypassed.", { exact: false }).waitFor(),
   },
   {
     ...detail("detail-conversation-conflicts", 103, "PR with exact conflict paths and an agent resolution action."),
@@ -231,6 +408,39 @@ const scenarios = [
       if (JSON.stringify(paths) !== JSON.stringify(expected)) throw new Error(`unexpected conflict paths: ${JSON.stringify(paths)}`);
       await page.locator(".conflict-alert").getByRole("button", { name: "Copy fix prompt", exact: true }).waitFor();
       await page.locator(".conflict-alert").getByRole("button", { name: "Fix with agent", exact: true }).waitFor();
+      const attentionLabels = await page.locator(".attention-label").allTextContents();
+      if (attentionLabels.length !== 2 || attentionLabels.some((label) => label !== "Action required")) {
+        throw new Error(`status cards do not clearly identify required action: ${JSON.stringify(attentionLabels)}`);
+      }
+      const surfaces = await page.locator(".conflict-alert").evaluate((alert) => {
+        const resolvedColor = (value) => {
+          const probe = document.createElement("span");
+          probe.style.color = value;
+          document.body.append(probe);
+          const color = getComputedStyle(probe).color;
+          probe.remove();
+          return color;
+        };
+        return {
+          alert: getComputedStyle(alert).backgroundColor,
+          panel: resolvedColor("var(--panel)"),
+          action: getComputedStyle(alert.querySelector(".conflict-primary")).backgroundColor,
+          accent: resolvedColor("var(--native-accent)"),
+          shadow: getComputedStyle(alert).boxShadow,
+        };
+      });
+      if (surfaces.alert !== surfaces.panel) throw new Error(`conflict alert still uses a tinted surface: ${JSON.stringify(surfaces)}`);
+      if (surfaces.action !== surfaces.accent) throw new Error(`constructive conflict action is not using the system accent: ${JSON.stringify(surfaces)}`);
+      if (surfaces.shadow === "none") throw new Error("conflict alert has no design-system elevation");
+      if (surfaces.shadow.includes("inset")) throw new Error(`conflict alert uses an inset status stripe: ${surfaces.shadow}`);
+      const alignment = await page.locator(".ci-failure-alert, .conflict-alert").evaluateAll((alerts) => alerts.map((alert) => {
+        const card = alert.getBoundingClientRect();
+        const title = alert.querySelector("strong").getBoundingClientRect();
+        return { x: card.x, width: card.width, titleX: title.x };
+      }));
+      if (alignment.length !== 2 || alignment.some((item) => Math.abs(item.x - alignment[0].x) > 1 || Math.abs(item.width - alignment[0].width) > 1 || Math.abs(item.titleX - alignment[0].titleX) > 1)) {
+        throw new Error(`status cards do not share the same outer and title alignment: ${JSON.stringify(alignment)}`);
+      }
     },
   },
   {
@@ -241,6 +451,27 @@ const scenarios = [
       await page.getByRole("link", { name: "Open logs ↗", exact: true }).waitFor();
       await page.getByRole("button", { name: "Copy fix prompt", exact: true }).waitFor();
       await page.getByRole("button", { name: "Fix with agent", exact: true }).waitFor();
+      const surfaces = await page.locator(".ci-failure-alert").evaluate((alert) => {
+        const resolvedColor = (value) => {
+          const probe = document.createElement("span");
+          probe.style.color = value;
+          document.body.append(probe);
+          const color = getComputedStyle(probe).color;
+          probe.remove();
+          return color;
+        };
+        return {
+          alert: getComputedStyle(alert).backgroundColor,
+          panel: resolvedColor("var(--panel)"),
+          action: getComputedStyle(alert.querySelector(".ci-agent-button")).backgroundColor,
+          accent: resolvedColor("var(--native-accent)"),
+          shadow: getComputedStyle(alert).boxShadow,
+        };
+      });
+      if (surfaces.alert !== surfaces.panel) throw new Error(`failure alert still uses a tinted surface: ${JSON.stringify(surfaces)}`);
+      if (surfaces.action !== surfaces.accent) throw new Error(`constructive failure action is not using the system accent: ${JSON.stringify(surfaces)}`);
+      if (surfaces.shadow === "none") throw new Error("failure alert has no design-system elevation");
+      if (surfaces.shadow.includes("inset")) throw new Error(`failure alert still uses an inset side stripe: ${surfaces.shadow}`);
     },
   },
   detail("detail-draft", 105, "Draft PR conversation."),
@@ -253,6 +484,26 @@ const scenarios = [
     route: `#/pr/${REPO}/101/files`,
     description: "Files tab with an ordinary three-file diff and inline threads.",
     ready: ".files-layout .diff",
+    verify: async (page) => {
+      const file = page.locator(".diff .file").first();
+      const expanded = await file.evaluate((node) => ({
+        border: getComputedStyle(node).borderTopWidth,
+        firstHunkBorder: getComputedStyle(node.querySelector(".hunk-head")).borderTopWidth,
+        shadow: getComputedStyle(node).boxShadow,
+      }));
+      if (expanded.border !== "0px") throw new Error(`diff card has a border in addition to its elevation: ${JSON.stringify(expanded)}`);
+      if (expanded.firstHunkBorder !== "0px") throw new Error(`first hunk duplicates the header divider: ${JSON.stringify(expanded)}`);
+      if (expanded.shadow === "none") throw new Error("diff card lost its design-system elevation");
+
+      await file.locator(".file-head").click();
+      await file.evaluate((node) => {
+        if (!node.classList.contains("collapsed")) throw new Error("file did not enter its collapsed state");
+        const divider = getComputedStyle(node.querySelector(".file-head-row")).borderBottomWidth;
+        if (divider !== "0px") throw new Error(`collapsed header keeps a duplicate bottom divider: ${divider}`);
+      });
+      await file.locator(".file-head").click();
+      await file.locator(".hunks").waitFor();
+    },
   },
   {
     name: "detail-range-picker",
@@ -263,7 +514,7 @@ const scenarios = [
       await page.locator(".rp-trigger").click();
       await page.locator(".rp-popover").waitFor();
     },
-    verify: async (page) => page.getByText("drag, or space + j/k, to select a range", { exact: true }).waitFor(),
+    verify: async (page) => page.getByText("Drag, or press Space + J/K, to select a range", { exact: true }).waitFor(),
   },
   {
     name: "detail-inline-comment-compose",
@@ -285,7 +536,7 @@ const scenarios = [
     ready: ".files-layout .diff",
     interact: async (page) => {
       const file = page.locator(".diff .file").filter({ hasText: "src/flight.ts" });
-      await file.getByRole("button", { name: "edit", exact: true }).click();
+      await file.getByRole("button", { name: "Edit", exact: true }).click();
       const editor = page.getByRole("textbox", { name: "Edit src/flight.ts" });
       await editor.fill("export function launch(mode = \"automatic\") {\n  return `launch:${mode}`;\n}\n\nexport const fixtureNumber = 101;\n");
       await file.locator(".file-editor").scrollIntoViewIfNeeded();
@@ -299,7 +550,7 @@ const scenarios = [
     ready: ".files-layout .diff",
     interact: async (page) => {
       const file = page.locator(".diff .file").filter({ hasText: "src/flight.ts" });
-      const edit = file.getByRole("button", { name: "edit", exact: true });
+      const edit = file.getByRole("button", { name: "Edit", exact: true });
       await edit.click();
       let editor = page.getByRole("textbox", { name: "Edit src/flight.ts" });
       await editor.fill("export function launch(mode = \"automatic\") {\n  return `launch:${mode}`;\n}\n\nexport const fixtureNumber = 101;\n");
@@ -337,7 +588,7 @@ const scenarios = [
     route: `#/pr/${REPO}/113/files`,
     description: "Zero-file PR showing the empty diff state.",
     ready: ".files-layout .diff-status",
-    verify: async (page) => page.getByText("no changes in this range.", { exact: true }).waitFor(),
+    verify: async (page) => page.getByText("No changes in this range.", { exact: true }).waitFor(),
   },
   {
     name: "detail-files-error",
@@ -346,10 +597,10 @@ const scenarios = [
     beforeGoto: async (page) => page.route((url) => url.pathname === "/api/pr/fixture/cockpit/101/diff", (route) => route.fulfill({ status: 500, contentType: "text/plain", body: "fixture diff failure" })),
     ready: ".files-layout .diff-status",
     verify: async (page) => {
-      const retry = page.getByRole("button", { name: "retry", exact: true });
+      const retry = page.getByRole("button", { name: "Retry", exact: true });
       await retry.waitFor();
       const status = await page.locator(".diff-status").innerText();
-      if (!status.includes("couldn't load this diff.")) throw new Error(`unexpected diff error state: ${status}`);
+      if (!status.includes("Couldn’t load this diff.")) throw new Error(`unexpected diff error state: ${status}`);
     },
   },
   {
@@ -400,7 +651,7 @@ const scenarios = [
     route: `#/pr/${REPO}/101/agents`,
     description: "Agents tab before any runs exist.",
     ready: ".agents-layout",
-    verify: async (page) => page.getByText("no agent runs yet", { exact: true }).waitFor(),
+    verify: async (page) => page.getByText("No agent runs yet", { exact: true }).waitFor(),
   },
   {
     ...detail("detail-long-markdown", 108, "Huge Markdown description with a table, code block, and embedded image."),
@@ -411,8 +662,8 @@ const scenarios = [
     verify: async (page) => {
       const failed = page.getByText("FAILED", { exact: true }).first();
       await failed.waitFor();
-      await page.getByRole("button", { name: "retry", exact: true }).first().waitFor();
-      await page.getByRole("button", { name: "discard", exact: true }).first().waitFor();
+      await page.getByRole("button", { name: "Retry", exact: true }).first().waitFor();
+      await page.getByRole("button", { name: "Discard", exact: true }).first().waitFor();
       await failed.scrollIntoViewIfNeeded();
     },
   },
@@ -424,10 +675,43 @@ const scenarios = [
       await pending.scrollIntoViewIfNeeded();
     },
   },
-  settings("settings", "General settings and workspace configuration.", "General"),
-  settings("settings-keybinds", "Global and in-app keyboard shortcuts.", "Keybinds"),
-  settings("settings-agents", "Built-in and custom agent configuration.", "Agents"),
-  settings("settings-diff-tests", "Diff rendering and test-file preferences.", "Diff / Tests"),
+  settings("settings", "General settings and workspace configuration.", "general"),
+  {
+    ...settings("settings-scrolled", "Sticky settings header after the form has scrolled beneath it.", "general"),
+    interact: async (page) => {
+      await page.locator(".page").evaluate((node) => {
+        node.scrollTop = node.scrollHeight;
+      });
+    },
+    verify: async (page) => {
+      const scrollTop = await page.locator(".page").evaluate((node) => node.scrollTop);
+      if (scrollTop <= 0) throw new Error(`settings page did not scroll: ${scrollTop}`);
+      const positions = await page.locator(".page").evaluate((node) => ({
+        pageTop: node.getBoundingClientRect().top,
+        headTop: node.querySelector(".head")?.getBoundingClientRect().top,
+      }));
+      if (positions.headTop == null || Math.abs(positions.headTop - positions.pageTop) > 1) {
+        throw new Error(`sticky settings header left a ${positions.headTop - positions.pageTop}px gap`);
+      }
+      const headerSurface = await page.locator(".head").evaluate((node) => {
+        const style = getComputedStyle(node);
+        return {
+          backgroundColor: style.backgroundColor,
+          backgroundImage: style.backgroundImage,
+          backdropFilter: style.backdropFilter,
+        };
+      });
+      if (headerSurface.backgroundImage !== "none" || headerSurface.backdropFilter !== "none") {
+        throw new Error(`sticky settings header is translucent: ${JSON.stringify(headerSurface)}`);
+      }
+      const alpha = Number(headerSurface.backgroundColor.match(/[\d.]+/g)?.[3] ?? 1);
+      if (alpha < 1) throw new Error(`sticky settings header background is not opaque: ${headerSurface.backgroundColor}`);
+      await page.locator('.app-nav a[href="#/settings/general"][aria-current="page"]').waitFor();
+    },
+  },
+  settings("settings-keybinds", "Global and in-app keyboard shortcuts.", "keybinds"),
+  settings("settings-agents", "Built-in and custom agent configuration.", "automerge"),
+  settings("settings-diff-tests", "Diff rendering and test-file preferences.", "tests"),
   {
     name: "palette",
     route: "#/",
@@ -516,17 +800,15 @@ function quotaRoutes(page, { graphql, rest }) {
   return page.route("**/api/quota", (route) => route.fulfill({ status: 200, contentType: "application/json", body }));
 }
 
-function settings(name, description, tab) {
+function settings(name, description, section) {
   return {
     name,
-    route: "#/settings",
+    route: `#/settings/${section}`,
     description,
+    sidebar: true,
     ready: ".settings-panel",
-    interact: tab === "General" ? undefined : async (page) => {
-      await page.getByRole("tab", { name: tab, exact: true }).click();
-      await page.getByRole("tab", { name: tab, exact: true }).getAttribute("aria-selected").then((value) => {
-        if (value !== "true") throw new Error(`${tab} settings tab did not activate`);
-      });
+    verify: async (page) => {
+      await page.locator(`.app-nav a[href="#/settings/${section}"][aria-current="page"]`).waitFor();
     },
   };
 }
@@ -933,7 +1215,7 @@ async function run() {
             await scenario.interact?.(page);
             await scenario.verify?.(page);
             const sidebar = page.locator(".app-sidebar");
-            if (await sidebar.count()) await sidebar.waitFor({ state: "hidden" });
+            if (await sidebar.count() && !scenario.sidebar) await sidebar.waitFor({ state: "hidden" });
             await settle(page, theme);
             if (externalRequests.length) throw new Error(`external network request blocked: ${externalRequests.join(", ")}`);
             if (pageErrors.length) throw new AggregateError(pageErrors, "uncaught browser error");
