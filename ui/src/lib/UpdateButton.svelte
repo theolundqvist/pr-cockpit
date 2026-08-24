@@ -1,13 +1,20 @@
 <script>
-  import { fetchUpdateAvailable, triggerUpdate } from "./api.js";
+  import { fetchVersion, triggerUpdate } from "./api.js";
   import { showFlash } from "./flash.svelte.js";
 
   let available = $state(false);
   let updating = $state(false);
+  // The build this page was served by. An update that restarts the server without replacing this window
+  // leaves the old bundle on screen, so the page reloads itself once the server reports a new revision.
+  let loadedRev = null;
 
   async function poll() {
     try {
-      available = await fetchUpdateAvailable();
+      const { updateAvailable, rev } = await fetchVersion();
+      available = updateAvailable;
+      if (!rev) return;
+      if (loadedRev === null) loadedRev = rev;
+      else if (rev !== loadedRev) location.reload();
     } catch {}
   }
 

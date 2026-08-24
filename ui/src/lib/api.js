@@ -243,10 +243,10 @@ export async function fetchRelayCoverage(repos) {
   return res.json();
 }
 
-export async function fetchUpdateAvailable() {
+export async function fetchVersion() {
   const res = await fetch("/api/version");
   if (!res.ok) throw new Error(`version ${res.status}`);
-  return (await res.json()).updateAvailable;
+  return res.json();
 }
 
 export async function triggerUpdate() {

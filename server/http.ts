@@ -81,7 +81,7 @@ import {
   type AgentRow,
 } from "./agents.ts";
 import { defaultRescorePrompt, effectiveRescoreScore, maybeRescore, shouldAutoRescore } from "./rescorer.ts";
-import { isUpdateAvailable } from "./version.ts";
+import { isUpdateAvailable, runningRev } from "./version.ts";
 import { spawn } from "node:child_process";
 import { repoUsersCached } from "./repoUsers.ts";
 import { matchesQuery, parseQuery, wantsHistoricalPrs } from "./query.ts";
@@ -1971,7 +1971,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       return handleShutdown();
     }
     if (req.method === "GET" && url.pathname === "/api/version") {
-      return json({ updateAvailable: isUpdateAvailable() });
+      return json({ updateAvailable: isUpdateAvailable(), rev: runningRev() });
     }
     if (req.method === "POST" && url.pathname === "/api/update") {
       return handleUpdate();
