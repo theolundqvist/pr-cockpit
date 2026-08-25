@@ -1,5 +1,6 @@
 const CONTROL_RE = /^##\[([^\] ]+)(?: ([^\]]*))?\](.*)$/;
 const WORKFLOW_COMMAND_RE = /^::(error|warning|notice)(?: (.*?))?::(.*)$/;
+const COMMAND_RE = /^\[command\](.*)$/;
 
 function decodeCommandText(value) {
   return value.replaceAll("%0D", "\r").replaceAll("%0A", "\n").replaceAll("%25", "%");
@@ -117,6 +118,12 @@ export function parseActionLog(text, jobConclusion = null) {
         continue;
       }
     }
+    const commandLine = source.match(COMMAND_RE);
+    if (commandLine) {
+      addLine(lineNumber, commandLine[1], "command");
+      continue;
+    }
+
 
     const workflowCommand = source.match(WORKFLOW_COMMAND_RE);
     if (workflowCommand) {

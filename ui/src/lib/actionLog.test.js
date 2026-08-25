@@ -65,6 +65,9 @@ describe("parseActionLog", () => {
     const parsed = parseActionLog("line one\n\nline three");
     expect(parsed.steps).toHaveLength(1);
     expect(parsed.steps[0].title).toBe("Set up job");
+
+    const command = parseActionLog("[command]/usr/bin/git version");
+    expect(command.steps[0].lines[0]).toEqual({ line: 1, text: "/usr/bin/git version", tone: "command" });
     expect(parsed.steps[0].lines.map((line) => line.text)).toEqual(["line one", "", "line three"]);
   });
 });
