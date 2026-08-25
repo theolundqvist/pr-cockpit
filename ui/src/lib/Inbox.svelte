@@ -287,17 +287,6 @@
     if (next === "closed") loadClosed();
   }
 
-  let closedSummary = $derived.by(() => {
-    let merged = 0;
-    let closed = 0;
-    const repos = new Set();
-    for (const pr of closedPrs) {
-      if (pr.state === "MERGED") merged++;
-      else closed++;
-      repos.add(pr.repo);
-    }
-    return { merged, closed, repos: repos.size };
-  });
 
   // state:closed / state:merged queries reach pr_index history, which only the server can merge — fetch (debounced) instead of filtering the open inbox locally
   let historyPrs = $state([]);
@@ -338,22 +327,6 @@
     return countMatches(prs, v.query, showArchived);
   }
 
-  let headCount = $derived.by(() => {
-    if (!filterQuery.trim()) return `${prs.length} open`;
-    if (wantsHistory(filterQuery)) return historyActive ? `${filteredPrs.length} found` : "searching…";
-    return `${filteredPrs.length}/${prs.length} open`;
-  });
-
-  let queueSummary = $derived.by(() => {
-    const counts = { ready: 0, yours: 0, waiting: 0 };
-    const repos = new Set();
-    for (const pr of filteredPrs) {
-      const group = classify(pr, viewerLogin).group;
-      if (group in counts) counts[group]++;
-      repos.add(pr.repo);
-    }
-    return { ...counts, repos: repos.size };
-  });
 
   const TRUNK_MIN_BASE_COUNT = 3;
 
@@ -801,49 +774,6 @@
       </span>
     </header>
 
-    <section class="queue-overview" aria-label="Review queue summary">
-      {#if view === "closed"}
-        <div class="queue-copy">
-          <span class="ui-eyebrow">Recently finished</span>
-          <h1>{closedLoaded ? `${closedPrs.length} done` : "loading…"}</h1>
-          <p>
-            {#if closedSummary.repos}
-              Newest merge or close first, across {closedSummary.repos} repositor{closedSummary.repos === 1 ? "y" : "ies"}.
-            {:else}
-              Pull requests you were part of land here once they merge or close.
-            {/if}
-          </p>
-        </div>
-        <div class="queue-metrics two" aria-label="Finished counts">
-          <div class="queue-metric merged">
-            <span>Merged</span>
-            <strong>{closedSummary.merged}</strong>
-          </div>
-          <div class="queue-metric closed">
-            <span>Closed</span>
-            <strong>{closedSummary.closed}</strong>
-          </div>
-        </div>
-      {:else}
-        <div class="queue-copy">
-          <h1>{headCount}</h1>
-        </div>
-        <div class="queue-metrics" aria-label="Queue counts">
-          <div class="queue-metric ready">
-            <span>Ready</span>
-            <strong>{queueSummary.ready}</strong>
-          </div>
-          <div class="queue-metric review">
-            <span>Your move</span>
-            <strong>{queueSummary.yours}</strong>
-          </div>
-          <div class="queue-metric wait">
-            <span>Waiting</span>
-            <strong>{queueSummary.waiting}</strong>
-          </div>
-        </div>
-      {/if}
-    </section>
 
     <div class="view-tabs" role="tablist" aria-label="List view">
       <button class="view-tab" role="tab" aria-selected={view === "open"} class:active={view === "open"} onclick={() => showView("open")}>
@@ -1614,70 +1544,6 @@
   .head-right {
     gap: 8px;
   }
-  .queue-overview {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 24px;
-    margin-bottom: 16px;
-    padding: 20px 22px;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-xs);
-  }
-  .queue-copy {
-    min-width: 0;
-  }
-  .queue-copy h1 {
-    margin: 3px 0 4px;
-    color: var(--text);
-    font-size: 28px;
-    font-weight: 650;
-    line-height: 1.08;
-    letter-spacing: -0.038em;
-  }
-  .queue-copy p {
-    margin: 0;
-    color: var(--text-dim);
-    font-size: 12px;
-    line-height: 1.45;
-  }
-  .queue-metrics {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(68px, 1fr));
-    gap: 8px;
-  }
-  .queue-metric {
-    min-width: 72px;
-    padding: 8px 10px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    background: color-mix(in srgb, var(--panel) 82%, transparent);
-  }
-  .queue-metric span {
-    display: block;
-    margin-bottom: 3px;
-    color: var(--text-faint);
-    font-size: 10.5px;
-    line-height: 1;
-  }
-  .queue-metric strong {
-    display: block;
-    color: var(--text);
-    font-size: 18px;
-    font-weight: 650;
-    letter-spacing: -0.025em;
-    line-height: 1;
-  }
-  .queue-metric.ready strong { color: var(--ready); }
-  .queue-metric.review strong { color: var(--review); }
-  .queue-metric.merged strong { color: var(--merged); }
-  .queue-metric.closed strong { color: var(--closed); }
-  .queue-metric.wait strong { color: var(--text-dim); }
-  .queue-metrics.two {
-    grid-template-columns: repeat(2, minmax(68px, 1fr));
-  }
   .view-tabs {
     display: flex;
     gap: 4px;
@@ -2024,14 +1890,6 @@
       padding-top: 16px;
       margin-top: -16px;
     }
-    .queue-overview {
-      grid-template-columns: 1fr;
-      gap: 16px;
-      padding: 18px;
-    }
-    .queue-metrics {
-      width: 100%;
-    }
     .queue-sidecar {
       grid-template-columns: 1fr;
     }
@@ -2068,51 +1926,6 @@
     font-weight: 500;
     line-height: 30px;
     letter-spacing: -0.025em;
-  }
-  .queue-overview {
-    gap: 32px;
-    margin: 0 0 18px;
-    padding: 18px 20px;
-    border: 0;
-    border-radius: var(--radius-lg);
-    background: var(--panel);
-    box-shadow: var(--shadow-surface);
-  }
-  .queue-copy h1 {
-    margin: 2px 0 3px;
-    font-size: 24px;
-    font-weight: 500;
-    line-height: 30px;
-    letter-spacing: -0.025em;
-  }
-  .queue-copy p {
-    color: var(--text-dim);
-    font-size: 14px;
-    line-height: 20px;
-  }
-  .queue-metrics,
-  .queue-metrics.two {
-    display: flex;
-    gap: 0;
-  }
-  .queue-metric {
-    min-width: 82px;
-    padding: 2px 16px;
-    border: 0;
-    border-left: 1px solid var(--border-soft);
-    border-radius: 0;
-    background: transparent;
-  }
-  .queue-metric span {
-    margin-bottom: 4px;
-    font-size: 12px;
-    line-height: 16px;
-  }
-  .queue-metric strong {
-    font-size: 16px;
-    font-weight: 600;
-    line-height: 20px;
-    letter-spacing: 0;
   }
   .view-tabs {
     display: inline-flex;
@@ -2356,13 +2169,6 @@
       top: -14px;
       margin-top: -14px;
       padding-top: 14px;
-    }
-    .queue-overview {
-      gap: 16px;
-      padding-inline: 0;
-    }
-    .queue-metric {
-      padding-inline: 12px;
     }
     .queue-sidecar {
       grid-template-columns: 1fr;

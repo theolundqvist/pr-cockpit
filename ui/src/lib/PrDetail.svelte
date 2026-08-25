@@ -2453,7 +2453,6 @@
         <div class="files-layout">
           <div class="files-toolbar">
             <div class="toolbar-left">
-              <span class="toolbar-label">Compare</span>
               <RangePicker
                 {commits}
                 {rangeKey}
