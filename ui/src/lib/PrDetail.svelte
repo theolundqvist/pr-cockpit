@@ -5680,6 +5680,7 @@
   .cols {
     grid-template-columns: minmax(0, 816px) minmax(240px, 264px);
     gap: 32px;
+    justify-content: center;
   }
   .right {
     gap: 0;
