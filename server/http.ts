@@ -1255,8 +1255,10 @@ async function handleActions(owner: string, repo: string, number: string, runtim
 async function handleActionGraphs(owner: string, repo: string, number: string, runtime: HttpRuntime): Promise<Response> {
   const context = cachedActionsContext(owner, repo, number);
   if (context instanceof Response) return context;
+  void runtime.activateActionsLease(context.repoName, context.num, context.headSha).catch((error) => {
+    console.error(`Actions cache refresh failed for ${context.repoName}#${context.num}:`, error);
+  });
   try {
-    await runtime.activateActionsLease(context.repoName, context.num, context.headSha);
     const workflows = await runtime.actionWorkflowGraphs(context.repoName, context.num, context.headSha);
     return json({ headSha: context.headSha, workflows });
   } catch (error) {

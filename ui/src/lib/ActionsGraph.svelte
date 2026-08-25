@@ -2,42 +2,28 @@
   import { durationText } from "./time.js";
 
   let { workflows, groups, statusIcon, onselect } = $props();
-  let selectedPath = $state("");
   let mode = $state("workflow");
-  $effect(() => {
-    if (workflows.some((workflow) => workflow.path === selectedPath)) return;
-    selectedPath = workflows.find((workflow) => !workflow.error)?.path ?? workflows[0]?.path ?? "";
-  });
-
-
-  let selectedWorkflow = $derived(
-    workflows.find((workflow) => workflow.path === selectedPath)
-      ?? workflows.find((workflow) => !workflow.error)
-      ?? workflows[0]
-      ?? null,
-  );
-
-  let runGroup = $derived.by(() => {
-    if (!selectedWorkflow) return null;
-    return groups.find((group) => group.run.workflowPath === selectedWorkflow.path)
-      ?? groups.find((group) => group.run.workflowName === selectedWorkflow.name)
-      ?? null;
-  });
 
   function normalizedName(value) {
     return value.toLowerCase().replaceAll("-", " ").replaceAll("_", " ").replace(/\s+/g, " ").trim();
   }
 
-  function matchingJobs(definition) {
+  function runGroupFor(workflow) {
+    return groups.find((group) => group.run.workflowPath === workflow.path)
+      ?? groups.find((group) => group.run.workflowName === workflow.name)
+      ?? null;
+  }
+
+  function matchingJobs(definition, workflow) {
     const names = [definition.name, definition.id].map(normalizedName);
-    return (runGroup?.jobs ?? []).filter((job) => {
+    return (runGroupFor(workflow)?.jobs ?? []).filter((job) => {
       const actual = normalizedName(job.name);
       return names.some((name) => actual === name || actual.startsWith(`${name} (`) || actual.startsWith(`${name} /`));
     });
   }
 
-  function stateFor(definition) {
-    const jobs = matchingJobs(definition);
+  function stateFor(definition, workflow) {
+    const jobs = matchingJobs(definition, workflow);
     if (jobs.some((job) => ["failure", "timed_out", "action_required", "startup_failure", "stale"].includes(job.conclusion))) {
       return { status: "completed", conclusion: "failure", jobs };
     }
@@ -49,6 +35,7 @@
     if (jobs.length > 0) return { status: "completed", conclusion: jobs[0].conclusion, jobs };
     return { status: "queued", conclusion: null, jobs };
   }
+
   function nodeMeta(definition, state) {
     if (state.jobs.length > 1) return `${state.jobs.length} matrix jobs`;
     const job = state.jobs[0];
@@ -59,9 +46,8 @@
     return definition.uses ? "Reusable workflow" : "Not started";
   }
 
-
-  function selectDefinition(definition) {
-    const state = stateFor(definition);
+  function selectDefinition(definition, workflow) {
+    const state = stateFor(definition, workflow);
     const job = state.jobs.find((item) => item.conclusion === "failure")
       ?? state.jobs.find((item) => item.status !== "completed")
       ?? state.jobs[0];
@@ -75,28 +61,30 @@
     return parents.length === 0 ? 0 : Math.max(...parents.map((parent) => jobStage(parent, byId, next))) + 1;
   }
 
-  let graph = $derived.by(() => {
-    const jobs = selectedWorkflow?.jobs ?? [];
-    const byId = new Map(jobs.map((job) => [job.id, job]));
+  function graphFor(workflow) {
+    const byId = new Map(workflow.jobs.map((job) => [job.id, job]));
     const stageCounts = new Map();
-    const nodes = jobs.map((job) => {
+    const nodes = workflow.jobs.map((job) => {
       const stage = jobStage(job, byId);
       const row = stageCounts.get(stage) ?? 0;
       stageCounts.set(stage, row + 1);
-      return { job, stage, x: 24 + stage * 292, y: 58 + row * 98 };
+      return { job, stage, x: 24 + stage * 292, y: 24 + row * 98 };
     });
     const positions = new Map(nodes.map((node) => [node.job.id, node]));
-    const edges = nodes.flatMap((node) => node.job.needs.map((id) => ({ from: positions.get(id), to: node })).filter((edge) => edge.from));
+    const edges = nodes.flatMap((node) =>
+      node.job.needs.map((id) => ({ from: positions.get(id), to: node })).filter((edge) => edge.from)
+    );
     return {
       nodes,
       edges,
-      width: Math.max(720, (Math.max(0, ...nodes.map((node) => node.stage)) + 1) * 292 + 24),
-      height: Math.max(300, Math.max(0, ...nodes.map((node) => node.y)) + 110),
+      width: Math.max(316, (Math.max(0, ...nodes.map((node) => node.stage)) + 1) * 292 + 24),
+      height: Math.max(116, Math.max(0, ...nodes.map((node) => node.y)) + 92),
     };
-  });
+  }
 
-  let timeline = $derived.by(() => {
-    const jobs = (runGroup?.jobs ?? []).filter((job) => job.startedAt);
+  function timelineFor(workflow) {
+    const jobs = (runGroupFor(workflow)?.jobs ?? []).filter((job) => job.startedAt);
+    if (jobs.length === 0) return [];
     const starts = jobs.map((job) => Date.parse(job.startedAt));
     const ends = jobs.map((job) => Date.parse(job.completedAt ?? new Date().toISOString()));
     const start = Math.min(...starts);
@@ -108,82 +96,95 @@
         width: Math.max(1.5, ((Date.parse(job.completedAt ?? new Date().toISOString()) - Date.parse(job.startedAt)) / (end - start)) * 100),
       }))
       .sort((left, right) => Date.parse(left.job.startedAt) - Date.parse(right.job.startedAt));
-  });
+  }
 </script>
 
 <div class="graph-shell">
   <header class="graph-toolbar">
-    <div class="workflow-picker">
-      <label for="workflow-graph">Workflow</label>
-      <select id="workflow-graph" bind:value={selectedPath}>
-        {#each workflows as workflow}
-          <option value={workflow.path}>{workflow.name || workflow.path}</option>
-        {/each}
-      </select>
-    </div>
     <div class="mode-picker" aria-label="Overview layout">
       <button class:active={mode === "workflow"} onclick={() => mode = "workflow"}>Workflow</button>
       <button class:active={mode === "timeline"} onclick={() => mode = "timeline"}>Timeline</button>
     </div>
-    {#if runGroup}
-      <span class="run-summary">
-        {runGroup.jobs.filter((job) => job.conclusion === "success").length} passed
-        · {runGroup.jobs.filter((job) => job.conclusion === "failure").length} failed
-        · {runGroup.jobs.filter((job) => job.status !== "completed").length} active
-      </span>
-    {/if}
   </header>
 
-  {#if !selectedWorkflow}
+  {#if workflows.length === 0}
     <div class="graph-empty">No workflow definitions found for this head.</div>
-  {:else if selectedWorkflow.error}
-    <div class="graph-empty error">{selectedWorkflow.error}</div>
-  {:else if mode === "workflow"}
-    <div class="workflow-canvas" role="group" aria-label={`${selectedWorkflow.name || "Workflow"} dependency graph`}>
-      <div class="canvas-inner" style={`width:${graph.width}px;height:${graph.height}px`}>
-        <svg class="edges" width={graph.width} height={graph.height} aria-hidden="true">
-          <defs>
-            <marker id="workflow-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
-              <path d="M 0 0 L 10 5 L 0 10 z"></path>
-            </marker>
-          </defs>
-          {#each graph.edges as edge}
-            <path d={`M ${edge.from.x + 236} ${edge.from.y + 34} C ${edge.from.x + 264} ${edge.from.y + 34}, ${edge.to.x - 28} ${edge.to.y + 34}, ${edge.to.x} ${edge.to.y + 34}`}></path>
-          {/each}
-        </svg>
-        {#each graph.nodes as node (node.job.id)}
-          {@const state = stateFor(node.job)}
-          <button
-            class="graph-node"
-            class:clickable={state.jobs.length > 0}
-            style={`left:${node.x}px;top:${node.y}px`}
-            onclick={() => selectDefinition(node.job)}
-            disabled={state.jobs.length === 0}
-          >
-            {@render statusIcon(state.status, state.conclusion)}
-            <span class="node-copy">
-              <strong>{node.job.name}</strong>
-              <span>{nodeMeta(node.job, state)}</span>
-            </span>
-          </button>
-        {/each}
-      </div>
-    </div>
-  {:else if timeline.length === 0}
-    <div class="graph-empty">No job timing is available yet.</div>
   {:else}
-    <div class="timeline">
-      {#each timeline as item (item.job.id)}
-        <button class="timeline-row" onclick={() => onselect(item.job)}>
-          <span class="timeline-label">
-            {@render statusIcon(item.job.status, item.job.conclusion)}
-            <span>{item.job.name}</span>
-          </span>
-          <span class="track">
-            <span class="bar" class:failed={item.job.conclusion === "failure"} style={`left:${item.left}%;width:${item.width}%`}></span>
-          </span>
-          <span class="duration">{item.job.completedAt ? durationText(item.job.startedAt, item.job.completedAt) : "running"}</span>
-        </button>
+    <div class="workflow-list">
+      {#each workflows as workflow, index (workflow.path)}
+        {@const runGroup = runGroupFor(workflow)}
+        {@const graph = graphFor(workflow)}
+        {@const timeline = timelineFor(workflow)}
+        <section class="workflow-panel">
+          <header class="workflow-heading">
+            <strong>{workflow.name || workflow.path}</strong>
+            {#if runGroup}
+              <span class="run-summary">
+                {runGroup.jobs.filter((job) => job.conclusion === "success").length} passed
+                · {runGroup.jobs.filter((job) => job.conclusion === "failure").length} failed
+                · {runGroup.jobs.filter((job) => job.status !== "completed").length} active
+              </span>
+            {/if}
+          </header>
+
+          {#if workflow.error}
+            <div class="graph-empty error">{workflow.error}</div>
+          {:else if mode === "workflow" && graph.nodes.length === 0}
+            <div class="graph-empty">No jobs are defined in this workflow.</div>
+          {:else if mode === "workflow"}
+            <div class="workflow-canvas" role="group" aria-label={`${workflow.name || "Workflow"} dependency graph`}>
+              <div class="canvas-inner" style={`width:${graph.width}px;height:${graph.height}px`}>
+                <svg class="edges" width={graph.width} height={graph.height} aria-hidden="true">
+                  <defs>
+                    <marker id={`workflow-arrow-${index}`} viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+                      <path d="M 0 0 L 10 5 L 0 10 z"></path>
+                    </marker>
+                  </defs>
+                  {#each graph.edges as edge}
+                    <path
+                      d={`M ${edge.from.x + 236} ${edge.from.y + 34} C ${edge.from.x + 264} ${edge.from.y + 34}, ${edge.to.x - 28} ${edge.to.y + 34}, ${edge.to.x} ${edge.to.y + 34}`}
+                      marker-end={`url(#workflow-arrow-${index})`}
+                    ></path>
+                  {/each}
+                </svg>
+                {#each graph.nodes as node (node.job.id)}
+                  {@const state = stateFor(node.job, workflow)}
+                  <button
+                    class="graph-node"
+                    class:clickable={state.jobs.length > 0}
+                    style={`left:${node.x}px;top:${node.y}px`}
+                    onclick={() => selectDefinition(node.job, workflow)}
+                    disabled={state.jobs.length === 0}
+                    title={node.job.name}
+                  >
+                    {@render statusIcon(state.status, state.conclusion)}
+                    <span class="node-copy">
+                      <strong>{node.job.name}</strong>
+                      <span>{nodeMeta(node.job, state)}</span>
+                    </span>
+                  </button>
+                {/each}
+              </div>
+            </div>
+          {:else if timeline.length === 0}
+            <div class="graph-empty">No job timing is available yet.</div>
+          {:else}
+            <div class="timeline">
+              {#each timeline as item (item.job.id)}
+                <button class="timeline-row" onclick={() => onselect(item.job)}>
+                  <span class="timeline-label">
+                    {@render statusIcon(item.job.status, item.job.conclusion)}
+                    <span>{item.job.name}</span>
+                  </span>
+                  <span class="track">
+                    <span class="bar" class:failed={item.job.conclusion === "failure"} style={`left:${item.left}%;width:${item.width}%`}></span>
+                  </span>
+                  <span class="duration">{item.job.completedAt ? durationText(item.job.startedAt, item.job.completedAt) : "running"}</span>
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </section>
       {/each}
     </div>
   {/if}
@@ -199,30 +200,16 @@
   }
   .graph-toolbar {
     display: flex;
-    min-height: 48px;
+    min-height: 42px;
     align-items: center;
     gap: 16px;
     padding: 0 14px;
     border-bottom: 1px solid var(--border);
     background: var(--surface);
   }
-  .workflow-picker {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  label,
   .run-summary {
     color: var(--text-faint);
     font-size: 11px;
-  }
-  select {
-    padding: 5px 24px 5px 8px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    color: var(--text);
-    background: var(--panel);
-    font: 500 12px var(--sans);
   }
   .mode-picker {
     display: flex;
@@ -248,14 +235,37 @@
   .run-summary {
     margin-left: auto;
   }
+  .workflow-list {
+    display: flex;
+    flex-direction: column;
+  }
+  .workflow-panel + .workflow-panel {
+    border-top: 1px solid var(--border);
+  }
+  .workflow-heading {
+    display: flex;
+    min-height: 42px;
+    align-items: center;
+    gap: 12px;
+    padding: 0 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .workflow-heading strong {
+    overflow: hidden;
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .workflow-canvas {
-    min-height: 420px;
     overflow: auto;
     background-image: radial-gradient(circle, var(--border) 0.75px, transparent 0.75px);
     background-size: 18px 18px;
   }
   .canvas-inner {
     position: relative;
+    min-width: 100%;
   }
   .edges {
     position: absolute;
@@ -266,7 +276,6 @@
     fill: none;
     stroke: var(--border-strong, var(--border));
     stroke-width: 1.5;
-    marker-end: url(#workflow-arrow);
   }
   .edges marker path {
     fill: var(--text-faint);
@@ -374,7 +383,7 @@
   }
   .graph-empty {
     display: flex;
-    min-height: 420px;
+    min-height: 116px;
     align-items: center;
     justify-content: center;
     color: var(--text-faint);
@@ -385,6 +394,10 @@
   }
   @media (max-width: 860px) {
     .graph-toolbar {
+      flex-wrap: wrap;
+      padding-block: 8px;
+    }
+    .workflow-heading {
       flex-wrap: wrap;
       padding-block: 8px;
     }

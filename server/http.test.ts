@@ -1470,16 +1470,23 @@ describe("Actions viewer API", () => {
       expect(logResponse.status).toBe(200);
       expect(await logResponse.json()).toMatchObject({ body: "complete log", state: "ready", truncated: false, job: { id: 4401, name: "build" } });
 
+      let finishActivation = () => {};
+      const activation = new Promise<void>((resolve) => {
+        finishActivation = resolve;
+      });
       const graphHandler = buildFetchHandler(4820, {
-        activateActionsLease: async () => {},
-        actionWorkflowGraphs: async () => [{
-          path: ".github/workflows/ci.yml",
-          name: "CI",
-          jobs: [
-            { id: "build", name: "Build", needs: [], uses: null },
-            { id: "test", name: "Test", needs: ["build"], uses: null },
-          ],
-        }],
+        activateActionsLease: () => activation,
+        actionWorkflowGraphs: async () => {
+          finishActivation();
+          return [{
+            path: ".github/workflows/ci.yml",
+            name: "CI",
+            jobs: [
+              { id: "build", name: "Build", needs: [], uses: null },
+              { id: "test", name: "Test", needs: ["build"], uses: null },
+            ],
+          }];
+        },
       });
       const graphResponse = await graphHandler(new Request(`http://127.0.0.1:4820/api/pr/http-actions/viewer/${number}/actions/graph`));
       expect(graphResponse.status).toBe(200);
