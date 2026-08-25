@@ -755,7 +755,7 @@ const scenarios = [
   },
   onboardingStep("onboarding-step-1-connect", 1, "Successful GitHub authentication step."),
   onboardingStep("onboarding-step-2-repositories", 2, "Successful repository selection step."),
-  onboardingStep("onboarding-step-3-live-updates", 3, "Hosted GitHub App installation guidance."),
+  onboardingStep("onboarding-step-3-live-updates", 3, "Minimal hosted relay setup."),
   onboardingStep("onboarding-step-4-ready", 4, "Successful initial inbox sync step."),
   {
     name: "quota-exhausted",
@@ -830,10 +830,10 @@ function onboardingStep(name, step, description) {
       await page.getByText(`Step ${step} of 4`, { exact: true }).waitFor();
       if (step === 1) await page.getByText("Connected as", { exact: false }).waitFor();
       if (step === 3) {
-        await page.getByRole("button", { name: "Install GitHub App", exact: true }).waitFor();
-        await page.getByRole("button", { name: "Use polling instead", exact: true }).waitFor();
+        await page.getByRole("button", { name: "Install on GitHub", exact: true }).waitFor();
+        await page.getByRole("button", { name: "Use polling", exact: true }).waitFor();
         await page.getByRole("link", { name: "Source", exact: true }).waitFor();
-        await page.getByRole("link", { name: "Self-hosting guide", exact: true }).waitFor();
+        await page.getByRole("link", { name: "Self-host", exact: true }).waitFor();
       }
       if (step === 4) await page.getByText("Your inbox is ready.", { exact: true }).waitFor();
     },
@@ -877,7 +877,7 @@ async function advanceOnboarding(page, targetStep) {
   await page.locator(".repo-row input").first().check();
   await page.getByRole("button", { name: "Continue with 1", exact: true }).click();
   if (targetStep === 3) return;
-  await page.getByRole("button", { name: "Use polling instead", exact: true }).click();
+  await page.getByRole("button", { name: "Use polling", exact: true }).click();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await page.getByText("Your inbox is ready.", { exact: true }).waitFor();
 }

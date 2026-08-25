@@ -236,8 +236,7 @@
 
     {#if step === 1}
       <span class="eyebrow">Step 1 of 4</span>
-      <h1 class="onb-title">Connect GitHub</h1>
-      <p class="onb-sub">PR Cockpit uses the GitHub CLI already installed on your computer.</p>
+      <h1 class="onb-title">Connect GitHub.</h1>
 
       <div class="status-card" aria-live="polite">
         {#if authLoading}
@@ -260,8 +259,7 @@
       </div>
     {:else if step === 2}
       <span class="eyebrow">Step 2 of 4</span>
-      <h1 class="onb-title">Choose repositories</h1>
-      <p class="onb-sub">Pick the repositories whose pull requests should land in your inbox.</p>
+      <h1 class="onb-title">Choose repositories.</h1>
 
       {#if repoError}
         <div class="notice failure-notice" role="alert">
@@ -328,68 +326,55 @@
       </div>
     {:else if step === 3}
       <span class="eyebrow">Step 3 of 4</span>
-      <h1 class="onb-title">Keep your inbox current</h1>
-      <p class="onb-sub">Install the free GitHub App for live updates, or continue with periodic polling.</p>
+      <h1 class="onb-title">Always up to date.</h1>
 
-      <div class="relay-card">
-        <div class="relay-heading">
-          <strong>Hosted relay</strong>
-          <span>Free</span>
-        </div>
+      {#if !coverageConfirmed && !skippedLive}
+        <p class="relay-copy">Install the free GitHub App, choose repositories, then return.</p>
+      {/if}
 
-        {#if !coverageConfirmed && !skippedLive}
-          <ol class="relay-steps">
-            <li>Open GitHub and choose your account.</li>
-            <li>Grant access to the repositories selected here.</li>
-            <li>Return to PR Cockpit. Live updates are confirmed automatically.</li>
-          </ol>
-        {/if}
-
+      {#if coverageState !== "ready" && coverageState !== "idle"}
         <div class="status-card coverage-card" aria-live="polite">
           {#if coverageState === "checking"}
             <span class="spinner" aria-hidden="true"></span>
-            <span>Checking coverage for {chosen.length} {chosen.length === 1 ? "repository" : "repositories"}…</span>
+            <span>Checking {chosen.length} {chosen.length === 1 ? "repository" : "repositories"}…</span>
           {:else if coverageConfirmed}
             <span class="status-mark success" aria-hidden="true">✓</span>
-            <span>Live updates confirmed for every selected repository.</span>
+            <span>Live updates are on.</span>
           {:else if coverageState === "polling"}
             <span class="spinner" aria-hidden="true"></span>
-            <span>Waiting for the GitHub App installation to cover every selected repository…</span>
+            <span>Waiting for GitHub…</span>
           {:else if skippedLive}
             <span class="status-mark" aria-hidden="true">→</span>
-            <span>Polling selected. PR Cockpit will refresh from GitHub every few minutes.</span>
+            <span>Polling every few minutes.</span>
           {:else if coverageError}
             <span class="status-mark failure" aria-hidden="true">!</span>
             <span>{coverageError}</span>
-          {:else}
-            <span class="status-mark" aria-hidden="true">→</span>
-            <span>The GitHub App still needs access to one or more selected repositories.</span>
           {/if}
         </div>
+      {/if}
 
-        {#if !coverageConfirmed && !skippedLive}
-          <div class="live-actions">
-            {#if coverage?.installUrl}
-              <button class="primary" type="button" onclick={installApp}>Install GitHub App</button>
-            {/if}
-            {#if coverageState === "failed"}
-              <button class="secondary" type="button" onclick={checkCoverage}>Retry check</button>
-            {/if}
-          </div>
-        {/if}
-      </div>
+      {#if !coverageConfirmed && !skippedLive}
+        <div class="live-actions">
+          {#if coverage?.installUrl}
+            <button class="primary" type="button" onclick={installApp}>Install on GitHub</button>
+          {/if}
+          {#if coverageState === "failed"}
+            <button class="secondary" type="button" onclick={checkCoverage}>Retry check</button>
+          {/if}
+        </div>
+      {/if}
 
-      <p class="relay-disclosure">
-        The hosted relay is an open-source Cloudflare Worker. It stores compact event markers and workflow statuses—not PR bodies, comments, diffs, or logs. Your GitHub token verifies repository access and is never stored.
+      <p class="relay-meta">
+        Open-source Cloudflare relay. Stores event markers only—no PR data or logs.
         <a href="https://github.com/theolundqvist/pr-cockpit/tree/main/relay" target="_blank" rel="noreferrer">Source</a>
         <span aria-hidden="true">·</span>
-        <a href="https://github.com/theolundqvist/pr-cockpit/blob/main/docs/self-host-relay.md" target="_blank" rel="noreferrer">Self-hosting guide</a>
+        <a href="https://github.com/theolundqvist/pr-cockpit/blob/main/docs/self-host-relay.md" target="_blank" rel="noreferrer">Self-host</a>
       </p>
 
       <div class="polling-option">
-        <span>Without a relay, PR Cockpit still works by polling GitHub every few minutes, but the inbox is not guaranteed to be current.</span>
+        <span>No relay: polling may be stale.</span>
         {#if !coverageConfirmed && !skippedLive}
-          <button class="link-button" type="button" onclick={skipLiveUpdates}>Use polling instead</button>
+          <button class="link-button" type="button" onclick={skipLiveUpdates}>Use polling</button>
         {/if}
       </div>
 
@@ -399,8 +384,7 @@
       </div>
     {:else}
       <span class="eyebrow">Step 4 of 4</span>
-      <h1 class="onb-title">Build your inbox</h1>
-      <p class="onb-sub">Your settings are saved before PR Cockpit runs the first GitHub sync.</p>
+      <h1 class="onb-title">Build your inbox.</h1>
 
       <div class="sync-list" aria-live="polite">
         <div class:complete={syncState !== "saving" && syncState !== "idle"}>
@@ -482,18 +466,12 @@
     text-transform: none;
   }
   .onb-title {
-    margin: 0 0 8px;
+    margin: 0 0 28px;
     color: var(--text);
-    font-size: 24px;
-    font-weight: 500;
-    line-height: 30px;
-    letter-spacing: -0.025em;
-  }
-  .onb-sub {
-    margin: 0 0 24px;
-    color: var(--text-dim);
-    font-size: 14px;
-    line-height: 20px;
+    font-size: 32px;
+    font-weight: 620;
+    line-height: 34px;
+    letter-spacing: -0.048em;
   }
   .status-card,
   .notice {
@@ -656,39 +634,15 @@
     color: var(--fail);
     font-size: 11.5px;
   }
-  .relay-card {
-    padding: 16px;
-    border-radius: var(--radius-md);
-    background: var(--surface);
-  }
-  .relay-heading {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 12px;
-    color: var(--text);
-    font-size: 13px;
-  }
-  .relay-heading span {
-    padding: 2px 7px;
-    border-radius: 999px;
-    background: var(--ready-bg);
-    color: var(--ready);
-    font-size: 10px;
-    font-weight: 600;
-    text-transform: uppercase;
-  }
-  .relay-steps {
-    display: grid;
-    gap: 5px;
-    margin: 0 0 14px;
-    padding-left: 22px;
+  .relay-copy {
+    margin: 0;
     color: var(--text-dim);
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1.45;
   }
   .coverage-card {
     min-height: 44px;
+    margin-top: 16px;
     padding: 0;
     background: transparent;
   }
@@ -699,20 +653,19 @@
     gap: 10px;
     margin-top: 14px;
   }
-  .relay-disclosure {
-    margin: 12px 0 0;
+  .relay-meta {
+    margin-top: 22px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
     color: var(--text-faint);
     font-size: 11px;
     line-height: 1.5;
   }
-  .relay-disclosure a {
+  .relay-meta a {
     color: var(--link);
     text-decoration: none;
   }
-  .relay-disclosure a:first-of-type {
-    margin-left: 4px;
-  }
-  .relay-disclosure a:hover {
+  .relay-meta a:hover {
     text-decoration: underline;
   }
   .polling-option {
@@ -720,7 +673,7 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: 16px;
-    margin-top: 12px;
+    margin-top: 16px;
     color: var(--text-dim);
     font-size: 11px;
     line-height: 1.45;
