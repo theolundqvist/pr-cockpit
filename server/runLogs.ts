@@ -190,11 +190,12 @@ function storeJob(repo: string, job: CompactJob): boolean {
   });
 }
 
+function jobProducesLog(job: { status: string; conclusion: string | null }): boolean {
+  return job.status === "completed" && job.conclusion !== "skipped";
+}
+
 async function fetchLogs(repo: string, jobs: CompactJob[], fetchers: ActionsFetchers, background: boolean): Promise<boolean> {
-  const wanted = jobs.filter((job) =>
-    job.status === "completed" && job.conclusion !== null &&
-    LOG_WORTHY_CONCLUSION.has(job.conclusion) && getRunJobLog(repo, job.id) === null
-  );
+  const wanted = jobs.filter((job) => jobProducesLog(job) && getRunJobLog(repo, job.id) === null);
   if (wanted.length === 0) return true;
   if (background && (await fetchers.restRemaining()) - wanted.length < REST_BACKGROUND_RESERVE) {
     for (const job of wanted) saveRunJobLogError(repo, job.id, job.attempt, "log not fetched: REST quota reserved for actions");
@@ -367,6 +368,7 @@ function tail(text: string): string {
   return firstBreak === -1 ? value : value.slice(firstBreak + 1);
 }
 export interface ActionJobLog extends CachedJobLog {
+  state: "pending" | "not-produced" | "ready";
   truncated: boolean;
 }
 
@@ -379,7 +381,8 @@ export async function actionJobLog(
 ): Promise<ActionJobLog | null> {
   let job = listRunJobs(repo, headSha).find((candidate) => candidate.job_id === jobId);
   if (!job) return null;
-  if (job.status !== "completed") return { job, body: null, truncated: false };
+  if (job.status !== "completed") return { job, body: null, state: "pending", truncated: false };
+  if (!jobProducesLog(job)) return { job, body: null, state: "not-produced", truncated: false };
 
   if (getRunJobLog(repo, jobId) === null) {
     const key = `${repo}:${jobId}`;
@@ -404,10 +407,11 @@ export async function actionJobLog(
   }
 
   const compressed = getRunJobLog(repo, jobId);
-  if (!compressed) return { job, body: null, truncated: false };
+  if (!compressed) return { job, body: null, state: "ready", truncated: false };
   const body = (await gunzipAsync(compressed)).toString();
   return {
     job,
+    state: "ready",
     body: full ? body : tail(body),
     truncated: !full && Buffer.byteLength(body) > JOB_LOG_TAIL_BYTES,
   };

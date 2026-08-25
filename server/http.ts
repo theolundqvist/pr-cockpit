@@ -1260,6 +1260,7 @@ async function handleActionLog(
     return json({
       job: serializeActionJob(result.job),
       body: result.body,
+      state: result.state,
       truncated: result.truncated,
     });
   } catch (error) {

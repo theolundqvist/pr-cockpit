@@ -141,15 +141,18 @@ test("concurrent activation bootstraps once and terminal attempts reconcile once
     const tail = cached[0].body;
     const full = (await actions.cachedJobLogs("acme/app", head, undefined, true))[0].body;
     console.log(JSON.stringify({
-      first, after: calls, cachedJobs: cached.map(({ job }) => job.job_id).sort((a, b) => a - b), bytes: dbm.db.query("SELECT log_bytes,log_truncated FROM run_jobs WHERE job_id=110").get(),
+      first, after: calls, cachedJobs: cached.map(({ job }) => job.job_id).sort((a, b) => a - b),
+      successfulStored: dbm.db.query("SELECT log_gz IS NOT NULL AS stored FROM run_jobs WHERE job_id=111").get().stored,
+      bytes: dbm.db.query("SELECT log_bytes,log_truncated FROM run_jobs WHERE job_id=110").get(),
       tailBytes: Buffer.byteLength(tail), fullBytes: Buffer.byteLength(full),
       cleaned: !full.includes("2026-08-24T10:00:00.000Z") && !full.includes("\\u001b[31m"),
       reconciled: dbm.db.query("SELECT reconciled_at IS NOT NULL AS done FROM workflow_runs WHERE run_id=11").get().done,
     }));
   `);
-  expect(result.first).toEqual({ runs: 1, jobs: [[10, null], [11, 1]], logs: [110, 113, 114] });
+  expect(result.first).toEqual({ runs: 1, jobs: [[10, null], [11, 1]], logs: [110, 111, 113, 114] });
   expect(result.after).toEqual(result.first);
   expect(result.cachedJobs).toEqual([110, 113, 114]);
+  expect(result.successfulStored).toBe(1);
   expect(result.bytes.log_truncated).toBe(0);
   expect(result.tailBytes).toBeLessThanOrEqual(262_144);
   expect(result.fullBytes).toBe(result.bytes.log_bytes);
@@ -355,6 +358,7 @@ test("a selected successful job fetches its full log once and serves a bounded t
     ]);
     const full = await actions.actionJobLog("acme/app", head, 120, true, fetchers);
     console.log(JSON.stringify({
+      state: first.state,
       fetches,
       firstBytes: Buffer.byteLength(first.body),
       duplicateBody: duplicate.body === first.body,
@@ -365,10 +369,34 @@ test("a selected successful job fetches its full log once and serves a bounded t
     }));
   `);
   expect(result.fetches).toBe(1);
+  expect(result.state).toBe("ready");
   expect(result.firstBytes).toBeLessThanOrEqual(262_144);
   expect(result.duplicateBody).toBe(true);
   expect(result.truncated).toBe(true);
   expect(result.fullBytes).toBeGreaterThan(result.firstBytes);
   expect(result.cleaned).toBe(true);
   expect(result.stored).toEqual({ stored: 1, log_error: null });
+});
+
+test("a skipped job reports that no log was produced without fetching GitHub", async () => {
+  const result = await runScenario("pr-cockpit-actions-skipped-log-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    dbm.upsertRunJob({
+      repo: "acme/app", job_id: 121, run_id: 12, run_attempt: 1, head_sha: head, head_branch: "feature",
+      workflow_name: "CI", name: "skipped", status: "completed", conclusion: "skipped",
+      started_at: null, completed_at: "2026-08-24T10:02:00Z", html_url: null, runner_name: null,
+      runner_group_name: null, labels_json: "[]", failed_step: null,
+    });
+    let fetches = 0;
+    const log = await actions.actionJobLog("acme/app", head, 121, false, {
+      fetchWorkflowRuns: async () => [],
+      fetchRunJobs: async () => [],
+      fetchJobLog: async () => { fetches++; return ""; },
+      restRemaining: async () => 5000,
+    });
+    console.log(JSON.stringify({ fetches, state: log.state, body: log.body }));
+  `);
+  expect(result).toEqual({ fetches: 0, state: "not-produced", body: null });
 });

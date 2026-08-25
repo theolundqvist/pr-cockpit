@@ -150,6 +150,21 @@
   }
 </script>
 
+{#snippet statusIcon(status, conclusion)}
+  {@const tone = stateTone(status, conclusion)}
+  <span class="status-icon {tone}" aria-hidden="true">
+    {#if tone === "ready"}
+      <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="7"></circle><path d="m4.6 8.1 2.2 2.2 4.7-4.8"></path></svg>
+    {:else if tone === "fail"}
+      <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="7"></circle><path d="m5.4 5.4 5.2 5.2m0-5.2-5.2 5.2"></path></svg>
+    {:else if tone === "wait"}
+      <svg class="status-spinner" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"></circle></svg>
+    {:else}
+      <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5"></circle><path d="M5.5 8h5"></path></svg>
+    {/if}
+  </span>
+{/snippet}
+
 <div class="actions-layout">
   <aside class="workflow-list" aria-label="Workflow runs">
     {#if loading && !snapshot}
@@ -165,7 +180,7 @@
       {#each groups as group (`${group.run.id}:${group.run.attempt}`)}
         <section class="workflow-group">
           <header class="workflow-head">
-            <span class="status-dot {stateTone(group.run.status, group.run.conclusion)}" aria-hidden="true"></span>
+            {@render statusIcon(group.run.status, group.run.conclusion)}
             <span class="workflow-name">{group.run.workflowName || "Workflow"}</span>
             {#if group.run.attempt > 1}<span class="attempt">attempt {group.run.attempt}</span>{/if}
             {#if group.run.eventAt}<span class="run-time">{relativeTime(group.run.eventAt)}</span>{/if}
@@ -173,7 +188,7 @@
           <div class="jobs">
             {#each group.jobs as job (job.id)}
               <button class="job-row" class:active={selectedJobId === job.id} onclick={() => selectJob(job)}>
-                <span class="status-dot {stateTone(job.status, job.conclusion)}" aria-hidden="true"></span>
+                {@render statusIcon(job.status, job.conclusion)}
                 <span class="job-copy">
                   <span class="job-name">{job.name}</span>
                   <span class="job-meta">
@@ -198,7 +213,7 @@
     {:else}
       <header class="log-head">
         <div class="log-title-row">
-          <span class="status-dot {stateTone(selectedJob.status, selectedJob.conclusion)}" aria-hidden="true"></span>
+          {@render statusIcon(selectedJob.status, selectedJob.conclusion)}
           <h2>{selectedJob.name}</h2>
           <span class="status-label {stateTone(selectedJob.status, selectedJob.conclusion)}">{stateLabel(selectedJob.conclusion ?? selectedJob.status)}</span>
         </div>
@@ -218,6 +233,8 @@
           <span>Couldn’t load this log.</span>
           <button class="link" onclick={retryLog}>Retry</button>
         </div>
+      {:else if selectedLog?.state === "not-produced"}
+        <div class="empty log-empty">GitHub skipped this job, so it produced no log.</div>
       {:else if selectedLog}
         <pre class="action-log mono">{selectedLog.body || "This job produced no log output."}</pre>
         {#if selectedLog.truncated}
@@ -296,9 +313,8 @@
     padding: 5px;
   }
   .job-row {
-    display: grid;
-    grid-template-columns: 10px minmax(0, 1fr);
-    gap: 8px;
+    grid-template-columns: 18px minmax(0, 1fr);
+    gap: 7px;
     width: 100%;
     padding: 7px 8px;
     border: 1px solid transparent;
@@ -340,30 +356,60 @@
     color: var(--fail);
     font-size: 11px;
   }
-  .status-dot {
-    display: inline-block;
+  .status-icon {
+    display: inline-flex;
+    width: 16px;
+    height: 16px;
+    margin-top: 1px;
     flex: none;
-    width: 8px;
-    height: 8px;
-    margin-top: 3px;
-    border-radius: 50%;
-    background: var(--text-faint);
+    align-items: center;
+    justify-content: center;
+    color: var(--text-faint);
   }
-  .workflow-head .status-dot,
-  .log-title-row .status-dot {
+  .workflow-head .status-icon,
+  .log-title-row .status-icon {
     margin-top: 0;
   }
-  .status-dot.ready {
-    background: var(--ready);
+  .status-icon.ready {
+    color: var(--ready);
   }
-  .status-dot.fail {
-    background: var(--fail);
+  .status-icon.fail {
+    color: var(--fail);
   }
-  .status-dot.wait {
-    background: var(--review);
+  .status-icon.wait {
+    color: var(--review);
   }
-  .status-dot.neutral {
-    background: var(--text-faint);
+  .status-icon svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.5;
+  }
+  .status-icon.ready circle,
+  .status-icon.fail circle {
+    fill: currentColor;
+    stroke: none;
+  }
+  .status-icon.ready path,
+  .status-icon.fail path {
+    stroke: var(--native-on-accent);
+    stroke-width: 1.5;
+  }
+  .status-spinner circle {
+    stroke-dasharray: 24 14;
+    transform-origin: center;
+    animation: status-spin 0.9s linear infinite;
+  }
+  @keyframes status-spin {
+    to { transform: rotate(360deg); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .status-spinner circle {
+      animation: none;
+    }
   }
   .log-pane {
     min-width: 0;

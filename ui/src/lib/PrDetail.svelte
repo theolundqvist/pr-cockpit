@@ -5174,9 +5174,6 @@
     border-bottom-color: var(--border);
     box-shadow: var(--shadow-xs);
   }
-  .detail-frame.conversation-tab > .detail {
-    max-width: 1120px;
-  }
   .cols {
     grid-template-columns: minmax(0, 1fr) minmax(248px, 278px);
     gap: 26px;
