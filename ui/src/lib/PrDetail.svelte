@@ -5678,7 +5678,7 @@
     }
   }
   .cols {
-    grid-template-columns: minmax(0, 1fr) minmax(240px, 264px);
+    grid-template-columns: minmax(0, 816px) minmax(240px, 264px);
     gap: 32px;
   }
   .right {
@@ -5691,9 +5691,6 @@
     border-radius: var(--radius-lg);
     background: color-mix(in srgb, var(--panel) 88%, var(--surface));
     box-shadow: var(--shadow-surface);
-  }
-  .body-card :global(.md) {
-    max-width: none;
   }
   .side-block {
     margin: 0 0 12px;
