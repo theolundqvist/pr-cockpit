@@ -1422,6 +1422,17 @@
     }
     return [...latest.entries()].map(([login, v]) => ({ login, state: v.state, avatarUrl: v.avatarUrl }));
   });
+  let approvedReviewers = $derived(reviewers.filter((reviewer) => reviewer.state === "APPROVED"));
+  let primaryApprover = $derived(approvedReviewers[0] ?? null);
+
+  function activateApprovalMarker() {
+    if (canReview) {
+      if (tab !== "conversation" && !goToTab("conversation")) return;
+      requestAnimationFrame(() => focusWhenReady("#verdict-control"));
+      return;
+    }
+    pickerMode = "review";
+  }
 
   let greptileMeta = $derived(pr ? greptileReviewMeta(pr) : { confidence: null, reviewedSha: null, unresolvedCount: 0 });
   let greptileState = $derived(pr ? greptileStatus(greptileMeta, pr.headRefOid) : null);
@@ -2248,7 +2259,7 @@
               {/if}
               <span class="sep">·</span>
               <span>{relativeTime(pr.updatedAt)}</span>
-              {#if liveState && mergeGate.reason && !pr.isDraft && pr.mergeable !== "CONFLICTING" && pr.mergeStateStatus !== "DIRTY"}
+              {#if liveState && mergeGate.reason && pr.reviewDecision !== "REVIEW_REQUIRED" && !pr.isDraft && pr.mergeable !== "CONFLICTING" && pr.mergeStateStatus !== "DIRTY"}
                 <span class="sep">·</span>
                 <span class="chip badge wait">{mergeGate.reason}</span>
               {/if}
@@ -2292,24 +2303,54 @@
               {/each}
             </div>
           {/if}
-          {#if liveState}
-            <div class="ci-summary {ci.tone}" role="status" aria-label={`${ci.text}. ${ciDetail}`}>
-              <span class="ci-summary-icon" aria-hidden="true">
-                {#if ci.icon === "success"}
-                  <svg class="status-success" viewBox="0 0 14 14">
-                    <circle cx="7" cy="7" r="6.5"></circle>
-                    <path d="m3.9 7.1 2 2 4.25-4.25"></path>
-                  </svg>
-                {:else if ci.icon === "failure"}
-                  <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"></circle><path d="m5.5 5.5 5 5m0-5-5 5"></path></svg>
-                {:else if ci.icon === "pending"}
-                  <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 4.5V8l2.4 1.5"></path></svg>
-                {:else}
-                  <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"></circle><path d="M5.5 8h5"></path></svg>
-                {/if}
-              </span>
-              <span class="ci-summary-label">{ci.text}</span>
-              <span class="ci-summary-detail">{ciDetail}</span>
+          {#if liveState || (pr.reviewDecision === "APPROVED" && primaryApprover)}
+            <div class="pr-head-statuses">
+              {#if liveState && pr.reviewDecision === "REVIEW_REQUIRED"}
+                <button
+                  type="button"
+                  class="approval-summary required"
+                  aria-label={canReview ? "Approval required. Review this pull request" : "Approval required. Choose a reviewer"}
+                  title={canReview ? "Review this pull request" : "Choose a reviewer"}
+                  onclick={activateApprovalMarker}
+                >
+                  <span class="approval-summary-icon" aria-hidden="true">
+                    <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 4.5V8l2.4 1.5"></path></svg>
+                  </span>
+                  <span>Approval required</span>
+                </button>
+              {:else if pr.reviewDecision === "APPROVED" && primaryApprover}
+                <div
+                  class="approval-summary approved"
+                  role="status"
+                  aria-label={`Approved by ${approvedReviewers.map((reviewer) => reviewer.login).join(", ")}`}
+                >
+                  <span class="approval-summary-icon" aria-hidden="true">
+                    <svg class="approval-check" viewBox="0 0 14 14"><circle cx="7" cy="7" r="6.5"></circle><path d="m3.9 7.1 2 2 4.25-4.25"></path></svg>
+                  </span>
+                  <Avatar login={primaryApprover.login} url={primaryApprover.avatarUrl} size={16} />
+                  <span>Approved by <strong>{primaryApprover.login}</strong>{#if approvedReviewers.length > 1} +{approvedReviewers.length - 1}{/if}</span>
+                </div>
+              {/if}
+              {#if liveState}
+                <div class="ci-summary {ci.tone}" role="status" aria-label={`${ci.text}. ${ciDetail}`}>
+                  <span class="ci-summary-icon" aria-hidden="true">
+                    {#if ci.icon === "success"}
+                      <svg class="status-success" viewBox="0 0 14 14">
+                        <circle cx="7" cy="7" r="6.5"></circle>
+                        <path d="m3.9 7.1 2 2 4.25-4.25"></path>
+                      </svg>
+                    {:else if ci.icon === "failure"}
+                      <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"></circle><path d="m5.5 5.5 5 5m0-5-5 5"></path></svg>
+                    {:else if ci.icon === "pending"}
+                      <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 4.5V8l2.4 1.5"></path></svg>
+                    {:else}
+                      <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"></circle><path d="M5.5 8h5"></path></svg>
+                    {/if}
+                  </span>
+                  <span class="ci-summary-label">{ci.text}</span>
+                  <span class="ci-summary-detail">{ciDetail}</span>
+                </div>
+              {/if}
             </div>
           {/if}
         </div>
@@ -4790,12 +4831,82 @@
     padding-top: 12px;
     border-top: 1px solid var(--border-soft);
   }
+  .pr-head-statuses {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+  }
+  .approval-summary {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 28px;
+    padding: 0 10px 0 7px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--surface);
+    box-shadow: var(--shadow-control-hairline);
+    color: var(--text-dim);
+    font-family: var(--sans);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  button.approval-summary {
+    cursor: pointer;
+    transition: background-color 120ms ease, color 120ms ease, transform 120ms var(--ease-out);
+  }
+  .approval-summary-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 16px;
+    height: 16px;
+    color: var(--text-faint);
+  }
+  .approval-summary-icon svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .approval-summary.required .approval-summary-icon {
+    color: var(--review);
+  }
+  .approval-summary.approved .approval-summary-icon {
+    color: var(--ready);
+  }
+  .approval-summary .approval-check circle {
+    fill: currentColor;
+    stroke: none;
+  }
+  .approval-summary .approval-check path {
+    stroke: var(--native-on-accent);
+    stroke-width: 1.4;
+  }
+  .approval-summary strong {
+    color: var(--text);
+    font-weight: 500;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    button.approval-summary:hover {
+      background: color-mix(in srgb, var(--surface) 88%, var(--text) 12%);
+      color: var(--text);
+    }
+  }
+  button.approval-summary:active {
+    transform: scale(0.99);
+  }
   .ci-summary {
     display: inline-flex;
     align-items: center;
     gap: 7px;
     min-height: 28px;
-    margin-left: auto;
+    margin-left: 0;
     padding: 0 10px 0 7px;
     border: 0;
     border-radius: 999px;
@@ -5422,6 +5533,11 @@
     .pr-head-foot {
       align-items: flex-start;
       flex-direction: column;
+    }
+    .pr-head-statuses {
+      align-items: flex-start;
+      flex-direction: column;
+      margin-left: 0;
     }
     .branch-context {
       width: 100%;

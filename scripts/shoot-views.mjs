@@ -170,6 +170,7 @@ const scenarios = [
   {
     ...detail("detail-conversation", 101, "Green PR conversation with approvals, threads, comments, and successful checks."),
     verify: async (page) => {
+      await page.locator(".approval-summary.approved").getByText("Approved by reviewer-one", { exact: true }).waitFor();
       await page.locator(".current-branch-badge").getByText("current", { exact: true }).waitFor();
       const backArrow = page.locator(".app-history").getByRole("button", { name: /Back/ });
       await backArrow.waitFor();
@@ -180,6 +181,15 @@ const scenarios = [
       await page.waitForFunction(() => location.hash === "#/");
       await page.goto(detailUrl, { waitUntil: "domcontentloaded" });
       await page.locator(".detail .pr-head").waitFor();
+    },
+  },
+  {
+    ...detail("detail-approval-required", 102, "Clickable approval-required marker in the PR header."),
+    interact: async (page) => page.getByRole("button", { name: "Approval required. Review this pull request" }).click(),
+    verify: async (page) => {
+      await page.locator("#verdict-control").waitFor();
+      const focused = await page.locator("#verdict-control").evaluate((element) => element === document.activeElement);
+      if (!focused) throw new Error("approval marker did not focus the review control");
     },
   },
   {
