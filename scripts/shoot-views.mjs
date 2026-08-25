@@ -755,7 +755,7 @@ const scenarios = [
   },
   onboardingStep("onboarding-step-1-connect", 1, "Successful GitHub authentication step."),
   onboardingStep("onboarding-step-2-repositories", 2, "Successful repository selection step."),
-  onboardingStep("onboarding-step-3-live-updates", 3, "Successful live-update coverage step."),
+  onboardingStep("onboarding-step-3-live-updates", 3, "Minimal hosted relay setup."),
   onboardingStep("onboarding-step-4-ready", 4, "Successful initial inbox sync step."),
   {
     name: "quota-exhausted",
@@ -823,19 +823,24 @@ function onboardingStep(name, step, description) {
     route: "#/",
     description,
     prepare: clearConfiguredRepos,
-    beforeGoto: onboardingFixtureRoutes,
+    beforeGoto: (page) => onboardingFixtureRoutes(page, { relayCovered: step < 3 }),
     ready: ".onb-page",
     interact: step === 1 ? undefined : async (page) => advanceOnboarding(page, step),
     verify: async (page) => {
       await page.getByText(`Step ${step} of 4`, { exact: true }).waitFor();
       if (step === 1) await page.getByText("Connected as", { exact: false }).waitFor();
-      if (step === 3) await page.getByText("Live updates confirmed for every selected repository.", { exact: true }).waitFor();
+      if (step === 3) {
+        await page.getByRole("button", { name: "Install on GitHub", exact: true }).waitFor();
+        await page.getByRole("button", { name: "Use polling", exact: true }).waitFor();
+        await page.getByRole("link", { name: "Source", exact: true }).waitFor();
+        await page.getByRole("link", { name: "Self-host", exact: true }).waitFor();
+      }
       if (step === 4) await page.getByText("Your inbox is ready.", { exact: true }).waitFor();
     },
   };
 }
 
-async function onboardingFixtureRoutes(page) {
+async function onboardingFixtureRoutes(page, { relayCovered = true } = {}) {
   await page.route("**/api/auth/status", (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
@@ -854,7 +859,7 @@ async function onboardingFixtureRoutes(page) {
     return route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ repos: Object.fromEntries(repos.map((repo) => [repo, true])), installUrl: "https://github.com/apps/pr-cockpit" }),
+      body: JSON.stringify({ repos: Object.fromEntries(repos.map((repo) => [repo, relayCovered])), installUrl: "https://github.com/apps/pr-cockpit" }),
     });
   });
   await page.route("**/api/refresh", (route) => route.fulfill({
@@ -871,8 +876,8 @@ async function advanceOnboarding(page, targetStep) {
   if (targetStep === 2) return;
   await page.locator(".repo-row input").first().check();
   await page.getByRole("button", { name: "Continue with 1", exact: true }).click();
-  await page.getByText("Live updates confirmed for every selected repository.", { exact: true }).waitFor();
   if (targetStep === 3) return;
+  await page.getByRole("button", { name: "Use polling", exact: true }).click();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await page.getByText("Your inbox is ready.", { exact: true }).waitFor();
 }
