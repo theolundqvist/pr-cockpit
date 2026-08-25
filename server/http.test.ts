@@ -1310,8 +1310,9 @@ describe("Actions viewer API", () => {
     });
     let activations = 0;
     const fetchHandler = buildFetchHandler(4820, {
-      activateActionsLease: async () => {
+      activateActionsLease: () => {
         activations++;
+        return Promise.withResolvers<void>().promise;
       },
       actionJobLog: async (_repo, _headSha, jobId, full) => ({
         job: listRunJobs(repo, head).find((job) => job.job_id === jobId)!,
@@ -1321,7 +1322,12 @@ describe("Actions viewer API", () => {
     });
 
     try {
-      const actionsResponse = await fetchHandler(new Request(`http://127.0.0.1:4820/api/pr/http-actions/viewer/${number}/actions`));
+      const actionsResponse = await Promise.race([
+        fetchHandler(new Request(`http://127.0.0.1:4820/api/pr/http-actions/viewer/${number}/actions`)),
+        Bun.sleep(50).then(() => {
+          throw new Error("Actions response waited for cache repair");
+        }),
+      ]);
       expect(actionsResponse.status).toBe(200);
       expect(await actionsResponse.json()).toEqual({
         headSha: head,

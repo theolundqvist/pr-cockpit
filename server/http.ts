@@ -1227,8 +1227,10 @@ function serializeActionJob(job: RunJobRow) {
 async function handleActions(owner: string, repo: string, number: string, runtime: HttpRuntime): Promise<Response> {
   const context = cachedActionsContext(owner, repo, number);
   if (context instanceof Response) return context;
+  void runtime.activateActionsLease(context.repoName, context.num, context.headSha).catch((error) => {
+    console.error(`Actions cache refresh failed for ${context.repoName}#${context.num}:`, error);
+  });
   try {
-    await runtime.activateActionsLease(context.repoName, context.num, context.headSha);
     const runs = workflowRunsForLease(context.repoName, context.num, context.headSha)
       .sort((left, right) => Date.parse(right.event_at) - Date.parse(left.event_at))
       .map(serializeActionRun);
