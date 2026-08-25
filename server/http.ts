@@ -98,7 +98,7 @@ import { createTmuxFocusHandler } from "./tmuxFocus.ts";
 import type { TmuxFocusHandler } from "./tmuxFocus.ts";
 import { needsMeRank } from "./rank.ts";
 import { invalidateInbox, invalidatePr } from "./rendererInvalidation.ts";
-import { actionJobLog, activateActionsLease, cachedJobLogs, formatJobLogs, formatRunJobs } from "./runLogs.ts";
+import { actionJobLog, actionWorkflowGraphs, activateActionsLease, cachedJobLogs, formatJobLogs, formatRunJobs } from "./runLogs.ts";
 const cockpitRoot = process.cwd();
 
 function json(data: unknown, status = 200): Response {
@@ -357,6 +357,7 @@ type HttpDependencies = {
   refreshPr: typeof refreshPr;
   handleTmuxFocus: TmuxFocusHandler;
   activateActionsLease: typeof activateActionsLease;
+  actionWorkflowGraphs: typeof actionWorkflowGraphs;
   actionJobLog: typeof actionJobLog;
 };
 
@@ -376,6 +377,7 @@ const defaultHttpDependencies: HttpDependencies = {
   refreshPr,
   handleTmuxFocus: createTmuxFocusHandler(),
   activateActionsLease,
+  actionWorkflowGraphs,
   actionJobLog,
 };
 async function handleGithubQuota(runtime: HttpRuntime): Promise<Response> {
@@ -1198,6 +1200,7 @@ function serializeActionRun(run: WorkflowRunRow) {
     id: run.run_id,
     attempt: run.run_attempt,
     workflowName: run.workflow_name,
+    workflowPath: run.workflow_path,
     status: run.status,
     conclusion: run.conclusion,
     eventAt: run.event_at,
@@ -1243,6 +1246,18 @@ async function handleActions(owner: string, repo: string, number: string, runtim
     return json({ error: error instanceof Error ? error.message : String(error) }, 502);
   }
 }
+async function handleActionGraphs(owner: string, repo: string, number: string, runtime: HttpRuntime): Promise<Response> {
+  const context = cachedActionsContext(owner, repo, number);
+  if (context instanceof Response) return context;
+  try {
+    await runtime.activateActionsLease(context.repoName, context.num, context.headSha);
+    const workflows = await runtime.actionWorkflowGraphs(context.repoName, context.num, context.headSha);
+    return json({ headSha: context.headSha, workflows });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 502);
+  }
+}
+
 
 async function handleActionLog(
   owner: string,
@@ -2280,6 +2295,16 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       parts[5] === "actions"
     ) {
       return handleActions(parts[2]!, parts[3]!, parts[4]!, runtime);
+    }
+    if (
+      req.method === "GET" &&
+      parts.length === 7 &&
+      parts[0] === "api" &&
+      parts[1] === "pr" &&
+      parts[5] === "actions" &&
+      parts[6] === "graph"
+    ) {
+      return handleActionGraphs(parts[2]!, parts[3]!, parts[4]!, runtime);
     }
     if (
       req.method === "GET" &&

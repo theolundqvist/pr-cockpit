@@ -1255,6 +1255,7 @@ export interface WorkflowRun {
   head_sha: string;
   head_branch: string;
   name: string;
+  path: string;
   status: string;
   conclusion: string | null;
   updated_at: string;

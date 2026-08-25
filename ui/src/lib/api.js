@@ -43,6 +43,13 @@ export async function fetchActions(repo, number) {
   if (!res.ok) throw new Error(body?.error || `actions ${res.status}`);
   return body;
 }
+export async function fetchActionGraph(repo, number) {
+  const res = await fetch(`/api/pr/${repo}/${number}/actions/graph`);
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.error || `action graph ${res.status}`);
+  return body;
+}
+
 
 export async function fetchActionLog(repo, number, jobId, full = false) {
   const suffix = full ? "?full=1" : "";

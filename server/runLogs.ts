@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import {
   activeActionsLeases,
   actionsLease,
+  getFileContents,
   getRunJobLog,
   listRunJobs,
   markActionsLeaseBootstrapped,
@@ -10,6 +11,7 @@ import {
   markWorkflowRunReconciled,
   openPrForAction,
   renewActionsLease,
+  saveFileContents,
   saveRunJobLog,
   saveRunJobLogError,
   upsertRunJob,
@@ -18,6 +20,7 @@ import {
   type RunJobRow,
 } from "./db.ts";
 import {
+  fetchFileContents,
   fetchGithubQuota,
   fetchJobLog,
   fetchRunJobs,
@@ -41,6 +44,7 @@ export interface CompactRun {
   headSha: string;
   headBranch: string;
   workflowName: string;
+  workflowPath: string;
   status: string;
   conclusion: string | null;
   eventAt: string;
@@ -94,6 +98,7 @@ function compactRun(run: WorkflowRun): CompactRun {
     headSha: run.head_sha,
     headBranch: run.head_branch,
     workflowName: run.name,
+    workflowPath: run.path ?? "",
     status: run.status,
     conclusion: run.conclusion,
     eventAt: run.updated_at,
@@ -121,6 +126,101 @@ function compactJob(job: RunJob, run?: CompactRun): CompactJob {
     failedStep: job.steps?.find((step) => step.conclusion === "failure")?.name ?? null,
   };
 }
+export interface WorkflowGraphJob {
+  id: string;
+  name: string;
+  needs: string[];
+  uses: string | null;
+}
+
+export interface WorkflowGraph {
+  path: string;
+  name: string | null;
+  jobs: WorkflowGraphJob[];
+  error?: string;
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function workflowJobName(id: string, value: unknown): string {
+  if (typeof value !== "string") return id;
+  const staticName = value
+    .replace(/\$\{\{.*?\}\}/g, "")
+    .replace(/\(\s*\)/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return staticName || id;
+}
+
+export function parseWorkflowGraph(path: string, source: string): WorkflowGraph {
+  const document = objectValue(Bun.YAML.parse(source));
+  const jobs = objectValue(document?.jobs);
+  if (!jobs) throw new Error("workflow has no jobs map");
+  return {
+    path,
+    name: typeof document?.name === "string" ? document.name : null,
+    jobs: Object.entries(jobs).map(([id, value]) => {
+      const job = objectValue(value) ?? {};
+      const rawNeeds = job.needs;
+      const needs = typeof rawNeeds === "string"
+        ? [rawNeeds]
+        : Array.isArray(rawNeeds) ? rawNeeds.filter((item): item is string => typeof item === "string") : [];
+      return {
+        id,
+        name: workflowJobName(id, job.name),
+        needs,
+        uses: typeof job.uses === "string" ? job.uses : null,
+      };
+    }),
+  };
+}
+
+type WorkflowGraphFetchers = {
+  fetchWorkflowRuns: typeof fetchWorkflowRuns;
+  fetchFileContents: typeof fetchFileContents;
+};
+
+const liveWorkflowGraphFetchers: WorkflowGraphFetchers = { fetchWorkflowRuns, fetchFileContents };
+
+function workflowFilePath(path: string): string {
+  const refMarker = path.indexOf("@refs/");
+  return refMarker === -1 ? path : path.slice(0, refMarker);
+}
+
+export async function actionWorkflowGraphs(
+  repo: string,
+  number: number,
+  headSha: string,
+  fetchers: WorkflowGraphFetchers = liveWorkflowGraphFetchers,
+): Promise<WorkflowGraph[]> {
+  let runs = workflowRunsForLease(repo, number, headSha);
+  if (runs.length === 0 || runs.some((run) => !run.workflow_path)) {
+    const refreshed = await fetchers.fetchWorkflowRuns(repo, headSha);
+    for (const run of refreshed) storeRun(repo, number, compactRun(run));
+    runs = workflowRunsForLease(repo, number, headSha);
+  }
+  const paths = [...new Set(runs.map((run) => workflowFilePath(run.workflow_path)).filter(Boolean))];
+  const settled = await Promise.allSettled(paths.map(async (path) => {
+    let source = getFileContents(headSha, path);
+    if (source === null) {
+      const result = await fetchers.fetchFileContents(repo, path, headSha);
+      if ("tooLarge" in result) throw new Error("workflow definition is too large");
+      source = result.content;
+      saveFileContents(headSha, path, source);
+    }
+    return parseWorkflowGraph(path, source);
+  }));
+  return settled.map((result, index) => {
+    if (result.status === "fulfilled") return result.value;
+    console.error(`Workflow graph load failed for ${repo}:${paths[index]}@${headSha}:`, result.reason);
+    return { path: paths[index]!, name: null, jobs: [], error: "Workflow definition unavailable" };
+  });
+}
+
 
 export function compactActionsPayload(event: string, payload: any): { run?: CompactRun; job?: CompactJob } | null {
   if (event === "workflow_run" && payload.workflow_run) {
@@ -133,6 +233,7 @@ export function compactActionsPayload(event: string, payload: any): { run?: Comp
         headSha: raw.head_sha,
         headBranch: raw.head_branch ?? "",
         workflowName: raw.name ?? raw.workflow_name ?? "",
+        workflowPath: raw.path ?? "",
         status: raw.status,
         conclusion: raw.conclusion ?? null,
         eventAt: raw.updated_at ?? raw.run_started_at ?? "",
@@ -175,8 +276,8 @@ export function compactActionsPayload(event: string, payload: any): { run?: Comp
 function storeRun(repo: string, number: number, run: CompactRun): boolean {
   return upsertWorkflowRun({
     repo, run_id: run.id, run_attempt: run.attempt, pr_number: number, head_sha: run.headSha,
-    head_branch: run.headBranch, workflow_name: run.workflowName, status: run.status,
-    conclusion: run.conclusion, event_at: run.eventAt, html_url: run.htmlUrl,
+    head_branch: run.headBranch, workflow_name: run.workflowName, workflow_path: run.workflowPath ?? "",
+    status: run.status, conclusion: run.conclusion, event_at: run.eventAt, html_url: run.htmlUrl,
   });
 }
 
@@ -283,8 +384,8 @@ async function repairActionsLease(repo: string, number: number, headSha: string,
     if (row.status !== "completed" || row.reconciled_at !== null) continue;
     await queueReconciliation(repo, {
       id: row.run_id, attempt: row.run_attempt, headSha: row.head_sha, headBranch: row.head_branch,
-      workflowName: row.workflow_name, status: row.status, conclusion: row.conclusion,
-      eventAt: row.event_at, htmlUrl: row.html_url,
+      workflowName: row.workflow_name, workflowPath: row.workflow_path,
+      status: row.status, conclusion: row.conclusion, eventAt: row.event_at, htmlUrl: row.html_url,
     }, fetchers, false);
   }
 }

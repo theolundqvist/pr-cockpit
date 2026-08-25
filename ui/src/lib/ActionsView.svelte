@@ -1,5 +1,6 @@
 <script>
-  import { fetchActionLog, fetchActions } from "./api.js";
+  import ActionsGraph from "./ActionsGraph.svelte";
+  import { fetchActionGraph, fetchActionLog, fetchActions } from "./api.js";
   import { durationText, relativeTime } from "./time.js";
 
   let { repo, number, headSha } = $props();
@@ -7,6 +8,9 @@
   let snapshot = $state(null);
   let loading = $state(true);
   let loadError = $state("");
+  let graphSnapshot = $state(null);
+  let graphError = $state("");
+  let overviewMode = $state(true);
   let refreshNonce = $state(0);
   let selectedJobId = $state(null);
   let logs = $state({});
@@ -113,6 +117,24 @@
       clearInterval(timer);
     };
   });
+  $effect(() => {
+    const key = `${repo}#${number}:${headSha}:${refreshNonce}`;
+    let stopped = false;
+    fetchActionGraph(repo, number).then(
+      (next) => {
+        if (stopped || key !== `${repo}#${number}:${headSha}:${refreshNonce}`) return;
+        graphSnapshot = next;
+        graphError = "";
+      },
+      (error) => {
+        if (!stopped) graphError = error instanceof Error ? error.message : String(error);
+      },
+    );
+    return () => {
+      stopped = true;
+    };
+  });
+
 
   async function loadLog(job, full = false) {
     const id = job.id;
@@ -139,6 +161,7 @@
 
   function selectJob(job) {
     selectedJobId = job.id;
+    overviewMode = false;
   }
 
   function retryLog() {
@@ -165,94 +188,175 @@
   </span>
 {/snippet}
 
-<div class="actions-layout">
-  <aside class="workflow-list" aria-label="Workflow runs">
-    {#if loading && !snapshot}
-      <div class="empty">Loading workflow runs…</div>
-    {:else if loadError && !snapshot}
-      <div class="empty error">
-        <span>Couldn’t load workflow runs.</span>
-        <button class="link" onclick={() => refreshNonce++}>Retry</button>
-      </div>
-    {:else if groups.length === 0}
-      <div class="empty">No workflow runs for this head</div>
-    {:else}
-      {#each groups as group (`${group.run.id}:${group.run.attempt}`)}
-        <section class="workflow-group">
-          <header class="workflow-head">
-            {@render statusIcon(group.run.status, group.run.conclusion)}
-            <span class="workflow-name">{group.run.workflowName || "Workflow"}</span>
-            {#if group.run.attempt > 1}<span class="attempt">attempt {group.run.attempt}</span>{/if}
-            {#if group.run.eventAt}<span class="run-time">{relativeTime(group.run.eventAt)}</span>{/if}
-          </header>
-          <div class="jobs">
-            {#each group.jobs as job (job.id)}
-              <button class="job-row" class:active={selectedJobId === job.id} onclick={() => selectJob(job)}>
-                {@render statusIcon(job.status, job.conclusion)}
-                <span class="job-copy">
-                  <span class="job-name">{job.name}</span>
-                  <span class="job-meta">
-                    {stateLabel(job.conclusion ?? job.status)} · {jobTime(job)}
-                    {#if runnerLabel(job)} · {runnerLabel(job)}{/if}
-                  </span>
-                  {#if job.failedStep}<span class="failed-step">Failed at {job.failedStep}</span>{/if}
-                </span>
-              </button>
-            {:else}
-              <div class="jobs-empty">Waiting for jobs…</div>
-            {/each}
-          </div>
-        </section>
-      {/each}
-    {/if}
-  </aside>
-
-  <section class="log-pane" aria-live="polite">
-    {#if !selectedJob}
-      <div class="empty">Select a job</div>
-    {:else}
-      <header class="log-head">
-        <div class="log-title-row">
-          {@render statusIcon(selectedJob.status, selectedJob.conclusion)}
-          <h2>{selectedJob.name}</h2>
-          <span class="status-label {stateTone(selectedJob.status, selectedJob.conclusion)}">{stateLabel(selectedJob.conclusion ?? selectedJob.status)}</span>
-        </div>
-        <div class="log-meta">
-          <span>{selectedJob.workflowName}</span>
-          <span>{jobTime(selectedJob)}</span>
-          {#if runnerLabel(selectedJob)}<span>{runnerLabel(selectedJob)}</span>{/if}
-        </div>
-      </header>
-
-      {#if selectedJob.status !== "completed"}
-        <div class="empty log-empty">The log will appear when this job completes.</div>
-      {:else if logLoadingId === selectedJob.id && !selectedLog}
-        <div class="empty log-empty">Loading log…</div>
-      {:else if selectedLogError}
-        <div class="empty error log-empty">
-          <span>Couldn’t load this log.</span>
-          <button class="link" onclick={retryLog}>Retry</button>
-        </div>
-      {:else if selectedLog?.state === "not-produced"}
-        <div class="empty log-empty">GitHub skipped this job, so it produced no log.</div>
-      {:else if selectedLog}
-        <pre class="action-log mono">{selectedLog.body || "This job produced no log output."}</pre>
-        {#if selectedLog.truncated}
-          <div class="log-footer">
-            <span>Showing the last 256 KB</span>
-            <button class="link" disabled={logLoadingId === selectedJob.id} onclick={() => loadLog(selectedJob, true)}>
-              {logLoadingId === selectedJob.id ? "Loading…" : "Show full log"}
-            </button>
-          </div>
-        {/if}
-      {:else}
-        <div class="empty log-empty">No log is available for this job.</div>
-      {/if}
-    {/if}
-  </section>
+<div class="actions-viewbar">
+  <div class="view-picker" aria-label="Actions view">
+    <button class:active={overviewMode} onclick={() => overviewMode = true}>Overview</button>
+    <button class:active={!overviewMode} disabled={!selectedJob} onclick={() => overviewMode = false}>Job log</button>
+  </div>
+  {#if loadError || graphError}
+    <button class="link refresh-link" onclick={() => refreshNonce++}>Retry data load</button>
+  {/if}
 </div>
 
+<div class="overview-panel" class:hidden={!overviewMode}>
+  {#if (loading && !snapshot) || (!graphSnapshot && !graphError)}
+    <div class="overview-state">Loading workflow overview…</div>
+  {:else if graphError && !graphSnapshot}
+    <div class="overview-state error">
+      <span>Couldn’t load workflow definitions.</span>
+      <button class="link" onclick={() => refreshNonce++}>Retry</button>
+    </div>
+  {:else if (graphSnapshot?.workflows ?? []).length === 0}
+    <div class="overview-state">No workflow definitions found for this head.</div>
+  {:else}
+    <ActionsGraph
+      workflows={graphSnapshot.workflows}
+      {groups}
+      {statusIcon}
+      onselect={selectJob}
+    />
+  {/if}
+</div>
+{#if !overviewMode}
+  <div class="actions-layout">
+    <aside class="workflow-list" aria-label="Workflow runs">
+      {#if loading && !snapshot}
+        <div class="empty">Loading workflow runs…</div>
+      {:else if loadError && !snapshot}
+        <div class="empty error">
+          <span>Couldn’t load workflow runs.</span>
+          <button class="link" onclick={() => refreshNonce++}>Retry</button>
+        </div>
+      {:else if groups.length === 0}
+        <div class="empty">No workflow runs for this head</div>
+      {:else}
+        {#each groups as group (`${group.run.id}:${group.run.attempt}`)}
+          <section class="workflow-group">
+            <header class="workflow-head">
+              {@render statusIcon(group.run.status, group.run.conclusion)}
+              <span class="workflow-name">{group.run.workflowName || "Workflow"}</span>
+              {#if group.run.attempt > 1}<span class="attempt">attempt {group.run.attempt}</span>{/if}
+              {#if group.run.eventAt}<span class="run-time">{relativeTime(group.run.eventAt)}</span>{/if}
+            </header>
+            <div class="jobs">
+              {#each group.jobs as job (job.id)}
+                <button class="job-row" class:active={selectedJobId === job.id} onclick={() => selectJob(job)}>
+                  {@render statusIcon(job.status, job.conclusion)}
+                  <span class="job-copy">
+                    <span class="job-name">{job.name}</span>
+                    <span class="job-meta">
+                      {stateLabel(job.conclusion ?? job.status)} · {jobTime(job)}
+                      {#if runnerLabel(job)} · {runnerLabel(job)}{/if}
+                    </span>
+                    {#if job.failedStep}<span class="failed-step">Failed at {job.failedStep}</span>{/if}
+                  </span>
+                </button>
+              {:else}
+                <div class="jobs-empty">Waiting for jobs…</div>
+              {/each}
+            </div>
+          </section>
+        {/each}
+      {/if}
+    </aside>
+
+    <section class="log-pane" aria-live="polite">
+      {#if !selectedJob}
+        <div class="empty">Select a job</div>
+      {:else}
+        <header class="log-head">
+          <div class="log-title-row">
+            {@render statusIcon(selectedJob.status, selectedJob.conclusion)}
+            <h2>{selectedJob.name}</h2>
+            <span class="status-label {stateTone(selectedJob.status, selectedJob.conclusion)}">{stateLabel(selectedJob.conclusion ?? selectedJob.status)}</span>
+          </div>
+          <div class="log-meta">
+            <span>{selectedJob.workflowName}</span>
+            <span>{jobTime(selectedJob)}</span>
+            {#if runnerLabel(selectedJob)}<span>{runnerLabel(selectedJob)}</span>{/if}
+          </div>
+        </header>
+
+        {#if selectedJob.status !== "completed"}
+          <div class="empty log-empty">The log will appear when this job completes.</div>
+        {:else if logLoadingId === selectedJob.id && !selectedLog}
+          <div class="empty log-empty">Loading log…</div>
+        {:else if selectedLogError}
+          <div class="empty error log-empty">
+            <span>Couldn’t load this log.</span>
+            <button class="link" onclick={retryLog}>Retry</button>
+          </div>
+        {:else if selectedLog?.state === "not-produced"}
+          <div class="empty log-empty">GitHub skipped this job, so it produced no log.</div>
+        {:else if selectedLog}
+          <pre class="action-log mono">{selectedLog.body || "This job produced no log output."}</pre>
+          {#if selectedLog.truncated}
+            <div class="log-footer">
+              <span>Showing the last 256 KB</span>
+              <button class="link" disabled={logLoadingId === selectedJob.id} onclick={() => loadLog(selectedJob, true)}>
+                {logLoadingId === selectedJob.id ? "Loading…" : "Show full log"}
+              </button>
+            </div>
+          {/if}
+        {:else}
+          <div class="empty log-empty">No log is available for this job.</div>
+        {/if}
+      {/if}
+    </section>
+  </div>
+{/if}
+
 <style>
+  .overview-panel.hidden {
+    display: none;
+  }
+  .actions-viewbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .view-picker {
+    display: flex;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--panel);
+  }
+  .view-picker button {
+    padding: 6px 11px;
+    border: 0;
+    color: var(--text-faint);
+    background: transparent;
+    font: 500 11px var(--sans);
+    cursor: pointer;
+  }
+  .view-picker button + button {
+    border-left: 1px solid var(--border);
+  }
+  .view-picker button.active {
+    color: var(--text);
+    background: var(--panel-raised);
+  }
+  .view-picker button:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  .refresh-link {
+    color: var(--fail);
+  }
+  .overview-state {
+    display: flex;
+    min-height: 420px;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    color: var(--text-faint);
+    background: var(--panel);
+    font-size: 12px;
+  }
   .actions-layout {
     display: grid;
     grid-template-columns: minmax(300px, 34%) minmax(0, 1fr);

@@ -156,6 +156,7 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   head_sha TEXT NOT NULL,
   head_branch TEXT NOT NULL,
   workflow_name TEXT NOT NULL,
+  workflow_path TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL,
   conclusion TEXT,
   event_at TEXT NOT NULL,
@@ -205,6 +206,11 @@ CREATE TABLE IF NOT EXISTS run_jobs (
 
 CREATE INDEX IF NOT EXISTS run_jobs_sha_idx ON run_jobs (repo, head_sha, run_id, run_attempt);
 `);
+
+const workflowRunColumns = db.query("PRAGMA table_info(workflow_runs)").all() as Array<{ name: string }>;
+if (!workflowRunColumns.some((column) => column.name === "workflow_path")) {
+  db.exec("ALTER TABLE workflow_runs ADD COLUMN workflow_path TEXT NOT NULL DEFAULT ''");
+}
 
 const runJobColumns = db.query("PRAGMA table_info(run_jobs)").all() as Array<{ name: string }>;
 for (const [name, definition] of [
@@ -704,6 +710,7 @@ export interface WorkflowRunRow {
   head_sha: string;
   head_branch: string;
   workflow_name: string;
+  workflow_path: string;
   status: string;
   conclusion: string | null;
   event_at: string;
@@ -747,12 +754,13 @@ const getWorkflowRunStmt = db.prepare<WorkflowRunRow, [string, number, number]>(
 );
 const upsertWorkflowRunStmt = db.prepare(`
   INSERT INTO workflow_runs (
-    repo, run_id, run_attempt, pr_number, head_sha, head_branch, workflow_name,
+    repo, run_id, run_attempt, pr_number, head_sha, head_branch, workflow_name, workflow_path,
     status, conclusion, event_at, html_url, fetched_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   ON CONFLICT (repo, run_id, run_attempt) DO UPDATE SET
     pr_number = excluded.pr_number, head_sha = excluded.head_sha, head_branch = excluded.head_branch,
-    workflow_name = excluded.workflow_name, status = excluded.status, conclusion = excluded.conclusion,
+    workflow_name = excluded.workflow_name, workflow_path = excluded.workflow_path,
+    status = excluded.status, conclusion = excluded.conclusion,
     event_at = excluded.event_at, html_url = excluded.html_url, fetched_at = datetime('now')
 `);
 
@@ -772,7 +780,7 @@ export function upsertWorkflowRun(run: Omit<WorkflowRunRow, "jobs_fetched_at" | 
     .run(run.repo, run.run_id, run.run_attempt);
   upsertWorkflowRunStmt.run(
     run.repo, run.run_id, run.run_attempt, run.pr_number, run.head_sha, run.head_branch,
-    run.workflow_name, run.status, run.conclusion, run.event_at, run.html_url,
+    run.workflow_name, run.workflow_path, run.status, run.conclusion, run.event_at, run.html_url,
   );
   return true;
 }

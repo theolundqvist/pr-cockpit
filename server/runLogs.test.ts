@@ -400,3 +400,40 @@ test("a skipped job reports that no log was produced without fetching GitHub", a
   `);
   expect(result).toEqual({ fetches: 0, state: "not-produced", body: null });
 });
+
+test("workflow graphs parse dependencies and reuse cached definitions", async () => {
+  const result = await runScenario("pr-cockpit-actions-graph-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    const calls = { runs: 0, files: 0 };
+    const fetchers = {
+      fetchWorkflowRuns: async () => {
+        calls.runs++;
+        return [{
+          id: 70, run_attempt: 1, head_sha: head, head_branch: "feature", name: "CI",
+          path: ".github/workflows/ci.yml", status: "completed", conclusion: "success",
+          updated_at: "2026-08-24T10:04:00Z", html_url: null,
+        }];
+      },
+      fetchFileContents: async () => {
+        calls.files++;
+        return { content: "name: CI\\njobs:\\n  lint:\\n    name: Lint\\n    runs-on: ubuntu-latest\\n  test:\\n    name: Test\\n    needs: lint\\n    runs-on: ubuntu-latest\\n  deploy:\\n    needs: [lint, test]\\n    uses: acme/workflows/.github/workflows/deploy.yml@main\\n" };
+      },
+    };
+    const first = await actions.actionWorkflowGraphs("acme/app", 7, head, fetchers);
+    const second = await actions.actionWorkflowGraphs("acme/app", 7, head, fetchers);
+    console.log(JSON.stringify({ calls, first, same: JSON.stringify(first) === JSON.stringify(second) }));
+  `);
+  expect(result.calls).toEqual({ runs: 1, files: 1 });
+  expect(result.same).toBe(true);
+  expect(result.first).toEqual([{
+    path: ".github/workflows/ci.yml",
+    name: "CI",
+    jobs: [
+      { id: "lint", name: "Lint", needs: [], uses: null },
+      { id: "test", name: "Test", needs: ["lint"], uses: null },
+      { id: "deploy", name: "deploy", needs: ["lint", "test"], uses: "acme/workflows/.github/workflows/deploy.yml@main" },
+    ],
+  }]);
+});

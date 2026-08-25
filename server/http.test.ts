@@ -1346,6 +1346,7 @@ describe("Actions viewer API", () => {
       head_sha: head,
       head_branch: "actions-viewer",
       workflow_name: "CI",
+      workflow_path: ".github/workflows/ci.yml",
       status: "completed",
       conclusion: "failure",
       event_at: "2026-08-25T08:02:00Z",
@@ -1398,6 +1399,7 @@ describe("Actions viewer API", () => {
           id: 44,
           attempt: 1,
           workflowName: "CI",
+          workflowPath: ".github/workflows/ci.yml",
           status: "completed",
           conclusion: "failure",
           eventAt: "2026-08-25T08:02:00Z",
@@ -1427,6 +1429,31 @@ describe("Actions viewer API", () => {
       const logResponse = await fetchHandler(new Request(`http://127.0.0.1:4820/api/pr/http-actions/viewer/${number}/actions/jobs/4401/log?full=1`));
       expect(logResponse.status).toBe(200);
       expect(await logResponse.json()).toMatchObject({ body: "complete log", state: "ready", truncated: false, job: { id: 4401, name: "build" } });
+
+      const graphHandler = buildFetchHandler(4820, {
+        activateActionsLease: async () => {},
+        actionWorkflowGraphs: async () => [{
+          path: ".github/workflows/ci.yml",
+          name: "CI",
+          jobs: [
+            { id: "build", name: "Build", needs: [], uses: null },
+            { id: "test", name: "Test", needs: ["build"], uses: null },
+          ],
+        }],
+      });
+      const graphResponse = await graphHandler(new Request(`http://127.0.0.1:4820/api/pr/http-actions/viewer/${number}/actions/graph`));
+      expect(graphResponse.status).toBe(200);
+      expect(await graphResponse.json()).toEqual({
+        headSha: head,
+        workflows: [{
+          path: ".github/workflows/ci.yml",
+          name: "CI",
+          jobs: [
+            { id: "build", name: "Build", needs: [], uses: null },
+            { id: "test", name: "Test", needs: ["build"], uses: null },
+          ],
+        }],
+      });
     } finally {
       db.run("DELETE FROM run_jobs WHERE repo = ?", [repo]);
       db.run("DELETE FROM workflow_runs WHERE repo = ?", [repo]);
