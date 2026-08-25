@@ -247,9 +247,6 @@
 {#if open}
   <div class="scrim" class:standalone onmousedown={close}>
     <div class="palette" class:standalone onmousedown={(e) => e.stopPropagation()}>
-      {#if standalone}
-        <div class="palette-standalone-head">Find PR</div>
-      {/if}
       <div class="palette-input-row">
         <svg class="palette-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
           <circle cx="10.5" cy="10.5" r="5.5" />
@@ -337,7 +334,7 @@
     box-shadow: 0 12px 28px rgb(0 0 0 / 0.16), 0 2px 6px rgb(0 0 0 / 0.1);
   }
   .palette.standalone .palette-results {
-    max-height: min(540px, calc(var(--general-height) - 288px));
+    max-height: min(540px, calc(var(--general-height) - 240px));
   }
   .palette-input {
     width: 100%;
@@ -378,13 +375,6 @@
     font-family: var(--mono);
     font-size: 9.5px;
   }
-  .palette-standalone-head {
-    padding: 18px 18px 10px;
-    color: var(--text);
-    font-size: 19px;
-    font-weight: 650;
-    letter-spacing: -0.025em;
-  }
   .palette-results {
     max-height: 52vh;
     overflow-y: auto;
@@ -397,17 +387,15 @@
     padding: 9px 14px;
     border-top: 1px solid var(--border);
     font-size: 11.5px;
-    color: var(--text-faint);
+    color: var(--text-dim);
   }
   .hint {
     display: flex;
     align-items: center;
     gap: 5px;
-    opacity: 0.5;
-    transition: opacity 110ms ease, color 110ms ease;
+    transition: color 110ms ease;
   }
   .hint.on {
-    opacity: 1;
     color: var(--text);
   }
   .palette-result {
