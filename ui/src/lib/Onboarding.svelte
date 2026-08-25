@@ -328,42 +328,70 @@
       </div>
     {:else if step === 3}
       <span class="eyebrow">Step 3 of 4</span>
-      <h1 class="onb-title">Enable live updates</h1>
-      <p class="onb-sub">A shared relay delivers GitHub events within seconds, with no relay account needed.</p>
+      <h1 class="onb-title">Keep your inbox current</h1>
+      <p class="onb-sub">Install the free GitHub App for live updates, or continue with periodic polling.</p>
 
-      <div class="status-card coverage-card" aria-live="polite">
-        {#if coverageState === "checking"}
-          <span class="spinner" aria-hidden="true"></span>
-          <span>Checking coverage for {chosen.length} {chosen.length === 1 ? "repository" : "repositories"}…</span>
-        {:else if coverageConfirmed}
-          <span class="status-mark success" aria-hidden="true">✓</span>
-          <span>Live updates confirmed for every selected repository.</span>
-        {:else if coverageState === "polling"}
-          <span class="spinner" aria-hidden="true"></span>
-          <span>Waiting for the GitHub App installation to cover every selected repository…</span>
-        {:else if skippedLive}
-          <span class="status-mark" aria-hidden="true">→</span>
-          <span>Live updates skipped. PR Cockpit will poll GitHub every few minutes.</span>
-        {:else if coverageError}
-          <span class="status-mark failure" aria-hidden="true">!</span>
-          <span>{coverageError}</span>
-        {:else}
-          <span class="status-mark" aria-hidden="true">→</span>
-          <span>Install the GitHub App for repositories that are not covered yet.</span>
+      <div class="relay-card">
+        <div class="relay-heading">
+          <strong>Hosted relay</strong>
+          <span>Free</span>
+        </div>
+
+        {#if !coverageConfirmed && !skippedLive}
+          <ol class="relay-steps">
+            <li>Open GitHub and choose your account.</li>
+            <li>Grant access to the repositories selected here.</li>
+            <li>Return to PR Cockpit. Live updates are confirmed automatically.</li>
+          </ol>
+        {/if}
+
+        <div class="status-card coverage-card" aria-live="polite">
+          {#if coverageState === "checking"}
+            <span class="spinner" aria-hidden="true"></span>
+            <span>Checking coverage for {chosen.length} {chosen.length === 1 ? "repository" : "repositories"}…</span>
+          {:else if coverageConfirmed}
+            <span class="status-mark success" aria-hidden="true">✓</span>
+            <span>Live updates confirmed for every selected repository.</span>
+          {:else if coverageState === "polling"}
+            <span class="spinner" aria-hidden="true"></span>
+            <span>Waiting for the GitHub App installation to cover every selected repository…</span>
+          {:else if skippedLive}
+            <span class="status-mark" aria-hidden="true">→</span>
+            <span>Polling selected. PR Cockpit will refresh from GitHub every few minutes.</span>
+          {:else if coverageError}
+            <span class="status-mark failure" aria-hidden="true">!</span>
+            <span>{coverageError}</span>
+          {:else}
+            <span class="status-mark" aria-hidden="true">→</span>
+            <span>The GitHub App still needs access to one or more selected repositories.</span>
+          {/if}
+        </div>
+
+        {#if !coverageConfirmed && !skippedLive}
+          <div class="live-actions">
+            {#if coverage?.installUrl}
+              <button class="primary" type="button" onclick={installApp}>Install GitHub App</button>
+            {/if}
+            {#if coverageState === "failed"}
+              <button class="secondary" type="button" onclick={checkCoverage}>Retry check</button>
+            {/if}
+          </div>
         {/if}
       </div>
 
-      {#if !coverageConfirmed && !skippedLive}
-        <div class="live-actions">
-          {#if coverage?.installUrl}
-            <button class="primary" type="button" onclick={installApp} disabled={coverageState === "polling"}>Install GitHub App</button>
-          {/if}
-          {#if coverageState === "failed"}
-            <button class="secondary" type="button" onclick={checkCoverage}>Retry check</button>
-          {/if}
-          <button class="link-button" type="button" onclick={skipLiveUpdates}>Skip — poll every few minutes</button>
-        </div>
-      {/if}
+      <p class="relay-disclosure">
+        The hosted relay is an open-source Cloudflare Worker. It stores compact event markers and workflow statuses—not PR bodies, comments, diffs, or logs. Your GitHub token verifies repository access and is never stored.
+        <a href="https://github.com/theolundqvist/pr-cockpit/tree/main/relay" target="_blank" rel="noreferrer">Source</a>
+        <span aria-hidden="true">·</span>
+        <a href="https://github.com/theolundqvist/pr-cockpit/blob/main/docs/self-host-relay.md" target="_blank" rel="noreferrer">Self-hosting guide</a>
+      </p>
+
+      <div class="polling-option">
+        <span>Without a relay, PR Cockpit still works by polling GitHub every few minutes, but the inbox is not guaranteed to be current.</span>
+        {#if !coverageConfirmed && !skippedLive}
+          <button class="link-button" type="button" onclick={skipLiveUpdates}>Use polling instead</button>
+        {/if}
+      </div>
 
       <div class="actions">
         <button class="secondary shortcut-action" type="button" onclick={() => (stopCoveragePolling(), step = 2)}>Back <Kbd keys="esc" /></button>
@@ -628,8 +656,41 @@
     color: var(--fail);
     font-size: 11.5px;
   }
+  .relay-card {
+    padding: 16px;
+    border-radius: var(--radius-md);
+    background: var(--surface);
+  }
+  .relay-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+    color: var(--text);
+    font-size: 13px;
+  }
+  .relay-heading span {
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: var(--ready-bg);
+    color: var(--ready);
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .relay-steps {
+    display: grid;
+    gap: 5px;
+    margin: 0 0 14px;
+    padding-left: 22px;
+    color: var(--text-dim);
+    font-size: 12px;
+    line-height: 1.45;
+  }
   .coverage-card {
     min-height: 44px;
+    padding: 0;
+    background: transparent;
   }
   .live-actions {
     display: flex;
@@ -637,6 +698,36 @@
     align-items: center;
     gap: 10px;
     margin-top: 14px;
+  }
+  .relay-disclosure {
+    margin: 12px 0 0;
+    color: var(--text-faint);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+  .relay-disclosure a {
+    color: var(--link);
+    text-decoration: none;
+  }
+  .relay-disclosure a:first-of-type {
+    margin-left: 4px;
+  }
+  .relay-disclosure a:hover {
+    text-decoration: underline;
+  }
+  .polling-option {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-top: 12px;
+    color: var(--text-dim);
+    font-size: 11px;
+    line-height: 1.45;
+  }
+  .polling-option .link-button {
+    flex: none;
+    white-space: nowrap;
   }
   .actions {
     display: flex;
