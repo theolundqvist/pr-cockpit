@@ -1,7 +1,6 @@
 const { spawn } = require("child_process");
 
 const commands = {
-  "github-workflow": "gh auth refresh --hostname github.com --scopes workflow",
   "omp-anthropic": "printf '\\nType /login in OMP, then connect Anthropic for Sonnet.\\n\\n'; omp",
 };
 

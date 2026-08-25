@@ -12,6 +12,7 @@
   import { columnWithin, createDefinitionHover, tokenAtPoint } from "./wordAtPoint.js";
   import Chevron from "./Chevron.svelte";
   import Kbd from "./Kbd.svelte";
+  import GithubSetupModal from "./GithubSetupModal.svelte";
 
   let {
     files,
@@ -51,6 +52,7 @@
   let fileEditRequest;
   let editMenu = $state(null);
   let editMenuRequest = 0;
+  let githubSetup = $state(null);
   let editMenuNode;
   let commentDrag = $state(null);
   let fileEditSpan = $derived.by(() => {
@@ -672,7 +674,6 @@
       message: change?.message ?? "",
       phase: "loading",
       error: null,
-      errorCode: null,
       suggestionPhase: change?.message ? "ready" : "idle",
       suggestionError: null,
       suggestionCode: null,
@@ -779,7 +780,6 @@
       return;
     }
     fileEditor.error = null;
-    fileEditor.errorCode = null;
     fileEditor.phase = "review";
     void suggestCommitMessage();
   }
@@ -787,7 +787,6 @@
   function returnToFileEdit() {
     if (!fileEditor || fileEditor.phase !== "review") return;
     fileEditor.error = null;
-    fileEditor.errorCode = null;
     fileEditor.phase = "editing";
   }
 
@@ -809,7 +808,6 @@
     const editor = fileEditor;
     editor.phase = "committing";
     editor.error = null;
-    editor.errorCode = null;
     try {
       const content = editor.eol === "\r\n" ? editor.content.replace(/\n/g, "\r\n") : editor.content;
       await onCommitFileEdit(editor.path, editor.expectedHeadOid, content, message);
@@ -818,9 +816,14 @@
       if (fileEditor?.path === editor.path) {
         fileEditor.phase = "review";
         fileEditor.error = fileEditError(error, "Couldn't commit this file.");
-        fileEditor.errorCode = error?.code ?? null;
+        if (error?.code === "github-setup" && error.auth) githubSetup = error.auth;
       }
     }
+  }
+
+  function finishGithubSetup() {
+    githubSetup = null;
+    if (fileEditor?.phase === "review") void commitFileEdit();
   }
 
 
@@ -938,6 +941,10 @@
     return out;
   }
 </script>
+{#if githubSetup}
+  <GithubSetupModal initialStatus={githubSetup} onReady={finishGithubSetup} onClose={() => (githubSetup = null)} />
+{/if}
+
 
 {#snippet codeContent(row)}
   {#if row.intra}
@@ -1223,12 +1230,7 @@
               {/if}
             </label>
             {#if fileEditor.error}
-              <div class="file-edit-error" role="alert">
-                {fileEditor.error}
-                {#if fileEditor.errorCode === "workflow-scope"}
-                  <button class="reset-link" type="button" onclick={() => openSetup("github-workflow", "gh auth refresh --hostname github.com --scopes workflow")}>Authorize in Terminal</button>
-                {/if}
-              </div>
+              <div class="file-edit-error" role="alert">{fileEditor.error}</div>
             {/if}
             <div class="file-editor-actions">
               <button class="cbtn ghost" disabled={fileEditor.phase === "committing"} onclick={returnToFileEdit}>Back</button>

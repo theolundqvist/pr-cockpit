@@ -1,8 +1,11 @@
 import type { MergeMethod } from "./mergeMethod.ts";
 import { mockGithub } from "./mockGithub.ts";
-
-let cachedToken: string | null = null;
-const ghExecutable = process.env.COCKPIT_GH_BIN || "gh";
+import {
+  githubAuthStatus as liveGithubAuthStatus,
+  liveGithubToken,
+  startGithubSetup as startLiveGithubSetup,
+  type GithubAuthStatus,
+} from "./githubAuth.ts";
 const strictUtf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 type GithubGraphqlError = { type?: string; message?: string };
@@ -20,59 +23,28 @@ export class StalePrHeadError extends Error {
     this.name = "StalePrHeadError";
   }
 }
-export interface GithubAuthStatus {
-  ok: boolean;
-  login: string | null;
-  error: string | null;
+
+
+export async function githubAuthStatus(scopes: readonly string[] = ["repo", "workflow"]): Promise<GithubAuthStatus> {
+  if (!mockGithub) return liveGithubAuthStatus(scopes);
+  return {
+    ok: true,
+    state: "ready",
+    login: mockGithub.viewerLogin,
+    error: null,
+    requiredScopes: [...scopes],
+    missingScopes: [],
+  };
 }
 
-export async function githubAuthStatus(): Promise<GithubAuthStatus> {
-  if (mockGithub) return { ok: true, login: mockGithub.viewerLogin, error: null };
-
-  const notSignedIn = { ok: false, login: null, error: "GitHub CLI is not signed in. Sign in with: gh auth login" };
-
-  // The token is what every other call actually uses, so it decides the verdict.
-  let token: string;
-  try {
-    token = await runGh(["auth", "token"]);
-  } catch {
-    return { ok: false, login: null, error: "GitHub CLI is not installed. Install it with: brew install gh" };
-  }
-  if (!token) return notSignedIn;
-
-  return { ok: true, login: await ghLogin(), error: null };
+export async function startGithubSetup(scopes: readonly string[] = ["repo", "workflow"]): Promise<GithubAuthStatus> {
+  if (!mockGithub) return startLiveGithubSetup(scopes);
+  return githubAuthStatus(scopes);
 }
-
-// `gh auth status --json` needs gh 2.66+, so fall back rather than call an older gh signed out.
-async function ghLogin(): Promise<string | null> {
-  const statusText = await runGh(["auth", "status", "--json", "hosts"]).catch(() => "");
-  if (statusText) {
-    try {
-      const status = JSON.parse(statusText) as { hosts?: Record<string, Array<{ active?: boolean; login?: string; state?: string }>> };
-      const account = status.hosts?.["github.com"]?.find((candidate) => candidate.active && candidate.state === "success");
-      if (account?.login) return account.login;
-    } catch {}
-  }
-  return (await runGh(["api", "user", "--jq", ".login"]).catch(() => "")) || null;
-}
-
-// Resolves to trimmed stdout, empty on a non-zero exit; rejects only when gh cannot be spawned.
-async function runGh(args: string[]): Promise<string> {
-  const proc = Bun.spawn([ghExecutable, ...args], { stdout: "pipe", stderr: "ignore" });
-  const out = await new Response(proc.stdout).text();
-  return (await proc.exited) === 0 ? out.trim() : "";
-}
-
 
 export async function ghToken(): Promise<string> {
   if (mockGithub) return "fixture-token";
-  if (cachedToken) return cachedToken;
-  const proc = Bun.spawn([ghExecutable, "auth", "token"], { stdout: "pipe" });
-  const token = (await new Response(proc.stdout).text()).trim();
-  await proc.exited;
-  if (!token) throw new Error("gh auth token returned empty output");
-  cachedToken = token;
-  return token;
+  return liveGithubToken();
 }
 
 let cachedViewerLogin: string | null = null;

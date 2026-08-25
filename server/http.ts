@@ -46,6 +46,7 @@ import {
   fetchGithubQuota,
   GithubRequestError,
   githubAuthStatus,
+  startGithubSetup,
   StalePrHeadError,
   getViewerLogin,
   lookupPr,
@@ -59,6 +60,7 @@ import {
   type PrCommentSince,
   type PrDetail,
 } from "./github.ts";
+import type { GithubAuthStatus } from "./githubAuth.ts";
 import { type CommitFileStat, commitStatsFromMirror, conflictFilesFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError } from "./mirror.ts";
 import { checkState, type CheckState } from "./checkState.ts";
 import { currentBaseRef, discardMutation, enqueueMutation, mutationsForPr, retryMutation, type MutationPayload } from "./mutations.ts";
@@ -352,6 +354,8 @@ type HttpDependencies = {
   fetchPrCommentsSince: typeof fetchPrCommentsSince;
   lookupPrIndexes: typeof lookupPrIndexes;
   commitPrFileEdit: typeof commitPrFileEdit;
+  githubAuthStatus: typeof githubAuthStatus;
+  startGithubSetup: typeof startGithubSetup;
   generateCommitMessage: typeof generateCommitMessage;
   resolveReviewThread: typeof resolveReviewThread;
   refreshPr: typeof refreshPr;
@@ -372,6 +376,8 @@ const defaultHttpDependencies: HttpDependencies = {
   fetchPrCommentsSince,
   lookupPrIndexes,
   commitPrFileEdit,
+  githubAuthStatus,
+  startGithubSetup,
   generateCommitMessage,
   resolveReviewThread,
   refreshPr,
@@ -1402,6 +1408,19 @@ function isWorkflowScopeError(path: string, error: unknown): boolean {
     && error.graphqlErrors.some(({ type, message }) =>
       type === "FORBIDDEN" && /personal access token/i.test(message ?? ""));
 }
+const AUTH_SCOPE_ALLOWED: Record<string, true> = { repo: true, workflow: true };
+
+function requestedAuthScopes(value: unknown): string[] | null {
+  if (value === undefined) return ["repo", "workflow"];
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const scopes = [...new Set(value)];
+  return scopes.every((scope) => typeof scope === "string" && AUTH_SCOPE_ALLOWED[scope]) ? scopes.sort() as string[] : null;
+}
+
+function githubSetupResponse(auth: GithubAuthStatus, status = 401): Response {
+  return json({ error: auth.error ?? "GitHub setup required.", code: "github-setup", auth }, status);
+}
+
 
 
 
@@ -1453,12 +1472,13 @@ async function handlePrFileEdit(req: Request, runtime: HttpRuntime): Promise<Res
     if (error instanceof StalePrHeadError) {
       return json({ error: error.message, code: "stale-head" }, 409);
     }
-    if (isWorkflowScopeError(path, error)) {
-      return json({
-        error: "Authorize workflow edits with GitHub, then retry.",
-        code: "workflow-scope",
-      }, 403);
+    const workflowScopeMissing = isWorkflowScopeError(path, error);
+    const requiredScopes = workflowScopeMissing ? ["repo", "workflow"] : ["repo"];
+    let auth = await runtime.githubAuthStatus(requiredScopes);
+    if (workflowScopeMissing && auth.ok) {
+      auth = { ...auth, ok: false, state: "missing-scopes", error: "Allow workflow access.", missingScopes: ["workflow"] };
     }
+    if (!auth.ok) return githubSetupResponse(auth, 403);
     console.error(`PR file edit failed for ${repo}#${number}:`, error);
     return json({ error: "GitHub commit failed" }, 502);
   }
@@ -2063,6 +2083,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     if (isMockGithub && req.method !== "GET") {
       let allowed = (req.method === "POST" && url.pathname === "/api/archive")
         || (req.method === "POST" && url.pathname === "/api/commit-message")
+        || (req.method === "POST" && url.pathname === "/api/auth/setup")
         || (req.method === "PUT" && url.pathname === "/api/settings")
         || (req.method === "POST" && parts.length === 6 && parts[0] === "api" && parts[1] === "pr" && parts[5] === "merge-method");
       if (!allowed && req.method === "POST" && url.pathname === "/api/mutations") {
@@ -2094,7 +2115,13 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       return handleClosed(url);
     }
     if (req.method === "GET" && url.pathname === "/api/auth/status") {
-      return json(await githubAuthStatus());
+      const scopes = requestedAuthScopes(url.searchParams.get("scopes")?.split(","));
+      return scopes ? json(await runtime.githubAuthStatus(scopes)) : json({ error: "invalid auth scopes" }, 400);
+    }
+    if (req.method === "POST" && url.pathname === "/api/auth/setup") {
+      const body = await req.json().catch(() => null) as { scopes?: unknown } | null;
+      const scopes = requestedAuthScopes(body?.scopes);
+      return scopes ? json(await runtime.startGithubSetup(scopes)) : json({ error: "invalid auth scopes" }, 400);
     }
     if (req.method === "GET" && url.pathname === "/api/onboarding/repos") {
       return handleOnboardingRepos();

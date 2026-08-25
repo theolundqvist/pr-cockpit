@@ -2,6 +2,7 @@
   import { fetchAuthStatus, fetchOnboardingRepos, fetchRelayCoverage, fetchSettings, refreshInbox, saveSettings } from "./api.js";
   import { relativeTime } from "./time.js";
   import Kbd from "./Kbd.svelte";
+  import GithubSetupModal from "./GithubSetupModal.svelte";
 
   let { onDone, onCancel = null } = $props();
 
@@ -11,6 +12,7 @@
 
   let step = $state(1);
   let auth = $state(null);
+  let githubSetup = $state(null);
   let authLoading = $state(true);
   let repos = $state([]);
   let reposLoading = $state(false);
@@ -72,6 +74,11 @@
       authLoading = false;
     }
   }
+  function finishGithubSetup(status) {
+    auth = status;
+    githubSetup = null;
+  }
+
 
   async function loadRepos() {
     if (reposLoading) return;
@@ -247,7 +254,7 @@
 
       <div class="actions">
         {#if !auth?.ok && !authLoading}
-          <button class="secondary" type="button" onclick={checkAuth}>Re-check</button>
+          <button class="secondary" type="button" onclick={() => (githubSetup = { requiredScopes: ["repo", "workflow"], state: "error", ...auth })}>Set up GitHub</button>
         {/if}
         <button class="primary" type="submit" disabled={!auth?.ok}>Continue</button>
       </div>
@@ -393,6 +400,10 @@
       </div>
     {/if}
   </form>
+
+{#if githubSetup}
+  <GithubSetupModal initialStatus={githubSetup} onReady={finishGithubSetup} onClose={() => (githubSetup = null)} />
+{/if}
 </div>
 
 <style>

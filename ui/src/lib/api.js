@@ -138,6 +138,7 @@ export async function commitPrFileEdit(repo, number, path, expectedHeadOid, cont
   if (!res.ok) {
     const error = new Error(body?.error || `pr-file-edit ${res.status}`);
     error.code = body?.code;
+    error.auth = body?.auth;
     error.status = res.status;
     throw error;
   }
@@ -225,9 +226,20 @@ export async function searchPrs(q) {
   if (!res.ok) throw new Error(`search ${res.status}`);
   return (await res.json()).results;
 }
-export async function fetchAuthStatus() {
-  const res = await fetch("/api/auth/status");
+export async function fetchAuthStatus(scopes = ["repo", "workflow"]) {
+  const params = new URLSearchParams({ scopes: scopes.join(",") });
+  const res = await fetch(`/api/auth/status?${params}`);
   if (!res.ok) throw new Error(`auth status ${res.status}`);
+  return res.json();
+}
+
+export async function startGithubSetup(scopes) {
+  const res = await fetch("/api/auth/setup", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ scopes }),
+  });
+  if (!res.ok) throw new Error(`auth setup ${res.status}`);
   return res.json();
 }
 

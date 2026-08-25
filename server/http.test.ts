@@ -1054,8 +1054,16 @@ describe("PR file edits", () => {
     expect(refreshCalls).toBe(0);
   });
 
-  test("explains the workflow scope required by GitHub", async () => {
+  test("returns guided setup when workflow access is missing", async () => {
     const body = { ...requestBody, path: ".github/workflows/ci.yml" };
+    const auth = {
+      ok: false,
+      state: "missing-scopes" as const,
+      login: "octocat",
+      error: "Allow workflow access.",
+      requiredScopes: ["repo", "workflow"],
+      missingScopes: ["workflow"],
+    };
     const fetchHandler = buildFetchHandler(4820, {
       commitPrFileEdit: async () => {
         throw new GithubRequestError("GraphQL request failed", 502, [{
@@ -1063,15 +1071,47 @@ describe("PR file edits", () => {
           message: "Resource not accessible by personal access token",
         }]);
       },
+      githubAuthStatus: async (scopes) => {
+        expect(scopes).toEqual(["repo", "workflow"]);
+        return auth;
+      },
       refreshPr: async () => {},
     });
 
     const response = await fetchHandler(fileEditRequest(body));
     expect(response.status).toBe(403);
     expect(await response.json()).toEqual({
-      error: "Authorize workflow edits with GitHub, then retry.",
-      code: "workflow-scope",
+      error: "Allow workflow access.",
+      code: "github-setup",
+      auth,
     });
+  });
+
+  test("starts GitHub setup with only allowed requested scopes", async () => {
+    let requestedScopes: readonly string[] = [];
+    const auth = {
+      ok: false,
+      state: "authorizing" as const,
+      login: "octocat",
+      error: null,
+      requiredScopes: ["repo", "workflow"],
+      missingScopes: ["workflow"],
+    };
+    const fetchHandler = buildFetchHandler(4820, {
+      startGithubSetup: async (scopes) => {
+        requestedScopes = scopes;
+        return auth;
+      },
+    });
+
+    const response = await fetchHandler(new Request("http://127.0.0.1:4820/api/auth/setup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scopes: ["workflow", "repo"] }),
+    }));
+    expect(response.status).toBe(200);
+    expect(requestedScopes).toEqual(["repo", "workflow"]);
+    expect(await response.json()).toEqual(auth);
   });
 
   const invalidRequests: [string, Record<string, unknown>][] = [
