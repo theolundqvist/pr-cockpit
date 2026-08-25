@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { buildFetchHandler, buildPrAgentSummary, checkoutTargetFor, formatPrAgentSummary, mergeabilityNeedsRefresh, reviewThreadHandle, snapshotStatus, statsExcludingTests, trackedDetailIsStale } from "./http.ts";
 import { StalePrHeadError, type PrDetail } from "./github.ts";
-import { db, getCachedPrDetail, getPr, getSetting, saveDiff, saveFileContents, setSetting, upsertCachedPrDetail, upsertPr, upsertPrIndex } from "./db.ts";
+import { db, getCachedPrDetail, getPr, getSetting, listRunJobs, saveDiff, saveFileContents, setSetting, upsertCachedPrDetail, upsertPr, upsertPrIndex, upsertRunJob, upsertWorkflowRun } from "./db.ts";
 import { testMatcher } from "../ui/src/lib/testPath.js";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -310,6 +310,7 @@ describe("agent PR summary", () => {
     ]);
     expect(summary.openCommentsComplete).toBe(true);
   });
+
 
   test("drops a failed check the moment the same job is queued again, so agents never chase a stale run", () => {
     const rerun = structuredClone(detail) as PrDetail;
@@ -1261,6 +1262,106 @@ describe("contextual editor target", () => {
     } finally {
       rmSync(checkout, { recursive: true, force: true });
       rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+describe("Actions viewer API", () => {
+  test("serves current-head workflow jobs and an on-demand log", async () => {
+    const repo = "http-actions/viewer";
+    const number = 96133;
+    const head = "f".repeat(40);
+    const row = trackedPrRow({ repo, number, fetchedAt: "2026-08-25T08:00:00Z" });
+    upsertPr({
+      ...row,
+      head_sha: head,
+      detail_json: JSON.stringify({ ...JSON.parse(row.detail_json), headRefOid: head }),
+    });
+    upsertWorkflowRun({
+      repo,
+      run_id: 44,
+      run_attempt: 1,
+      pr_number: number,
+      head_sha: head,
+      head_branch: "actions-viewer",
+      workflow_name: "CI",
+      status: "completed",
+      conclusion: "failure",
+      event_at: "2026-08-25T08:02:00Z",
+      html_url: "https://github.com/http-actions/viewer/actions/runs/44",
+    });
+    upsertRunJob({
+      repo,
+      job_id: 4401,
+      run_id: 44,
+      run_attempt: 1,
+      head_sha: head,
+      head_branch: "actions-viewer",
+      workflow_name: "CI",
+      name: "build",
+      status: "completed",
+      conclusion: "failure",
+      started_at: "2026-08-25T08:00:00Z",
+      completed_at: "2026-08-25T08:02:00Z",
+      html_url: "https://github.com/http-actions/viewer/actions/runs/44/job/4401",
+      runner_name: "runner-3",
+      runner_group_name: "hosted",
+      labels_json: "[\"arm64\"]",
+      failed_step: "Compile",
+    });
+    let activations = 0;
+    const fetchHandler = buildFetchHandler(4820, {
+      activateActionsLease: async () => {
+        activations++;
+      },
+      actionJobLog: async (_repo, _headSha, jobId, full) => ({
+        job: listRunJobs(repo, head).find((job) => job.job_id === jobId)!,
+        body: full ? "complete log" : "tail",
+        truncated: !full,
+      }),
+    });
+
+    try {
+      const actionsResponse = await fetchHandler(new Request(`http://127.0.0.1:4820/api/pr/http-actions/viewer/${number}/actions`));
+      expect(actionsResponse.status).toBe(200);
+      expect(await actionsResponse.json()).toEqual({
+        headSha: head,
+        runs: [{
+          id: 44,
+          attempt: 1,
+          workflowName: "CI",
+          status: "completed",
+          conclusion: "failure",
+          eventAt: "2026-08-25T08:02:00Z",
+          htmlUrl: "https://github.com/http-actions/viewer/actions/runs/44",
+        }],
+        jobs: [{
+          id: 4401,
+          runId: 44,
+          attempt: 1,
+          workflowName: "CI",
+          name: "build",
+          status: "completed",
+          conclusion: "failure",
+          startedAt: "2026-08-25T08:00:00Z",
+          completedAt: "2026-08-25T08:02:00Z",
+          htmlUrl: "https://github.com/http-actions/viewer/actions/runs/44/job/4401",
+          runnerName: "runner-3",
+          runnerGroupName: "hosted",
+          labels: ["arm64"],
+          failedStep: "Compile",
+          logBytes: null,
+          logError: null,
+        }],
+      });
+      expect(activations).toBe(1);
+
+      const logResponse = await fetchHandler(new Request(`http://127.0.0.1:4820/api/pr/http-actions/viewer/${number}/actions/jobs/4401/log?full=1`));
+      expect(logResponse.status).toBe(200);
+      expect(await logResponse.json()).toMatchObject({ body: "complete log", truncated: false, job: { id: 4401, name: "build" } });
+    } finally {
+      db.run("DELETE FROM run_jobs WHERE repo = ?", [repo]);
+      db.run("DELETE FROM workflow_runs WHERE repo = ?", [repo]);
+      db.run("DELETE FROM prs WHERE repo = ? AND number = ?", [repo, number]);
     }
   });
 });

@@ -16,6 +16,7 @@ import {
   listPrIndex,
   listPrs,
   listRunJobs,
+  workflowRunsForLease,
   saveDiff,
   saveFileContents,
   setArchived,
@@ -28,6 +29,8 @@ import {
   type MutationRow,
   type PrIndexRow,
   type PrRow,
+  type RunJobRow,
+  type WorkflowRunRow,
 } from "./db.ts";
 import { localCheckoutBranchFor, localCheckoutPathFor, setLocalCheckoutBranch, worktreePathFor, worktreeWindowIdFor } from "./worktreeScan.ts";
 import { prKey } from "./prKey.ts";
@@ -94,7 +97,7 @@ import { createTmuxFocusHandler } from "./tmuxFocus.ts";
 import type { TmuxFocusHandler } from "./tmuxFocus.ts";
 import { needsMeRank } from "./rank.ts";
 import { invalidateInbox, invalidatePr } from "./rendererInvalidation.ts";
-import { activateActionsLease, cachedJobLogs, formatJobLogs, formatRunJobs } from "./runLogs.ts";
+import { actionJobLog, activateActionsLease, cachedJobLogs, formatJobLogs, formatRunJobs } from "./runLogs.ts";
 const cockpitRoot = process.cwd();
 
 function json(data: unknown, status = 200): Response {
@@ -351,6 +354,8 @@ type HttpDependencies = {
   resolveReviewThread: typeof resolveReviewThread;
   refreshPr: typeof refreshPr;
   handleTmuxFocus: TmuxFocusHandler;
+  activateActionsLease: typeof activateActionsLease;
+  actionJobLog: typeof actionJobLog;
 };
 
 type HttpRuntime = HttpDependencies & {
@@ -367,6 +372,8 @@ const defaultHttpDependencies: HttpDependencies = {
   resolveReviewThread,
   refreshPr,
   handleTmuxFocus: createTmuxFocusHandler(),
+  activateActionsLease,
+  actionJobLog,
 };
 async function handleGithubQuota(runtime: HttpRuntime): Promise<Response> {
   try {
@@ -1176,11 +1183,86 @@ function cachedActionsContext(owner: string, repo: string, number: string): {
   return { repoName, num, headSha: detail.headRefOid };
 }
 
-async function handleActionsLease(owner: string, repo: string, number: string): Promise<Response> {
+async function handleActionsLease(owner: string, repo: string, number: string, runtime: HttpRuntime): Promise<Response> {
   const context = cachedActionsContext(owner, repo, number);
   if (context instanceof Response) return context;
-  await activateActionsLease(context.repoName, context.num, context.headSha);
+  await runtime.activateActionsLease(context.repoName, context.num, context.headSha);
   return json({ ok: true });
+}
+
+function serializeActionRun(run: WorkflowRunRow) {
+  return {
+    id: run.run_id,
+    attempt: run.run_attempt,
+    workflowName: run.workflow_name,
+    status: run.status,
+    conclusion: run.conclusion,
+    eventAt: run.event_at,
+    htmlUrl: run.html_url,
+  };
+}
+
+function serializeActionJob(job: RunJobRow) {
+  const labels = JSON.parse(job.labels_json) as string[];
+  return {
+    id: job.job_id,
+    runId: job.run_id,
+    attempt: job.run_attempt,
+    workflowName: job.workflow_name,
+    name: job.name,
+    status: job.status,
+    conclusion: job.conclusion,
+    startedAt: job.started_at,
+    completedAt: job.completed_at,
+    htmlUrl: job.html_url,
+    runnerName: job.runner_name,
+    runnerGroupName: job.runner_group_name,
+    labels,
+    failedStep: job.failed_step,
+    logBytes: job.log_bytes,
+    logError: job.log_error,
+  };
+}
+
+async function handleActions(owner: string, repo: string, number: string, runtime: HttpRuntime): Promise<Response> {
+  const context = cachedActionsContext(owner, repo, number);
+  if (context instanceof Response) return context;
+  try {
+    await runtime.activateActionsLease(context.repoName, context.num, context.headSha);
+    const runs = workflowRunsForLease(context.repoName, context.num, context.headSha)
+      .sort((left, right) => Date.parse(right.event_at) - Date.parse(left.event_at))
+      .map(serializeActionRun);
+    const jobs = listRunJobs(context.repoName, context.headSha).map(serializeActionJob);
+    return json({ headSha: context.headSha, runs, jobs });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 502);
+  }
+}
+
+async function handleActionLog(
+  owner: string,
+  repo: string,
+  number: string,
+  jobId: string,
+  url: URL,
+  runtime: HttpRuntime,
+): Promise<Response> {
+  const context = cachedActionsContext(owner, repo, number);
+  if (context instanceof Response) return context;
+  const id = Number(jobId);
+  if (!Number.isSafeInteger(id) || id <= 0) return json({ error: "invalid job id" }, 400);
+  try {
+    const full = url.searchParams.get("full") === "1";
+    const result = await runtime.actionJobLog(context.repoName, context.headSha, id, full);
+    if (!result) return json({ error: "job is not cached for this PR head" }, 404);
+    return json({
+      job: serializeActionJob(result.job),
+      body: result.body,
+      truncated: result.truncated,
+    });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 502);
+  }
 }
 
 function handleAgentPrJobs(owner: string, repo: string, number: string): Response {
@@ -2121,6 +2203,26 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       parts.length === 6 &&
       parts[0] === "api" &&
       parts[1] === "pr" &&
+      parts[5] === "actions"
+    ) {
+      return handleActions(parts[2]!, parts[3]!, parts[4]!, runtime);
+    }
+    if (
+      req.method === "GET" &&
+      parts.length === 9 &&
+      parts[0] === "api" &&
+      parts[1] === "pr" &&
+      parts[5] === "actions" &&
+      parts[6] === "jobs" &&
+      parts[8] === "log"
+    ) {
+      return handleActionLog(parts[2]!, parts[3]!, parts[4]!, parts[7]!, url, runtime);
+    }
+    if (
+      req.method === "GET" &&
+      parts.length === 6 &&
+      parts[0] === "api" &&
+      parts[1] === "pr" &&
       parts[5] === "conflicts"
     ) {
       return handlePrConflicts(parts[2]!, parts[3]!, parts[4]!);
@@ -2167,7 +2269,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       if (!trustedCliHost || req.headers.get("x-pr-cockpit-cli") !== "1") {
         return json({ error: "trusted CLI request required" }, 403);
       }
-      return handleActionsLease(parts[3]!, parts[4]!, parts[5]!);
+      return handleActionsLease(parts[3]!, parts[4]!, parts[5]!, runtime);
     }
     if (
       req.method === "POST" &&

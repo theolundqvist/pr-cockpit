@@ -81,6 +81,7 @@ const liveFetchers: ActionsFetchers = {
 };
 const activations = new Map<string, { headSha: string; promise: Promise<void> }>();
 const reconciliations = new Map<string, { background: boolean; terminal: boolean; promise: Promise<boolean> }>();
+const logFetches = new Map<string, Promise<void>>();
 
 export function cleanJobLog(text: string): string {
   return text.replace(/^\uFEFF/, "").replace(TIMESTAMP_LINE_RE, "").replace(ANSI_RE, "");
@@ -365,6 +366,53 @@ function tail(text: string): string {
   const firstBreak = value.indexOf("\n");
   return firstBreak === -1 ? value : value.slice(firstBreak + 1);
 }
+export interface ActionJobLog extends CachedJobLog {
+  truncated: boolean;
+}
+
+export async function actionJobLog(
+  repo: string,
+  headSha: string,
+  jobId: number,
+  full = false,
+  fetchers: ActionsFetchers = liveFetchers,
+): Promise<ActionJobLog | null> {
+  let job = listRunJobs(repo, headSha).find((candidate) => candidate.job_id === jobId);
+  if (!job) return null;
+  if (job.status !== "completed") return { job, body: null, truncated: false };
+
+  if (getRunJobLog(repo, jobId) === null) {
+    const key = `${repo}:${jobId}`;
+    let pending = logFetches.get(key);
+    if (!pending) {
+      pending = (async () => {
+        try {
+          const body = cleanJobLog(await fetchers.fetchJobLog(repo, jobId));
+          const compressed = await gzipAsync(body);
+          if (!saveRunJobLog(repo, jobId, job.run_id, job.run_attempt, headSha, compressed, Buffer.byteLength(body))) {
+            throw new Error("job changed before its log could be cached");
+          }
+        } catch (error) {
+          saveRunJobLogError(repo, jobId, job.run_attempt, error instanceof Error ? error.message : String(error));
+          throw error;
+        }
+      })().finally(() => logFetches.delete(key));
+      logFetches.set(key, pending);
+    }
+    await pending;
+    job = listRunJobs(repo, headSha).find((candidate) => candidate.job_id === jobId) ?? job;
+  }
+
+  const compressed = getRunJobLog(repo, jobId);
+  if (!compressed) return { job, body: null, truncated: false };
+  const body = (await gunzipAsync(compressed)).toString();
+  return {
+    job,
+    body: full ? body : tail(body),
+    truncated: !full && Buffer.byteLength(body) > JOB_LOG_TAIL_BYTES,
+  };
+}
+
 
 export async function cachedJobLogs(repo: string, headSha: string, checkName?: string, full = false): Promise<CachedJobLog[]> {
   const jobs = listRunJobs(repo, headSha).filter((job) =>

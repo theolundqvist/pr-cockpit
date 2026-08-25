@@ -23,7 +23,7 @@
   const isShell = navigator.userAgent.includes("Electron");
 
   function parseRoute(hash) {
-    const match = hash.match(/^#\/pr\/([^/]+)\/([^/]+)\/(\d+)(?:\/(files|agents)|\/history\/([^/?]+)(?:\?symbol=([^&]+))?)?$/);
+    const match = hash.match(/^#\/pr\/([^/]+)\/([^/]+)\/(\d+)(?:\/(files|agents|actions)|\/history\/([^/?]+)(?:\?symbol=([^&]+))?)?$/);
     if (match) {
       let historyPath = null;
       let historySymbol = null;

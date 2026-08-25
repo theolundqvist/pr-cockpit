@@ -328,3 +328,47 @@ test("duplicate terminal deliveries and explicit activation share one reconcilia
   expect(result.calls).toEqual({ runs: 0, jobs: 1, logs: 1 });
   expect(result.reconciled).toBe(1);
 });
+
+test("a selected successful job fetches its full log once and serves a bounded tail", async () => {
+  const result = await runScenario("pr-cockpit-actions-viewer-log-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    dbm.upsertRunJob({
+      repo: "acme/app", job_id: 120, run_id: 12, run_attempt: 1, head_sha: head,
+      head_branch: "feature", workflow_name: "CI", name: "build", status: "completed",
+      conclusion: "success", started_at: "2026-08-24T10:00:00Z", completed_at: "2026-08-24T10:02:00Z",
+      html_url: null, runner_name: "runner-1", runner_group_name: "hosted",
+      labels_json: "[\\"arm64\\"]", failed_step: null,
+    });
+    const source = Array.from({ length: 30000 }, (_, i) => \`2026-08-24T10:00:00.000Z line-\${i}\`).join("\\n");
+    let fetches = 0;
+    const fetchers = {
+      fetchWorkflowRuns: async () => [],
+      fetchRunJobs: async () => [],
+      fetchJobLog: async () => { fetches++; return source; },
+      restRemaining: async () => 5000,
+    };
+    const [first, duplicate] = await Promise.all([
+      actions.actionJobLog("acme/app", head, 120, false, fetchers),
+      actions.actionJobLog("acme/app", head, 120, false, fetchers),
+    ]);
+    const full = await actions.actionJobLog("acme/app", head, 120, true, fetchers);
+    console.log(JSON.stringify({
+      fetches,
+      firstBytes: Buffer.byteLength(first.body),
+      duplicateBody: duplicate.body === first.body,
+      truncated: first.truncated,
+      fullBytes: Buffer.byteLength(full.body),
+      cleaned: !full.body.includes("2026-08-24T10:00:00.000Z"),
+      stored: dbm.db.query("SELECT log_gz IS NOT NULL AS stored,log_error FROM run_jobs WHERE job_id=120").get(),
+    }));
+  `);
+  expect(result.fetches).toBe(1);
+  expect(result.firstBytes).toBeLessThanOrEqual(262_144);
+  expect(result.duplicateBody).toBe(true);
+  expect(result.truncated).toBe(true);
+  expect(result.fullBytes).toBeGreaterThan(result.firstBytes);
+  expect(result.cleaned).toBe(true);
+  expect(result.stored).toEqual({ stored: 1, log_error: null });
+});

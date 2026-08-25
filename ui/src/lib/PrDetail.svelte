@@ -29,7 +29,7 @@
   import { loadPrIndex, prSummary } from "./prIndex.svelte.js";
   import { imageFallback, prKeyOwner, shouldCopyPrCockpitUrl, shouldCopyPrUrl } from "./dom.js";
   import { readLastViewed, writeLastViewed } from "./lastViewed.js";
-  import { relativeTime } from "./time.js";
+  import { durationText, relativeTime } from "./time.js";
   import { mermaidDiagrams } from "./mermaid.js";
   import { theme } from "./theme.svelte.js";
   import { setViewerLogin } from "./viewer.svelte.js";
@@ -46,6 +46,7 @@
   import { mergeGate as evalMergeGate, forceMergeAvailable as evalForceMerge } from "./mergeGate.js";
   import { quota } from "./quota.svelte.js";
   import { quotaImpact } from "./quotaImpact.js";
+  import ActionsView from "./ActionsView.svelte";
   import QuotaMergeModal from "./QuotaMergeModal.svelte";
   import MergeDecisionDialog from "./MergeDecisionDialog.svelte";
   import SplitButton from "./SplitButton.svelte";
@@ -835,11 +836,6 @@
     return summary ? `→ ${turn.toolName} — ${summary}` : `→ ${turn.toolName}`;
   }
 
-  function durationText(startedAt, endedAt) {
-    const ms = new Date(endedAt) - new Date(startedAt);
-    const mins = Math.round(ms / 60000);
-    return mins < 1 ? "<1m" : `${mins}m`;
-  }
 
   function runHealth(run) {
     if (run.state === "running") return "running";
@@ -1751,9 +1747,9 @@
         e.preventDefault();
         return;
       }
-      if (e.metaKey && ["1", "2", "3"].includes(e.key)) {
+      if (e.metaKey && ["1", "2", "3", "4"].includes(e.key)) {
         if (!rangeOpen && !pickerMode && !telescopeOpen) {
-          goToTab(e.key === "1" ? "conversation" : e.key === "2" ? "files" : "agents");
+          goToTab(e.key === "1" ? "conversation" : e.key === "2" ? "files" : e.key === "3" ? "agents" : "actions");
         }
         e.preventDefault();
         return;
@@ -2018,8 +2014,8 @@
     ...(pr ? [{ key: "⇧T", label: "focus terminal" }] : []),
     { key: "esc", label: "back" },
   ]);
-  let agentsKeys = $derived([
-    { key: "⌘1 / ⌘2 / ⌘3", label: "switch tab" },
+  let tabKeys = $derived([
+    { key: "⌘1 / ⌘2 / ⌘3 / ⌘4", label: "switch tab" },
     { key: "x", label: "close" },
     { key: "o", label: "github" },
     ...(pr ? [{ key: "⇧T", label: "focus terminal" }] : []),
@@ -2327,6 +2323,9 @@
         <a class="tab" class:active={tab === "agents"} href="#/pr/{repo}/{number}/agents" onclick={(event) => guardTabNavigation(event, "agents")}>
           Agents {#if agent?.state === "running"}<span class="tab-count">1</span>{/if} {#if tab !== "agents"}<Kbd keys="⌘3" />{/if}
         </a>
+        <a class="tab" class:active={tab === "actions"} href="#/pr/{repo}/{number}/actions" onclick={(event) => guardTabNavigation(event, "actions")}>
+          Actions {#if tab !== "actions"}<Kbd keys="⌘4" />{/if}
+        </a>
       </nav>
 
       {#if tab === "files"}
@@ -2475,6 +2474,8 @@
             {/if}
           </div>
         </div>
+      {:else if tab === "actions"}
+        <ActionsView {repo} {number} headSha={pr.headRefOid} />
       {:else}
         <div class="cols">
         <div class="left">
@@ -3124,7 +3125,7 @@
     {:else if copied.value}
       <div class="keybar copied-flash">{copied.value}</div>
     {:else}
-      <KeyBar keys={tab === "files" ? filesKeys : tab === "agents" ? agentsKeys : conversationKeys} />
+      <KeyBar keys={tab === "files" ? filesKeys : tab === "agents" || tab === "actions" ? tabKeys : conversationKeys} />
     {/if}
 
     <Telescope bind:this={telescope} {repo} headSha={pr.headRefOid} headRef={pr.headRefName} {testsHidden} changedFiles={files} onOpenChangedFile={openChangedFile} onOpenHistory={openFileHistory} bind:open={telescopeOpen} />
