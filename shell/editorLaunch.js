@@ -1,8 +1,9 @@
 const fs = require("fs");
-const { spawn, execFileSync } = require("child_process");
+const { randomUUID } = require("crypto");
+const { spawn, spawnSync, execFileSync } = require("child_process");
 
 function editorCommand(env) {
-  return env.VISUAL || env.EDITOR || "nvim";
+  return env.EDITOR || env.VISUAL || "vi";
 }
 
 // A packaged GUI app's PATH usually lacks homebrew/cargo bins, so probe known
@@ -78,6 +79,13 @@ function launchAlacritty(bin, dir, target, line, bounds, env) {
       error "window never appeared"
     end tell`;
   return new Promise((resolve) => {
+    let warning;
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      resolve(warning && !result.warning ? { ...result, warning } : result);
+    };
     const proc = spawn(bin, [
       "--title", title,
       "-o", "window.dynamic_title=false",
@@ -86,23 +94,21 @@ function launchAlacritty(bin, dir, target, line, bounds, env) {
       "--working-directory", dir,
       "-e", shell, "-ilc", editorInvocation(target, line, env),
     ], { detached: true, stdio: "ignore" });
-    proc.on("error", (err) => resolve({ error: `Alacritty launch failed: ${err.message}` }));
+    proc.once("error", (err) => finish({ error: `Alacritty launch failed: ${err.message}` }));
+    proc.once("close", (code) => finish({ ok: true, exitCode: code }));
     proc.unref();
 
     const osa = spawn("osascript", ["-e", script], { stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
     osa.stderr.on("data", (chunk) => (stderr += chunk));
     osa.on("close", (code) => {
-      if (code === 0) return resolve({ ok: true });
+      if (code === 0) return;
       const denied = /not allowed assistive access|osascript is not allowed/i.test(stderr);
-      resolve({
-        ok: true,
-        warning: denied
-          ? "Editor opened, but exact sizing needs Accessibility permission for PR Cockpit."
-          : "Editor opened, but the window couldn't be resized exactly.",
-      });
+      warning = denied
+        ? "Editor opened, but exact sizing needs Accessibility permission for PR Cockpit."
+        : "Editor opened, but the window couldn't be resized exactly.";
     });
-    osa.on("error", () => resolve({ ok: true, warning: "Editor opened, but osascript is unavailable." }));
+    osa.on("error", () => (warning = "Editor opened, but osascript is unavailable."));
   });
 }
 
@@ -114,12 +120,15 @@ function launchAppleTerminal(dir, target, line, bounds, env) {
       activate
       set editorTab to do script ${appleQuote(command)}
       set bounds of front window to {${bounds.x}, ${bounds.y}, ${bounds.x + bounds.width}, ${bounds.y + bounds.height}}
+      repeat while busy of editorTab
+        delay 0.1
+      end repeat
     end tell`;
   return new Promise((resolve) => {
     const osa = spawn("osascript", ["-e", script], { stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
     osa.stderr.on("data", (chunk) => (stderr += chunk));
-    osa.on("close", (code) => resolve(code === 0 ? { ok: true } : { error: `Terminal launch failed: ${stderr.trim()}` }));
+    osa.on("close", (code) => resolve(code === 0 ? { ok: true, exitCode: 0 } : { error: `Terminal launch failed: ${stderr.trim()}` }));
     osa.on("error", (err) => resolve({ error: `Terminal launch failed: ${err.message}` }));
   });
 }
@@ -131,14 +140,13 @@ function launchLinuxTerminal(dir, target, line, bounds, env) {
       detached: true,
       stdio: "ignore",
     });
-    proc.on("error", (err) => resolve({ error: `terminal launch failed: ${err.message}` }));
+    proc.once("error", (err) => resolve({ error: `terminal launch failed: ${err.message}` }));
+    proc.once("close", (code) => resolve({ ok: true, exitCode: code, warning: "Window bounds aren't applied on this platform." }));
     proc.unref();
-    // spawn reports ENOENT asynchronously; give it a tick before declaring success
-    setTimeout(() => resolve({ ok: true, warning: "Window bounds aren't applied on this platform." }), 100);
   });
 }
 
-// bounds = the cockpit BrowserWindow's current getBounds(); returns { ok, warning? } | { error }
+// bounds = the cockpit BrowserWindow's current getBounds(); resolves when the editor exits.
 async function launchEditorTerminal(dir, target, line, bounds, env = process.env, platform = process.platform) {
   if (platform !== "darwin") return launchLinuxTerminal(dir, target, line, bounds, env);
   const alacritty = alacrittyBin(env);
@@ -146,4 +154,80 @@ async function launchEditorTerminal(dir, target, line, bounds, env = process.env
   return launchAppleTerminal(dir, target, line, bounds, env);
 }
 
-module.exports = { launchEditorTerminal, editorCommand, editorInvocation, alacrittyBin };
+const editorSessions = new Map();
+
+function headFile(checkout, relativePath) {
+  const result = spawnSync("git", ["-C", checkout, "show", `HEAD:${relativePath}`], {
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  if (result.status !== 0) {
+    throw new Error(result.stderr.toString().trim() || `${relativePath} is unavailable at the PR head`);
+  }
+  return result.stdout;
+}
+
+async function runEditorSession(checkout, target, relativePath, line, bounds, env = process.env, platform = process.platform) {
+  let baseline;
+  try {
+    baseline = headFile(checkout, relativePath);
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+  const result = await launchEditorTerminal(checkout, target, line, bounds, env, platform);
+  if (result.error) return result;
+
+  let edited;
+  try {
+    edited = fs.readFileSync(target);
+  } catch (err) {
+    return { error: `Couldn't read the edited file: ${err.message}` };
+  }
+  if (edited.equals(baseline)) {
+    if (result.exitCode) return { error: `Editor exited with status ${result.exitCode}.` };
+    return { ...result, changed: false };
+  }
+  const content = edited.toString("utf8");
+  if (!Buffer.from(content, "utf8").equals(edited)) {
+    return { error: "The edited file is not UTF-8 and can't be reviewed in PR Cockpit." };
+  }
+  const sessionId = randomUUID();
+  editorSessions.set(sessionId, { target, baseline, edited });
+  return {
+    ...result,
+    changed: true,
+    content,
+    sessionId,
+    warning: result.exitCode ? `Editor exited with status ${result.exitCode}; review the saved changes before committing.` : result.warning,
+  };
+}
+
+function finishEditorSession(sessionId) {
+  const session = editorSessions.get(sessionId);
+  if (!session) return { error: "Editor session expired; the worktree changes were preserved." };
+  let current;
+  try {
+    current = fs.readFileSync(session.target);
+  } catch (err) {
+    return { error: `Couldn't inspect the edited file: ${err.message}` };
+  }
+  if (!current.equals(session.edited)) {
+    return { error: "The file changed again; the worktree changes were preserved." };
+  }
+  try {
+    fs.writeFileSync(session.target, session.baseline);
+  } catch (err) {
+    return { error: `Couldn't clean the editor worktree: ${err.message}` };
+  }
+  editorSessions.delete(sessionId);
+  return { ok: true };
+}
+
+module.exports = {
+  launchEditorTerminal,
+  runEditorSession,
+  finishEditorSession,
+  editorCommand,
+  editorInvocation,
+  alacrittyBin,
+};

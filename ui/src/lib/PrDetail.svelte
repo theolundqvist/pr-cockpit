@@ -116,6 +116,8 @@
   let detailLoadPromise = null;
   let detailRefreshPromise = null;
   let detailRefreshQueued = false;
+  let externalEditorBusy = $state(false);
+  let preparedEditorKey = null;
 
   $effect(() => {
     const key = prKeyOf(repo, number);
@@ -1200,7 +1202,11 @@
     return { path: files[index].path, line: Number.isInteger(line) && line > 0 ? line : null };
   }
 
-  async function openEditor() {
+  function currentEditorTarget() {
+    return editorTargetFromDiff() ?? (files[fileIndex] ? { path: files[fileIndex].path, line: null } : null);
+  }
+
+  async function openInlineEditor() {
     if (!pr || !fileEditable) {
       showFlash("Inline editing is only available for the current open pull request.");
       return;
@@ -1213,9 +1219,66 @@
       await new Promise((resolve) => requestAnimationFrame(resolve));
     }
     if (!diffView || !(await diffView.openEditor(editorTargetFromDiff()))) {
-      showFlash("Choose an editable file before opening the editor.");
+      showFlash("Choose an editable file before opening the inline editor.");
     }
   }
+
+  async function finishExternalEdit(sessionId) {
+    const result = await window.cockpitShell?.finishEditor?.(sessionId);
+    if (result?.error) showFlash(result.error);
+  }
+
+  async function openExternalEditor() {
+    if (externalEditorBusy) return;
+    if (!pr || !fileEditable) {
+      showFlash("External editing is only available for the current open pull request.");
+      return;
+    }
+    if (!window.cockpitShell?.openEditor) {
+      showFlash("External editing is only available in the desktop app.");
+      return;
+    }
+    const target = currentEditorTarget();
+    if (!target) {
+      showFlash("Choose an editable file before opening the external editor.");
+      return;
+    }
+    externalEditorBusy = true;
+    let result;
+    try {
+      result = await window.cockpitShell.openEditor(repo, number, target);
+    } catch (error) {
+      showFlash(error instanceof Error ? error.message : "Couldn't open the external editor.");
+      return;
+    } finally {
+      externalEditorBusy = false;
+    }
+    if (result?.error) {
+      showFlash(result.error);
+      return;
+    }
+    if (result?.warning) showFlash(result.warning);
+    if (!result?.changed) return;
+    if (tab !== "files") {
+      goToTab("files");
+      await tick();
+    }
+    for (let attempt = 0; attempt < 20 && !diffView; attempt++) {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    if (!diffView || !(await diffView.reviewExternalEdit(target, result.content, result.sessionId))) {
+      await finishExternalEdit(result.sessionId);
+      showFlash("Couldn't show the editor changes for this file.");
+    }
+  }
+
+  $effect(() => {
+    if (tab !== "files" || !fileEditable || !pr?.headRefOid || !window.cockpitShell?.prepareEditor) return;
+    const key = `${repo}#${number}@${pr.headRefOid}`;
+    if (key === preparedEditorKey) return;
+    preparedEditorKey = key;
+    void window.cockpitShell.prepareEditor(repo, number);
+  });
 
   function copyBranchName() {
     if (!pr?.headRefName) return;
@@ -1894,7 +1957,9 @@
       } else if (e.key === "r") {
         revealReply();
       } else if (e.key === "e") {
-        openEditor();
+        openInlineEditor();
+      } else if (e.key === "E") {
+        openExternalEditor();
       } else if (e.key === "m") {
         if (mergeGate.action === "merge" && !mergeMutation) requestMerge();
         else if (mergeGate.reason) mergeFlash.show(mergeGate.reason);
@@ -1912,8 +1977,6 @@
         focusTerminal();
       } else if (e.key === "p") {
         promptOpen = true;
-      } else if (tab === "conversation" && e.key === "E" && pr.body && !editingBody && !editBodyMutation) {
-        startEditBody();
       } else if (autofixDef?.keybind === e.key && fixShortcutTarget) {
         if (fixShortcutTarget === "ci") ciFixConfirm = true;
         else if (fixShortcutTarget === "conflict") conflictResolveConfirm = true;
@@ -1986,8 +2049,8 @@
     { key: "d", label: "files" },
     { key: "c", label: "comment" },
     { key: "r", label: "reply" },
-    { key: "e", label: "editor" },
-    ...(pr?.body ? [{ key: "⇧E", label: "edit description" }] : []),
+    { key: "e", label: "edit inline" },
+    { key: "⇧E", label: "editor" },
     ...(canReview ? [{ key: "v", label: "review" }] : []),
     { key: "s", label: "assign" },
     { key: "q", label: "request review" },
@@ -2007,7 +2070,8 @@
     { key: "x", label: "hide tests" },
     { key: "h", label: "file history" },
     { key: "r", label: "reply" },
-    { key: "e", label: "editor" },
+    { key: "e", label: "edit inline" },
+    { key: "⇧E", label: "editor" },
     { key: "s", label: "assign" },
     { key: "q", label: "request review" },
     mergeKey,
@@ -2395,6 +2459,7 @@
                 editable={fileEditable}
                 onCommitFileEdit={commitFileEdit}
                 onGenerateCommitMessage={(path, hunk) => generateCommitMessage(repo, number, path, hunk)}
+                onFinishExternalEdit={finishExternalEdit}
                 layout={prefs.diffLayout}
               />
             {/if}

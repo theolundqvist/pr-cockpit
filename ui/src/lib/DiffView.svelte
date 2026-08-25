@@ -32,6 +32,7 @@
     editable = false,
     onCommitFileEdit = null,
     onGenerateCommitMessage = null,
+    onFinishExternalEdit = null,
     base = null,
     onOpenHistory = null,
     onLookupDefinition = null,
@@ -672,6 +673,7 @@
       original: "",
       content: "",
       message: change?.message ?? "",
+      externalSessionId: change?.externalSessionId ?? null,
       phase: "loading",
       error: null,
       suggestionPhase: change?.message ? "ready" : "idle",
@@ -690,7 +692,7 @@
       } else {
         fileEditor = {
           ...fileEditor,
-          eol: normalized.eol,
+          eol: change?.eol ?? normalized.eol,
           original: normalized.content,
           content: change ? change.apply(normalized.content) : normalized.content,
           phase: change ? "review" : "editing",
@@ -705,10 +707,12 @@
     }
   }
 
-  function discardFileEdit() {
+  async function discardFileEdit() {
     if (fileEditor?.phase === "committing") return;
+    const editor = fileEditor;
     fileEditRequest = null;
-    fileEditor = null;
+    if (editor?.externalSessionId) await onFinishExternalEdit?.(editor.externalSessionId);
+    if (fileEditor === editor) fileEditor = null;
   }
 
   export function finishFileEdit() {
@@ -742,6 +746,28 @@
     const line = target?.line;
     const row = Number.isInteger(line) ? section.querySelector(`.file-diff-content .line[data-new-line="${line}"]`) : null;
     await startFileEdit(file, row ? editPlacement(section, row) : fallbackEditPlacement(section));
+    return true;
+  }
+
+  export async function reviewExternalEdit(target, content, sessionId) {
+    if (fileEditor || !editable || !target || typeof content !== "string" || !sessionId) return false;
+    const normalized = normalizeFileEndings(content);
+    if (!normalized) return false;
+    const index = files.findIndex((file) => file.path === target.path);
+    const file = files[index];
+    const section = document.getElementById(`diff-file-${index}`);
+    if (!file || !section || file.isBinary || file.isDeleted) return false;
+    if (collapsed.has(file.path)) {
+      onToggleFile(file);
+      await tick();
+    }
+    const line = target.line;
+    const row = Number.isInteger(line) ? section.querySelector(`.file-diff-content .line[data-new-line="${line}"]`) : null;
+    await startFileEdit(file, row ? editPlacement(section, row) : fallbackEditPlacement(section), {
+      apply: () => normalized.content,
+      eol: normalized.eol,
+      externalSessionId: sessionId,
+    });
     return true;
   }
 
@@ -811,7 +837,8 @@
     try {
       const content = editor.eol === "\r\n" ? editor.content.replace(/\n/g, "\r\n") : editor.content;
       await onCommitFileEdit(editor.path, editor.expectedHeadOid, content, message);
-      if (fileEditor?.path === editor.path) fileEditor = null;
+      if (editor.externalSessionId) await onFinishExternalEdit?.(editor.externalSessionId);
+      if (fileEditor === editor) fileEditor = null;
     } catch (error) {
       if (fileEditor?.path === editor.path) {
         fileEditor.phase = "review";
