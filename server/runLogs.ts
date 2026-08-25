@@ -32,7 +32,6 @@ import {
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
 
-export const JOB_LOG_TAIL_BYTES = 262_144;
 export const REST_BACKGROUND_RESERVE = 500;
 const LOG_WORTHY_CONCLUSION = new Set(["failure", "cancelled", "timed_out", "action_required", "neutral", "startup_failure", "stale"]);
 const TIMESTAMP_LINE_RE = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z /gm;
@@ -473,30 +472,22 @@ export interface CachedJobLog {
   body: string | null;
 }
 
-function tail(text: string): string {
-  if (Buffer.byteLength(text) <= JOB_LOG_TAIL_BYTES) return text;
-  const value = Buffer.from(text).subarray(-JOB_LOG_TAIL_BYTES).toString();
-  const firstBreak = value.indexOf("\n");
-  return firstBreak === -1 ? value : value.slice(firstBreak + 1);
-}
 export interface ActionJobLog extends CachedJobLog {
   state: "pending" | "not-produced" | "ready";
-  truncated: boolean;
 }
 
 export async function actionJobLog(
   repo: string,
   headSha: string,
   jobId: number,
-  full = false,
   fetchers: ActionsFetchers = liveFetchers,
 ): Promise<ActionJobLog | null> {
   let job = listRunJobs(repo, headSha).find((candidate) => candidate.job_id === jobId);
   if (!job) return null;
-  if (!jobIsComplete(job)) return { job, body: null, state: "pending", truncated: false };
-  if (!jobProducesLog(job)) return { job, body: null, state: "not-produced", truncated: false };
+  if (!jobIsComplete(job)) return { job, body: null, state: "pending" };
+  if (!jobProducesLog(job)) return { job, body: null, state: "not-produced" };
 
-  if (getRunJobLog(repo, jobId) === null) {
+  if (getRunJobLog(repo, jobId) === null || job.log_truncated === 1) {
     const key = `${repo}:${jobId}`;
     let pending = logFetches.get(key);
     if (!pending) {
@@ -519,18 +510,16 @@ export async function actionJobLog(
   }
 
   const compressed = getRunJobLog(repo, jobId);
-  if (!compressed) return { job, body: null, state: "ready", truncated: false };
-  const body = (await gunzipAsync(compressed)).toString();
+  if (!compressed) return { job, body: null, state: "ready" };
   return {
     job,
     state: "ready",
-    body: full ? body : tail(body),
-    truncated: !full && Buffer.byteLength(body) > JOB_LOG_TAIL_BYTES,
+    body: (await gunzipAsync(compressed)).toString(),
   };
 }
 
 
-export async function cachedJobLogs(repo: string, headSha: string, checkName?: string, full = false): Promise<CachedJobLog[]> {
+export async function cachedJobLogs(repo: string, headSha: string, checkName?: string): Promise<CachedJobLog[]> {
   const jobs = listRunJobs(repo, headSha).filter((job) =>
     jobIsComplete(job) && job.conclusion !== null && LOG_WORTHY_CONCLUSION.has(job.conclusion)
   );
@@ -538,8 +527,7 @@ export async function cachedJobLogs(repo: string, headSha: string, checkName?: s
   const entries: CachedJobLog[] = [];
   for (const job of matched) {
     const gz = getRunJobLog(repo, job.job_id);
-    const complete = gz ? (await gunzipAsync(gz)).toString() : null;
-    entries.push({ job, body: complete === null || full ? complete : tail(complete) });
+    entries.push({ job, body: gz ? (await gunzipAsync(gz)).toString() : null });
   }
   return entries;
 }
@@ -556,13 +544,12 @@ export function formatRunJobs(headSha: string, jobs: RunJobRow[]): string {
   return `Cached Actions jobs for ${headSha}\n\n${rows.join("\n")}\n`;
 }
 
-export function formatJobLogs(headSha: string, entries: CachedJobLog[], full = false): string {
+export function formatJobLogs(headSha: string, entries: CachedJobLog[]): string {
   if (entries.length === 0) return `No cached jobs for ${headSha}. Nothing failed, or the run has not finished.\n`;
   const sections = entries.map(({ job, body }) => {
     const facts = [
       job.conclusion ?? job.status,
       job.failed_step ? `failed step: ${job.failed_step}` : null,
-      !full && job.log_bytes !== null && job.log_bytes > JOB_LOG_TAIL_BYTES ? `last ${JOB_LOG_TAIL_BYTES / 1024} KB` : null,
       job.log_truncated === 1 ? "legacy truncated log" : null,
       job.html_url,
     ].filter((fact) => fact !== null);

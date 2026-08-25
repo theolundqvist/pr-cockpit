@@ -51,9 +51,8 @@ export async function fetchActionGraph(repo, number) {
 }
 
 
-export async function fetchActionLog(repo, number, jobId, full = false) {
-  const suffix = full ? "?full=1" : "";
-  const res = await fetch(`/api/pr/${repo}/${number}/actions/jobs/${jobId}/log${suffix}`);
+export async function fetchActionLog(repo, number, jobId) {
+  const res = await fetch(`/api/pr/${repo}/${number}/actions/jobs/${jobId}/log`);
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new Error(body?.error || `action log ${res.status}`);
   return body;

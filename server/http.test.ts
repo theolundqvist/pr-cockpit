@@ -1417,11 +1417,10 @@ describe("Actions viewer API", () => {
         activations++;
         return Promise.withResolvers<void>().promise;
       },
-      actionJobLog: async (_repo, _headSha, jobId, full) => ({
+      actionJobLog: async (_repo, _headSha, jobId) => ({
         job: listRunJobs(repo, head).find((job) => job.job_id === jobId)!,
-        body: full ? "complete log" : "tail",
+        body: "complete log",
         state: "ready",
-        truncated: !full,
       }),
     });
 
@@ -1466,9 +1465,9 @@ describe("Actions viewer API", () => {
       });
       expect(activations).toBe(1);
 
-      const logResponse = await fetchHandler(new Request(`http://127.0.0.1:4820/api/pr/http-actions/viewer/${number}/actions/jobs/4401/log?full=1`));
+      const logResponse = await fetchHandler(new Request(`http://127.0.0.1:4820/api/pr/http-actions/viewer/${number}/actions/jobs/4401/log`));
       expect(logResponse.status).toBe(200);
-      expect(await logResponse.json()).toMatchObject({ body: "complete log", state: "ready", truncated: false, job: { id: 4401, name: "build" } });
+      expect(await logResponse.json()).toMatchObject({ body: "complete log", state: "ready", job: { id: 4401, name: "build" } });
 
       let finishActivation = () => {};
       const activation = new Promise<void>((resolve) => {

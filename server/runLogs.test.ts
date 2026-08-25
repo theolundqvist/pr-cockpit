@@ -119,7 +119,7 @@ test("a terminal job event normalizes stale status and caches a rerun log", asyn
       runnerGroupName: "hosted", labels: ["arm64"], failedStep: "bun test",
     } }, fetchers);
     const cached = await actions.cachedJobLogs("acme/app", head);
-    const selected = await actions.actionJobLog("acme/app", head, 41, false, fetchers);
+    const selected = await actions.actionJobLog("acme/app", head, 41, fetchers);
     console.log(JSON.stringify({
       logFetches,
       row: dbm.db.query("SELECT status,conclusion,log_gz IS NOT NULL AS logged FROM run_jobs WHERE job_id=41").get(),
@@ -176,14 +176,13 @@ test("concurrent activation bootstraps once and terminal attempts reconcile once
     const first = JSON.parse(JSON.stringify(calls));
     await actions.activateActionsLease("acme/app", 7, head, fetchers);
     const cached = await actions.cachedJobLogs("acme/app", head);
-    const tail = cached[0].body;
-    const full = (await actions.cachedJobLogs("acme/app", head, undefined, true))[0].body;
+    const body = cached[0].body;
     console.log(JSON.stringify({
       first, after: calls, cachedJobs: cached.map(({ job }) => job.job_id).sort((a, b) => a - b),
       successfulStored: dbm.db.query("SELECT log_gz IS NOT NULL AS stored FROM run_jobs WHERE job_id=111").get().stored,
       bytes: dbm.db.query("SELECT log_bytes,log_truncated FROM run_jobs WHERE job_id=110").get(),
-      tailBytes: Buffer.byteLength(tail), fullBytes: Buffer.byteLength(full),
-      cleaned: !full.includes("2026-08-24T10:00:00.000Z") && !full.includes("\\u001b[31m"),
+      returnedBytes: Buffer.byteLength(body),
+      cleaned: !body.includes("2026-08-24T10:00:00.000Z") && !body.includes("\\u001b[31m"),
       reconciled: dbm.db.query("SELECT reconciled_at IS NOT NULL AS done FROM workflow_runs WHERE run_id=11").get().done,
     }));
   `);
@@ -192,9 +191,8 @@ test("concurrent activation bootstraps once and terminal attempts reconcile once
   expect(result.cachedJobs).toEqual([110, 113, 114]);
   expect(result.successfulStored).toBe(1);
   expect(result.bytes.log_truncated).toBe(0);
-  expect(result.tailBytes).toBeLessThanOrEqual(262_144);
-  expect(result.fullBytes).toBe(result.bytes.log_bytes);
-  expect(result.fullBytes).toBeGreaterThan(result.tailBytes);
+  expect(result.returnedBytes).toBe(result.bytes.log_bytes);
+  expect(result.returnedBytes).toBeGreaterThan(262_144);
   expect(result.cleaned).toBe(true);
   expect(result.reconciled).toBe(1);
 });
@@ -370,7 +368,7 @@ test("duplicate terminal deliveries and explicit activation share one reconcilia
   expect(result.reconciled).toBe(1);
 });
 
-test("a selected successful job fetches its full log once and serves a bounded tail", async () => {
+test("a selected successful job fetches and serves its full log once", async () => {
   const result = await runScenario("pr-cockpit-actions-viewer-log-", `
     const actions = await import(${JSON.stringify(runLogsUrl)});
     const dbm = await import(${JSON.stringify(dbUrl)});
@@ -391,29 +389,25 @@ test("a selected successful job fetches its full log once and serves a bounded t
       restRemaining: async () => 5000,
     };
     const [first, duplicate] = await Promise.all([
-      actions.actionJobLog("acme/app", head, 120, false, fetchers),
-      actions.actionJobLog("acme/app", head, 120, false, fetchers),
+      actions.actionJobLog("acme/app", head, 120, fetchers),
+      actions.actionJobLog("acme/app", head, 120, fetchers),
     ]);
-    const full = await actions.actionJobLog("acme/app", head, 120, true, fetchers);
     console.log(JSON.stringify({
       state: first.state,
       fetches,
       firstBytes: Buffer.byteLength(first.body),
       duplicateBody: duplicate.body === first.body,
-      truncated: first.truncated,
-      fullBytes: Buffer.byteLength(full.body),
-      cleaned: !full.body.includes("2026-08-24T10:00:00.000Z"),
-      stored: dbm.db.query("SELECT log_gz IS NOT NULL AS stored,log_error FROM run_jobs WHERE job_id=120").get(),
+      cleaned: !first.body.includes("2026-08-24T10:00:00.000Z"),
+      stored: dbm.db.query("SELECT log_gz IS NOT NULL AS stored,log_bytes,log_error FROM run_jobs WHERE job_id=120").get(),
     }));
   `);
   expect(result.fetches).toBe(1);
   expect(result.state).toBe("ready");
-  expect(result.firstBytes).toBeLessThanOrEqual(262_144);
+  expect(result.firstBytes).toBeGreaterThan(262_144);
+  expect(result.firstBytes).toBe(result.stored.log_bytes);
   expect(result.duplicateBody).toBe(true);
-  expect(result.truncated).toBe(true);
-  expect(result.fullBytes).toBeGreaterThan(result.firstBytes);
   expect(result.cleaned).toBe(true);
-  expect(result.stored).toEqual({ stored: 1, log_error: null });
+  expect(result.stored).toEqual({ stored: 1, log_bytes: result.firstBytes, log_error: null });
 });
 
 test("a skipped job reports that no log was produced without fetching GitHub", async () => {
@@ -428,7 +422,7 @@ test("a skipped job reports that no log was produced without fetching GitHub", a
       runner_group_name: null, labels_json: "[]", failed_step: null,
     });
     let fetches = 0;
-    const log = await actions.actionJobLog("acme/app", head, 121, false, {
+    const log = await actions.actionJobLog("acme/app", head, 121, {
       fetchWorkflowRuns: async () => [],
       fetchRunJobs: async () => [],
       fetchJobLog: async () => { fetches++; return ""; },

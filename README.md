@@ -73,7 +73,6 @@ pr-cockpit owner/repo#123 --diff             # cached diff
 pr-cockpit owner/repo#123 --file src/app.ts  # full file at the PR head
 pr-cockpit owner/repo#123 --jobs             # cached queued, running, and completed jobs
 pr-cockpit owner/repo#123 --logs [check]     # cached failed and cancelled logs
-pr-cockpit owner/repo#123 --logs --full      # complete stored logs
 pr-cockpit resolve owner/repo#123 HANDLE     # resolve a review thread
 pr-cockpit update                            # fast-forward and rebuild
 ```

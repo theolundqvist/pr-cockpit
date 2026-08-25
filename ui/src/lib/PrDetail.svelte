@@ -2449,6 +2449,10 @@
         </a>
       </nav>
 
+      <div style:display={tab === "actions" ? "contents" : "none"}>
+        <ActionsView {repo} {number} headSha={pr.headRefOid} bind:runUrl={actionsRunUrl} />
+      </div>
+
       {#if tab === "files"}
         <div class="files-layout">
           <div class="files-toolbar">
@@ -2594,9 +2598,7 @@
             {/if}
           </div>
         </div>
-      {:else if tab === "actions"}
-        <ActionsView {repo} {number} headSha={pr.headRefOid} bind:runUrl={actionsRunUrl} />
-      {:else}
+      {:else if tab !== "actions"}
         <div class="cols">
         <div class="left">
           {#if pr.body}

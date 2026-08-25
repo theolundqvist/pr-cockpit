@@ -305,7 +305,7 @@
 
   .output-line code {
     padding: 0 14px 0 10px;
-    color: var(--text-dim);
+    color: var(--text);
     font: inherit;
     overflow-wrap: anywhere;
     white-space: pre-wrap;
@@ -314,7 +314,7 @@
   .line-number {
     padding-right: 10px;
     border-right: 1px solid var(--border);
-    color: var(--text-faint);
+    color: var(--text-dim);
     font-variant-numeric: tabular-nums;
     text-align: right;
     user-select: none;

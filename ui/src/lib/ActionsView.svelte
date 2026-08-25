@@ -147,12 +147,12 @@
   });
 
 
-  async function loadLog(job, full = false) {
+  async function loadLog(job) {
     const id = job.id;
     logLoadingId = id;
     try {
-      const result = await fetchActionLog(repo, number, id, full);
-      if (selectedJobId !== id && !full) return;
+      const result = await fetchActionLog(repo, number, id);
+      if (selectedJobId !== id) return;
       logs = { ...logs, [id]: result };
       const nextErrors = { ...logErrors };
       delete nextErrors[id];
@@ -301,14 +301,6 @@
           <div class="empty log-empty">GitHub skipped this job, so it produced no log.</div>
         {:else if selectedLog?.body}
           <ActionLog body={selectedLog.body} jobConclusion={selectedJob.conclusion} failedStep={selectedJob.failedStep} {statusIcon} />
-          {#if selectedLog.truncated}
-            <div class="log-footer">
-              <span>Showing the last 256 KB</span>
-              <button class="link" disabled={logLoadingId === selectedJob.id} onclick={() => loadLog(selectedJob, true)}>
-                {logLoadingId === selectedJob.id ? "Loading…" : "Show full log"}
-              </button>
-            </div>
-          {/if}
         {:else}
           <div class="empty log-empty">No log is available for this job.</div>
         {/if}
@@ -578,14 +570,6 @@
     flex-wrap: wrap;
     gap: 5px 12px;
     margin-top: 6px;
-  }
-  .log-footer {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 8px 14px;
-    border-top: 1px solid var(--border);
-    background: var(--surface);
   }
   .empty {
     display: flex;

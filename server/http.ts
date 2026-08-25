@@ -1272,7 +1272,6 @@ async function handleActionLog(
   repo: string,
   number: string,
   jobId: string,
-  url: URL,
   runtime: HttpRuntime,
 ): Promise<Response> {
   const context = cachedActionsContext(owner, repo, number);
@@ -1280,14 +1279,12 @@ async function handleActionLog(
   const id = Number(jobId);
   if (!Number.isSafeInteger(id) || id <= 0) return json({ error: "invalid job id" }, 400);
   try {
-    const full = url.searchParams.get("full") === "1";
-    const result = await runtime.actionJobLog(context.repoName, context.headSha, id, full);
+    const result = await runtime.actionJobLog(context.repoName, context.headSha, id);
     if (!result) return json({ error: "job is not cached for this PR head" }, 404);
     return json({
       job: serializeActionJob(result.job),
       body: result.body,
       state: result.state,
-      truncated: result.truncated,
     });
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : String(error) }, 502);
@@ -1306,9 +1303,8 @@ async function handleAgentPrLogs(owner: string, repo: string, number: string, ur
   const context = cachedActionsContext(owner, repo, number);
   if (context instanceof Response) return context;
   const check = url.searchParams.get("check") ?? undefined;
-  const full = url.searchParams.get("full") === "1";
-  const entries = await cachedJobLogs(context.repoName, context.headSha, check, full);
-  return new Response(formatJobLogs(context.headSha, entries, full), {
+  const entries = await cachedJobLogs(context.repoName, context.headSha, check);
+  return new Response(formatJobLogs(context.headSha, entries), {
     headers: { "content-type": "text/plain; charset=utf-8" },
   });
 }
@@ -2344,7 +2340,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       parts[6] === "jobs" &&
       parts[8] === "log"
     ) {
-      return handleActionLog(parts[2]!, parts[3]!, parts[4]!, parts[7]!, url, runtime);
+      return handleActionLog(parts[2]!, parts[3]!, parts[4]!, parts[7]!, runtime);
     }
     if (
       req.method === "GET" &&
