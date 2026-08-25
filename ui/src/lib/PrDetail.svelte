@@ -1017,6 +1017,7 @@
 
   let liveState = $derived(!!pr && pr.state.toUpperCase() === "OPEN");
   let mergedState = $derived(!!pr && pr.state.toUpperCase() === "MERGED");
+  let canReview = $derived(!mergedState && !pr?.viewerIsAuthor);
   let onLocalBranch = $derived(!!pr && pr.localBranch === pr.headRefName);
   let hasConflicts = $derived(!!pr && (pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "DIRTY"));
 
@@ -1888,7 +1889,7 @@
         rangeOpen = true;
       } else if (tab === "conversation" && e.key === "c") {
         focusTarget("#composer-input");
-      } else if (tab === "conversation" && e.key === "v" && !mergedState) {
+      } else if (tab === "conversation" && e.key === "v" && canReview) {
         focusTarget("#verdict-control");
       } else if (e.key === "r") {
         revealReply();
@@ -1987,7 +1988,7 @@
     { key: "r", label: "reply" },
     { key: "e", label: "editor" },
     ...(pr?.body ? [{ key: "⇧E", label: "edit description" }] : []),
-    ...(!mergedState && !pr?.viewerIsAuthor ? [{ key: "v", label: "review" }] : []),
+    ...(canReview ? [{ key: "v", label: "review" }] : []),
     { key: "s", label: "assign" },
     { key: "q", label: "request review" },
     { key: "p", label: "prompt agent" },
@@ -2859,7 +2860,7 @@
               {/if}
             </div>
           {/if}
-          {#if !mergedState}
+          {#if canReview}
             <div class="side-block">
               <h3 class="side-title">Review</h3>
               {#if verdictMutation}
