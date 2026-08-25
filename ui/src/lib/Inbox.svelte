@@ -22,6 +22,7 @@
   import { showFlash } from "./flash.svelte.js";
   import CurrentBranchBadge from "./CurrentBranchBadge.svelte";
   import Kbd from "./Kbd.svelte";
+  import ConfirmDialog from "./ConfirmDialog.svelte";
 
   let { refreshRevision = 0, pollCompletedAt = null, onFindPr = () => {} } = $props();
   let handledRefreshRevision = refreshRevision;
@@ -34,9 +35,14 @@
   let selected = $state(0);
   let multiAnchor = $state(null);
   const bulkAutofixFlash = timedFlag(3000);
-  let autofixConfirm = $state(false);
-  let autofixConfirmCount = $state(0);
-  let customConfirm = $state(null);
+  // one modal serves every plain yes/no confirmation, each entry carrying its own copy and action
+  let confirmAction = $state(null);
+
+  function runConfirmAction() {
+    const action = confirmAction;
+    confirmAction = null;
+    action.run();
+  }
 
   let keybindAgents = $derived(prefs.agents.filter((a) => a.trigger === "keybind" && a.enabled && a.keybind));
   let lastG = 0;
@@ -597,8 +603,11 @@
       bulkAutofixFlash.show(targets.length === 1 ? "already green or running — nothing to autofix" : `all ${targets.length} selected already green or running — nothing to autofix`);
       return;
     }
-    autofixConfirmCount = eligible.length;
-    autofixConfirm = true;
+    confirmAction = {
+      title: `Arm auto-fix on ${eligible.length} PR${eligible.length > 1 ? "s" : ""}?`,
+      confirmLabel: "Arm agent",
+      run: submitBulkAutofix,
+    };
   }
 
   async function submitBulkAutofix() {
@@ -615,6 +624,14 @@
     await Promise.allSettled(eligible.map((pr) => autofixAgent(pr.repo, pr.number)));
     bulkAutofixFlash.show(eligible.length === 1 && skipped === 0 ? "autofix armed" : `autofix armed on ${eligible.length}${skipped ? ` · ${skipped} skipped` : ""}`);
     loadInbox();
+  }
+
+  function requestCustomAgent(def) {
+    confirmAction = {
+      title: def.id === "rescorer" ? "Re-score this PR?" : `Arm the "${def.name || "custom"}" agent on this PR?`,
+      confirmLabel: def.id === "rescorer" ? "Re-score" : "Arm agent",
+      run: () => submitCustom(def),
+    };
   }
 
   async function submitCustom(def) {
@@ -676,18 +693,7 @@
         e.preventDefault();
         return;
       }
-      if (autofixConfirm) {
-        if (e.key === "Enter") submitBulkAutofix();
-        autofixConfirm = false;
-        e.preventDefault();
-        return;
-      }
-      if (customConfirm) {
-        if (e.key === "Enter") submitCustom(customConfirm);
-        customConfirm = null;
-        e.preventDefault();
-        return;
-      }
+      if (confirmAction) return;
       const pr = ordered[selected];
       if (e.key === "g" && !e.shiftKey) {
         const now = Date.now();
@@ -734,8 +740,8 @@
         const def = keybindAgents.find((a) => a.id !== "fixer" && a.keybind === e.key);
         if (def.id === "autofix") openAutofixConfirm();
         else if (def.id === "rescorer") {
-          if (pr) customConfirm = def;
-        } else if (pr && pr.fixerAgentState !== "running") customConfirm = def;
+          if (pr) requestCustomAgent(def);
+        } else if (pr && pr.fixerAgentState !== "running") requestCustomAgent(def);
       } else if (view === "open" && e.key === "e") {
         if (pr && isArchived(pr)) {
           archive(pr, false);
@@ -1132,11 +1138,16 @@
   </div>
 </div>
 
-{#if autofixConfirm}
-  <div class="copied-flash">Arm auto-fix on {autofixConfirmCount} PR{autofixConfirmCount > 1 ? "s" : ""}? <kbd>enter</kbd> confirm · <kbd>esc</kbd> cancel</div>
-{:else if customConfirm}
-  <div class="copied-flash">{customConfirm.id === "rescorer" ? "Re-score this PR?" : `Arm "${customConfirm.name || "custom"}" agent on this PR?`} <kbd>enter</kbd> confirm · <kbd>esc</kbd> cancel</div>
-{:else if copied.value}
+{#if confirmAction}
+  <ConfirmDialog
+    title={confirmAction.title}
+    confirmLabel={confirmAction.confirmLabel}
+    onConfirm={runConfirmAction}
+    onCancel={() => (confirmAction = null)}
+  />
+{/if}
+
+{#if copied.value}
   <div class="copied-flash">{copied.value}</div>
 {:else if archiveFlash.value}
   <div class="copied-flash">Archived — <kbd>z</kbd> to undo</div>

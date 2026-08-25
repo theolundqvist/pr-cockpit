@@ -21,6 +21,8 @@
       title: "Navigation",
       items: [
         { key: "⌘K", label: "jump to PR" },
+        { key: "⌘N", label: "new window" },
+        { key: "⇧⏎ / ⌘⏎", label: "jump list: new window / github" },
         { key: "/", label: "search / filter" },
         { key: "⇧H / ⇧L", label: "back / forward" },
         { key: "⌘,", label: "settings" },

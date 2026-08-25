@@ -127,6 +127,11 @@ let perViewPositionEnabled = false;
 let shellThemePreference = "system";
 let win = null;
 let paletteWin = null;
+const extraWindows = new Set();
+
+function cockpitWindows() {
+  return [win, ...extraWindows].filter((window) => window && !window.isDestroyed());
+}
 
 function normalizeThemePreference(value) {
   return value === "light" || value === "dark" || value === "system" ? value : "system";
@@ -139,7 +144,7 @@ function windowBackgroundColor() {
 
 function syncWindowBackground() {
   const backgroundColor = windowBackgroundColor();
-  if (win && !win.isDestroyed()) win.setBackgroundColor(backgroundColor);
+  for (const window of cockpitWindows()) window.setBackgroundColor(backgroundColor);
   if (paletteWin && !paletteWin.isDestroyed()) paletteWin.setBackgroundColor("#00000000");
 }
 
@@ -158,7 +163,7 @@ function currentNativePalette() {
 
 function broadcastNativePalette() {
   const palette = currentNativePalette();
-  for (const window of [win, paletteWin]) {
+  for (const window of [...cockpitWindows(), paletteWin]) {
     if (palette && window && !window.isDestroyed()) window.webContents.send("cockpit:native-palette-changed", palette);
   }
 }
@@ -211,6 +216,69 @@ if (!app.requestSingleInstanceLock()) {
   // launcher, tray, or global shortcut all try to reveal the app makes the
   // tile visibly flash on macOS.
   let dockIconVisible = null;
+
+  // Zoom is one persisted preference, so every cockpit window shows the same scale.
+  function applyZoom(level) {
+    zoomLevel = Math.max(ZOOM_LEVEL_MIN, Math.min(ZOOM_LEVEL_MAX, level));
+    for (const window of cockpitWindows()) window.webContents.zoomLevel = zoomLevel;
+    saveZoomLevel(zoomLevel);
+  }
+
+  // Full page loads reset webContents.zoomLevel to 0, so callers reapply it on did-finish-load.
+  function attachZoomShortcuts(target) {
+    target.webContents.on("before-input-event", (event, input) => {
+      if (input.type !== "keyDown" || !input.meta || input.control || input.alt) return;
+      if (input.key === "=" || input.key === "+") {
+        applyZoom(zoomLevel + 1);
+        event.preventDefault();
+      } else if (input.key === "-") {
+        applyZoom(zoomLevel - 1);
+        event.preventDefault();
+      } else if (input.key === "0") {
+        applyZoom(0);
+        event.preventDefault();
+      }
+    });
+  }
+
+  // ⌘N opens another view of the same server in this process. It owns no tray,
+  // deep link, palette, or per-view bounds state, and ⌘W really closes it.
+  function openExtraWindow(hash = null) {
+    const focused = BrowserWindow.getFocusedWindow();
+    const source = focused && focused !== paletteWin ? focused : win;
+    const anchor = source && !source.isDestroyed() ? source.getBounds() : null;
+    const extra = new BrowserWindow({
+      width: anchor?.width ?? 1440,
+      height: anchor?.height ?? 900,
+      x: anchor ? anchor.x + 34 : undefined,
+      y: anchor ? anchor.y + 34 : undefined,
+      backgroundColor: windowBackgroundColor(),
+      titleBarStyle: "hiddenInset",
+      webPreferences: { sandbox: true, preload: path.join(__dirname, "preload.js") },
+      show: false,
+    });
+    extraWindows.add(extra);
+    attachZoomShortcuts(extra);
+    extra.once("ready-to-show", () => {
+      extra.show();
+      extra.focus();
+    });
+    extra.webContents.on("did-finish-load", () => {
+      extra.webContents.zoomLevel = zoomLevel;
+    });
+    extra.webContents.setWindowOpenHandler(({ url }) => {
+      shell.openExternal(url);
+      return { action: "deny" };
+    });
+    extra.on("swipe", (event, direction) => {
+      const history = extra.webContents.navigationHistory;
+      if (direction === "left" && history.canGoBack()) history.goBack();
+      else if (direction === "right" && history.canGoForward()) history.goForward();
+    });
+    extra.on("closed", () => extraWindows.delete(extra));
+    extra.loadURL(hash ? `${serverOrigin}/${hash}` : serverOrigin);
+    return extra;
+  }
 
   function deepLinkParts(url) {
     try {
@@ -271,6 +339,8 @@ if (!app.requestSingleInstanceLock()) {
 
   function hideAppFromDock() {
     hideMainWindow();
+    // extras carry no restorable state and showMainWindow() cannot bring them back, so close them
+    for (const extra of [...extraWindows]) extra.close();
     if (paletteWin && !paletteWin.isDestroyed()) paletteWin.hide();
     hideDockIcon();
   }
@@ -288,7 +358,10 @@ if (!app.requestSingleInstanceLock()) {
           { label: "Quit PR Cockpit", click: quitPrCockpit },
         ],
       },
-      { label: "File", submenu: [{ role: "close" }] },
+      {
+        label: "File",
+        submenu: [{ label: "New Window", accelerator: "CommandOrControl+N", click: () => openExtraWindow() }, { role: "close" }],
+      },
       { role: "editMenu" },
       { label: "View", submenu: [{ role: "reload" }, { role: "forceReload" }, { role: "toggleDevTools" }] },
       { role: "windowMenu" },
@@ -516,6 +589,9 @@ if (!app.requestSingleInstanceLock()) {
       return launchSetupTerminal(action, win.getBounds());
     });
     ipcMain.handle("cockpit:native-palette", () => currentNativePalette());
+    ipcMain.handle("cockpit:open-window", (_event, hash) => {
+      openExtraWindow(typeof hash === "string" && hash.startsWith("#/") ? hash : null);
+    });
 
     // Settings only tune background + per-view bounds; fetch them off the first-paint path and apply on arrival.
     fetchSettings()
@@ -553,26 +629,7 @@ if (!app.requestSingleInstanceLock()) {
     );
     tray.on("click", showMainWindow);
 
-    function applyZoom(level) {
-      zoomLevel = Math.max(ZOOM_LEVEL_MIN, Math.min(ZOOM_LEVEL_MAX, level));
-      win.webContents.zoomLevel = zoomLevel;
-      saveZoomLevel(zoomLevel);
-    }
-
-    // Full page loads reset webContents.zoomLevel to 0, so reapply it on every did-finish-load below.
-    win.webContents.on("before-input-event", (event, input) => {
-      if (input.type !== "keyDown" || !input.meta || input.control || input.alt) return;
-      if (input.key === "=" || input.key === "+") {
-        applyZoom(zoomLevel + 1);
-        event.preventDefault();
-      } else if (input.key === "-") {
-        applyZoom(zoomLevel - 1);
-        event.preventDefault();
-      } else if (input.key === "0") {
-        applyZoom(0);
-        event.preventDefault();
-      }
-    });
+    attachZoomShortcuts(win);
 
     win.webContents.on("did-finish-load", () => {
       win.webContents.zoomLevel = zoomLevel;
@@ -760,10 +817,15 @@ if (!app.requestSingleInstanceLock()) {
     });
     paletteWin.webContents.on("did-navigate-in-page", (event, url) => {
       const hash = new URL(url).hash;
-      const go = hash.match(/^#\/palette\/go\/(.+)$/);
+      const go = hash.match(/^#\/palette\/(go|window|github)\/([^/]+\/[^/]+)\/(\d+)$/);
       if (go) {
-        win.webContents.executeJavaScript(`location.hash = ${JSON.stringify(`#/pr/${go[1]}`)}`);
-        showMainWindow();
+        const [, verb, repo, number] = go;
+        if (verb === "github") shell.openExternal(`https://github.com/${repo}/pull/${number}`);
+        else if (verb === "window") openExtraWindow(`#/pr/${repo}/${number}`);
+        else {
+          win.webContents.executeJavaScript(`location.hash = ${JSON.stringify(`#/pr/${repo}/${number}`)}`);
+          showMainWindow();
+        }
       } else if (hash !== "#/palette/close") {
         return;
       }

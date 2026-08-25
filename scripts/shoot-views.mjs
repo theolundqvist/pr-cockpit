@@ -335,24 +335,24 @@ const scenarios = [
     }),
     interact: async (page) => {
       await page.keyboard.press("m");
-      await page.getByRole("alertdialog", { name: "Merge pull request #101?" }).waitFor();
+      await page.getByRole("alertdialog", { name: "Merge #101?" }).waitFor();
     },
     verify: async (page) => {
-      const dialog = page.getByRole("alertdialog", { name: "Merge pull request #101?" });
+      const dialog = page.getByRole("alertdialog", { name: "Merge #101?" });
       await dialog.getByText("fixture/pr-101", { exact: true }).waitFor();
       await dialog.getByLabel("fixture/pr-101 into main").getByText("main", { exact: true }).waitFor();
       const focusedLabel = await page.evaluate(() => document.activeElement?.getAttribute("aria-label"));
-      if (focusedLabel !== "Merge pull request") throw new Error(`unexpected initial merge-dialog focus: ${focusedLabel}`);
+      if (focusedLabel !== "Merge") throw new Error(`unexpected initial merge-dialog focus: ${focusedLabel}`);
       await page.keyboard.press("Tab");
       const wrappedLabel = await page.evaluate(() => document.activeElement?.getAttribute("aria-label"));
-      if (wrappedLabel !== "Cancel merge") throw new Error(`merge-dialog focus did not wrap to cancel: ${wrappedLabel}`);
+      if (wrappedLabel !== "Cancel") throw new Error(`merge-dialog focus did not wrap to cancel: ${wrappedLabel}`);
       await page.keyboard.press("Shift+Tab");
       const restoredLabel = await page.evaluate(() => document.activeElement?.getAttribute("aria-label"));
-      if (restoredLabel !== "Merge pull request") throw new Error(`merge-dialog reverse focus did not wrap: ${restoredLabel}`);
+      if (restoredLabel !== "Merge") throw new Error(`merge-dialog reverse focus did not wrap: ${restoredLabel}`);
       await page.keyboard.press("Escape");
       await dialog.waitFor({ state: "detached" });
       await page.keyboard.press("m");
-      await page.getByRole("alertdialog", { name: "Merge pull request #101?" }).waitFor();
+      await page.getByRole("alertdialog", { name: "Merge #101?" }).waitFor();
       const mergeRequestPending = page.waitForRequest((request) => request.method() === "POST" && request.url().endsWith("/api/mutations"));
       await page.keyboard.press("Enter");
       const mergeRequest = await mergeRequestPending;
@@ -362,16 +362,20 @@ const scenarios = [
       }
       await dialog.waitFor({ state: "detached" });
       await page.keyboard.press("m");
-      await page.getByRole("alertdialog", { name: "Merge pull request #101?" }).waitFor();
+      await page.getByRole("alertdialog", { name: "Merge #101?" }).waitFor();
     },
   },
   {
     ...detail("detail-close-confirmation", 101, "Close confirmation without closing the pull request."),
     interact: async (page) => {
       await page.keyboard.press("x");
-      await page.locator(".close-confirm").waitFor();
+      await page.getByRole("alertdialog", { name: "Close #101?" }).waitFor();
     },
-    verify: async (page) => page.getByText("close PR #101?", { exact: true }).waitFor(),
+    verify: async (page) => {
+      const dialog = page.getByRole("alertdialog", { name: "Close #101?" });
+      await dialog.getByRole("button", { name: "Close pull request", exact: true }).waitFor();
+      if (await page.locator(".keybar.merge-confirm").count()) throw new Error("close confirmation is still rendering in the bottom bar");
+    },
   },
   {
     ...detail("detail-find-bar", 101, "Find-in-page bar with deterministic matches highlighted."),
@@ -395,11 +399,11 @@ const scenarios = [
     ...detail("detail-conversation-blocked-admin", 112, "Branch-protection block with the admin force-merge confirmation visible.", "fixture/admin-cockpit"),
     interact: async (page) => {
       await page.keyboard.press("Shift+M");
-      await page.getByRole("alertdialog", { name: "Force-merge pull request #112?" }).waitFor();
+      await page.getByRole("alertdialog", { name: "Force-merge #112?" }).waitFor();
     },
     verify: async (page) => {
-      const dialog = page.getByRole("alertdialog", { name: "Force-merge pull request #112?" });
-      await dialog.getByText("Source", { exact: true }).waitFor();
+      const dialog = page.getByRole("alertdialog", { name: "Force-merge #112?" });
+      await dialog.getByRole("button", { name: "Force-merge", exact: true }).waitFor();
       if (await dialog.getByText("Bypass approval rule", { exact: true }).count()) throw new Error("force-merge eyebrow is still visible");
       if (await dialog.getByText("Required approvals will be bypassed.", { exact: false }).count()) throw new Error("force-merge explanation is still visible");
     },

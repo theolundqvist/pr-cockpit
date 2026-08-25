@@ -161,6 +161,26 @@
     close();
   }
 
+  function chooseInNewWindow(result) {
+    if (standalone) {
+      location.hash = `#/palette/window/${result.repo}/${result.number}`;
+      return;
+    }
+    const hash = `#/pr/${result.repo}/${result.number}`;
+    if (window.cockpitShell?.openWindow) window.cockpitShell.openWindow(hash);
+    else window.open(`${location.pathname}${hash}`, "_blank");
+    close();
+  }
+
+  function chooseOnGithub(result) {
+    if (standalone) {
+      location.hash = `#/palette/github/${result.repo}/${result.number}`;
+      return;
+    }
+    window.open(`https://github.com/${result.repo}/pull/${result.number}`, "_blank", "noopener");
+    close();
+  }
+
   function scrollSelectedIntoView() {
     requestAnimationFrame(() => {
       document.querySelectorAll(".palette-result")[selected]?.scrollIntoView({ block: "nearest" });
@@ -189,7 +209,12 @@
         selected = Math.max(0, selected - 1);
         scrollSelectedIntoView();
       } else if (e.key === "Enter") {
-        if (results[selected]) choose(results[selected]);
+        const result = results[selected];
+        if (result) {
+          if (e.shiftKey) chooseInNewWindow(result);
+          else if (e.metaKey || e.ctrlKey) chooseOnGithub(result);
+          else choose(result);
+        }
       } else {
         return;
       }

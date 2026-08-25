@@ -50,6 +50,7 @@
   import ActionsView from "./ActionsView.svelte";
   import QuotaMergeModal from "./QuotaMergeModal.svelte";
   import MergeDecisionDialog from "./MergeDecisionDialog.svelte";
+  import ConfirmDialog from "./ConfirmDialog.svelte";
   import SplitButton from "./SplitButton.svelte";
   import DiffView from "./DiffView.svelte";
   import FileHistory from "./FileHistory.svelte";
@@ -146,7 +147,7 @@
     mergeConfirm = false;
     quotaMergeModal = false;
     forceMergeConfirm = false;
-    closeConfirm = false;
+    confirmAction = null;
     mergeMenuOpen = false;
     reviewMenuOpen = false;
     editingTitle = false;
@@ -641,7 +642,6 @@
   let mergeActionMethodLabel = $derived(pr.mergeMethod === "merge" ? "commit" : pr.mergeMethod ?? "squash");
   let mergeConfirm = $state(false);
   let forceMergeConfirm = $state(false);
-  let closeConfirm = $state(false);
   let mergeMenuOpen = $state(false);
   let mergeMethodBusy = $state(false);
   let quotaStatus = $derived(quotaImpact(quota.resources));
@@ -714,9 +714,57 @@
   let autoMergeMutation = $derived(mutations.find((m) => m.kind === "auto-merge"));
   let githubAutoMergeMutation = $derived(mutations.find((m) => m.kind === "github-auto-merge"));
   let githubAutoMergeEnabled = $derived(Boolean(pr.autoMergeRequest));
-  let autoMergeConfirm = $state(false);
-  let autofixConfirm = $state(false);
-  let customConfirm = $state(null);
+  // one modal serves every plain yes/no confirmation, each entry carrying its own copy and action
+  let confirmAction = $state(null);
+
+  function runConfirmAction() {
+    const action = confirmAction;
+    confirmAction = null;
+    action.run();
+  }
+
+  function requestClose() {
+    confirmAction = { title: `Close #${number}?`, confirmLabel: "Close pull request", danger: true, run: submitClose };
+  }
+
+  function requestAutoMerge() {
+    const enable = !pr.autoMergeEnabled;
+    confirmAction = {
+      title: `${enable ? "Arm" : "Disarm"} the auto-merge bot for #${number}?`,
+      confirmLabel: enable ? "Arm" : "Disarm",
+      run: () => submitAutoMerge(enable),
+    };
+  }
+
+  function requestAutofix() {
+    confirmAction = { title: `Arm the auto-fix agent for #${number}?`, confirmLabel: "Arm agent", run: submitAutofix };
+  }
+
+  function requestCiFix() {
+    confirmAction = {
+      title: "Fix failing CI with an agent?",
+      message: `${failingChecks.length} failing check${failingChecks.length === 1 ? "" : "s"} on ${pr.headRefName}`,
+      confirmLabel: "Fix with agent",
+      run: submitCiFix,
+    };
+  }
+
+  function requestConflictResolution() {
+    confirmAction = {
+      title: "Resolve conflicts with an agent?",
+      message: `${conflictFiles.length ? `Conflicts in ${conflictFiles.length} file${conflictFiles.length === 1 ? "" : "s"}` : "Repository-level conflict"}, pushed to ${pr.headRefName}`,
+      confirmLabel: "Resolve conflicts",
+      run: submitConflictResolution,
+    };
+  }
+
+  function requestCustomAgent(def) {
+    confirmAction = {
+      title: def.id === "rescorer" ? `Re-score #${number}?` : `Arm the "${def.name || "custom"}" agent for #${number}?`,
+      confirmLabel: def.id === "rescorer" ? "Re-score" : "Arm agent",
+      run: () => submitCustom(def),
+    };
+  }
 
   let keybindAgents = $derived(prefs.agents.filter((a) => a.trigger === "keybind" && a.enabled && a.keybind));
   const runLabel = (run) => (run.agent_id && prefs.agents.find((a) => a.id === run.agent_id)?.name) || run.kind;
@@ -741,7 +789,6 @@
   let agent = $state(null);
   let agentLog = $state(null);
   let showAgentLog = $state(false);
-  let killConfirm = $state(false);
 
   async function loadAgent() {
     try {
@@ -757,9 +804,12 @@
     if (showAgentLog) agentLog = await fetchAgentLog(repo, number);
   }
 
-  async function confirmKillAgent() {
+  function requestKillAgent() {
+    confirmAction = { title: "Kill the running agent?", confirmLabel: "Kill agent", danger: true, run: killRunningAgent };
+  }
+
+  async function killRunningAgent() {
     await killAgent(repo, number);
-    killConfirm = false;
     await loadAgent();
     if (tab === "agents") await loadAgentRuns();
   }
@@ -898,10 +948,8 @@
   let autofixError = $state(null);
   let conflictResolveBusy = $state(false);
   let conflictResolveError = $state(null);
-  let conflictResolveConfirm = $state(false);
   let ciFixBusy = $state(false);
   let ciFixError = $state(null);
-  let ciFixConfirm = $state(false);
 
   async function submitAutofix() {
     if (autofixBusy || agent?.state === "running" || prIsGreen || mergedState) return;
@@ -1872,43 +1920,7 @@
         }
         return;
       }
-      if (mergeConfirm || forceMergeConfirm) return;
-      if (closeConfirm) {
-        if (e.key === "Enter") submitClose();
-        closeConfirm = false;
-        e.preventDefault();
-        return;
-      }
-      if (autoMergeConfirm) {
-        if (e.key === "Enter") submitAutoMerge(!pr.autoMergeEnabled);
-        autoMergeConfirm = false;
-        e.preventDefault();
-        return;
-      }
-      if (autofixConfirm) {
-        if (e.key === "Enter") submitAutofix();
-        autofixConfirm = false;
-        e.preventDefault();
-        return;
-      }
-      if (ciFixConfirm) {
-        if (e.key === "Enter") submitCiFix();
-        ciFixConfirm = false;
-        e.preventDefault();
-        return;
-      }
-      if (conflictResolveConfirm) {
-        if (e.key === "Enter") submitConflictResolution();
-        conflictResolveConfirm = false;
-        e.preventDefault();
-        return;
-      }
-      if (customConfirm) {
-        if (e.key === "Enter") submitCustom(customConfirm);
-        customConfirm = null;
-        e.preventDefault();
-        return;
-      }
+      if (mergeConfirm || forceMergeConfirm || confirmAction) return;
       if (e.key === "Escape") {
         if (tab === "files") goToTab("conversation");
         else if (finishFileEdit()) location.hash = "#/";
@@ -1947,7 +1959,7 @@
       } else if (tab === "files" && e.key === "h") {
         if (files[fileIndex]) openFileHistory(files[fileIndex].path);
       } else if (e.key === "x") {
-        if (liveState && !mergeMutation && !closeMutation) closeConfirm = true;
+        if (liveState && !mergeMutation && !closeMutation) requestClose();
       } else if (tab === "files" && e.key === "c") {
         rangeOpen = true;
       } else if (tab === "conversation" && e.key === "c") {
@@ -1978,19 +1990,19 @@
       } else if (e.key === "p") {
         promptOpen = true;
       } else if (autofixDef?.keybind === e.key && fixShortcutTarget) {
-        if (fixShortcutTarget === "ci") ciFixConfirm = true;
-        else if (fixShortcutTarget === "conflict") conflictResolveConfirm = true;
-        else autofixConfirm = true;
+        if (fixShortcutTarget === "ci") requestCiFix();
+        else if (fixShortcutTarget === "conflict") requestConflictResolution();
+        else requestAutofix();
       } else if (keybindAgents.some((a) => a.keybind === e.key)) {
         const def = keybindAgents.find((a) => a.keybind === e.key);
         if (def.id === "fixer") {
-          if (!autoMergeMutation) autoMergeConfirm = true;
+          if (!autoMergeMutation) requestAutoMerge();
         } else if (def.id === "autofix") {
-          if (!autofixBusy && agent?.state !== "running" && !prIsGreen && !mergedState) autofixConfirm = true;
+          if (!autofixBusy && agent?.state !== "running" && !prIsGreen && !mergedState) requestAutofix();
         } else if (def.id === "rescorer") {
-          if (!customBusy) customConfirm = def;
+          if (!customBusy) requestCustomAgent(def);
         } else if (!customBusy && agent?.state !== "running") {
-          customConfirm = def;
+          requestCustomAgent(def);
         }
       } else {
         return;
@@ -2279,7 +2291,7 @@
                 <button
                   class="ci-agent-button shortcut-action"
                   disabled={ciFixBusy || agent?.state === "running"}
-                  onclick={() => (ciFixConfirm = true)}
+                  onclick={requestCiFix}
                 >
                   {ciFixBusy ? "Starting…" : agent?.state === "running" ? "Agent running" : "Fix with agent"}
                   {#if fixShortcutTarget === "ci"}<Kbd keys={autofixDef.keybind} />{/if}
@@ -2327,7 +2339,7 @@
                   <button
                     class="conflict-primary shortcut-action"
                     disabled={conflictResolveBusy || agent?.state === "running"}
-                    onclick={() => (conflictResolveConfirm = true)}
+                    onclick={requestConflictResolution}
                   >
                     {conflictResolveBusy ? "Starting…" : agent?.state === "running" ? "Agent running" : "Fix with agent"}
                     {#if fixShortcutTarget === "conflict"}<Kbd keys={autofixDef.keybind} />{/if}
@@ -2494,12 +2506,7 @@
                 </span>
                 {#if runDetail.run.exit_reason}<span class="run-exit">{runDetail.run.exit_reason}</span>{/if}
                 {#if runDetail.run.state === "running"}
-                  {#if killConfirm}
-                    <button class="link danger" onclick={confirmKillAgent}>confirm kill</button>
-                    <button class="link" onclick={() => (killConfirm = false)}>cancel</button>
-                  {:else}
-                    <button class="link" onclick={() => (killConfirm = true)}>kill agent</button>
-                  {/if}
+                  <button class="link" onclick={requestKillAgent}>kill agent</button>
                 {/if}
                 <button class="link" onclick={() => (showRawLog = !showRawLog)}>{showRawLog ? "hide raw log" : "raw log"}</button>
               </div>
@@ -2831,7 +2838,7 @@
                       onDiscard={() => handleDiscard(closeMutation.id)}
                     />
                   {:else}
-                    <button class="merge-btn fail close-action" onclick={() => (closeConfirm = true)}>
+                    <button class="merge-btn fail close-action" onclick={requestClose}>
                       <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
                         <circle cx="12" cy="12" r="8.5"></circle>
                         <path d="m9 9 6 6m0-6-6 6"></path>
@@ -2848,7 +2855,7 @@
             <div class="side-block">
               <h3 class="side-title">Agents</h3>
               {#if !prIsGreen && !mergedState}
-                <button class="btn wide shortcut-action" disabled={autofixBusy || agent?.state === "running"} onclick={() => (autofixConfirm = true)}>
+                <button class="btn wide shortcut-action" disabled={autofixBusy || agent?.state === "running"} onclick={requestAutofix}>
                   {autofixBusy ? "Starting…" : "Auto-fix"}
                   {#if fixShortcutTarget === "autofix"}
                     <Kbd keys={autofixDef.keybind} />
@@ -2908,12 +2915,7 @@
                 <div class="am-actions">
                   <button class="link" onclick={toggleAgentLog}>{showAgentLog ? "hide log" : "view log"}</button>
                   {#if agent.state === "running"}
-                    {#if killConfirm}
-                      <button class="link danger" onclick={confirmKillAgent}>confirm kill</button>
-                      <button class="link" onclick={() => (killConfirm = false)}>cancel</button>
-                    {:else}
-                      <button class="link" onclick={() => (killConfirm = true)}>kill agent</button>
-                    {/if}
+                    <button class="link" onclick={requestKillAgent}>kill agent</button>
                   {/if}
                 </div>
                 {#if showAgentLog}
@@ -3150,42 +3152,22 @@
         onConfirm={confirmMergeDecision}
         onCancel={cancelMergeDecision}
       />
-    {:else if closeConfirm}
-      <div class="keybar merge-confirm close-confirm">
-        <span>close PR #{number}?</span>
-        <span class="confirm-keys"><Kbd keys="enter" /> confirm · <Kbd keys="esc" /> cancel</span>
-      </div>
-    {:else if peopleFlash.value}
+    {/if}
+
+    {#if confirmAction}
+      <ConfirmDialog
+        title={confirmAction.title}
+        confirmLabel={confirmAction.confirmLabel}
+        danger={Boolean(confirmAction.danger)}
+        detail={confirmAction.message ? confirmMessage : null}
+        onConfirm={runConfirmAction}
+        onCancel={() => (confirmAction = null)}
+      />
+      {#snippet confirmMessage()}{confirmAction.message}{/snippet}
+    {/if}
+
+    {#if peopleFlash.value}
       <div class="keybar merge-flash">{peopleFlash.value}</div>
-    {:else if autoMergeConfirm}
-      <div class="keybar merge-confirm">
-        <span>
-          {pr.autoMergeEnabled
-            ? `disarm auto-merge bot for #${number}?`
-            : `arm auto-merge bot + fixer agent for #${number}?`}
-        </span>
-        <span class="confirm-keys"><Kbd keys="enter" /> confirm · <Kbd keys="esc" /> cancel</span>
-      </div>
-    {:else if autofixConfirm}
-      <div class="keybar merge-confirm">
-        <span>arm auto-fix agent for #{number}?</span>
-        <span class="confirm-keys"><Kbd keys="enter" /> confirm · <Kbd keys="esc" /> cancel</span>
-      </div>
-    {:else if ciFixConfirm}
-      <div class="keybar merge-confirm">
-        <span>launch an agent to fix {failingChecks.length} failing CI check{failingChecks.length === 1 ? "" : "s"} on {pr.headRefName}?</span>
-        <span class="confirm-keys"><Kbd keys="enter" /> confirm · <Kbd keys="esc" /> cancel</span>
-      </div>
-    {:else if conflictResolveConfirm}
-      <div class="keybar merge-confirm">
-        <span>{conflictFiles.length ? `resolve conflicts in ${conflictFiles.length} file${conflictFiles.length === 1 ? "" : "s"}` : "resolve repository-level conflict"} and push to {pr.headRefName}?</span>
-        <span class="confirm-keys"><Kbd keys="enter" /> confirm · <Kbd keys="esc" /> cancel</span>
-      </div>
-    {:else if customConfirm}
-      <div class="keybar merge-confirm">
-        <span>{customConfirm.id === "rescorer" ? `re-score #${number}?` : `arm "${customConfirm.name || "custom"}" agent for #${number}?`}</span>
-        <span class="confirm-keys"><Kbd keys="enter" /> confirm · <Kbd keys="esc" /> cancel</span>
-      </div>
     {:else if mergeFlash.value}
       <div class="keybar merge-flash">{mergeFlash.value}</div>
     {:else if branchCopied.value}
@@ -3271,33 +3253,6 @@
     width: 100%;
     max-width: 1120px;
     padding: 32px 0 48px;
-  }
-  .merge-confirm {
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    height: 38px;
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    padding: 0 24px;
-    background: var(--overlay-bg);
-    border-top: 2px solid var(--ready);
-    backdrop-filter: blur(8px);
-    z-index: 20;
-    font-size: 12.5px;
-    color: var(--text);
-  }
-  .merge-confirm strong {
-    color: var(--ready);
-    font-weight: 600;
-  }
-  .merge-confirm .confirm-keys {
-    color: var(--text-dim);
-  }
-  .merge-confirm.close-confirm {
-    border-top-color: var(--fail);
   }
   .prompt-overlay {
     position: fixed;
@@ -4474,9 +4429,6 @@
   .am-actions .link:hover {
     color: var(--text);
   }
-  .am-actions .link.danger {
-    color: var(--fail);
-  }
   .am-log {
     margin: 10px 0 0;
     padding: 8px;
@@ -5335,7 +5287,6 @@
     border-radius: 14px;
     box-shadow: var(--shadow-dialog);
   }
-  .merge-confirm,
   .copied-flash,
   .merge-flash {
     left: var(--app-rail-width, 0px);
