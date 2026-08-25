@@ -23,7 +23,12 @@ export function mergeGate(pr, rollupState) {
     if (s === "PENDING") return { action: null, reason: "Some checks haven't completed yet" };
     return { action: null, reason: "Some checks were not successful" };
   }
-  return { action: null, reason: "Checking for ability to merge automatically…" };
+  return { action: null, reason: "Checking whether this pull request can be merged…" };
+}
+
+export function mergeabilityPending(pr) {
+  if (!pr || pr.state.toUpperCase() !== "OPEN" || pr.isDraft) return false;
+  return pr.mergeable === "UNKNOWN" || pr.mergeStateStatus === "UNKNOWN";
 }
 
 export function forceMergeAvailable(pr, gate) {

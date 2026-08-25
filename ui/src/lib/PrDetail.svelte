@@ -45,7 +45,7 @@
   import { prKeyOf } from "./prKey.js";
   import { getDetail, cacheDetail } from "./detailCache.js";
   import { buildChecks, countChecks, summarizeChecks, sectionizeChecks, ciFixPrompt } from "./checks.js";
-  import { mergeGate as evalMergeGate, forceMergeAvailable as evalForceMerge, forceMergeShortcutAction } from "./mergeGate.js";
+  import { mergeGate as evalMergeGate, forceMergeAvailable as evalForceMerge, forceMergeShortcutAction, mergeabilityPending } from "./mergeGate.js";
   import { quota } from "./quota.svelte.js";
   import { quotaImpact } from "./quotaImpact.js";
   import ActionsView from "./ActionsView.svelte";
@@ -476,6 +476,12 @@
     if (refreshRevision === handledRefreshRevision) return;
     handledRefreshRevision = refreshRevision;
     untrack(() => refreshDetail());
+  });
+
+  $effect(() => {
+    if (!mergeabilityPending(pr)) return;
+    const timer = setInterval(() => untrack(refreshDetail), 2_000);
+    return () => clearInterval(timer);
   });
 
   $effect(() => {
