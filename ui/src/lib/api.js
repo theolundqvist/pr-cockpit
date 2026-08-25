@@ -137,6 +137,21 @@ export async function commitPrFileEdit(repo, number, path, expectedHeadOid, cont
   return body;
 }
 
+export async function generateCommitMessage(repo, number, path, hunk) {
+  const res = await fetch("/api/commit-message", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ repo, number, path, hunk }),
+  });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    const error = new Error(body?.error || `commit-message ${res.status}`);
+    error.code = body?.code;
+    throw error;
+  }
+  return body.message;
+}
+
 export async function fetchFileHistory(repo, path, base, symbol = null, baseSha = null) {
   const p = new URLSearchParams({ repo, path, base });
   if (symbol) {

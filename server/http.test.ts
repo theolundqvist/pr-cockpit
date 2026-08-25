@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { buildFetchHandler, buildPrAgentSummary, checkoutTargetFor, formatPrAgentSummary, mergeabilityNeedsRefresh, reviewThreadHandle, snapshotStatus, statsExcludingTests, trackedDetailIsStale } from "./http.ts";
-import { StalePrHeadError, type PrDetail } from "./github.ts";
+import { GithubRequestError, StalePrHeadError, type PrDetail } from "./github.ts";
 import { db, getCachedPrDetail, getPr, getSetting, listRunJobs, saveDiff, saveFileContents, setSetting, upsertCachedPrDetail, upsertPr, upsertPrIndex, upsertRunJob, upsertWorkflowRun } from "./db.ts";
 import { testMatcher } from "../ui/src/lib/testPath.js";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -1054,6 +1054,26 @@ describe("PR file edits", () => {
     expect(refreshCalls).toBe(0);
   });
 
+  test("explains the workflow scope required by GitHub", async () => {
+    const body = { ...requestBody, path: ".github/workflows/ci.yml" };
+    const fetchHandler = buildFetchHandler(4820, {
+      commitPrFileEdit: async () => {
+        throw new GithubRequestError("GraphQL request failed", 502, [{
+          type: "FORBIDDEN",
+          message: "Resource not accessible by personal access token",
+        }]);
+      },
+      refreshPr: async () => {},
+    });
+
+    const response = await fetchHandler(fileEditRequest(body));
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: "Authorize workflow edits with GitHub, then retry.",
+      code: "workflow-scope",
+    });
+  });
+
   const invalidRequests: [string, Record<string, unknown>][] = [
     ["a traversal path", { ...requestBody, path: "../private.ts" }],
     ["an abbreviated head SHA", { ...requestBody, expectedHeadOid: "a".repeat(39) }],
@@ -1083,6 +1103,48 @@ describe("PR file edits", () => {
       expect(refreshCalls).toBe(0);
     });
   }
+});
+
+describe("commit message generation", () => {
+  test("uses the cached PR description and edited hunk", async () => {
+    const repo = "cockpit-test/commit-message";
+    const number = 987654321;
+    const row = trackedPrRow({ repo, number, fetchedAt: new Date().toISOString() });
+    row.title = "Stop queued staging deploys";
+    row.detail_json = JSON.stringify({
+      ...JSON.parse(row.detail_json),
+      title: row.title,
+      body: "Keep only the newest pending deployment.",
+    });
+    upsertPr(row);
+    let received: unknown;
+    const fetchHandler = buildFetchHandler(4820, {
+      generateCommitMessage: async (input) => {
+        received = input;
+        return "fix(ci): remove the deployment queue";
+      },
+    });
+
+    const response = await fetchHandler(new Request("http://127.0.0.1:4820/api/commit-message", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        repo,
+        number,
+        path: ".github/workflows/eas.yml",
+        hunk: "@@ -64,1 +64,0 @@\n-      queue: max",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ message: "fix(ci): remove the deployment queue" });
+    expect(received).toEqual({
+      title: row.title,
+      body: "Keep only the newest pending deployment.",
+      path: ".github/workflows/eas.yml",
+      hunk: "@@ -64,1 +64,0 @@\n-      queue: max",
+    });
+  });
 });
 
 describe("PR diff head overrides", () => {

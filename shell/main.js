@@ -5,6 +5,7 @@ const os = require("os");
 const { spawn, execSync } = require("child_process");
 const { windowBoundsForPersistence, windowBoundsForRestore } = require("./windowBounds");
 const { launchEditorTerminal } = require("./editorLaunch");
+const { launchSetupTerminal } = require("./setupLaunch");
 const { getNativePalette } = require("./nativePalette");
 
 app.setName("PR Cockpit");
@@ -473,6 +474,10 @@ if (!app.requestSingleInstanceLock()) {
       if (!win || win.isDestroyed()) return { error: "editor launch failed: no cockpit window" };
       const result = await launchEditorTerminal(checkout, target, editorTarget?.line ?? null, win.getBounds());
       return result.error ? { error: `editor launch failed: ${result.error}` } : result;
+    });
+    ipcMain.handle("cockpit:open-setup", async (_event, action) => {
+      if (!win || win.isDestroyed()) return { error: "setup launch failed: no cockpit window" };
+      return launchSetupTerminal(action, win.getBounds());
     });
     ipcMain.handle("cockpit:native-palette", () => currentNativePalette());
 

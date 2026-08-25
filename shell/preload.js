@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("cockpitShell", {
   openEditor: (repo, number, target) => ipcRenderer.invoke("cockpit:open-editor", { repo, number, target }),
+  openSetup: (action) => ipcRenderer.invoke("cockpit:open-setup", action),
   getNativePalette: () => ipcRenderer.invoke("cockpit:native-palette"),
   onNativePaletteChanged: (callback) => {
     const listener = (_event, palette) => callback(palette);

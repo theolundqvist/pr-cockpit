@@ -4,6 +4,7 @@
     fetchPrDetail,
     fetchPrDiff,
     commitPrFileEdit,
+    generateCommitMessage,
     fetchConflictFiles,
     fetchPrCommitStats,
     fetchMutations,
@@ -2392,6 +2393,7 @@
                 onLookupDefinition={(symbol, fromPath, position) => telescope?.openDefinition(symbol, fromPath, position)}
                 editable={fileEditable}
                 onCommitFileEdit={commitFileEdit}
+                onGenerateCommitMessage={(path, hunk) => generateCommitMessage(repo, number, path, hunk)}
                 layout={prefs.diffLayout}
               />
             {/if}

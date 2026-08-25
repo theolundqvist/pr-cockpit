@@ -65,6 +65,7 @@ import { currentBaseRef, discardMutation, enqueueMutation, mutationsForPr, retry
 import { isMergeMethod, mergeMethodFor, mergeMethodSourceFor, setMergeMethodPreference } from "./mergeMethod.ts";
 import { AGENT_DEFAULTS, readSettings, relayConfig, RELAY_APP_INSTALL_URL, RELAY_APP_SLUG, settingsRepos, writeSettings, type AgentSetting, type Settings } from "./settings.ts";
 import { claudeBinPath, ompBinPath } from "./harness.ts";
+import { CommitMessageError, generateCommitMessage } from "./commitMessage.ts";
 import { relayStatus } from "./relayClient.ts";
 import { relayCoverage } from "./relayCoverage.ts";
 import { testMatcher } from "../ui/src/lib/testPath.js";
@@ -351,6 +352,7 @@ type HttpDependencies = {
   fetchPrCommentsSince: typeof fetchPrCommentsSince;
   lookupPrIndexes: typeof lookupPrIndexes;
   commitPrFileEdit: typeof commitPrFileEdit;
+  generateCommitMessage: typeof generateCommitMessage;
   resolveReviewThread: typeof resolveReviewThread;
   refreshPr: typeof refreshPr;
   handleTmuxFocus: TmuxFocusHandler;
@@ -369,6 +371,7 @@ const defaultHttpDependencies: HttpDependencies = {
   fetchPrCommentsSince,
   lookupPrIndexes,
   commitPrFileEdit,
+  generateCommitMessage,
   resolveReviewThread,
   refreshPr,
   handleTmuxFocus: createTmuxFocusHandler(),
@@ -1370,6 +1373,21 @@ async function handleFile(url: URL): Promise<Response> {
 
 const CANONICAL_REPO_RE = /^(?!\.{1,2}\/)[A-Za-z0-9_.-]+\/(?!\.{1,2}$)[A-Za-z0-9_.-]+$/;
 const MAX_COMMIT_HEADLINE_LENGTH = 200;
+function isRepoFilePath(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length > 0
+    && !value.startsWith("/")
+    && !value.includes("\0")
+    && value.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+
+function isWorkflowScopeError(path: string, error: unknown): boolean {
+  return path.startsWith(".github/workflows/")
+    && error instanceof GithubRequestError
+    && error.graphqlErrors.some(({ type, message }) =>
+      type === "FORBIDDEN" && /personal access token/i.test(message ?? ""));
+}
+
 
 
 async function handlePrFileEdit(req: Request, runtime: HttpRuntime): Promise<Response> {
@@ -1390,11 +1408,7 @@ async function handlePrFileEdit(req: Request, runtime: HttpRuntime): Promise<Res
     || typeof number !== "number"
     || !Number.isSafeInteger(number)
     || number <= 0
-    || typeof path !== "string"
-    || !(path.length > 0
-      && !path.startsWith("/")
-      && !path.includes("\0")
-      && path.split("/").every((segment) => segment !== "" && segment !== "." && segment !== ".."))
+    || !isRepoFilePath(path)
     || typeof expectedHeadOid !== "string"
     || !FULL_SHA_RE.test(expectedHeadOid)
     || typeof content !== "string"
@@ -1424,8 +1438,61 @@ async function handlePrFileEdit(req: Request, runtime: HttpRuntime): Promise<Res
     if (error instanceof StalePrHeadError) {
       return json({ error: error.message, code: "stale-head" }, 409);
     }
+    if (isWorkflowScopeError(path, error)) {
+      return json({
+        error: "Authorize workflow edits with GitHub, then retry.",
+        code: "workflow-scope",
+      }, 403);
+    }
     console.error(`PR file edit failed for ${repo}#${number}:`, error);
     return json({ error: "GitHub commit failed" }, 502);
+  }
+}
+
+async function handleCommitMessage(req: Request, runtime: HttpRuntime): Promise<Response> {
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: "invalid JSON body" }, 400);
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return json({ error: "invalid commit message request" }, 400);
+  }
+  const { repo, number, path, hunk } = body as Record<string, unknown>;
+  if (
+    typeof repo !== "string"
+    || !CANONICAL_REPO_RE.test(repo)
+    || typeof number !== "number"
+    || !Number.isSafeInteger(number)
+    || number <= 0
+    || !isRepoFilePath(path)
+    || typeof hunk !== "string"
+    || hunk.length === 0
+    || hunk.length > 30_000
+    || !hunk.isWellFormed()
+  ) {
+    return json({ error: "invalid commit message request" }, 400);
+  }
+
+  const stored = getPr(repo, number) ?? getCachedPrDetail(repo, number);
+  if (!stored) return json({ error: "PR is not cached yet" }, 404);
+  const detail = JSON.parse(stored.detail_json) as { title?: string; body?: string | null };
+  const title = detail.title ?? ("title" in stored ? stored.title : "");
+  try {
+    const message = await runtime.generateCommitMessage({
+      title,
+      body: detail.body ?? "",
+      path,
+      hunk,
+    });
+    return json({ message });
+  } catch (error) {
+    if (error instanceof CommitMessageError) {
+      return json({ error: error.message, code: error.code }, error.code === "omp-auth" ? 409 : 503);
+    }
+    console.error(`Commit message generation failed for ${repo}#${number}:`, error);
+    return json({ error: "Commit message generation failed" }, 502);
   }
 }
 
@@ -1980,6 +2047,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     }
     if (isMockGithub && req.method !== "GET") {
       let allowed = (req.method === "POST" && url.pathname === "/api/archive")
+        || (req.method === "POST" && url.pathname === "/api/commit-message")
         || (req.method === "PUT" && url.pathname === "/api/settings")
         || (req.method === "POST" && parts.length === 6 && parts[0] === "api" && parts[1] === "pr" && parts[5] === "merge-method");
       if (!allowed && req.method === "POST" && url.pathname === "/api/mutations") {
@@ -2039,6 +2107,9 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     }
     if (req.method === "POST" && url.pathname === "/api/pr-file-edit") {
       return handlePrFileEdit(req, runtime);
+    }
+    if (req.method === "POST" && url.pathname === "/api/commit-message") {
+      return handleCommitMessage(req, runtime);
     }
     if (req.method === "GET" && url.pathname === "/api/file-history") {
       return handleFileHistory(req, url);

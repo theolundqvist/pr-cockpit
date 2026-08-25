@@ -30,6 +30,7 @@
     commentable = true,
     editable = false,
     onCommitFileEdit = null,
+    onGenerateCommitMessage = null,
     base = null,
     onOpenHistory = null,
     onLookupDefinition = null,
@@ -616,6 +617,47 @@
   function fileEditError(error, fallback) {
     return error instanceof Error && error.message ? error.message : fallback;
   }
+  function fileEditHunk(span) {
+    return [
+      `@@ -${span.oldStart},${span.oldCount} +${span.newStart},${span.newCount} @@`,
+      ...(span.beforeContext === null ? [] : [` ${span.beforeContext}`]),
+      ...span.removed.map((line) => `-${line}`),
+      ...(span.newlineChanged ? [`- ${span.oldEndsWithNewline ? "ends with newline" : "no trailing newline"}`] : []),
+      ...span.added.map((line) => `+${line}`),
+      ...(span.newlineChanged ? [`+ ${span.newEndsWithNewline ? "ends with newline" : "no trailing newline"}`] : []),
+      ...(span.afterContext === null ? [] : [` ${span.afterContext}`]),
+    ].join("\n");
+  }
+
+  async function suggestCommitMessage() {
+    if (!fileEditor || fileEditor.phase !== "review" || fileEditor.message.trim() || !onGenerateCommitMessage) return;
+    const editor = fileEditor;
+    const span = changedLineSpan(editor.original, editor.content);
+    if (!span) return;
+    editor.suggestionPhase = "generating";
+    editor.suggestionError = null;
+    editor.suggestionCode = null;
+    try {
+      const message = await onGenerateCommitMessage(editor.path, fileEditHunk(span));
+      if (fileEditor !== editor) return;
+      if (!editor.message.trim()) editor.message = message;
+      editor.suggestionPhase = "ready";
+    } catch (error) {
+      if (fileEditor !== editor) return;
+      editor.suggestionPhase = "error";
+      editor.suggestionError = fileEditError(error, "Couldn't suggest a commit message.");
+      editor.suggestionCode = error?.code ?? null;
+    }
+  }
+
+  async function openSetup(action, fallbackCommand) {
+    const result = window.cockpitShell?.openSetup
+      ? await window.cockpitShell.openSetup(action)
+      : await navigator.clipboard.writeText(fallbackCommand).then(() => ({ warning: "Command copied. Run it in a terminal." }));
+    if (!fileEditor || !result?.error) return;
+    fileEditor.error = result.error;
+  }
+
 
   async function startFileEdit(file, placement, change = null) {
     if (!editable || file.isBinary || file.isDeleted || fileEditor || !placement) return;
@@ -630,6 +672,10 @@
       message: change?.message ?? "",
       phase: "loading",
       error: null,
+      errorCode: null,
+      suggestionPhase: change?.message ? "ready" : "idle",
+      suggestionError: null,
+      suggestionCode: null,
       ...placement,
     };
     try {
@@ -648,6 +694,7 @@
           content: change ? change.apply(normalized.content) : normalized.content,
           phase: change ? "review" : "editing",
         };
+        if (change) void suggestCommitMessage();
       }
       fileEditRequest = null;
     } catch (error) {
@@ -732,12 +779,15 @@
       return;
     }
     fileEditor.error = null;
+    fileEditor.errorCode = null;
     fileEditor.phase = "review";
+    void suggestCommitMessage();
   }
 
   function returnToFileEdit() {
     if (!fileEditor || fileEditor.phase !== "review") return;
     fileEditor.error = null;
+    fileEditor.errorCode = null;
     fileEditor.phase = "editing";
   }
 
@@ -759,6 +809,7 @@
     const editor = fileEditor;
     editor.phase = "committing";
     editor.error = null;
+    editor.errorCode = null;
     try {
       const content = editor.eol === "\r\n" ? editor.content.replace(/\n/g, "\r\n") : editor.content;
       await onCommitFileEdit(editor.path, editor.expectedHeadOid, content, message);
@@ -767,6 +818,7 @@
       if (fileEditor?.path === editor.path) {
         fileEditor.phase = "review";
         fileEditor.error = fileEditError(error, "Couldn't commit this file.");
+        fileEditor.errorCode = error?.code ?? null;
       }
     }
   }
@@ -1150,14 +1202,34 @@
               </div>
             {/if}
             <label class="file-edit-message">
-              Commit message
+              <span>
+                Commit message
+                {#if fileEditor.suggestionPhase === "generating"}<span class="hint">Generating with Sonnet…</span>{/if}
+              </span>
               <input
                 bind:value={fileEditor.message}
                 maxlength="200"
+                placeholder={fileEditor.suggestionPhase === "generating" ? "Generating…" : ""}
                 disabled={fileEditor.phase === "committing"}
               />
+              {#if fileEditor.suggestionError}
+                <span class="file-edit-suggestion-error">
+                  {fileEditor.suggestionError}
+                  {#if fileEditor.suggestionCode === "omp-auth"}
+                    <button class="reset-link" type="button" onclick={() => openSetup("omp-anthropic", "omp")}>Connect Anthropic</button>
+                  {/if}
+                  <button class="reset-link" type="button" onclick={suggestCommitMessage}>Retry</button>
+                </span>
+              {/if}
             </label>
-            {#if fileEditor.error}<div class="file-edit-error" role="alert">{fileEditor.error}</div>{/if}
+            {#if fileEditor.error}
+              <div class="file-edit-error" role="alert">
+                {fileEditor.error}
+                {#if fileEditor.errorCode === "workflow-scope"}
+                  <button class="reset-link" type="button" onclick={() => openSetup("github-workflow", "gh auth refresh --hostname github.com --scopes workflow")}>Authorize in Terminal</button>
+                {/if}
+              </div>
+            {/if}
             <div class="file-editor-actions">
               <button class="cbtn ghost" disabled={fileEditor.phase === "committing"} onclick={returnToFileEdit}>Back</button>
               <button class="cbtn primary" disabled={fileEditor.phase === "committing" || !fileEditor.message.trim()} onclick={commitFileEdit}>
@@ -1483,6 +1555,15 @@
     outline: none;
     border-color: var(--link);
     box-shadow: 0 0 0 3px var(--focus-ring);
+  }
+  .file-edit-suggestion-error {
+    color: var(--fail);
+    font-size: 12px;
+  }
+  .file-edit-message > span:first-child {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
   }
   .file-edit-error {
     color: var(--fail);

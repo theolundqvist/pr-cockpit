@@ -12,6 +12,7 @@ import { buildFetchHandler } from "./http.ts";
 import { installMockNetworkGuard, isMockGithub, seedMockDatabase } from "./mockGithub.ts";
 import { startCockpitServer } from "./cockpitServer.ts";
 import { resumeActionsLeases } from "./runLogs.ts";
+import { ensureOmpInstalled } from "./commitMessage.ts";
 
 const port = Number(Bun.env.COCKPIT_PORT ?? 4820);
 
@@ -40,6 +41,7 @@ try {
     startRelayClient();
     startUpdateCheck();
     startFixerSupervision();
+    void ensureOmpInstalled().catch((error) => console.error("background OMP installation failed:", error));
     startWebhooks();
   }
 
