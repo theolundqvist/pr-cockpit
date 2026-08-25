@@ -752,7 +752,7 @@
         }
       } else if (view === "open" && e.key === "A") {
         toggleArchived();
-      } else if (e.key === "C") {
+      } else if (e.key === "Tab") {
         showView(view === "closed" ? "open" : "closed");
       } else {
         return;
@@ -854,10 +854,10 @@
       <button class="view-tab" role="tab" aria-selected={view === "open"} class:active={view === "open"} onclick={() => showView("open")}>
         Open
         <span class="view-tab-count">{prs.length}</span>
-        {#if view === "closed"}<Kbd keys="c" />{/if}
+        {#if view === "closed"}<Kbd keys="tab" />{/if}
       </button>
       <button class="view-tab" role="tab" aria-selected={view === "closed"} class:active={view === "closed"} onclick={() => showView("closed")}>
-        Recently merged {#if view === "open"}<Kbd keys="c" />{/if}
+        Recently merged {#if view === "open"}<Kbd keys="tab" />{/if}
       </button>
     </div>
 
