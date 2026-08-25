@@ -16,6 +16,7 @@ This repository is worked on by humans and coding agents alike. Leave it easier 
 - `cd ui && bun run dev` for a hot-reloading UI. It proxies `/api` to `127.0.0.1:4820`, so it needs a server on that port.
 - `bun test server/<file>.test.ts` for a targeted test. Prefer targeted runs over the whole suite while iterating.
 - Screenshot harnesses render at `1600x1200`; keep their default viewport and PNG dimension checks aligned.
+- Conversation, Agents, and Actions share the standard detail width; Files alone expands. PR descriptions fill their card instead of retaining the global reading-width cap.
 - Verify landing-page search queries against live GitHub results; captured PR titles can disappear from the search index while the fixture remains valid.
 - Match the surrounding style. Comments are for a non-obvious constraint, not for narration.
 - Pull-request actions follow GitHub semantics: merge green, update neutral, and destructive actions red.

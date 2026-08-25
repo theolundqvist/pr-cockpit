@@ -1342,7 +1342,7 @@
       showFlash(result.error);
       return;
     }
-    if (result?.warning) showFlash(result.warning);
+    if (result?.warning && result.exitCode) showFlash(result.warning);
     if (!result?.changed) return;
     if (tab !== "files") {
       goToTab("files");
@@ -5676,6 +5676,9 @@
     border-radius: var(--radius-lg);
     background: color-mix(in srgb, var(--panel) 88%, var(--surface));
     box-shadow: var(--shadow-surface);
+  }
+  .body-card :global(.md) {
+    max-width: none;
   }
   .side-block {
     margin: 0 0 12px;
