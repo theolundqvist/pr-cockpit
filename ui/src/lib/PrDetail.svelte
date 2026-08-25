@@ -1350,7 +1350,7 @@
       showFlash(result.error);
       return;
     }
-    if (result?.warning && result.exitCode) showFlash(result.warning);
+    if (result?.warning) showFlash(result.warning);
     if (!result?.changed) return;
     if (tab !== "files") {
       goToTab("files");
