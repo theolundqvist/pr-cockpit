@@ -4,7 +4,7 @@
 
 PR Cockpit is a keyboard-first macOS app that keeps pull requests, diffs, threads, checks, and images warm on your Mac. Reads feel immediate, while comments, reviews, edits, and merges sync through your existing `gh` login. GitHub remains the source of truth.
 
-[Website](https://theolundqvist.github.io/pr-cockpit/) · [Install](#install) · [CLI](#agents-listen-dont-poll) · [Shortcuts](#shortcuts)
+[Website](https://theolundqvist.github.io/pr-cockpit/) · [Install](#install) · [CLI](#agents-listen-dont-poll) · [Self-host relay](docs/self-host-relay.md) · [Shortcuts](#shortcuts)
 
 ## GitHub PRs at local speed
 
@@ -94,6 +94,7 @@ pr-cockpit listen owner/repo#123
 - **The relay carries markers, not pull-request payloads.** It also carries compact Actions run and job state, including runner assignment, but never full pull-request payloads or job logs.
 - **Writes stay authenticated.** Comments, reviews, edits, thread resolution, and merges use the existing GitHub CLI login.
 - **Humans and agents share one cache.** The app uses WebSocket invalidations; the CLI and API expose the same refreshed state.
+- **Self-hosting is one Worker.** Deploy the relay to Cloudflare, create a GitHub App, and connect its URL—no separate database, server, or tunnel. [Complete self-hosting guide](docs/self-host-relay.md).
 
 ## Install
 
@@ -139,7 +140,7 @@ Settings live in the app. Optional shell overrides live in `~/.config/pr-cockpit
 | `COCKPIT_PORT` | Local HTTP port; defaults to `4820` |
 | `COCKPIT_DEFAULT_REPO` | Repository assumed when a PR number is passed alone |
 | `COCKPIT_REPO_ROOTS` | Paths containing local checkouts |
-| `COCKPIT_RELAY_URL` | Optional self-hosted webhook relay |
+| `COCKPIT_RELAY_URL` | [Self-hosted webhook relay](docs/self-host-relay.md) |
 
 </details>
 
