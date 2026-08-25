@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { anchorThreads, buildGapRows, buildWholeFile, fileDiffFingerprint, fileUsesSplitLayout, hunkOldOffset, indexDiff, parseDiff, revertChange, revertFile, revertHunk, splitDiffRows } from "./diff.js";
+import { anchorThreads, buildGapPage, buildGapRows, buildWholeFile, fileDiffFingerprint, fileUsesSplitLayout, hunkOldOffset, indexDiff, parseDiff, revertChange, revertFile, revertHunk, splitDiffRows } from "./diff.js";
 import { createDiffDocument } from "./diffDocument.js";
 
 function makeDiff(hunkBody) {
@@ -255,6 +255,22 @@ describe("buildGapRows", () => {
       { type: "context", oldNum: 498, newNum: 519, text: "line 519" },
     ]);
     expect(splitDiffRows(rows)).toEqual(rows.map((row) => ({ left: row, right: row })));
+  });
+});
+
+describe("buildGapPage", () => {
+  test("reveals at most seventy lines from either visible edge", () => {
+    const content = Array.from({ length: 250 }, (_, index) => `line ${index + 1}`).join("\n");
+
+    const above = buildGapPage(content, 0, 201, -2, "up", 70);
+    expect(above).toHaveLength(70);
+    expect(above[0]).toEqual({ type: "context", oldNum: 129, newNum: 131, text: "line 131" });
+    expect(above.at(-1)).toEqual({ type: "context", oldNum: 198, newNum: 200, text: "line 200" });
+
+    const below = buildGapPage(content, 50, 251, 3, "down", 70);
+    expect(below).toHaveLength(70);
+    expect(below[0]).toEqual({ type: "context", oldNum: 54, newNum: 51, text: "line 51" });
+    expect(below.at(-1)).toEqual({ type: "context", oldNum: 123, newNum: 120, text: "line 120" });
   });
 });
 

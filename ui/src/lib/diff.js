@@ -373,6 +373,12 @@ export function buildGapRows(content, fromNewNum, toNewNum, oldOffset) {
   return rows;
 }
 
+export function buildGapPage(content, fromNewNum, toNewNum, oldOffset, direction, limit) {
+  const pageFrom = direction === "down" ? fromNewNum : Math.max(fromNewNum, toNewNum - limit - 1);
+  const pageTo = direction === "down" ? Math.min(toNewNum, fromNewNum + limit + 1) : toNewNum;
+  return buildGapRows(content, pageFrom, pageTo, oldOffset);
+}
+
 export function anchorThreads(files, threads) {
   const filesByPath = new Map(files.map((file) => [file.path, file]));
   const anchored = new Map();

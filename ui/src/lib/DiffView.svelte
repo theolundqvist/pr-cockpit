@@ -7,7 +7,7 @@
   import { getHighlighter, ensureTheme, langForPath, tokenizeLine } from "./highlight.js";
   import { renderMarkdown } from "./markdown.js";
   import { theme } from "./theme.svelte.js";
-  import { buildWholeFile, buildGapRows, fileUsesSplitLayout, hunkOldOffset, revertChange, revertFile, splitDiffRows } from "./diff.js";
+  import { buildGapPage, buildWholeFile, fileUsesSplitLayout, hunkOldOffset, revertChange, revertFile, splitDiffRows } from "./diff.js";
   import { fetchFileContents } from "./api.js";
   import { columnWithin, createDefinitionHover, tokenAtPoint } from "./wordAtPoint.js";
   import Chevron from "./Chevron.svelte";
@@ -507,6 +507,7 @@
   }
   let wholeFile = $state(new Map());
   let gapRows = $state(new Map());
+  let gapFiles = $state(new Map());
 
   const HEAD_H = 37;
   const FILE_MESSAGE_H = 45;
@@ -515,6 +516,7 @@
   const HUNK_HEAD_PADDING_H = 6;
   const HUNK_HEAD_BORDER_H = 2;
   const MAX_HIGHLIGHT_LINE = 1000;
+  const GAP_PAGE_LINES = 70;
   const SLICE_MAX_ROWS = 150;
   const SLICE_BUDGET_MS = 8;
   const IDLE_TIMEOUT_MS = 300;
@@ -561,31 +563,72 @@
     return { first: first ?? 1, last: last ?? 0 };
   }
 
-  function gapBounds(file, hi) {
-    const to = hunkNewBounds(file.hunks[hi]).first;
+  function gapBounds(file, hi, lineCount = null) {
+    const to = hi < file.hunks.length
+      ? hunkNewBounds(file.hunks[hi]).first
+      : lineCount === null ? null : lineCount + 1;
     const from = hi === 0 ? 0 : hunkNewBounds(file.hunks[hi - 1]).last;
     return { from, to };
   }
 
-  async function expandGap(file, hi) {
-    const key = `${file.path}#${hi}`;
-    if (gapRows.has(key)) return;
-    const { from, to } = gapBounds(file, hi);
-    const oldOffset = hunkOldOffset(file.hunks[hi].range);
-    if (to - from <= 1) return;
-    const loading = new Map(gapRows);
-    loading.set(key, "loading");
-    gapRows = loading;
-    let rows = null;
+  function gapKey(file, hi) {
+    return `${file.path}#${hi}`;
+  }
+
+  function gapHasMore(file, hi, rows, lineCount = null) {
+    const { from, to } = gapBounds(file, hi, lineCount);
+    if (to === null) return true;
+    if (to - from <= 1) return false;
+    if (!Array.isArray(rows) || rows.length === 0) return true;
+    return hi === file.hunks.length
+      ? rows.at(-1).newNum < to - 1
+      : rows[0].newNum > from + 1;
+  }
+
+  async function loadGapFile(file) {
+    const current = gapFiles.get(file.path);
+    if (current?.status === "ready") return current;
+    if (current?.status === "loading") return null;
+    const loading = new Map(gapFiles);
+    loading.set(file.path, { status: "loading" });
+    gapFiles = loading;
+    const requestIdentity = diffIdentity;
+    const requestHeadSha = headSha;
+    let entry = null;
     try {
-      const result = await fetchFileContents(repo, file.path, headSha);
-      if (!result.tooLarge) rows = buildGapRows(result.content, from, to, oldOffset);
+      const result = await fetchFileContents(repo, file.path, requestHeadSha);
+      if (!result.tooLarge) {
+        entry = {
+          status: "ready",
+          content: result.content,
+          lineCount: fileContentLines(result.content).lines.length,
+        };
+      }
     } catch {
-      rows = null;
+      entry = null;
     }
+    if (requestIdentity !== diffIdentity || requestHeadSha !== headSha) return null;
+    const next = new Map(gapFiles);
+    if (entry) next.set(file.path, entry);
+    else next.delete(file.path);
+    gapFiles = next;
+    return entry;
+  }
+
+  async function expandGap(file, hi) {
+    const loaded = await loadGapFile(file);
+    if (!loaded) return;
+    const key = gapKey(file, hi);
+    const current = gapRows.get(key) ?? [];
+    if (!gapHasMore(file, hi, current, loaded.lineCount)) return;
+    const { from, to } = gapBounds(file, hi, loaded.lineCount);
+    const trailing = hi === file.hunks.length;
+    const oldOffset = trailing ? file.deletions - file.additions : hunkOldOffset(file.hunks[hi].range);
+    const page = trailing
+      ? buildGapPage(loaded.content, current.at(-1)?.newNum ?? from, to, oldOffset, "down", GAP_PAGE_LINES)
+      : buildGapPage(loaded.content, from, current[0]?.newNum ?? to, oldOffset, "up", GAP_PAGE_LINES);
     const next = new Map(gapRows);
-    if (rows && rows.length) next.set(key, rows);
-    else next.delete(key);
+    next.set(key, trailing ? [...current, ...page] : [...page, ...current]);
     gapRows = next;
   }
 
@@ -1119,6 +1162,8 @@
     measuredFiles.clear();
     measuredRowChunks = new WeakMap();
     hydratedFiles.clear();
+    gapRows = new Map();
+    gapFiles = new Map();
     void tick().then(async () => {
       await setupObserver();
       observedFileNodes.length = 0;
@@ -1184,8 +1229,8 @@
         }
         const whole = wholeSnapshot.get(file.path);
         if (whole?.status === "ready" && !(await tokenize(visibleHighlightRows(whole.rows, split, chunkSnapshot), lang))) return;
-        for (let hi = 0; hi < file.hunks.length; hi++) {
-          const g = gapSnapshot.get(`${file.path}#${hi}`);
+        for (let hi = 0; hi <= file.hunks.length; hi++) {
+          const g = gapSnapshot.get(gapKey(file, hi));
           if (Array.isArray(g) && !(await tokenize(visibleHighlightRows(g, split, chunkSnapshot), lang))) return;
         }
       }
@@ -1602,26 +1647,51 @@
           oncontextmenu={(event) => onEditContextMenu(event, file)}
         >
           {#each file.hunks as hunk, hi}
-            {@const gap = gapRows.get(`${file.path}#${hi}`)}
-            {@const bounds = gapBounds(file, hi)}
-            {@const expandable = !file.isNew && bounds.to - bounds.from > 1}
-            {#if Array.isArray(gap)}
-              {@render diffRows(file, gap, null)}
-            {:else}
+            {@const key = gapKey(file, hi)}
+            {@const gap = gapRows.get(key)}
+            {@const gapFile = gapFiles.get(file.path)}
+            {@const expandable = !file.isNew && gapHasMore(file, hi, gap, gapFile?.lineCount)}
+            {@const loading = gapFile?.status === "loading"}
+            {#if expandable || !Array.isArray(gap)}
               <button
                 class="hunk-head"
                 class:expandable
                 data-hunk-index={hi}
-                disabled={!expandable}
+                disabled={!expandable || loading}
+                aria-label={expandable ? "Expand up to 70 more lines above" : undefined}
                 onclick={() => expandGap(file, hi)}
               >
                 <span class="ln"></span><span class="ln"></span>
                 <span class="hunk-label">{hunk.range}{hunk.context ? " " + hunk.context : ""}</span>
-                {#if expandable}<span class="hunk-expand">expand ↕</span>{/if}
+                {#if expandable}<span class="hunk-expand">{loading ? "loading…" : "expand more ↑"}</span>{/if}
               </button>
+            {/if}
+            {#if Array.isArray(gap)}
+              {@render diffRows(file, gap, null)}
             {/if}
             {@render diffRows(file, hunk.rows, hi)}
           {/each}
+          {#if !file.isNew && !file.isDeleted}
+            {@const tailIndex = file.hunks.length}
+            {@const tailGap = gapRows.get(gapKey(file, tailIndex))}
+            {@const tailFile = gapFiles.get(file.path)}
+            {@const tailExpandable = gapHasMore(file, tailIndex, tailGap, tailFile?.lineCount)}
+            {#if Array.isArray(tailGap)}
+              {@render diffRows(file, tailGap, null)}
+            {/if}
+            {#if tailExpandable}
+              <button
+                class="hunk-head expandable"
+                data-hunk-index={tailIndex}
+                disabled={tailFile?.status === "loading"}
+                aria-label="Expand up to 70 more lines below"
+                onclick={() => expandGap(file, tailIndex)}
+              >
+                <span class="ln"></span><span class="ln"></span>
+                <span class="hunk-expand">{tailFile?.status === "loading" ? "loading…" : "expand more ↓"}</span>
+              </button>
+            {/if}
+          {/if}
         </div>
       {/if}
       </div>
