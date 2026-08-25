@@ -109,7 +109,6 @@
                         <svg class:expanded={expandedGroups.has(line.groupId)} class="chevron" viewBox="0 0 12 12" aria-hidden="true">
                           <path d="m4 2.5 3.5 3.5L4 9.5" />
                         </svg>
-                        <span class="step-status {stepTone(line.conclusion)}">{@render statusIcon(stepState(line.conclusion), iconConclusion(line.conclusion))}</span>
                         <code>{line.text}</code>
                       </button>
                     </div>
@@ -335,7 +334,7 @@
   .group-summary {
     display: grid;
     min-width: 0;
-    grid-template-columns: 14px 18px minmax(0, 1fr);
+    grid-template-columns: 14px minmax(0, 1fr);
     align-items: center;
     gap: 7px;
     padding: 4px 14px 4px 10px;

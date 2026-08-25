@@ -79,7 +79,9 @@ export function parseActionLog(text, jobConclusion = null, failedStep = null) {
   function addLine(line, textValue, tone = "output", fields = {}) {
     const item = { line, text: textValue, tone, ...fields };
     if (groupStack.length > 0) item.groups = [...groupStack];
-    ensureStep(postCleanup ? "Post job cleanup" : "Set up job").lines.push(item);
+    const step = ensureStep(postCleanup ? "Post job cleanup" : "Set up job");
+    if (rootGroupDepth > 0 && step.rootGroup) item.rootGroupId = step.rootGroup.id;
+    step.lines.push(item);
   }
 
   const sourceLines = text.replace(/^\uFEFF/, "").split("\n");
@@ -115,6 +117,11 @@ export function parseActionLog(text, jobConclusion = null, failedStep = null) {
           groupStack.push(groupId);
         } else {
           startStep(value || "Log group");
+          current.rootGroup = {
+            id: `${current.id}-shell`,
+            line: lineNumber,
+            title: value || "Log group",
+          };
           rootGroupDepth = 1;
           postCleanup = false;
         }
@@ -175,24 +182,30 @@ export function parseActionLog(text, jobConclusion = null, failedStep = null) {
     if (failed) failed.conclusion = "failure";
   }
 
-  const failed = steps.find((step) => step.conclusion === "failure" && /^Run\b/.test(step.title));
+  const failed = steps.find((step) =>
+    step.conclusion === "failure" && /^Run\b/.test(step.title) && step.rootGroup
+  );
   if (failedStep && failed && failed.title !== failedStep) {
-    const groupId = `${failed.id}-shell`;
-    const firstLine = failed.lines[0]?.line ?? 2;
-    failed.lines = [
-      {
-        line: Math.max(1, firstLine - 1),
-        text: failed.title,
-        tone: "group",
-        groupId,
-        conclusion: "failure",
-      },
-      ...failed.lines.map((line) => ({
-        ...line,
-        groups: [groupId, ...(line.groups ?? [])],
-      })),
-    ];
+    const group = failed.rootGroup;
+    let groupConclusion = "success";
+    for (const line of failed.lines) {
+      if (line.rootGroupId !== group.id) continue;
+      line.groups = [group.id, ...(line.groups ?? [])];
+      if (line.tone === "failure") groupConclusion = "failure";
+      else if (line.tone === "warning" && groupConclusion === "success") groupConclusion = "warning";
+    }
+    failed.lines.unshift({
+      line: group.line,
+      text: group.title,
+      tone: "group",
+      groupId: group.id,
+      conclusion: groupConclusion,
+    });
     failed.title = failedStep;
+  }
+  for (const step of steps) {
+    delete step.rootGroup;
+    for (const line of step.lines) delete line.rootGroupId;
   }
 
   return { steps, annotations };

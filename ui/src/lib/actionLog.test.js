@@ -96,12 +96,13 @@ describe("parseActionLog", () => {
     ]);
   });
 
-  test("nests the failed shell group under GitHub's job step name", () => {
+  test("keeps runtime output visible below a collapsed shell echo", () => {
     const parsed = parseActionLog([
       "##[group]Run set -euo pipefail",
       "set -euo pipefail",
-      "##[error]APPLE_CERTIFICATE did not provide a valid code-signing identity",
       "##[endgroup]",
+      'keychain: "/tmp/release.keychain-db"',
+      "##[error]APPLE_CERTIFICATE did not provide a valid code-signing identity",
     ].join("\n"), "failure", "Number, sign, archive, and upload");
 
     expect(parsed.steps[0].title).toBe("Number, sign, archive, and upload");
@@ -110,8 +111,10 @@ describe("parseActionLog", () => {
       text: "Run set -euo pipefail",
       tone: "group",
       groupId: "step-1-shell",
-      conclusion: "failure",
+      conclusion: "success",
     });
     expect(parsed.steps[0].lines[1].groups).toEqual(["step-1-shell"]);
+    expect(parsed.steps[0].lines[2].groups).toBeUndefined();
+    expect(parsed.steps[0].lines[3].groups).toBeUndefined();
   });
 });
