@@ -363,15 +363,9 @@ new file mode 100644
 index 0000000..3333333
 Binary files /dev/null and b/assets/cockpit.bin differ
 diff --git a/docs/old-name.md b/docs/new-name.md
-similarity index 91%
+similarity index 100%
 rename from docs/old-name.md
 rename to docs/new-name.md
-index 4444444..5555555 100644
---- a/docs/old-name.md
-+++ b/docs/new-name.md
-@@ -1 +1 @@
--# Old fixture name
-+# New fixture name
 `;
   }
   if (number === 113) return "";

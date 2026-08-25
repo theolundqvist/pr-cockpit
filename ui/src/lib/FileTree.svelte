@@ -20,7 +20,15 @@
         if (!node.dirs.has(part)) node.dirs.set(part, { name: part, path: acc, dirs: new Map(), files: [] });
         node = node.dirs.get(part);
       }
-      node.files.push({ name, path: file.path, additions: file.additions, deletions: file.deletions, tone: fileTone(file) });
+      node.files.push({
+        name,
+        path: file.path,
+        additions: file.additions,
+        deletions: file.deletions,
+        tone: fileTone(file),
+        isRenamed: Boolean(file.previousPath),
+        isUnchangedRename: file.isUnchangedRename,
+      });
     });
     compress(root);
     sumLines(root);
@@ -105,7 +113,10 @@
       {@render rails(depth)}
       <span class="dot {file.tone}"></span>
       <span class="name">{file.name}</span>
-      <span class="counts mono"><span class="add">+{file.additions}</span><span class="del">−{file.deletions}</span></span>
+      {#if file.isRenamed}<span class="renamed">renamed</span>{/if}
+      {#if !file.isUnchangedRename}
+        <span class="counts mono"><span class="add">+{file.additions}</span><span class="del">−{file.deletions}</span></span>
+      {/if}
     </button>
   {/each}
 {/snippet}
@@ -214,6 +225,11 @@
   .file .name {
     flex: 1;
     min-width: 0;
+  }
+  .renamed {
+    flex: none;
+    color: var(--text-faint);
+    font-size: 11px;
   }
   .counts {
     flex: none;

@@ -11,6 +11,8 @@ export function parseDiff(text) {
   const pushFile = (path) => {
     file = {
       path,
+      previousPath: null,
+      similarity: null,
       isNew: false,
       isDeleted: false,
       isBinary: false,
@@ -67,12 +69,18 @@ export function parseDiff(text) {
       }
     } else if (line.startsWith("index ")) {
       file.index = line.slice("index ".length).trim();
+    } else if (line.startsWith("similarity index ")) {
+      file.similarity = Number.parseInt(line.slice("similarity index ".length), 10);
     } else if (line.startsWith("new file mode")) file.isNew = true;
     else if (line.startsWith("deleted file mode")) file.isDeleted = true;
     else if (line.startsWith("Binary files")) file.isBinary = true;
+    else if (line.startsWith("rename from ")) file.previousPath = line.slice("rename from ".length);
     else if (line.startsWith("rename to ")) file.path = line.slice("rename to ".length);
   }
-  for (const file of files) for (const hunk of file.hunks) alignWhitespaceOnly(file, hunk);
+  for (const file of files) {
+    file.isUnchangedRename = file.previousPath !== null && file.similarity === 100 && file.hunks.length === 0;
+    for (const hunk of file.hunks) alignWhitespaceOnly(file, hunk);
+  }
   return files;
 }
 
@@ -184,6 +192,8 @@ export function fileDiffFingerprint(file) {
     second = Math.imul(second ^ 0, 0x85ebca6b);
   };
   add(file.isNew);
+  add(file.previousPath);
+  add(file.similarity);
   add(file.isDeleted);
   add(file.isBinary);
   add(file.index);

@@ -66,6 +66,29 @@ describe("parseDiff whitespace-tolerant alignment", () => {
   });
 });
 
+describe("parseDiff renames", () => {
+  test("identifies a file renamed without content changes", () => {
+    const [file] = parseDiff(
+      "diff --git a/docs/old.md b/docs/new.md\nsimilarity index 100%\nrename from docs/old.md\nrename to docs/new.md\n",
+    );
+
+    expect(file.previousPath).toBe("docs/old.md");
+    expect(file.path).toBe("docs/new.md");
+    expect(file.similarity).toBe(100);
+    expect(file.isUnchangedRename).toBe(true);
+    expect(file.hunks).toEqual([]);
+  });
+
+  test("does not hide a renamed binary file with content changes", () => {
+    const [file] = parseDiff(
+      "diff --git a/assets/old.bin b/assets/new.bin\nsimilarity index 90%\nrename from assets/old.bin\nrename to assets/new.bin\nBinary files a/assets/old.bin and b/assets/new.bin differ\n",
+    );
+
+    expect(file.isUnchangedRename).toBe(false);
+    expect(file.isBinary).toBe(true);
+  });
+});
+
 describe("splitDiffRows", () => {
   test("pairs changed lines and preserves surrounding context", () => {
     const rows = parseDiff(makeDiff(" const before = 1;\n-old one\n-old two\n+new one\n const after = 1;"))[0].hunks[0].rows;

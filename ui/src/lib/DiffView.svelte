@@ -462,6 +462,7 @@
   let gapRows = $state(new Map());
 
   const HEAD_H = 37;
+  const FILE_MESSAGE_H = 45;
   const LINE_H = 20;
   const HUNK_HEAD_TEXT_H = 20;
   const HUNK_HEAD_PADDING_H = 6;
@@ -474,7 +475,9 @@
   let generalLayoutScale = $derived(theme.generalScale / 100);
 
   function estimateHeight(file, isCollapsed, whole = null) {
-    if (isCollapsed || file.isBinary) return HEAD_H;
+    if (isCollapsed) return HEAD_H;
+    if (file.isUnchangedRename) return HEAD_H + FILE_MESSAGE_H;
+    if (file.isBinary) return HEAD_H;
     const split = usesSplitLayout(file);
     if (whole?.status === "ready") {
       return HEAD_H + (split ? pairedRows(whole.rows).length : whole.rows.length) * LINE_H * diffLayoutScale;
@@ -1134,7 +1137,15 @@
           onclick={(event) => (fileEditor?.path === file.path ? finishFileEdit() : keepingHeaderPlace(event, file, () => onToggleFile(file)))}
         >
           <Chevron direction={isCollapsed ? "right" : "down"} />
-          <span class="file-path">{file.path}</span>
+          {#if file.previousPath}
+            <span class="rename-paths">
+              <span class="file-path" title={file.previousPath}>{file.previousPath}</span>
+              <span class="rename-arrow" aria-hidden="true">→</span>
+              <span class="file-path" title={file.path}>{file.path}</span>
+            </span>
+          {:else}
+            <span class="file-path">{file.path}</span>
+          {/if}
           <span
             class="path-copy"
             role="button"
@@ -1153,8 +1164,11 @@
           <span class="file-stat">
             {#if file.isNew}<span class="new">new</span>{/if}
             {#if file.isDeleted}<span class="del">deleted</span>{/if}
-            <span class="add">+{file.additions}</span>
-            <span class="del">−{file.deletions}</span>
+            {#if file.previousPath}<span class="renamed">renamed</span>{/if}
+            {#if !file.isUnchangedRename}
+              <span class="add">+{file.additions}</span>
+              <span class="del">−{file.deletions}</span>
+            {/if}
           </span>
         </button>
         {#if fileEditor?.path === file.path}
@@ -1165,7 +1179,7 @@
               <button class="cbtn ghost" onclick={discardFileEdit}>Close</button>
             {/if}
           </div>
-        {:else if !isCollapsed && editable && !file.isBinary && !file.isDeleted}
+        {:else if !isCollapsed && editable && !file.isBinary && !file.isDeleted && !file.isUnchangedRename}
           <button class="whole-btn file-edit-btn" onclick={(event) => startFileEdit(file, toolbarEditPlacement(event.currentTarget))}>Edit</button>
         {/if}
         {#if onToggleViewed}
@@ -1180,7 +1194,7 @@
             <span class="viewed-label">Viewed</span>
           </button>
         {/if}
-        {#if !isCollapsed && !file.isBinary && !file.isDeleted}
+        {#if !isCollapsed && !file.isBinary && !file.isDeleted && !file.isUnchangedRename}
           <button class="whole-btn" disabled={whole?.status === "loading"} onclick={() => toggleWholeFile(file)}>
             {whole?.status === "ready"
               ? "hunks"
@@ -1273,6 +1287,8 @@
       <div class="file-diff-content" hidden={fileEditor?.path === file.path}>
         {#if !hotPaths.has(file.path)}
         <div style="height:{estimateHeight(file, false, whole) - HEAD_H}px"></div>
+      {:else if file.isUnchangedRename}
+        <div class="file-message">File renamed without changes.</div>
       {:else if file.isBinary}
         <div class="binary">Binary file not shown</div>
       {:else if whole?.status === "ready"}
@@ -1441,6 +1457,19 @@
     cursor: default;
     color: var(--text-faint);
   }
+  .rename-paths {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .rename-paths .file-path {
+    flex: 1 1 0;
+  }
+  .rename-arrow {
+    flex: none;
+    color: var(--text-faint);
+  }
   .file-path {
     flex: 0 1 auto;
     min-width: 0;
@@ -1475,13 +1504,17 @@
   .file-stat .new {
     color: var(--ready);
   }
+  .file-stat .renamed {
+    color: var(--text-dim);
+  }
   .file-stat .add {
     color: var(--ready);
   }
   .file-stat .del {
     color: var(--fail);
   }
-  .binary {
+  .binary,
+  .file-message {
     padding: 14px 16px;
     color: var(--text-faint);
     font-size: 12.5px;
