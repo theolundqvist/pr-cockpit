@@ -1294,7 +1294,7 @@
     externalEditorBusy = true;
     let result;
     try {
-      result = await window.cockpitShell.openEditor(repo, number, target);
+      result = await window.cockpitShell.openEditor(repo, number, target, pr.headRefOid);
     } catch (error) {
       showFlash(error instanceof Error ? error.message : "Couldn't open the external editor.");
       return;
@@ -1321,11 +1321,11 @@
   }
 
   $effect(() => {
-    if (tab !== "files" || !fileEditable || !pr?.headRefOid || !window.cockpitShell?.prepareEditor) return;
+    if (!fileEditable || !pr?.headRefOid || !window.cockpitShell?.prepareEditor) return;
     const key = `${repo}#${number}@${pr.headRefOid}`;
     if (key === preparedEditorKey) return;
     preparedEditorKey = key;
-    void window.cockpitShell.prepareEditor(repo, number);
+    void window.cockpitShell.prepareEditor(repo, number, pr.headRefOid);
   });
 
   function copyBranchName() {

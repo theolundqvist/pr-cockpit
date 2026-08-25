@@ -48,13 +48,20 @@ const DEFAULT_OPEN_APP = "Command+Control+G";
 const DEFAULT_OPEN_PALETTE = "Command+Option+K";
 
 const editorPreparations = new Map();
+const editorCheckoutPaths = new Map();
 
 function validPrIdentity(repo, number) {
   return typeof repo === "string" && /^[\w.-]+\/[\w.-]+$/.test(repo) && Number.isInteger(number) && number > 0;
 }
 
-function prepareEditorCheckout(repo, number) {
-  const key = `${repo}#${number}`;
+function validEditorHead(headSha) {
+  return typeof headSha === "string" && /^[0-9a-f]{40}$/i.test(headSha);
+}
+
+function prepareEditorCheckout(repo, number, headSha) {
+  const key = `${repo}#${number}@${headSha}`;
+  const cached = editorCheckoutPaths.get(key);
+  if (cached) return Promise.resolve(cached);
   const active = editorPreparations.get(key);
   if (active) return active;
   const preparation = (async () => {
@@ -62,11 +69,23 @@ function prepareEditorCheckout(repo, number) {
     const body = await res.json();
     if (!res.ok) throw new Error(body.error || `checkout materialization failed (${res.status})`);
     if (typeof body.path !== "string" || !path.isAbsolute(body.path)) throw new Error("server returned an invalid checkout path");
+    for (const cachedKey of editorCheckoutPaths.keys()) {
+      if (cachedKey.startsWith(`${repo}#${number}@`)) editorCheckoutPaths.delete(cachedKey);
+    }
+    editorCheckoutPaths.set(key, body.path);
     return body.path;
   })();
   editorPreparations.set(key, preparation);
   void preparation.finally(() => editorPreparations.delete(key)).catch(() => {});
   return preparation;
+}
+
+function editorTargetInCheckout(checkout, relativePath) {
+  const root = fs.realpathSync(checkout);
+  const target = fs.realpathSync(path.resolve(root, relativePath));
+  const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+  if (!target.startsWith(prefix)) throw new Error("editor target escapes the checkout");
+  return target;
 }
 
 const boundsFile = path.join(app.getPath("userData"), "window-bounds.json");
@@ -538,8 +557,10 @@ if (!app.requestSingleInstanceLock()) {
       const repo = payload?.repo;
       const number = payload?.number;
       const editorTarget = payload?.target;
+      const headSha = payload?.headSha;
       if (
         !validPrIdentity(repo, number)
+        || !validEditorHead(headSha)
         || !editorTarget
         || typeof editorTarget !== "object"
         || typeof editorTarget.path !== "string"
@@ -548,23 +569,35 @@ if (!app.requestSingleInstanceLock()) {
       ) {
         return { error: "bad editor request" };
       }
-      const preparation = editorPreparations.get(`${repo}#${number}`);
+      const key = `${repo}#${number}@${headSha}`;
+      const preparation = editorPreparations.get(key);
       if (preparation) await preparation.catch(() => {});
-      let checkout;
+      let checkout = editorCheckoutPaths.get(key);
       let target;
-      try {
-        const query = `?file=${encodeURIComponent(editorTarget.path)}`;
-        const res = await fetch(`${serverOrigin}/api/pr/${repo}/${number}/checkout${query}`);
-        const body = await res.json();
-        if (!res.ok) return { error: body.error || `checkout materialization failed (${res.status})` };
-        if (typeof body.path !== "string" || !path.isAbsolute(body.path)) return { error: "server returned an invalid checkout path" };
-        if (typeof body.target !== "string" || !path.isAbsolute(body.target)) return { error: "server returned an invalid editor target" };
-        checkout = body.path;
-        target = body.target;
-        const checkoutPrefix = checkout.endsWith(path.sep) ? checkout : `${checkout}${path.sep}`;
-        if (!target.startsWith(checkoutPrefix)) return { error: "editor target escapes the checkout" };
-      } catch (err) {
-        return { error: `checkout materialization failed: ${err.message}` };
+      if (checkout) {
+        try {
+          target = editorTargetInCheckout(checkout, editorTarget.path);
+        } catch {
+          editorCheckoutPaths.delete(key);
+          checkout = null;
+        }
+      }
+      if (!checkout) {
+        try {
+          const query = `?file=${encodeURIComponent(editorTarget.path)}`;
+          const res = await fetch(`${serverOrigin}/api/pr/${repo}/${number}/checkout${query}`);
+          const body = await res.json();
+          if (!res.ok) return { error: body.error || `checkout materialization failed (${res.status})` };
+          if (typeof body.path !== "string" || !path.isAbsolute(body.path)) return { error: "server returned an invalid checkout path" };
+          if (typeof body.target !== "string" || !path.isAbsolute(body.target)) return { error: "server returned an invalid editor target" };
+          checkout = body.path;
+          target = body.target;
+          const checkoutPrefix = checkout.endsWith(path.sep) ? checkout : `${checkout}${path.sep}`;
+          if (!target.startsWith(checkoutPrefix)) return { error: "editor target escapes the checkout" };
+          editorCheckoutPaths.set(key, checkout);
+        } catch (err) {
+          return { error: `checkout materialization failed: ${err.message}` };
+        }
       }
       if (!win || win.isDestroyed()) return { error: "editor launch failed: no cockpit window" };
       return runEditorSession(checkout, target, editorTarget.path, editorTarget.line, win.getBounds());
@@ -572,9 +605,10 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("cockpit:prepare-editor", async (_event, payload) => {
       const repo = payload?.repo;
       const number = payload?.number;
-      if (!validPrIdentity(repo, number)) return { error: "bad editor request" };
+      const headSha = payload?.headSha;
+      if (!validPrIdentity(repo, number) || !validEditorHead(headSha)) return { error: "bad editor request" };
       try {
-        await prepareEditorCheckout(repo, number);
+        await prepareEditorCheckout(repo, number, headSha);
         return { ok: true };
       } catch (err) {
         return { error: `checkout materialization failed: ${err.message}` };

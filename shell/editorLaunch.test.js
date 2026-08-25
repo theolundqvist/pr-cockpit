@@ -40,7 +40,7 @@ function editorCheckout(editorBody) {
   const terminal = join(checkout, "terminal");
   const editor = join(checkout, "editor");
   const target = join(checkout, "source.ts");
-  writeFileSync(terminal, "#!/bin/sh\n[ \"$1\" = \"-e\" ] && shift\nexec \"$@\"\n");
+  writeFileSync(terminal, "#!/bin/sh\n[ \"$1\" = \"-e\" ] && shift\n\"$@\" >/dev/null 2>&1 &\nexit 0\n");
   writeFileSync(editor, editorBody);
   chmodSync(terminal, 0o755);
   chmodSync(editor, 0o755);
@@ -68,7 +68,10 @@ async function runSession(fixture) {
 describe("external editor session", () => {
   test("waits for the editor, returns its changes, and restores the managed worktree", async () => {
     const fixture = editorCheckout("#!/bin/sh\ntarget=\"\"\nfor arg in \"$@\"; do target=\"$arg\"; done\nsleep 0.05\nprintf 'edited\\n' > \"$target\"\n");
+    const startedAt = Date.now();
     const result = await runSession(fixture);
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(40);
+    expect(result.warning).toBeUndefined();
 
     expect(result).toMatchObject({ changed: true, content: "edited\n" });
     expect(readFileSync(fixture.target, "utf8")).toBe("edited\n");
