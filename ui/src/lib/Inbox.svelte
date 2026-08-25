@@ -786,10 +786,7 @@
 <div class="page">
   <div class="inbox" onmousemove={trackMouse}>
     <header class="head">
-      <div class="head-copy">
-        <span class="ui-eyebrow">Workspace</span>
-        <span class="head-title">Review queue</span>
-      </div>
+      <span class="head-title">Review queue</span>
       <span class="head-right">
         <UpdateButton />
         <span
@@ -829,15 +826,7 @@
         </div>
       {:else}
         <div class="queue-copy">
-          <span class="ui-eyebrow">Pull requests</span>
           <h1>{headCount}</h1>
-          <p>
-            {#if queueSummary.repos}
-              Sorted around the next decision across {queueSummary.repos} repositor{queueSummary.repos === 1 ? "y" : "ies"}.
-            {:else}
-              Your pull-request workspace will appear here.
-            {/if}
-          </p>
         </div>
         <div class="queue-metrics" aria-label="Queue counts">
           <div class="queue-metric ready">
@@ -1614,14 +1603,6 @@
     border-bottom: 1px solid var(--border-soft);
     backdrop-filter: blur(18px) saturate(160%);
   }
-  .head-copy {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-  .head .ui-eyebrow {
-    font-size: 10px;
-  }
   .head-title {
     font-family: var(--sans);
     font-size: 19px;
@@ -2081,12 +2062,6 @@
     border-bottom-color: var(--border-soft);
     background: linear-gradient(to bottom, var(--bg) 74%, color-mix(in srgb, var(--bg) 84%, transparent));
     backdrop-filter: blur(14px);
-  }
-  .head-copy {
-    gap: 0;
-  }
-  .head .ui-eyebrow {
-    font-size: 12px;
   }
   .head-title {
     font-size: 24px;
