@@ -85,6 +85,7 @@
   const conflictCopied = timedFlag(1200);
 
   let pr = $state(null);
+  let actionsRunUrl = $state(null);
   let files = $state([]);
   let diffDocument = null;
   onDestroy(() => diffDocument?.dispose());
@@ -2019,7 +2020,8 @@
       } else if (e.key === "q") {
         pickerMode = "review";
       } else if (e.key === "o") {
-        if (pr) window.open(pr.url, "_blank", "noopener");
+        const url = tab === "actions" ? actionsRunUrl : pr?.url;
+        if (url) window.open(url, "_blank", "noopener");
       } else if (e.key === "T") {
         focusTerminal();
       } else if (e.key === "p") {
@@ -2130,7 +2132,7 @@
   let tabKeys = $derived([
     { key: "⌘1 / ⌘2 / ⌘3 / ⌘4", label: "switch tab" },
     { key: "x", label: "close" },
-    { key: "o", label: "github" },
+    { key: "o", label: tab === "actions" && actionsRunUrl ? "github run" : "github" },
     ...(pr ? [{ key: "⇧T", label: "focus terminal" }] : []),
     { key: "esc", label: "back" },
   ]);
@@ -2588,7 +2590,7 @@
           </div>
         </div>
       {:else if tab === "actions"}
-        <ActionsView {repo} {number} headSha={pr.headRefOid} />
+        <ActionsView {repo} {number} headSha={pr.headRefOid} bind:runUrl={actionsRunUrl} />
       {:else}
         <div class="cols">
         <div class="left">
