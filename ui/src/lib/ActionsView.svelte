@@ -1,5 +1,6 @@
 <script>
   import ActionsGraph from "./ActionsGraph.svelte";
+  import ActionLog from "./ActionLog.svelte";
   import { fetchActionGraph, fetchActionLog, fetchActions } from "./api.js";
   import { durationText, relativeTime } from "./time.js";
 
@@ -288,8 +289,8 @@
           </div>
         {:else if selectedLog?.state === "not-produced"}
           <div class="empty log-empty">GitHub skipped this job, so it produced no log.</div>
-        {:else if selectedLog}
-          <pre class="action-log mono">{selectedLog.body || "This job produced no log output."}</pre>
+        {:else if selectedLog?.body}
+          <ActionLog body={selectedLog.body} jobConclusion={selectedJob.conclusion} {statusIcon} />
           {#if selectedLog.truncated}
             <div class="log-footer">
               <span>Showing the last 256 KB</span>
@@ -567,22 +568,6 @@
     flex-wrap: wrap;
     gap: 5px 12px;
     margin-top: 6px;
-  }
-  .action-log {
-    box-sizing: border-box;
-    width: 100%;
-    min-height: 380px;
-    max-height: calc(100vh - 330px);
-    margin: 0;
-    padding: 14px 16px;
-    overflow: auto;
-    border: 0;
-    color: var(--text-dim);
-    background: var(--panel);
-    font-size: 11px;
-    line-height: 1.55;
-    white-space: pre-wrap;
-    word-break: break-word;
   }
   .log-footer {
     display: flex;
