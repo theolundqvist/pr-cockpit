@@ -1,5 +1,5 @@
 <script>
-  import { tick, untrack } from "svelte";
+  import { onDestroy, tick, untrack } from "svelte";
   import {
     fetchPrDetail,
     fetchPrDiff,
@@ -25,7 +25,8 @@
     focusTmux,
     tmuxFocusErrorMessage,
   } from "./api.js";
-  import { parseDiff, anchorThreads, fileDiffFingerprint } from "./diff.js";
+  import { anchorThreads, fileDiffFingerprint } from "./diff.js";
+  import { loadDiffDocument } from "./diffDocument.js";
   import { renderMarkdown } from "./markdown.js";
   import { loadPrIndex, prSummary } from "./prIndex.svelte.js";
   import { imageFallback, prKeyOwner, shouldCopyPrCockpitUrl, shouldCopyPrUrl } from "./dom.js";
@@ -85,6 +86,8 @@
 
   let pr = $state(null);
   let files = $state([]);
+  let diffDocument = null;
+  onDestroy(() => diffDocument?.dispose());
   let error = $state(null);
   let showLoading = $state(false);
   let loadingSummary = $derived(prSummary(repo, number));
@@ -135,6 +138,8 @@
       if (activeFetch === token && !pr && !error) showLoading = true;
     }, 250);
     files = [];
+    diffDocument?.dispose();
+    diffDocument = null;
     error = null;
     mutations = [];
     fileIndex = 0;
@@ -239,6 +244,7 @@
 
   let diffFetch;
   let loadedDiffKey = null;
+  let displayedDiffKey = $state(null);
   let buildingKey = "";
   let buildingDeadline = 0;
   const BUILD_CAP_MS = 120_000;
@@ -258,19 +264,32 @@
     Promise.all([
       fetchPrDiff(repo, number, r),
       isSince ? fetchPrDiff(repo, number, null) : Promise.resolve(null),
-    ]).then(([res, prRes]) => {
+    ]).then(async ([res, prRes]) => {
       if (diffFetch !== token) return;
       if (res.ok) {
-        let parsed = res.text ? parseDiff(res.text) : [];
-        if (isSince && prRes?.ok) {
-          const ownPaths = new Set((prRes.text ? parseDiff(prRes.text) : []).map((f) => f.path));
-          const own = parsed.filter((f) => ownPaths.has(f.path));
+        const [document, prDocument] = await Promise.all([
+          loadDiffDocument(res.bytes),
+          isSince && prRes?.ok ? loadDiffDocument(prRes.bytes) : Promise.resolve(null),
+        ]);
+        if (diffFetch !== token) {
+          document.dispose();
+          prDocument?.dispose();
+          return;
+        }
+        let parsed = document.files;
+        if (prDocument) {
+          const ownPaths = new Set(prDocument.files.map((file) => file.path));
+          const own = parsed.filter((file) => ownPaths.has(file.path));
           churnBaseRef = own.length < parsed.length ? pr.baseRefName : null;
           parsed = own;
+          prDocument.dispose();
         } else {
           churnBaseRef = null;
         }
+        diffDocument?.dispose();
+        diffDocument = document;
         syncViewedFiles(parsed);
+        displayedDiffKey = dkey;
         files = parsed;
         fileIndex = 0;
         diffState = "ready";
@@ -295,6 +314,10 @@
         diffState = "error";
         buildingKey = "";
       }
+    }).catch(() => {
+      if (diffFetch !== token) return;
+      diffState = "error";
+      buildingKey = "";
     });
     return () => clearTimeout(retryTimer);
   });
@@ -303,6 +326,20 @@
     diffState = "building";
     buildingKey = "";
     diffNonce++;
+  }
+
+  function warmDiffFile(path, visible) {
+    if (visible) return diffDocument?.hydrate(path);
+    const document = diffDocument;
+    if (!document) return null;
+    return document.prefetch(path).catch(() => {
+      if (document === diffDocument) diffState = "error";
+      return null;
+    });
+  }
+
+  function releaseDiffFile(path) {
+    return diffDocument?.release(path);
   }
 
   $effect(() => {
@@ -1535,24 +1572,15 @@
 
   $effect(() => {
     if (tab !== "files" || diffState !== "ready" || treeFiles.length === 0) return;
+    const paths = treeFiles.map((file) => file.path);
     requestAnimationFrame(() => {
-      const rows = document.querySelectorAll(".tree-pane .row");
-      if (!rows.length) return;
-      // .name flexes wider or narrower than its natural text width; probe outside flex to measure it
-      const probe = document.createElement("span");
-      probe.style.cssText = "position:absolute;visibility:hidden;white-space:nowrap;left:-9999px;top:-9999px;";
-      document.body.appendChild(probe);
+      const name = document.querySelector(".tree-pane .name");
+      if (!name) return;
+      const context = document.createElement("canvas").getContext("2d");
+      context.font = getComputedStyle(name).font;
       let widest = TREE_MIN_WIDTH;
-      for (const row of rows) {
-        const name = row.querySelector(".name");
-        if (!name) continue;
-        probe.style.font = getComputedStyle(name).font;
-        probe.textContent = name.textContent;
-        const ideal = row.clientWidth - name.clientWidth + probe.offsetWidth;
-        widest = Math.max(widest, ideal);
-      }
-      probe.remove();
-      treeMaxWidth = widest + 16;
+      for (const path of paths) widest = Math.max(widest, context.measureText(path).width + 96);
+      treeMaxWidth = widest;
     });
   });
 
@@ -2451,6 +2479,8 @@
               <DiffView
                 bind:this={diffView}
                 {files}
+                onWarmFile={warmDiffFile}
+                onReleaseFile={releaseDiffFile}
                 anchored={threadSplit.anchored}
                 {threadProps}
                 collapsed={collapsedFiles}
@@ -2459,6 +2489,7 @@
                 viewed={viewedFiles}
                 onToggleViewed={(file) => setFileViewed(file, !viewedFiles.has(file.path))}
                 headSha={range?.head ?? pr.headRefOid}
+                diffIdentity={displayedDiffKey}
                 {pendingInline}
                 {commentable}
                 onInlineComment={submitInlineComment}

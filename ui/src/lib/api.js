@@ -83,7 +83,7 @@ export async function fetchPrDiff(repo, number, range = null) {
       return { ok: false, building: true, retryAfterMs: (Number(res.headers.get("retry-after")) || 5) * 1000 };
     }
     if (!res.ok) return { ok: false, building: false };
-    return { ok: true, text: await res.text() };
+    return { ok: true, bytes: await res.arrayBuffer() };
   } catch {
     return { ok: false, building: false };
   }

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { buildGapRows, buildWholeFile, fileDiffFingerprint, fileUsesSplitLayout, hunkOldOffset, parseDiff, revertChange, revertFile, revertHunk, splitDiffRows } from "./diff.js";
+import { anchorThreads, buildGapRows, buildWholeFile, fileDiffFingerprint, fileUsesSplitLayout, hunkOldOffset, indexDiff, parseDiff, revertChange, revertFile, revertHunk, splitDiffRows } from "./diff.js";
+import { createDiffDocument } from "./diffDocument.js";
 
 function makeDiff(hunkBody) {
   return `diff --git a/foo.ts b/foo.ts\nindex abc..def 100644\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1,3 +1,3 @@\n${hunkBody}\n`;
@@ -273,5 +274,76 @@ describe("buildWholeFile", () => {
       [4, 5],
     ]);
     expect(splitDiffRows(rows)[4]).toEqual({ left: rows[4], right: rows[4] });
+  });
+});
+
+describe("lazy diff document", () => {
+  const text = [
+    makeDiff(" context\n-old\n+new"),
+    "diff --git a/bar.ts b/bar.ts\nnew file mode 100644\n--- /dev/null\n+++ b/bar.ts\n@@ -0,0 +1,2 @@\n+one\n+two\n",
+  ].join("");
+
+  test("indexes compact file metadata without retaining rows", () => {
+    const indexed = indexDiff(text);
+
+    expect(indexed.map((file) => file.path)).toEqual(["foo.ts", "bar.ts"]);
+    expect(indexed[0].hunks[0]).toMatchObject({
+      rowCount: 3,
+      splitRowCount: 2,
+      newLineRanges: [[1, 2]],
+      rows: null,
+    });
+    expect(fileDiffFingerprint(indexed[0])).toBe(indexed[0].fingerprint);
+  });
+
+  test("hydrates one file without changing its indexed identity", () => {
+    const indexed = indexDiff(text);
+    const document = createDiffDocument(text, indexed);
+    const hydrated = document.hydrate("bar.ts");
+
+    expect(hydrated.hydrated).toBe(true);
+    expect(hydrated.hunks[0].rows.map((row) => row.text)).toEqual(["one", "two"]);
+    expect(hydrated.fingerprint).toBe(indexed[1].fingerprint);
+    expect(document.hydrate("bar.ts")).toBe(hydrated);
+    expect(indexed[0].hunks[0].rows).toBeNull();
+  });
+
+  test("releases hydrated rows back to compact metadata", async () => {
+    const indexed = indexDiff(text);
+    const document = createDiffDocument(text, indexed);
+    const hydrated = await document.prefetch("bar.ts");
+
+    expect(hydrated.hydrated).toBe(true);
+    expect(document.release("bar.ts")).toBe(indexed[1]);
+    expect(document.hydrate("bar.ts")).not.toBe(hydrated);
+  });
+
+  test("discards obsolete worker results and accepts the next request", async () => {
+    const indexed = indexDiff(text);
+    const messages = [];
+    const worker = { postMessage: (message) => messages.push(message), terminate() {} };
+    const document = createDiffDocument(text, indexed, worker);
+
+    const obsolete = document.prefetch("bar.ts");
+    document.release("bar.ts");
+    const current = document.prefetch("bar.ts");
+    expect(messages).toHaveLength(2);
+
+    worker.onmessage({ data: { type: "file", id: messages[0].id, file: parseDiff(text)[1] } });
+    expect(await obsolete).toBeNull();
+    expect(document.prefetch("bar.ts")).toBe(current);
+    expect(messages).toHaveLength(2);
+    worker.onmessage({ data: { type: "file", id: messages[1].id, file: parseDiff(text)[1] } });
+    expect((await current).hunks[0].rows.map((row) => row.text)).toEqual(["one", "two"]);
+  });
+
+  test("anchors threads identically before and after hydration", () => {
+    const indexed = indexDiff(text);
+    const document = createDiffDocument(text, indexed);
+    const thread = { path: "bar.ts", line: 2, diffSide: "RIGHT" };
+
+    expect(anchorThreads(indexed, [thread]).anchored.get("bar.ts:2")).toEqual([thread]);
+    const hydrated = indexed.map((file) => (file.path === "bar.ts" ? document.hydrate(file.path) : file));
+    expect(anchorThreads(hydrated, [thread]).anchored.get("bar.ts:2")).toEqual([thread]);
   });
 });

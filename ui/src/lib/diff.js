@@ -83,6 +83,39 @@ export function parseDiff(text) {
   }
   return files;
 }
+function compactNewLines(rows) {
+  const ranges = [];
+  for (const row of rows) {
+    if (row.newNum === null) continue;
+    const last = ranges.at(-1);
+    if (last && last[1] + 1 === row.newNum) last[1] = row.newNum;
+    else if (!last || last[1] !== row.newNum) ranges.push([row.newNum, row.newNum]);
+  }
+  return ranges;
+}
+
+export function indexDiff(text) {
+  const starts = [];
+  const marker = /^diff --git /gm;
+  for (let match = marker.exec(text); match; match = marker.exec(text)) starts.push(match.index);
+  return parseDiff(text).map((file, index) => ({
+    ...file,
+    fingerprint: fileDiffFingerprint(file),
+    patchStart: starts[index],
+    patchEnd: starts[index + 1] ?? text.length,
+    hydrated: false,
+    hunks: file.hunks.map((hunk) => ({
+      range: hunk.range,
+      context: hunk.context,
+      oldNoNewline: hunk.oldNoNewline,
+      newNoNewline: hunk.newNoNewline,
+      rowCount: hunk.rows.length,
+      splitRowCount: splitDiffRows(hunk.rows).length,
+      newLineRanges: compactNewLines(hunk.rows),
+      rows: null,
+    })),
+  }));
+}
 
 export function splitDiffRows(rows) {
   const pairs = [];
@@ -179,6 +212,7 @@ export function fileUsesSplitLayout(file, layout) {
 }
 
 export function fileDiffFingerprint(file) {
+  if (file.fingerprint) return file.fingerprint;
   let first = 0x811c9dc5;
   let second = 0x9e3779b9;
   const add = (value) => {
@@ -340,23 +374,18 @@ export function buildGapRows(content, fromNewNum, toNewNum, oldOffset) {
 }
 
 export function anchorThreads(files, threads) {
-  const newLinesByPath = new Map();
-  for (const file of files) {
-    const lines = new Set();
-    for (const hunk of file.hunks) {
-      for (const row of hunk.rows) {
-        if (row.newNum !== null) lines.add(row.newNum);
-      }
-    }
-    newLinesByPath.set(file.path, lines);
-  }
-
+  const filesByPath = new Map(files.map((file) => [file.path, file]));
   const anchored = new Map();
   const unanchored = [];
   for (const thread of threads) {
-    const lines = newLinesByPath.get(thread.path);
-    if (thread.line !== null && thread.diffSide === "RIGHT" && lines?.has(thread.line)) {
-      const key = `${thread.path}:${thread.line}`;
+    const file = filesByPath.get(thread.path);
+    const line = thread.line;
+    const matches = line !== null && thread.diffSide === "RIGHT" && file?.hunks.some((hunk) => {
+      if (hunk.rows) return hunk.rows.some((row) => row.newNum === line);
+      return hunk.newLineRanges?.some(([start, end]) => line >= start && line <= end);
+    });
+    if (matches) {
+      const key = `${thread.path}:${line}`;
       if (!anchored.has(key)) anchored.set(key, []);
       anchored.get(key).push(thread);
     } else {

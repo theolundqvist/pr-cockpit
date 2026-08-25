@@ -1,12 +1,18 @@
 <script>
+  import { tick, untrack } from "svelte";
   import Chevron from "./Chevron.svelte";
 
   let { files, selectedPath, onSelect } = $props();
 
   const INDENT = 16;
-  const RAIL_OFFSET = 13;
+  let lastSelectedPath = null;
+  const ROW_HEIGHT = 32;
+  const OVERSCAN = 12;
 
   let collapsedDirs = $state(new Set());
+  let treeEl = $state();
+  let windowStart = $state(0);
+  let windowEnd = $state(40);
 
   let tree = $derived.by(() => {
     const root = { name: "", path: "", dirs: new Map(), files: [] };
@@ -33,6 +39,21 @@
     compress(root);
     sumLines(root);
     return root;
+  });
+
+  let rows = $derived.by(() => {
+    const flattened = [];
+    function append(node, depth) {
+      for (const dir of node.dirs.values()) {
+        flattened.push({ key: `dir:${dir.path}`, kind: "dir", depth, value: dir });
+        if (!collapsedDirs.has(dir.path)) append(dir, depth + 1);
+      }
+      for (const file of node.files) {
+        flattened.push({ key: `file:${file.path}`, kind: "file", depth, value: file });
+      }
+    }
+    append(tree, 0);
+    return flattened;
   });
 
   function compress(node) {
@@ -66,69 +87,116 @@
     return "mod";
   }
 
+  function updateWindow() {
+    if (!treeEl) return;
+    const root = treeEl.parentElement;
+    const treeTop = treeEl.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop;
+    const top = Math.max(0, root.scrollTop - treeTop);
+    const start = Math.max(0, Math.floor(top / ROW_HEIGHT) - OVERSCAN);
+    const end = Math.min(rows.length, Math.ceil((top + root.clientHeight) / ROW_HEIGHT) + OVERSCAN);
+    if (start !== windowStart) windowStart = start;
+    if (end !== windowEnd) windowEnd = end;
+  }
+
   function toggleDir(path) {
     const next = new Set(collapsedDirs);
     next.has(path) ? next.delete(path) : next.add(path);
     collapsedDirs = next;
   }
 
-  let treeEl;
+  $effect(() => {
+    const element = treeEl;
+    if (!element) return;
+    const root = element.parentElement;
+    let frame = null;
+    const scheduleWindow = () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        updateWindow();
+      });
+    };
+    const resize = new ResizeObserver(scheduleWindow);
+    root.addEventListener("scroll", scheduleWindow, { passive: true });
+    resize.observe(root);
+    untrack(scheduleWindow);
+    return () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      root.removeEventListener("scroll", scheduleWindow);
+      resize.disconnect();
+    };
+  });
 
   $effect(() => {
-    if (!selectedPath) return;
-    treeEl?.querySelector(".file.selected")?.scrollIntoView({ block: "nearest" });
+    rows.length;
+    void tick().then(updateWindow);
+  });
+
+  $effect(() => {
+    const path = selectedPath;
+    if (path === lastSelectedPath) return;
+    lastSelectedPath = path;
+    const index = rows.findIndex((row) => row.kind === "file" && row.value.path === path);
+    if (index < 0) return;
+    void tick().then(async () => {
+      if (!treeEl) return;
+      const root = treeEl.parentElement;
+      const treeTop = treeEl.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop;
+      const top = treeTop + index * ROW_HEIGHT;
+      if (top < root.scrollTop) root.scrollTop = top;
+      else if (top + ROW_HEIGHT > root.scrollTop + root.clientHeight) root.scrollTop = top + ROW_HEIGHT - root.clientHeight;
+      updateWindow();
+      await tick();
+      treeEl.querySelector(".file.selected")?.scrollIntoView({ block: "nearest" });
+    });
   });
 </script>
 
 {#snippet rails(depth)}
   {#if depth}
-    <span class="rails" aria-hidden="true">
-      {#each Array.from({ length: depth }) as _, i (i)}
-        <span class="rail" style="left: {i * INDENT + RAIL_OFFSET}px"></span>
-      {/each}
-    </span>
+    <span class="rails" style="--depth:{depth}" aria-hidden="true"></span>
   {/if}
 {/snippet}
 
-{#snippet branch(node, depth)}
-  {#each [...node.dirs.values()] as dir (dir.path)}
-    <button class="row dir" style="padding-left: {depth * INDENT + 8}px" onclick={() => toggleDir(dir.path)}>
-      {@render rails(depth)}
-      <Chevron direction={collapsedDirs.has(dir.path) ? "right" : "down"} size={12} />
-      <span class="folder-icon"></span>
-      <span class="name">{dir.name}</span>
-      <span class="counts mono"><span class="add">+{dir.additions}</span><span class="del">−{dir.deletions}</span></span>
-    </button>
-    {#if !collapsedDirs.has(dir.path)}
-      {@render branch(dir, depth + 1)}
+<div class="tree" bind:this={treeEl}>
+  <div class="spacer" style="height:{windowStart * ROW_HEIGHT}px" aria-hidden="true"></div>
+  {#each rows.slice(windowStart, windowEnd) as row (row.key)}
+    {@const value = row.value}
+    {#if row.kind === "dir"}
+      <button class="row dir" style="padding-left: {row.depth * INDENT + 8}px" onclick={() => toggleDir(value.path)}>
+        {@render rails(row.depth)}
+        <Chevron direction={collapsedDirs.has(value.path) ? "right" : "down"} size={12} />
+        <span class="folder-icon"></span>
+        <span class="name">{value.name}</span>
+        <span class="counts mono"><span class="add">+{value.additions}</span><span class="del">−{value.deletions}</span></span>
+      </button>
+    {:else}
+      <button
+        class="row file"
+        class:selected={value.path === selectedPath}
+        style="padding-left: {row.depth * INDENT + 8}px"
+        onclick={() => onSelect(value.path)}
+      >
+        {@render rails(row.depth)}
+        <span class="dot {value.tone}"></span>
+        <span class="name">{value.name}</span>
+        {#if value.isRenamed}<span class="renamed">renamed</span>{/if}
+        {#if !value.isUnchangedRename}
+          <span class="counts mono"><span class="add">+{value.additions}</span><span class="del">−{value.deletions}</span></span>
+        {/if}
+      </button>
     {/if}
   {/each}
-  {#each node.files as file (file.path)}
-    <button
-      class="row file"
-      class:selected={file.path === selectedPath}
-      style="padding-left: {depth * INDENT + 8}px"
-      onclick={() => onSelect(file.path)}
-    >
-      {@render rails(depth)}
-      <span class="dot {file.tone}"></span>
-      <span class="name">{file.name}</span>
-      {#if file.isRenamed}<span class="renamed">renamed</span>{/if}
-      {#if !file.isUnchangedRename}
-        <span class="counts mono"><span class="add">+{file.additions}</span><span class="del">−{file.deletions}</span></span>
-      {/if}
-    </button>
-  {/each}
-{/snippet}
-
-<div class="tree" bind:this={treeEl}>
-  {@render branch(tree, 0)}
+  <div class="spacer" style="height:{Math.max(0, rows.length - windowEnd) * ROW_HEIGHT}px" aria-hidden="true"></div>
 </div>
 
 <style>
   .tree {
     display: flex;
     flex-direction: column;
+  }
+  .spacer {
+    flex: none;
   }
   .row {
     position: relative;
@@ -167,15 +235,12 @@
   }
   .rails {
     position: absolute;
-    inset: 0;
-    pointer-events: none;
-  }
-  .rail {
-    position: absolute;
     top: 0;
     bottom: 0;
-    width: 1px;
-    background: var(--border);
+    left: 13px;
+    width: calc(var(--depth) * 16px);
+    background: repeating-linear-gradient(to right, var(--border) 0 1px, transparent 1px 16px);
+    pointer-events: none;
   }
   .folder-icon {
     flex: none;
