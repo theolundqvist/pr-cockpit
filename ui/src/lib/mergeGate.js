@@ -32,3 +32,9 @@ export function forceMergeAvailable(pr, gate) {
   if (pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "DIRTY") return false;
   return gate.action !== "merge";
 }
+
+export function forceMergeShortcutAction(pr, gate) {
+  if (forceMergeAvailable(pr, gate)) return "force";
+  if (gate.action === "merge") return "merge";
+  return null;
+}

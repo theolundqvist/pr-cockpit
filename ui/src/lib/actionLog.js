@@ -24,12 +24,15 @@ function trimLines(lines) {
   return lines.slice(start, end);
 }
 
-export function parseActionLog(text, jobConclusion = null) {
+export function parseActionLog(text, jobConclusion = null, failedStep = null) {
   const steps = [];
   const annotations = [];
   let current = null;
   let actionId = null;
-  let groupDepth = 0;
+  let actionOpen = false;
+  let rootGroupDepth = 0;
+  let groupStack = [];
+  let groupCounter = 0;
   let postCleanup = false;
 
   function startStep(title) {
@@ -53,14 +56,30 @@ export function parseActionLog(text, jobConclusion = null) {
     current.lines = trimLines(current.lines);
     if (conclusion && current.conclusion !== "failure") current.conclusion = conclusion;
     if (durationMs !== null && Number.isFinite(durationMs)) current.durationMs = durationMs;
+    const groupConclusions = new Map();
+    for (const line of current.lines) {
+      for (const groupId of line.groups ?? []) {
+        const existing = groupConclusions.get(groupId);
+        if (line.tone === "failure") groupConclusions.set(groupId, "failure");
+        else if (line.tone === "warning" && existing !== "failure") groupConclusions.set(groupId, "warning");
+        else if (!existing) groupConclusions.set(groupId, "success");
+      }
+    }
+    for (const line of current.lines) {
+      if (line.groupId) line.conclusion = groupConclusions.get(line.groupId) ?? "success";
+    }
     if (current.lines.length > 0 || current.conclusion === "skipped") steps.push(current);
     current = null;
     actionId = null;
-    groupDepth = 0;
+    actionOpen = false;
+    rootGroupDepth = 0;
+    groupStack = [];
   }
 
-  function addLine(line, textValue, tone = "output") {
-    ensureStep(postCleanup ? "Post job cleanup" : "Set up job").lines.push({ line, text: textValue, tone });
+  function addLine(line, textValue, tone = "output", fields = {}) {
+    const item = { line, text: textValue, tone, ...fields };
+    if (groupStack.length > 0) item.groups = [...groupStack];
+    ensureStep(postCleanup ? "Post job cleanup" : "Set up job").lines.push(item);
   }
 
   const sourceLines = text.replace(/^\uFEFF/, "").split("\n");
@@ -78,6 +97,7 @@ export function parseActionLog(text, jobConclusion = null) {
         const label = properties.display || "Action";
         startStep(postCleanup ? `Post ${label.replace(/^Run /, "")}` : label);
         actionId = properties.id || null;
+        actionOpen = true;
         postCleanup = false;
         continue;
       }
@@ -89,18 +109,20 @@ export function parseActionLog(text, jobConclusion = null) {
         continue;
       }
       if (command === "group") {
-        if (actionId || groupDepth > 0) {
-          addLine(lineNumber, value, "group");
-          groupDepth++;
+        if (actionOpen || rootGroupDepth > 0 || groupStack.length > 0) {
+          const groupId = `${ensureStep().id}-group-${++groupCounter}`;
+          addLine(lineNumber, value || "Log group", "group", { groupId });
+          groupStack.push(groupId);
         } else {
           startStep(value || "Log group");
-          groupDepth = 1;
+          rootGroupDepth = 1;
           postCleanup = false;
         }
         continue;
       }
       if (command === "endgroup") {
-        groupDepth = Math.max(0, groupDepth - 1);
+        if (groupStack.length > 0) groupStack.pop();
+        else rootGroupDepth = Math.max(0, rootGroupDepth - 1);
         continue;
       }
       if (command === "command") {
@@ -111,10 +133,9 @@ export function parseActionLog(text, jobConclusion = null) {
         const tone = command === "error" ? "failure" : command;
         const message = decodeCommandText(value);
         annotations.push({ line: lineNumber, tone, text: message });
-        const step = ensureStep(postCleanup ? "Post job cleanup" : "Log output");
-        step.lines.push({ line: lineNumber, text: message, tone });
-        if (tone === "failure") step.conclusion = "failure";
-        else if (tone === "warning" && step.conclusion === "success") step.conclusion = "warning";
+        addLine(lineNumber, message, tone);
+        if (tone === "failure") current.conclusion = "failure";
+        else if (tone === "warning" && current.conclusion === "success") current.conclusion = "warning";
         continue;
       }
     }
@@ -130,10 +151,9 @@ export function parseActionLog(text, jobConclusion = null) {
       const tone = workflowCommand[1] === "error" ? "failure" : workflowCommand[1];
       const message = decodeCommandText(workflowCommand[3]);
       annotations.push({ line: lineNumber, tone, text: message });
-      const step = ensureStep(postCleanup ? "Post job cleanup" : "Log output");
-      step.lines.push({ line: lineNumber, text: message, tone });
-      if (tone === "failure") step.conclusion = "failure";
-      else if (tone === "warning" && step.conclusion === "success") step.conclusion = "warning";
+      addLine(lineNumber, message, tone);
+      if (tone === "failure") current.conclusion = "failure";
+      else if (tone === "warning" && current.conclusion === "success") current.conclusion = "warning";
       continue;
     }
 
@@ -153,6 +173,26 @@ export function parseActionLog(text, jobConclusion = null) {
     && !steps.some((step) => step.conclusion === "failure")) {
     const failed = [...steps].reverse().find((step) => !step.title.startsWith("Post ")) ?? steps.at(-1);
     if (failed) failed.conclusion = "failure";
+  }
+
+  const failed = steps.find((step) => step.conclusion === "failure" && /^Run\b/.test(step.title));
+  if (failedStep && failed && failed.title !== failedStep) {
+    const groupId = `${failed.id}-shell`;
+    const firstLine = failed.lines[0]?.line ?? 2;
+    failed.lines = [
+      {
+        line: Math.max(1, firstLine - 1),
+        text: failed.title,
+        tone: "group",
+        groupId,
+        conclusion: "failure",
+      },
+      ...failed.lines.map((line) => ({
+        ...line,
+        groups: [groupId, ...(line.groups ?? [])],
+      })),
+    ];
+    failed.title = failedStep;
   }
 
   return { steps, annotations };

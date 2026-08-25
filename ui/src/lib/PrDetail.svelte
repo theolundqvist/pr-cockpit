@@ -45,7 +45,7 @@
   import { prKeyOf } from "./prKey.js";
   import { getDetail, cacheDetail } from "./detailCache.js";
   import { buildChecks, countChecks, summarizeChecks, sectionizeChecks, ciFixPrompt } from "./checks.js";
-  import { mergeGate as evalMergeGate, forceMergeAvailable as evalForceMerge } from "./mergeGate.js";
+  import { mergeGate as evalMergeGate, forceMergeAvailable as evalForceMerge, forceMergeShortcutAction } from "./mergeGate.js";
   import { quota } from "./quota.svelte.js";
   import { quotaImpact } from "./quotaImpact.js";
   import ActionsView from "./ActionsView.svelte";
@@ -695,6 +695,14 @@
     mergeMenuOpen = false;
     forceMergeConfirm = force;
     mergeConfirm = !force;
+  }
+
+  function requestForceMergeShortcut() {
+    if (mergeMutation) return false;
+    const action = forceMergeShortcutAction(pr, mergeGate);
+    if (action === null) return false;
+    requestMerge(action === "force");
+    return true;
   }
 
   function cancelMergeDecision() {
@@ -1942,8 +1950,7 @@
         if (e.key === "Escape") {
           mergeMenuOpen = false;
           e.preventDefault();
-        } else if (e.key === "M" && forceMergeAvailable && liveState && !mergeMutation) {
-          requestMerge(true);
+        } else if (e.key === "M" && liveState && requestForceMergeShortcut()) {
           e.preventDefault();
         }
         return;
@@ -2004,7 +2011,7 @@
         if (mergeGate.action === "merge" && !mergeMutation) requestMerge();
         else if (mergeGate.reason) mergeFlash.show(mergeGate.reason);
       } else if (e.key === "M") {
-        if (forceMergeAvailable && !mergeMutation) requestMerge(true);
+        requestForceMergeShortcut();
       } else if (e.key === "u" && mergeGate.action === "update") {
         if (!updateMutation) submitUpdateBranch();
       } else if (e.key === "s") {

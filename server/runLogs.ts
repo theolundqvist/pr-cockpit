@@ -281,10 +281,15 @@ function storeRun(repo: string, number: number, run: CompactRun): boolean {
   });
 }
 
+function jobIsComplete(job: { status: string; conclusion: string | null }): boolean {
+  return job.status === "completed" || job.conclusion !== null;
+}
+
 function storeJob(repo: string, job: CompactJob): boolean {
   return upsertRunJob({
     repo, job_id: job.id, run_id: job.runId, run_attempt: job.attempt, head_sha: job.headSha,
-    head_branch: job.headBranch, workflow_name: job.workflowName, name: job.name, status: job.status,
+    head_branch: job.headBranch, workflow_name: job.workflowName, name: job.name,
+    status: jobIsComplete(job) ? "completed" : job.status,
     conclusion: job.conclusion, started_at: job.startedAt, completed_at: job.completedAt,
     html_url: job.htmlUrl, runner_name: job.runnerName, runner_group_name: job.runnerGroupName,
     labels_json: JSON.stringify(job.labels), failed_step: job.failedStep,
@@ -292,7 +297,7 @@ function storeJob(repo: string, job: CompactJob): boolean {
 }
 
 function jobProducesLog(job: { status: string; conclusion: string | null }): boolean {
-  return job.status === "completed" && job.conclusion !== "skipped";
+  return jobIsComplete(job) && job.conclusion !== "skipped";
 }
 
 async function fetchLogs(repo: string, jobs: CompactJob[], fetchers: ActionsFetchers, background: boolean): Promise<boolean> {
@@ -454,7 +459,13 @@ export async function ingestActionsState(
     }
     return changed;
   }
-  return storeJob(repo, state.job!);
+  const job = state.job!;
+  const changed = storeJob(repo, job);
+  const lease = actionsLease(repo, pr.number);
+  if (changed && lease?.head_sha === pr.head_sha && jobProducesLog(job) && getRunJobLog(repo, job.id) === null) {
+    await fetchLogs(repo, [job], fetchers, true);
+  }
+  return changed;
 }
 
 export interface CachedJobLog {
@@ -482,7 +493,7 @@ export async function actionJobLog(
 ): Promise<ActionJobLog | null> {
   let job = listRunJobs(repo, headSha).find((candidate) => candidate.job_id === jobId);
   if (!job) return null;
-  if (job.status !== "completed") return { job, body: null, state: "pending", truncated: false };
+  if (!jobIsComplete(job)) return { job, body: null, state: "pending", truncated: false };
   if (!jobProducesLog(job)) return { job, body: null, state: "not-produced", truncated: false };
 
   if (getRunJobLog(repo, jobId) === null) {
@@ -521,7 +532,7 @@ export async function actionJobLog(
 
 export async function cachedJobLogs(repo: string, headSha: string, checkName?: string, full = false): Promise<CachedJobLog[]> {
   const jobs = listRunJobs(repo, headSha).filter((job) =>
-    job.status === "completed" && job.conclusion !== null && LOG_WORTHY_CONCLUSION.has(job.conclusion)
+    jobIsComplete(job) && job.conclusion !== null && LOG_WORTHY_CONCLUSION.has(job.conclusion)
   );
   const matched = checkName ? jobs.filter((job) => job.name.toLowerCase().includes(checkName.toLowerCase())) : jobs;
   const entries: CachedJobLog[] = [];
@@ -555,7 +566,7 @@ export function formatJobLogs(headSha: string, entries: CachedJobLog[], full = f
       job.log_truncated === 1 ? "legacy truncated log" : null,
       job.html_url,
     ].filter((fact) => fact !== null);
-    const text = body ?? `no log cached: ${job.log_error ?? "job is not complete"}`;
+    const text = body ?? `no log cached: ${job.log_error ?? (jobIsComplete(job) ? "log fetch pending" : "job is not complete")}`;
     return `===== ${job.name} · ${facts.join(" · ")}\n\n${text.endsWith("\n") ? text : `${text}\n`}`;
   });
   return `Cached job logs for ${headSha} · ${entries.length} job(s)\n\n${sections.join("\n")}`;

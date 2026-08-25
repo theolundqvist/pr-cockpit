@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mergeGate, forceMergeAvailable } from "./mergeGate.js";
+import { mergeGate, forceMergeAvailable, forceMergeShortcutAction } from "./mergeGate.js";
 
 function pr(overrides) {
   return {
@@ -94,5 +94,19 @@ describe("forceMergeAvailable", () => {
   test("true when open and blocked short of a clean merge", () => {
     expect(forceMergeAvailable(pr({ mergeStateStatus: "BLOCKED" }), { action: null })).toBe(true);
     expect(forceMergeAvailable(pr({ mergeStateStatus: "BEHIND" }), { action: "update" })).toBe(true);
+  });
+});
+
+describe("forceMergeShortcutAction", () => {
+  test("falls back to a regular merge when force-merge is unnecessary", () => {
+    expect(forceMergeShortcutAction(pr(), { action: "merge" })).toBe("merge");
+  });
+
+  test("keeps force-merge for an otherwise blocked pull request", () => {
+    expect(forceMergeShortcutAction(pr({ mergeStateStatus: "BLOCKED" }), { action: null })).toBe("force");
+  });
+
+  test("does nothing when neither merge path is available", () => {
+    expect(forceMergeShortcutAction(pr({ mergeable: "CONFLICTING" }), { action: null })).toBeNull();
   });
 });

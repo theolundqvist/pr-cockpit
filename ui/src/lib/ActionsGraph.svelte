@@ -9,9 +9,9 @@
   }
 
   function runGroupFor(workflow) {
-    return groups.find((group) => group.run.workflowPath === workflow.path)
-      ?? groups.find((group) => group.run.workflowName === workflow.name)
-      ?? null;
+    return groups.find((group) =>
+      group.run.workflowPath === workflow.path || group.run.workflowName === workflow.name
+    ) ?? null;
   }
 
   function matchingJobs(definition, workflow) {

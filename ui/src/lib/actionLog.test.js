@@ -70,4 +70,48 @@ describe("parseActionLog", () => {
     expect(command.steps[0].lines[0]).toEqual({ line: 1, text: "/usr/bin/git version", tone: "command" });
     expect(parsed.steps[0].lines.map((line) => line.text)).toEqual(["line one", "", "line three"]);
   });
+
+  test("preserves nested runner group boundaries and outcome", () => {
+    const parsed = parseActionLog([
+      "##[start-action display=Number, sign, archive, and upload;id=archive]",
+      "##[group]Run set -euo pipefail",
+      "set -euo pipefail",
+      "keychain=/tmp/release.keychain-db",
+      "##[error]APPLE_CERTIFICATE did not provide a valid code-signing identity",
+      "##[endgroup]",
+      "##[end-action id=archive;outcome=failure;conclusion=failure;duration_ms=130]",
+    ].join("\n"));
+
+    expect(parsed.steps[0].lines[0]).toEqual({
+      line: 2,
+      text: "Run set -euo pipefail",
+      tone: "group",
+      groupId: "step-1-group-1",
+      conclusion: "failure",
+    });
+    expect(parsed.steps[0].lines.slice(1).map((line) => line.groups)).toEqual([
+      ["step-1-group-1"],
+      ["step-1-group-1"],
+      ["step-1-group-1"],
+    ]);
+  });
+
+  test("nests the failed shell group under GitHub's job step name", () => {
+    const parsed = parseActionLog([
+      "##[group]Run set -euo pipefail",
+      "set -euo pipefail",
+      "##[error]APPLE_CERTIFICATE did not provide a valid code-signing identity",
+      "##[endgroup]",
+    ].join("\n"), "failure", "Number, sign, archive, and upload");
+
+    expect(parsed.steps[0].title).toBe("Number, sign, archive, and upload");
+    expect(parsed.steps[0].lines[0]).toEqual({
+      line: 1,
+      text: "Run set -euo pipefail",
+      tone: "group",
+      groupId: "step-1-shell",
+      conclusion: "failure",
+    });
+    expect(parsed.steps[0].lines[1].groups).toEqual(["step-1-shell"]);
+  });
 });

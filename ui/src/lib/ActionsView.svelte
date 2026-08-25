@@ -4,7 +4,7 @@
   import { fetchActionGraph, fetchActionLog, fetchActions } from "./api.js";
   import { durationText, relativeTime } from "./time.js";
 
-  let { repo, number, headSha } = $props();
+  let { repo, number, headSha, runUrl = $bindable(null) } = $props();
 
   let snapshot = $state(null);
   let loading = $state(true);
@@ -78,6 +78,16 @@
 
   let selectedJob = $derived((snapshot?.jobs ?? []).find((job) => job.id === selectedJobId) ?? null);
   let selectedLog = $derived(selectedJobId === null ? null : logs[selectedJobId] ?? null);
+  let selectedRunUrl = $derived.by(() => {
+    if (!selectedJob) return null;
+    const run = (snapshot?.runs ?? []).find((candidate) =>
+      candidate.id === selectedJob.runId && candidate.attempt === selectedJob.attempt
+    );
+    return run?.htmlUrl ?? selectedJob.htmlUrl?.replace(/\/job\/\d+\/?$/, "") ?? null;
+  });
+  $effect(() => {
+    runUrl = selectedRunUrl;
+  });
   let selectedLogError = $derived(selectedJobId === null ? "" : logErrors[selectedJobId] ?? "");
   let hasActiveJobs = $derived((snapshot?.jobs ?? []).some((job) => job.status !== "completed"));
 
@@ -290,7 +300,7 @@
         {:else if selectedLog?.state === "not-produced"}
           <div class="empty log-empty">GitHub skipped this job, so it produced no log.</div>
         {:else if selectedLog?.body}
-          <ActionLog body={selectedLog.body} jobConclusion={selectedJob.conclusion} {statusIcon} />
+          <ActionLog body={selectedLog.body} jobConclusion={selectedJob.conclusion} failedStep={selectedJob.failedStep} {statusIcon} />
           {#if selectedLog.truncated}
             <div class="log-footer">
               <span>Showing the last 256 KB</span>

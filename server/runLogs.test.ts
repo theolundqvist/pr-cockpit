@@ -97,6 +97,44 @@ test("event ingestion is monotonic, runner-complete, REST-free without a lease, 
   expect(result.jobsOutput).toContain("runner hosted/runner-4");
 });
 
+test("a terminal job event normalizes stale status and caches a rerun log", async () => {
+  const result = await runScenario("pr-cockpit-actions-terminal-job-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    dbm.db.query("INSERT INTO actions_leases(repo,number,head_sha,expires_at,bootstrapped_at) VALUES(?,?,?,?,?)")
+      .run("acme/app", 7, head, "2099-08-24T10:00:00Z", "2026-08-24T10:00:00Z");
+    let logFetches = 0;
+    const fetchers = {
+      fetchWorkflowRuns: async () => [],
+      fetchRunJobs: async () => [],
+      fetchJobLog: async () => { logFetches++; return "rerun failure evidence"; },
+      restRemaining: async () => 5000,
+    };
+    await actions.ingestActionsState("acme/app", { job: {
+      id: 41, runId: 20, attempt: 2, headSha: head, headBranch: "feature",
+      workflowName: "CI", name: "rerun", status: "in_progress", conclusion: "failure",
+      startedAt: "2026-08-24T10:00:00Z", completedAt: "2026-08-24T10:03:00Z",
+      htmlUrl: "https://github.com/acme/app/actions/runs/20/job/41", runnerName: "runner-4",
+      runnerGroupName: "hosted", labels: ["arm64"], failedStep: "bun test",
+    } }, fetchers);
+    const cached = await actions.cachedJobLogs("acme/app", head);
+    const selected = await actions.actionJobLog("acme/app", head, 41, false, fetchers);
+    console.log(JSON.stringify({
+      logFetches,
+      row: dbm.db.query("SELECT status,conclusion,log_gz IS NOT NULL AS logged FROM run_jobs WHERE job_id=41").get(),
+      cachedBody: cached[0]?.body,
+      selectedState: selected?.state,
+    }));
+  `);
+  expect(result).toEqual({
+    logFetches: 1,
+    row: { status: "completed", conclusion: "failure", logged: 1 },
+    cachedBody: "rerun failure evidence",
+    selectedState: "ready",
+  });
+});
+
 test("concurrent activation bootstraps once and terminal attempts reconcile once with complete unsuccessful logs", async () => {
   const result = await runScenario("pr-cockpit-actions-lease-", `
     const actions = await import(${JSON.stringify(runLogsUrl)});

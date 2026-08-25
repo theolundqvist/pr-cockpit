@@ -1,15 +1,17 @@
 <script>
   import { parseActionLog } from "./actionLog.js";
 
-  let { body, jobConclusion, statusIcon } = $props();
+  let { body = "", jobConclusion = null, failedStep = null, statusIcon } = $props();
   const failureConclusions = new Set(["failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale"]);
   let expanded = $state(new Set());
-  let parsed = $derived(parseActionLog(body, jobConclusion));
+  let expandedGroups = $state(new Set());
+  let parsed = $derived(parseActionLog(body, jobConclusion, failedStep));
 
   $effect(() => {
     body;
     const failed = parsed.steps.filter((step) => stepTone(step.conclusion) === "failure").map((step) => step.id);
     expanded = new Set(failed.length > 0 ? failed : parsed.steps.length === 1 ? [parsed.steps[0].id] : []);
+    expandedGroups = new Set();
   });
 
   function toggle(stepId) {
@@ -17,6 +19,17 @@
     if (next.has(stepId)) next.delete(stepId);
     else next.add(stepId);
     expanded = next;
+  }
+
+  function toggleGroup(groupId) {
+    const next = new Set(expandedGroups);
+    if (next.has(groupId)) next.delete(groupId);
+    else next.add(groupId);
+    expandedGroups = next;
+  }
+
+  function lineVisible(line) {
+    return (line.groups ?? []).every((groupId) => expandedGroups.has(groupId));
   }
 
   function stepTone(conclusion) {
@@ -84,10 +97,29 @@
               <div class="output-empty">No output</div>
             {:else}
               {#each step.lines as line}
-                <div class="output-line {line.tone}" class:blank={line.text === ""}>
-                  <span class="line-number">{line.line}</span>
-                  <code>{line.text || " "}</code>
-                </div>
+                {#if lineVisible(line)}
+                  {#if line.groupId}
+                    <div class="output-group {stepTone(line.conclusion)}">
+                      <span class="line-number">{line.line}</span>
+                      <button
+                        class="group-summary"
+                        aria-expanded={expandedGroups.has(line.groupId)}
+                        onclick={() => toggleGroup(line.groupId)}
+                      >
+                        <svg class:expanded={expandedGroups.has(line.groupId)} class="chevron" viewBox="0 0 12 12" aria-hidden="true">
+                          <path d="m4 2.5 3.5 3.5L4 9.5" />
+                        </svg>
+                        <span class="step-status {stepTone(line.conclusion)}">{@render statusIcon(stepState(line.conclusion), iconConclusion(line.conclusion))}</span>
+                        <code>{line.text}</code>
+                      </button>
+                    </div>
+                  {:else}
+                    <div class="output-line {line.tone}" class:blank={line.text === ""}>
+                      <span class="line-number">{line.line}</span>
+                      <code>{line.text || " "}</code>
+                    </div>
+                  {/if}
+                {/if}
               {/each}
             {/if}
           </div>
@@ -293,13 +325,45 @@
     color: #0969da;
   }
 
-  .output-line.group {
+  .output-group {
+    display: grid;
+    grid-template-columns: 48px minmax(0, 1fr);
     margin: 5px 0 2px;
+    background: var(--surface);
   }
 
-  .output-line.group code {
+  .group-summary {
+    display: grid;
+    min-width: 0;
+    grid-template-columns: 14px 18px minmax(0, 1fr);
+    align-items: center;
+    gap: 7px;
+    padding: 4px 14px 4px 10px;
+    border: 0;
+    background: transparent;
     color: var(--text);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .group-summary:hover {
+    background: var(--panel-raised);
+  }
+
+  .group-summary code {
+    min-width: 0;
+    padding: 0;
+    color: var(--text);
+    font: inherit;
     font-weight: 650;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .output-group.failure {
+    background: color-mix(in srgb, var(--fail) 9%, var(--surface));
   }
 
   .output-line.failure {
