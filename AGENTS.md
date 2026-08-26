@@ -21,6 +21,7 @@ This repository is worked on by humans and coding agents alike. Leave it easier 
 - Match the surrounding style. Comments are for a non-obvious constraint, not for narration.
 - Pull-request actions follow GitHub semantics: merge green, update neutral, and destructive actions red.
 - Workflow jobs use commit-check semantics: green check for success, red cross for failure, orange spinner while active, and gray minus when skipped.
+- File status lives in the colored leading icon; moved files use a distinct move glyph, never a text badge beside the name.
 - Do not perform Vercel or `forge.scape.app` infrastructure work from this repository.
 - For manual app recordings, launch `/Users/theo/dev/pr-cockpit`; this `pr-cockpit-v3` checkout is the legacy landing worktree.
 

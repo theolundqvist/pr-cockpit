@@ -179,9 +179,14 @@
         onclick={() => onSelect(value.path)}
       >
         {@render rails(row.depth)}
-        <span class="dot {value.tone}"></span>
+        {#if value.isRenamed}
+          <svg class="moved-icon" viewBox="0 0 12 12" aria-label="Moved file">
+            <path d="M1 3h7V1l3 3-3 3V5H1zm10 6H4v2L1 8l3-3v2h7z"></path>
+          </svg>
+        {:else}
+          <span class="dot {value.tone}"></span>
+        {/if}
         <span class="name">{value.name}</span>
-        {#if value.isRenamed}<span class="renamed">renamed</span>{/if}
         {#if !value.isUnchangedRename}
           <span class="counts mono"><span class="add">+{value.additions}</span><span class="del">−{value.deletions}</span></span>
         {/if}
@@ -270,6 +275,13 @@
     direction: rtl;
     text-align: left;
   }
+  .moved-icon {
+    flex: none;
+    width: 10px;
+    height: 10px;
+    color: var(--review);
+    fill: currentColor;
+  }
   .dot {
     flex: none;
     width: 6px;
@@ -292,11 +304,6 @@
   .file .name {
     flex: 1;
     min-width: 0;
-  }
-  .renamed {
-    flex: none;
-    color: var(--text-faint);
-    font-size: 11px;
   }
   .counts {
     flex: none;
