@@ -1509,12 +1509,11 @@ async function handleCommitMessage(req: Request, runtime: HttpRuntime): Promise<
 
   const stored = getPr(repo, number) ?? getCachedPrDetail(repo, number);
   if (!stored) return json({ error: "PR is not cached yet" }, 404);
-  const detail = JSON.parse(stored.detail_json) as { title?: string; body?: string | null };
+  const detail = JSON.parse(stored.detail_json) as { title?: string };
   const title = detail.title ?? ("title" in stored ? stored.title : "");
   try {
     const message = await runtime.generateCommitMessage({
       title,
-      body: detail.body ?? "",
       path,
       hunk,
     });

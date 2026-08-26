@@ -1146,7 +1146,7 @@ describe("PR file edits", () => {
 });
 
 describe("commit message generation", () => {
-  test("uses the cached PR description and edited hunk", async () => {
+  test("uses the cached PR title and edited hunk", async () => {
     const repo = "cockpit-test/commit-message";
     const number = 987654321;
     const row = trackedPrRow({ repo, number, fetchedAt: new Date().toISOString() });
@@ -1180,7 +1180,6 @@ describe("commit message generation", () => {
     expect(await response.json()).toEqual({ message: "fix(ci): remove the deployment queue" });
     expect(received).toEqual({
       title: row.title,
-      body: "Keep only the newest pending deployment.",
       path: ".github/workflows/eas.yml",
       hunk: "@@ -64,1 +64,0 @@\n-      queue: max",
     });

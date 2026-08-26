@@ -48,7 +48,6 @@ export async function ensureOmpInstalled(): Promise<string> {
 
 export function commitMessagePrompt(input: {
   title: string;
-  body: string;
   path: string;
   hunk: string;
 }): string {
@@ -59,9 +58,6 @@ Return exactly one plain-text line, no quotes or Markdown. Use an imperative sum
 <pr-title>
 ${input.title}
 </pr-title>
-<pr-description>
-${input.body || "(none)"}
-</pr-description>
 <file-path>
 ${input.path}
 </file-path>
@@ -72,7 +68,6 @@ ${input.hunk}
 
 export async function generateCommitMessage(input: {
   title: string;
-  body: string;
   path: string;
   hunk: string;
 }): Promise<string> {
