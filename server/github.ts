@@ -1381,118 +1381,125 @@ export type PrFileEdit = {
   message: string;
 };
 
-const PR_FILE_EDIT_HEAD_QUERY = `
-query($owner: String!, $name: String!, $number: Int!, $fileExpression: String!, $parentExpression: String!) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) {
-      state
-      headRefName
-      headRefOid
-      headRepository {
-        nameWithOwner
-        file: object(expression: $fileExpression) {
-          __typename
-          ... on Blob { isBinary }
-        }
-        parent: object(expression: $parentExpression) {
-          __typename
-          ... on Tree { entries { name type mode } }
-        }
-      }
-    }
-  }
-}`;
+type RestPull = {
+  state: string;
+  head: {
+    sha: string;
+    ref: string;
+    repo: { full_name: string } | null;
+  };
+};
 
-const CREATE_PR_FILE_COMMIT_MUTATION = `
-mutation($input: CreateCommitOnBranchInput!) {
-  createCommitOnBranch(input: $input) {
-    commit { oid }
-  }
-}`;
+type RestTreeEntry = {
+  path: string;
+  mode: string;
+  type: string;
+  sha: string;
+};
 
-function isExpectedHeadRace(error: unknown): boolean {
-  if (!(error instanceof GithubRequestError)) return false;
-  const details = [
-    error.message,
-    ...error.graphqlErrors.map(({ type, message }) => `${type ?? ""} ${message ?? ""}`),
-  ].join("\n");
-  return /\bSTALE_DATA\b|expected branch to point to/i.test(details)
-    || (/expected.?head.?oid/i.test(details) && /(?:mismatch|match|current|changed|stale)/i.test(details));
+async function githubRestResponse(method: string, path: string, body?: unknown): Promise<Response> {
+  const token = await ghToken();
+  return fetch(`https://api.github.com${path}`, {
+    method,
+    headers: {
+      Authorization: `bearer ${token}`,
+      Accept: "application/vnd.github+json",
+      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
+async function githubRestJson<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const response = await githubRestResponse(method, path, body);
+  if (!response.ok) {
+    throw new GithubRequestError(
+      `GitHub REST request failed: ${response.status} ${await response.text()}`,
+      response.status === 404 ? 404 : 502,
+    );
+  }
+  return response.json() as Promise<T>;
+}
+
+function encodedRepo(repo: string): string {
+  return repo.split("/").map(encodeURIComponent).join("/");
+}
+
+function isRefUpdateRace(error: unknown): boolean {
+  return error instanceof GithubRequestError
+    && /REST request failed: (?:409|422)\b/i.test(error.message)
+    && /(?:fast.?forward|reference update|expected|stale)/i.test(error.message);
 }
 
 export async function commitPrFileEdit(input: PrFileEdit): Promise<{ commitOid: string }> {
   const [owner, name] = input.repo.split("/");
   if (!owner || !name) throw new GithubRequestError(`Invalid repository: ${input.repo}`, 404);
   const expectedHeadOid = input.expectedHeadOid.toLowerCase();
-  const fileExpression = `${expectedHeadOid}:${input.path}`;
-  const lastSlash = input.path.lastIndexOf("/");
-  const parentPath = lastSlash === -1 ? "" : input.path.slice(0, lastSlash);
-  const basename = input.path.slice(lastSlash + 1);
-  const parentExpression = `${expectedHeadOid}:${parentPath}`;
-
-  const data = await graphql<{
-    repository: {
-      pullRequest: {
-        state: string;
-        headRefName: string | null;
-        headRefOid: string | null;
-        headRepository: {
-          nameWithOwner: string;
-          file: { __typename: string; isBinary?: boolean | null } | null;
-          parent: {
-            __typename: string;
-            entries?: Array<{ name: string; type: string; mode: number }> | null;
-          } | null;
-        } | null;
-      } | null;
-    } | null;
-  }>(PR_FILE_EDIT_HEAD_QUERY, { owner, name, number: input.number, fileExpression, parentExpression });
-  const pullRequest = data.repository?.pullRequest;
-  if (!pullRequest) throw new GithubRequestError(`${input.repo}#${input.number} was not found`, 404);
-  if (pullRequest.state !== "OPEN") throw new StalePrHeadError("PR is no longer open");
-  if (!pullRequest.headRefName || !pullRequest.headRefOid || !pullRequest.headRepository?.nameWithOwner) {
+  const baseRepo = encodedRepo(input.repo);
+  const pullRequest = await githubRestJson<RestPull>("GET", `/repos/${baseRepo}/pulls/${input.number}`);
+  if (pullRequest.state !== "open") throw new StalePrHeadError("PR is no longer open");
+  if (!pullRequest.head?.ref || !pullRequest.head.repo?.full_name) {
     throw new StalePrHeadError("PR head is unavailable");
   }
-  if (pullRequest.headRefOid !== expectedHeadOid) throw new StalePrHeadError();
-  const file = pullRequest.headRepository.file;
-  const parent = pullRequest.headRepository.parent;
-  const entry = parent?.entries?.find((candidate) => candidate.name === basename);
-  if (
-    file?.__typename !== "Blob"
-    || file?.isBinary !== false
-    || parent?.__typename !== "Tree"
-    || entry?.type !== "blob"
-    || entry?.mode !== 0o100644
-  ) {
+  if (pullRequest.head.sha.toLowerCase() !== expectedHeadOid) throw new StalePrHeadError();
+
+  const headRepo = encodedRepo(pullRequest.head.repo.full_name);
+  const commit = await githubRestJson<{ tree: { sha: string } }>(
+    "GET",
+    `/repos/${headRepo}/git/commits/${expectedHeadOid}`,
+  );
+  const segments = input.path.split("/");
+  let treeSha = commit.tree.sha;
+  for (let index = 0; index < segments.length; index += 1) {
+    const tree = await githubRestJson<{ tree: RestTreeEntry[] }>(
+      "GET",
+      `/repos/${headRepo}/git/trees/${encodeURIComponent(treeSha)}`,
+    );
+    const entry = tree.tree.find((candidate) => candidate.path === segments[index]);
+    const isFile = index === segments.length - 1;
+    if (!entry || (isFile ? entry.type !== "blob" || entry.mode !== "100644" : entry.type !== "tree")) {
+      throw new StalePrHeadError("PR file is no longer editable");
+    }
+    treeSha = entry.sha;
+  }
+  const currentBlob = await githubRestJson<{ content: string; encoding: string }>(
+    "GET",
+    `/repos/${headRepo}/git/blobs/${encodeURIComponent(treeSha)}`,
+  );
+  if (currentBlob.encoding !== "base64") throw new StalePrHeadError("PR file is no longer editable");
+  try {
+    if (strictUtf8Decoder.decode(Buffer.from(currentBlob.content, "base64")).includes("\0")) {
+      throw new StalePrHeadError("PR file is no longer editable");
+    }
+  } catch (error) {
+    if (error instanceof StalePrHeadError) throw error;
     throw new StalePrHeadError("PR file is no longer editable");
   }
 
+  const blob = await githubRestJson<{ sha: string }>("POST", `/repos/${headRepo}/git/blobs`, {
+    content: Buffer.from(input.content).toString("base64"),
+    encoding: "base64",
+  });
+  const nextTree = await githubRestJson<{ sha: string }>("POST", `/repos/${headRepo}/git/trees`, {
+    base_tree: commit.tree.sha,
+    tree: [{ path: input.path, mode: "100644", type: "blob", sha: blob.sha }],
+  });
+  const nextCommit = await githubRestJson<{ sha: string }>("POST", `/repos/${headRepo}/git/commits`, {
+    message: input.message,
+    tree: nextTree.sha,
+    parents: [expectedHeadOid],
+  });
+  const encodedRef = pullRequest.head.ref.split("/").map(encodeURIComponent).join("/");
   try {
-    const result = await graphql<{
-      createCommitOnBranch: { commit: { oid: string } | null } | null;
-    }>(CREATE_PR_FILE_COMMIT_MUTATION, {
-      input: {
-        branch: {
-          repositoryNameWithOwner: pullRequest.headRepository.nameWithOwner,
-          branchName: pullRequest.headRefName,
-        },
-        message: { headline: input.message },
-        fileChanges: {
-          additions: [{
-            path: input.path,
-            contents: Buffer.from(input.content).toString("base64"),
-          }],
-        },
-        expectedHeadOid,
-      },
+    await githubRestJson("PATCH", `/repos/${headRepo}/git/refs/heads/${encodedRef}`, {
+      sha: nextCommit.sha,
+      force: false,
     });
-    const commitOid = result.createCommitOnBranch?.commit?.oid;
-    if (!commitOid) throw new GithubRequestError("GitHub did not return a commit OID", 502);
-    return { commitOid };
   } catch (error) {
-    if (isExpectedHeadRace(error)) throw new StalePrHeadError();
+    if (isRefUpdateRace(error)) throw new StalePrHeadError();
     throw error;
   }
+  return { commitOid: nextCommit.sha };
 }
 
 export class RestRequestError extends Error {
@@ -1504,18 +1511,9 @@ export class RestRequestError extends Error {
 
 async function restRequest(method: string, path: string, body: unknown): Promise<void> {
   if (mockGithub) return;
-  const token = await ghToken();
-  const res = await fetch(`https://api.github.com${path}`, {
-    method,
-    headers: {
-      Authorization: `bearer ${token}`,
-      "Content-Type": "application/json",
-      Accept: "application/vnd.github+json",
-    },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    throw new RestRequestError(`${method} ${path} failed: ${res.status} ${await res.text()}`, res.status);
+  const response = await githubRestResponse(method, path, body);
+  if (!response.ok) {
+    throw new RestRequestError(`${method} ${path} failed: ${response.status} ${await response.text()}`, response.status);
   }
 }
 

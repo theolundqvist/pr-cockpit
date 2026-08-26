@@ -1054,7 +1054,7 @@ describe("PR file edits", () => {
     expect(refreshCalls).toBe(0);
   });
 
-  test("returns guided setup when workflow access is missing", async () => {
+  test("returns guided setup when REST workflow access is missing", async () => {
     const body = { ...requestBody, path: ".github/workflows/ci.yml" };
     const auth = {
       ok: false,
@@ -1066,10 +1066,10 @@ describe("PR file edits", () => {
     };
     const fetchHandler = buildFetchHandler(4820, {
       commitPrFileEdit: async () => {
-        throw new GithubRequestError("GraphQL request failed", 502, [{
-          type: "FORBIDDEN",
-          message: "Resource not accessible by personal access token",
-        }]);
+        throw new GithubRequestError(
+          'GitHub REST request failed: 403 {"message":"Resource not accessible by personal access token"}',
+          502,
+        );
       },
       githubAuthStatus: async (scopes) => {
         expect(scopes).toEqual(["repo", "workflow"]);

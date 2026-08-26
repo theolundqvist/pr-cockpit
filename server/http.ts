@@ -1402,8 +1402,11 @@ function isRepoFilePath(value: unknown): value is string {
 function isWorkflowScopeError(path: string, error: unknown): boolean {
   return path.startsWith(".github/workflows/")
     && error instanceof GithubRequestError
-    && error.graphqlErrors.some(({ type, message }) =>
-      type === "FORBIDDEN" && /personal access token/i.test(message ?? ""));
+    && (
+      error.graphqlErrors.some(({ type, message }) =>
+        type === "FORBIDDEN" && /personal access token/i.test(message ?? ""))
+      || /REST request failed: 403.*(?:personal access token|resource not accessible)/is.test(error.message)
+    );
 }
 const AUTH_SCOPE_ALLOWED: Record<string, true> = { repo: true, workflow: true };
 
