@@ -84,6 +84,7 @@ After a task needs non-obvious investigation, repeated failed attempts, or a rec
 - A reproducible code failure gets an automated test instead of a paragraph.
 - Record only evidence-backed, reusable guidance. No credentials, no transient PIDs, no diary of one-off failures.
 - GitHub prerequisite and onboarding flows are server-classified and resolved in-app; never send users to Terminal. Match the landing page: one short headline, no subtitle, flat controls, and only copy needed for the next action; open browser setup automatically and retain the device code as recovery.
+- Conflict cards refresh the mirror and compare the PR head with the current base branch; never use cached base revisions, invent repository-level conflict copy, or offer copy-prompt controls.
 - Installed updates replace shell files without changing the running Electron process. Renderer code must tolerate the prior shell response shape until relaunch; verify shell changes in a separate fresh process and never restart the installed renderer.
 - The Forgejo host mounts `/run` with `noexec`; invoke migration helpers through `bash` or `python3` rather than executing files there directly.
 - Forgejo hides pull requests when `repository.is_mirror` is true even if the unit is enabled. Keep the `mirror` row, clear only `is_mirror`, limit its refspecs to heads and tags, and maintain each native PR's hidden `refs/pull/<N>/head`; create an ordinary fallback branch only for an active fork PR and write both refs as UID/GID `994:984`.

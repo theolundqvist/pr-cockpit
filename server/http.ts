@@ -1025,21 +1025,20 @@ async function handlePrConflicts(owner: string, repo: string, number: string): P
   if (!ctx) return json({ error: "PR is not cached yet" }, 404);
   if (isMockGithub) return json({ files: mockGithub!.conflictFiles(repoName, num) });
 
-  let result = await conflictFilesFromMirror(repoName, ctx.baseSha ?? `refs/heads/${ctx.baseRef}`, ctx.headSha);
-  if (result.status === "no-mirror" || result.status === "missing-commit" || !ctx.baseSha) {
-    try {
-      await fetchMirror(repoName, INCREMENTAL_FETCH_TIMEOUT_MS);
-      result = await conflictFilesFromMirror(repoName, ctx.baseSha ?? `refs/heads/${ctx.baseRef}`, ctx.headSha);
-    } catch (err) {
-      console.error(`conflict file fetch failed for ${repoName}#${num}:`, err);
-      return json({ error: "conflict files are still loading" }, 503);
-    }
+  try {
+    await fetchMirror(repoName, INCREMENTAL_FETCH_TIMEOUT_MS);
+  } catch (err) {
+    console.error(`conflict file fetch failed for ${repoName}#${num}:`, err);
+    return json({ error: "Conflict files are still loading" }, 503);
   }
-  if (result.status === "conflicts" || result.status === "clean") return json({ files: result.files });
+
+  const result = await conflictFilesFromMirror(repoName, `refs/heads/${ctx.baseRef}`, ctx.headSha);
+  if (result.status === "conflicts") return json({ files: result.files });
+  if (result.status === "clean") return json({ error: "No conflicts found against the latest base branch" }, 409);
   if (result.status === "merge-failed") {
     console.error(`conflict merge-tree failed for ${repoName}#${num}: ${result.error}`);
   }
-  return json({ error: "couldn't determine conflict files" }, 503);
+  return json({ error: "Couldn't determine conflicting files" }, 503);
 }
 
 // Per-commit file counts for the timeline. The mirror is the only source of per-commit file lists;

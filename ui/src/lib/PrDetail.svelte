@@ -81,8 +81,6 @@
   let lastG = 0;
   const copied = timedFlag(1200);
   const branchCopied = timedFlag(1200);
-  const ciCopied = timedFlag(1200);
-  const conflictCopied = timedFlag(1200);
 
   let pr = $state(null);
   let actionsRunUrl = $state(null);
@@ -804,7 +802,7 @@
   function requestConflictResolution() {
     confirmAction = {
       title: "Resolve conflicts with an agent?",
-      message: `${conflictFiles.length ? `Conflicts in ${conflictFiles.length} file${conflictFiles.length === 1 ? "" : "s"}` : "Repository-level conflict"}, pushed to ${pr.headRefName}`,
+      message: `Conflicts in ${conflictFiles.length} file${conflictFiles.length === 1 ? "" : "s"}, pushed to ${pr.headRefName}`,
       confirmLabel: "Resolve conflicts",
       run: submitConflictResolution,
     };
@@ -1204,30 +1202,13 @@
     return "No checks have been reported";
   });
 
-  function copyCiFixPrompt() {
-    if (!pr || !failingChecks.length) return;
-    const prompt = ciFixPrompt({ repo, number, branch: pr.headRefName, checks: failingChecks });
-    navigator.clipboard.writeText(prompt).then(
-      () => ciCopied.show(),
-      () => showFlash("Couldn't copy the CI fix prompt."),
-    );
-  }
 
   function conflictFixPrompt() {
     if (!pr) return "";
-    const paths = conflictFiles.length
-      ? conflictFiles.map((path) => `- ${path}`).join("\n")
-      : "- Git reported a repository-level conflict without individual file paths";
+    const paths = conflictFiles.map((path) => `- ${path}`).join("\n");
     return `Resolve the merge conflicts on ${repo} PR #${number}.\n\nPR: https://github.com/${repo}/pull/${number}\nBranch: ${pr.headRefName}\nBase: ${pr.baseRefName}\n\nConflicting files:\n${paths}\n\nFetch origin/${pr.baseRefName} and merge it into ${pr.headRefName}. Resolve every conflict faithfully, preserving the intent of both sides. Do not change unrelated code. Run the narrowest relevant validation, commit the merge resolution, and push only to ${pr.headRefName}.`;
   }
 
-  function copyConflictFixPrompt() {
-    if (!pr || conflictFilesState !== "ready") return;
-    navigator.clipboard.writeText(conflictFixPrompt()).then(
-      () => conflictCopied.show(),
-      () => showFlash("Couldn't copy the conflict fix prompt."),
-    );
-  }
 
   let mergeGate = $derived.by(() => evalMergeGate(pr, rollup?.state ?? null));
 
@@ -1543,7 +1524,7 @@
   let fixShortcutTarget = $derived.by(() => {
     if (!autofixDef || agent?.state === "running" || mergedState) return null;
     if (failingChecks.length && !ciFixBusy) return "ci";
-    if (hasConflicts && conflictFilesState === "ready" && !conflictResolveBusy) return "conflict";
+    if (hasConflicts && conflictFilesState === "ready" && conflictFiles.length && !conflictResolveBusy) return "conflict";
     if (!mergedState && !prIsGreen && !autofixBusy) return "autofix";
     return null;
   });
@@ -2366,12 +2347,9 @@
                   <strong>{failingChecks.length} failing check{failingChecks.length === 1 ? "" : "s"}</strong>
                   <span class="attention-chip attention-label">Action required</span>
                 </div>
-                <span class="attention-description">Open the exact logs below or copy a ready-to-fix prompt.</span>
+                <span class="attention-description">Open the exact logs below or send them to an agent.</span>
               </div>
               <div class="ci-failure-actions">
-                <button class="ci-copy-button" onclick={copyCiFixPrompt}>
-                  {ciCopied.value ? "Copied" : "Copy fix prompt"}
-                </button>
                 <button
                   class="ci-agent-button shortcut-action"
                   disabled={ciFixBusy || agent?.state === "running"}
@@ -2415,11 +2393,8 @@
                 </div>
                 <span class="attention-description">This PR cannot merge until they are resolved.</span>
               </div>
-              {#if conflictFilesState === "ready"}
+              {#if conflictFilesState === "ready" && conflictFiles.length}
                 <div class="conflict-actions">
-                  <button class="conflict-copy-button" onclick={copyConflictFixPrompt}>
-                    {conflictCopied.value ? "Copied" : "Copy fix prompt"}
-                  </button>
                   <button
                     class="conflict-primary shortcut-action"
                     disabled={conflictResolveBusy || agent?.state === "running"}
@@ -2446,8 +2421,6 @@
                     <li title={path}>{path}</li>
                   {/each}
                 </ul>
-              {:else}
-                <div class="conflict-alert-note">Repository-level conflict · no individual paths reported</div>
               {/if}
             {/if}
             {#if conflictResolveError}<div class="conflict-alert-error">{conflictResolveError}</div>{/if}
@@ -5044,34 +5017,6 @@
     background: var(--fail-bg);
     color: var(--fail);
   }
-  .ci-copy-button,
-  .conflict-copy-button {
-    flex: none;
-    min-width: 112px;
-    min-height: 28px;
-    padding: 0 10px;
-    border: 0;
-    border-radius: 7px;
-    background: var(--surface);
-    color: var(--text-dim);
-    font-family: var(--sans);
-    font-size: 11px;
-    font-weight: 650;
-    text-align: center;
-    cursor: pointer;
-    transition: transform 120ms var(--ease-out), background 120ms ease;
-  }
-  @media (hover: hover) and (pointer: fine) {
-    .ci-copy-button:hover,
-    .conflict-copy-button:hover {
-      background: var(--surface-hover);
-      color: var(--text);
-    }
-  }
-  .ci-copy-button:active,
-  .conflict-copy-button:active {
-    transform: scale(0.99);
-  }
   .ci-failure-actions {
     display: flex;
     flex: none;
@@ -5576,7 +5521,6 @@
       width: 100%;
       margin-left: 0;
     }
-    .ci-copy-button,
     .ci-agent-button {
       flex: 1 1 0;
     }
@@ -5614,7 +5558,6 @@
       width: 100%;
       margin-left: 0;
     }
-    .conflict-copy-button,
     .conflict-primary {
       flex: 1 1 0;
     }
@@ -6089,8 +6032,6 @@
   .merge-btn:active:not(:disabled) {
     transform: scale(0.99);
   }
-  .ci-copy-button,
-  .conflict-copy-button,
   .ci-agent-button,
   .conflict-primary {
     min-height: 28px;
@@ -6100,12 +6041,6 @@
     font-family: var(--sans);
     font-size: 12px;
     font-weight: 500;
-  }
-  .ci-copy-button,
-  .conflict-copy-button {
-    background: color-mix(in srgb, var(--fail-bg) 78%, var(--panel));
-    box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--fail) 28%, transparent);
-    color: var(--fail);
   }
   .ci-agent-button {
     background: var(--fail);
@@ -6118,11 +6053,6 @@
     color: var(--on-brand);
   }
   @media (hover: hover) and (pointer: fine) {
-    .ci-copy-button:hover,
-    .conflict-copy-button:hover {
-      background: color-mix(in srgb, var(--fail-bg) 78%, var(--fail) 10%);
-      color: var(--fail);
-    }
     .ci-agent-button:hover:not(:disabled) {
       background: color-mix(in srgb, var(--fail) 88%, black);
     }
