@@ -9,6 +9,7 @@
   import { theme } from "./theme.svelte.js";
   import { buildGapPage, buildWholeFile, fileUsesSplitLayout, hunkOldOffset, revertChange, revertFile, splitDiffRows } from "./diff.js";
   import { fetchFileContents } from "./api.js";
+  import { shouldToggleHoveredViewed } from "./dom.js";
   import { columnWithin, createDefinitionHover, tokenAtPoint } from "./wordAtPoint.js";
   import Chevron from "./Chevron.svelte";
   import Kbd from "./Kbd.svelte";
@@ -129,9 +130,17 @@
     return null;
   }
 
+  let hoveredFilePath = null;
+  let hoveredFileSection = null;
+
+  function hoverFile(path, section = null) {
+    hoveredFilePath = path;
+    hoveredFileSection = section;
+    onHoverFile?.(path);
+  }
+
   // collapsing a file removes document height above the reader; hold its sticky header where it sat so the next files stay in place
-  async function keepingHeaderPlace(event, file, run) {
-    const head = event.currentTarget.closest(".file-head-row");
+  async function keepingHeaderPlace(head, file, run) {
     const scroller = collapsed.has(file.path) ? null : head && scrollParent(head);
     const target = scroller ? head.getBoundingClientRect().top : 0;
     run();
@@ -146,6 +155,20 @@
     };
     settle();
   }
+
+  function onViewedKey(event) {
+    if (!onToggleViewed || !shouldToggleHoveredViewed(event, "files", hoveredFilePath)) return;
+    const file = files.find((candidate) => candidate.path === hoveredFilePath);
+    const head = hoveredFileSection?.querySelector(".file-head-row");
+    if (!file || !head) return;
+    void keepingHeaderPlace(head, file, () => onToggleViewed(file));
+    event.preventDefault();
+  }
+
+  $effect(() => {
+    window.addEventListener("keydown", onViewedKey);
+    return () => window.removeEventListener("keydown", onViewedKey);
+  });
 
   function editPlacement(section, lineEl, column = 0) {
     const line = Number(lineEl?.dataset.newLine);
@@ -1149,7 +1172,7 @@
   }
 
   $effect(() => () => {
-    onHoverFile?.(null);
+    hoverFile(null);
     observer?.disconnect();
     prefetchObserver?.disconnect();
     fileResizeObserver?.disconnect();
@@ -1469,14 +1492,16 @@
       id="diff-file-{i}"
       style="--est-h:{fileHeight(file, isCollapsed, whole)}px"
       use:nearViewport={file.path}
-      onmouseenter={() => onHoverFile?.(file.path)}
-      onmouseleave={() => onHoverFile?.(null)}
+      onmouseenter={(event) => hoverFile(file.path, event.currentTarget)}
+      onmouseleave={(event) => {
+        if (hoveredFileSection === event.currentTarget) hoverFile(null);
+      }}
     >
       {#if hotPaths.has(file.path)}
       <div class="file-head-row">
         <button
           class="file-head mono"
-          onclick={(event) => (fileEditor?.path === file.path ? finishFileEdit() : keepingHeaderPlace(event, file, () => onToggleFile(file)))}
+          onclick={(event) => (fileEditor?.path === file.path ? finishFileEdit() : keepingHeaderPlace(event.currentTarget.closest(".file-head-row"), file, () => onToggleFile(file)))}
         >
           <Chevron direction={isCollapsed ? "right" : "down"} />
           {#if file.previousPath}
@@ -1530,7 +1555,7 @@
             class:active={isViewed}
             aria-pressed={isViewed}
             aria-label={isViewed ? "Mark file unviewed" : "Mark file viewed"}
-            onclick={(event) => keepingHeaderPlace(event, file, () => onToggleViewed(file))}
+            onclick={(event) => keepingHeaderPlace(event.currentTarget.closest(".file-head-row"), file, () => onToggleViewed(file))}
           >
             <span class="viewed-check" aria-hidden="true">{isViewed ? "✓" : ""}</span>
             <span class="viewed-label">Viewed</span>

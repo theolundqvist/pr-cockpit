@@ -27,7 +27,7 @@
   import { loadDiffDocument } from "./diffDocument.js";
   import { renderMarkdown } from "./markdown.js";
   import { loadPrIndex, prSummary } from "./prIndex.svelte.js";
-  import { imageFallback, prKeyOwner, shouldCopyPrCockpitUrl, shouldCopyPrUrl, shouldToggleHoveredViewed } from "./dom.js";
+  import { imageFallback, prKeyOwner, shouldCopyPrCockpitUrl, shouldCopyPrUrl } from "./dom.js";
   import { readLastViewed, writeLastViewed } from "./lastViewed.js";
   import { durationText, relativeTime } from "./time.js";
   import { mermaidDiagrams } from "./mermaid.js";
@@ -1980,14 +1980,6 @@
       }
       if (e.key === "G") {
         scrollEdge(page, "bottom");
-        e.preventDefault();
-        return;
-      }
-      const hoveredFile = shouldToggleHoveredViewed(e, tab, hoveredDiffPath)
-        ? files.find((file) => file.path === hoveredDiffPath)
-        : null;
-      if (hoveredFile) {
-        setFileViewed(hoveredFile, !viewedFiles.has(hoveredFile.path));
         e.preventDefault();
         return;
       }
