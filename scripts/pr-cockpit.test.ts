@@ -374,6 +374,39 @@ test("jobs and logs activate the lease before their cache-only GET", async () =>
   }
 });
 
+test("cache-run requests one Actions run through the trusted local endpoint", async () => {
+  const requests: Array<{ method: string; path: string; trusted: string | null }> = [];
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const url = new URL(request.url);
+      requests.push({ method: request.method, path: url.pathname, trusted: request.headers.get("x-pr-cockpit-cli") });
+      return new Response("Actions run 987: fetched\n");
+    },
+  });
+  try {
+    const process = Bun.spawn([
+      join(import.meta.dir, "pr-cockpit"),
+      "cache-run",
+      "owner/repo#17",
+      "987",
+    ], {
+      env: { ...Bun.env, COCKPIT_PORT: String(server.port) },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(await process.exited).toBe(0);
+    expect(await new Response(process.stdout).text()).toBe("Actions run 987: fetched\n");
+    expect(requests).toEqual([{
+      method: "POST",
+      path: "/api/agent/pr/owner/repo/17/runs/987/cache",
+      trusted: "1",
+    }]);
+  } finally {
+    server.stop(true);
+  }
+});
+
 test("update delegates to the running server and waits for the new revision", async () => {
   const root = mkdtempSync(join(tmpdir(), "pr-cockpit-update-"));
   const scripts = join(root, "scripts");

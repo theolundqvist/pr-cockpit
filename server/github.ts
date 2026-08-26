@@ -1233,6 +1233,16 @@ export interface WorkflowRun {
   updated_at: string;
   html_url: string | null;
 }
+export async function fetchWorkflowRun(repo: string, runId: number): Promise<WorkflowRun> {
+  if (mockGithub) return mockGithub.workflowRun(repo, runId);
+  const token = await ghToken();
+  const res = await fetch(`https://api.github.com/repos/${repo}/actions/runs/${runId}`, {
+    headers: { Authorization: `bearer ${token}`, Accept: "application/vnd.github+json" },
+  });
+  if (!res.ok) throw new Error(`workflow run fetch failed: ${res.status} ${await res.text()}`);
+  return res.json() as Promise<WorkflowRun>;
+}
+
 
 export async function fetchWorkflowRuns(repo: string, headSha: string): Promise<WorkflowRun[]> {
   const token = await ghToken();

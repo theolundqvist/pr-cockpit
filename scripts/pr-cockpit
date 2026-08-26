@@ -14,6 +14,7 @@ Usage:
   pr-cockpit                                  # list cached PRs for current repository
   pr-cockpit listen [pr://owner/repo/123]
   pr-cockpit resolve owner/repo#123 THREAD
+  pr-cockpit cache-run owner/repo#123 RUN_ID
   pr-cockpit update
 
 Commands:
@@ -21,6 +22,7 @@ Commands:
                       returns immediately when the current PR has failed CI or open comments
                       without REF, watch the current repository
   resolve REF THREAD  resolve one cached review thread by its displayed handle
+  cache-run REF RUN_ID  fetch one Actions run and keep its jobs and unsuccessful logs cached
   update              fast-forward, rebuild, and reconcile the installed app
 
 Options:
@@ -99,7 +101,7 @@ fi
 
 
 command="read"
-if [[ "${1:-}" = "listen" || "${1:-}" = "resolve" ]]; then
+if [[ "${1:-}" = "listen" || "${1:-}" = "resolve" || "${1:-}" = "cache-run" ]]; then
   command="$1"
   shift
 fi
@@ -112,6 +114,7 @@ since=""
 comments="1"
 listen_scope="all"
 thread_handle=""
+run_id=""
 while (($#)); do
   case "$1" in
     --json)
@@ -162,6 +165,8 @@ while (($#)); do
         ref="$1"
       elif [[ "$command" = "resolve" && -z "$thread_handle" ]]; then
         thread_handle="$1"
+      elif [[ "$command" = "cache-run" && -z "$run_id" ]]; then
+        run_id="$1"
       else
         usage
       fi
@@ -173,6 +178,8 @@ done
 [[ "$comments" = "1" || "$mode" = "summary" || "$mode" = "json" ]] || usage
 [[ -n "$ref" || "$command" != "resolve" ]] || usage
 [[ "$command" != "resolve" || ( "$mode" = "summary" && -z "$since" && "$comments" = "1" && "$thread_handle" =~ ^[0-9a-f]{10}$ ) ]] || usage
+[[ -n "$ref" || "$command" != "cache-run" ]] || usage
+[[ "$command" != "cache-run" || ( "$mode" = "summary" && -z "$since" && "$comments" = "1" && "$run_id" =~ ^[1-9][0-9]*$ ) ]] || usage
 
 port=$(cockpit_port)
 bun_bin=$(command -v bun || true)
@@ -327,6 +334,7 @@ case "$ref" in
 esac
 [[ -z "$uri_comments" ]] || comments="$uri_comments"
 [[ "$command" != "resolve" || -z "$uri_comments" ]] || usage
+[[ "$command" != "cache-run" || -z "$uri_comments" ]] || usage
 owner=${repo%/*}
 name=${repo#*/}
 base_url="http://127.0.0.1:$port/api/agent/pr/$owner/$name/$number"
@@ -371,6 +379,11 @@ fi
 if [[ "$command" = "resolve" ]]; then
   curl --noproxy '*' -sS --fail-with-body -X POST -H "X-PR-Cockpit-CLI: 1" "$base_url/threads/$thread_handle"
   printf '\n'
+  exit 0
+fi
+
+if [[ "$command" = "cache-run" ]]; then
+  curl --noproxy '*' -sS --fail-with-body -X POST -H "X-PR-Cockpit-CLI: 1" "$base_url/runs/$run_id/cache"
   exit 0
 fi
 

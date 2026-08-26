@@ -1505,4 +1505,35 @@ describe("Actions viewer API", () => {
       db.run("DELETE FROM prs WHERE repo = ? AND number = ?", [repo, number]);
     }
   });
+
+  test("trusted agent route requests one current-head Actions run", async () => {
+    const repo = "http-actions/requested";
+    const number = 96134;
+    const head = "e".repeat(40);
+    const row = trackedPrRow({ repo, number, fetchedAt: "2026-08-25T08:00:00Z" });
+    upsertPr({
+      ...row,
+      head_sha: head,
+      detail_json: JSON.stringify({ ...JSON.parse(row.detail_json), headRefOid: head }),
+    });
+    let requested: unknown = null;
+    const fetchHandler = buildFetchHandler(4820, {
+      cacheActionsRun: async (...args) => {
+        requested = args;
+        return "fetched";
+      },
+    });
+
+    try {
+      const response = await fetchHandler(new Request(
+        `http://127.0.0.1:4820/api/agent/pr/http-actions/requested/${number}/runs/987/cache`,
+        { method: "POST", headers: { "X-PR-Cockpit-CLI": "1" } },
+      ));
+      expect(response.status).toBe(200);
+      expect(requested).toEqual([repo, number, head, 987]);
+      expect(await response.text()).toContain("Actions run 987: fetched");
+    } finally {
+      db.run("DELETE FROM prs WHERE repo = ? AND number = ?", [repo, number]);
+    }
+  });
 });

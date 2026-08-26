@@ -197,6 +197,68 @@ test("concurrent activation bootstraps once and terminal attempts reconcile once
   expect(result.reconciled).toBe(1);
 });
 
+test("an explicit run request caches one current-head run once and rejects another head", async () => {
+  const result = await runScenario("pr-cockpit-actions-requested-run-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    let runFetches = 0;
+    let jobFetches = 0;
+    let logFetches = 0;
+    const rawRun = {
+      id: 55, run_attempt: 1, head_sha: head, head_branch: "feature", name: "CI",
+      path: ".github/workflows/ci.yml", status: "completed", conclusion: "failure",
+      updated_at: "2026-08-24T10:04:00Z", html_url: "https://github.com/acme/app/actions/runs/55",
+    };
+    const fetchers = {
+      fetchWorkflowRun: async () => { runFetches++; return rawRun; },
+      fetchWorkflowRuns: async () => { throw new Error("broad fetch not allowed"); },
+      fetchRunJobs: async () => {
+        jobFetches++;
+        return [{
+          id: 551, run_id: 55, run_attempt: 1, head_sha: head, head_branch: "feature",
+          workflow_name: "CI", name: "test", status: "completed", conclusion: "failure",
+          started_at: "2026-08-24T10:01:00Z", completed_at: "2026-08-24T10:04:00Z",
+          html_url: "https://github.com/acme/app/actions/runs/55/job/551",
+          runner_name: "runner-4", runner_group_name: "hosted", labels: ["arm64"],
+          steps: [{ name: "Run tests", number: 1, status: "completed", conclusion: "failure", started_at: null, completed_at: null }],
+        }];
+      },
+      fetchJobLog: async () => { logFetches++; return "failure evidence"; },
+      restRemaining: async () => 5000,
+    };
+    const first = await actions.cacheActionsRun("acme/app", 7, head, 55, fetchers);
+    const second = await actions.cacheActionsRun("acme/app", 7, head, 55, fetchers);
+    const mismatch = await actions.cacheActionsRun("acme/app", 7, head, 56, {
+      ...fetchers,
+      fetchWorkflowRun: async () => ({ ...rawRun, id: 56, head_sha: "b".repeat(40) }),
+    });
+    console.log(JSON.stringify({
+      first,
+      second,
+      mismatch,
+      runFetches,
+      jobFetches,
+      logFetches,
+      runs: dbm.db.query("SELECT run_id, reconciled_at IS NOT NULL AS reconciled FROM workflow_runs ORDER BY run_id").all(),
+      jobs: dbm.db.query("SELECT job_id, log_gz IS NOT NULL AS logged FROM run_jobs ORDER BY job_id").all(),
+      lease: dbm.db.query("SELECT head_sha FROM actions_leases WHERE repo=? AND number=?").get("acme/app", 7),
+    }));
+  `);
+
+  expect(result).toEqual({
+    first: "fetched",
+    second: "cached",
+    mismatch: "head-mismatch",
+    runFetches: 1,
+    jobFetches: 1,
+    logFetches: 1,
+    runs: [{ run_id: 55, reconciled: 1 }],
+    jobs: [{ job_id: 551, logged: 1 }],
+    lease: { head_sha: "a".repeat(40) },
+  });
+});
+
 test("an explicit activation for a new head queues behind a startup repair for the old head", async () => {
   const result = await runScenario("pr-cockpit-actions-head-change-", `
     const actions = await import(${JSON.stringify(runLogsUrl)});

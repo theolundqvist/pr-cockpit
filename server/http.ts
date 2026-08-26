@@ -100,7 +100,7 @@ import { createTmuxFocusHandler } from "./tmuxFocus.ts";
 import type { TmuxFocusHandler } from "./tmuxFocus.ts";
 import { needsMeRank } from "./rank.ts";
 import { invalidateInbox, invalidatePr } from "./rendererInvalidation.ts";
-import { actionJobLog, actionWorkflowGraphs, activateActionsLease, cachedJobLogs, formatJobLogs, formatRunJobs } from "./runLogs.ts";
+import { actionJobLog, actionWorkflowGraphs, activateActionsLease, cacheActionsRun, cachedJobLogs, formatJobLogs, formatRunJobs } from "./runLogs.ts";
 const cockpitRoot = process.cwd();
 
 function json(data: unknown, status = 200): Response {
@@ -361,6 +361,7 @@ type HttpDependencies = {
   refreshPr: typeof refreshPr;
   handleTmuxFocus: TmuxFocusHandler;
   activateActionsLease: typeof activateActionsLease;
+  cacheActionsRun: typeof cacheActionsRun;
   actionWorkflowGraphs: typeof actionWorkflowGraphs;
   actionJobLog: typeof actionJobLog;
 };
@@ -383,6 +384,7 @@ const defaultHttpDependencies: HttpDependencies = {
   refreshPr,
   handleTmuxFocus: createTmuxFocusHandler(),
   activateActionsLease,
+  cacheActionsRun,
   actionWorkflowGraphs,
   actionJobLog,
 };
@@ -1296,6 +1298,32 @@ function handleAgentPrJobs(owner: string, repo: string, number: string): Respons
   return new Response(formatRunJobs(context.headSha, listRunJobs(context.repoName, context.headSha)), {
     headers: { "content-type": "text/plain; charset=utf-8" },
   });
+}
+
+async function handleAgentCacheRun(
+  owner: string,
+  repo: string,
+  number: string,
+  runId: string,
+  runtime: HttpRuntime,
+): Promise<Response> {
+  const context = cachedActionsContext(owner, repo, number);
+  if (context instanceof Response) return context;
+  const id = Number(runId);
+  if (!Number.isSafeInteger(id) || id <= 0) return json({ error: "valid Actions run ID required" }, 400);
+
+  try {
+    const result = await runtime.cacheActionsRun(context.repoName, context.num, context.headSha, id);
+    if (result === "head-mismatch") {
+      return json({ error: "Actions run does not belong to the current PR head" }, 409);
+    }
+    const jobs = listRunJobs(context.repoName, context.headSha).filter((job) => job.run_id === id);
+    return new Response(`Actions run ${id}: ${result}\n\n${formatRunJobs(context.headSha, jobs)}`, {
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 502);
+  }
 }
 
 async function handleAgentPrLogs(owner: string, repo: string, number: string, url: URL): Promise<Response> {
@@ -2381,6 +2409,21 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       if (parts[6] === "jobs") return handleAgentPrJobs(parts[3]!, parts[4]!, parts[5]!);
       if (parts[6] === "logs") return handleAgentPrLogs(parts[3]!, parts[4]!, parts[5]!, url);
       if (parts[6] === "file") return handleAgentPrFile(parts[3]!, parts[4]!, parts[5]!, url);
+    }
+    if (
+      req.method === "POST" &&
+      parts.length === 9 &&
+      parts[0] === "api" &&
+      parts[1] === "agent" &&
+      parts[2] === "pr" &&
+      parts[6] === "runs" &&
+      parts[8] === "cache"
+    ) {
+      const trustedCliHost = /^(?:127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(req.headers.get("host") ?? url.host);
+      if (!trustedCliHost || req.headers.get("x-pr-cockpit-cli") !== "1") {
+        return json({ error: "trusted CLI request required" }, 403);
+      }
+      return handleAgentCacheRun(parts[3]!, parts[4]!, parts[5]!, parts[7]!, runtime);
     }
     const trustedCliHost = /^(?:127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(req.headers.get("host") ?? url.host);
     if (

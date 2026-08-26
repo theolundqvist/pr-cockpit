@@ -25,6 +25,7 @@ import {
   fetchJobLog,
   fetchRunJobs,
   fetchWorkflowRuns,
+  fetchWorkflowRun,
   type RunJob,
   type WorkflowRun,
 } from "./github.ts";
@@ -81,6 +82,15 @@ const liveFetchers: ActionsFetchers = {
   fetchRunJobs,
   fetchJobLog,
   restRemaining: async () => (await fetchGithubQuota()).rest.remaining,
+};
+
+export interface RequestedRunFetchers extends ActionsFetchers {
+  fetchWorkflowRun: typeof fetchWorkflowRun;
+}
+
+const liveRequestedRunFetchers: RequestedRunFetchers = {
+  ...liveFetchers,
+  fetchWorkflowRun,
 };
 const activations = new Map<string, { headSha: string; promise: Promise<void> }>();
 const reconciliations = new Map<string, { background: boolean; terminal: boolean; promise: Promise<boolean> }>();
@@ -370,6 +380,29 @@ function queueReconciliation(
   };
   reconciliations.set(key, entry);
   return entry.promise;
+}
+
+export async function cacheActionsRun(
+  repo: string,
+  number: number,
+  headSha: string,
+  runId: number,
+  fetchers: RequestedRunFetchers = liveRequestedRunFetchers,
+): Promise<"cached" | "fetched" | "head-mismatch"> {
+  const cached = workflowRunsForLease(repo, number, headSha)
+    .filter((run) => run.run_id === runId)
+    .at(-1);
+  if (cached?.status === "completed" && cached.reconciled_at !== null) {
+    renewActionsLease(repo, number, headSha);
+    return "cached";
+  }
+
+  const run = compactRun(await fetchers.fetchWorkflowRun(repo, runId));
+  if (run.headSha !== headSha) return "head-mismatch";
+  storeRun(repo, number, run);
+  renewActionsLease(repo, number, headSha);
+  await queueReconciliation(repo, run, fetchers, false);
+  return "fetched";
 }
 
 async function repairActionsLease(repo: string, number: number, headSha: string, fetchers: ActionsFetchers): Promise<void> {
