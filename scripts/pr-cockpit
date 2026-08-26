@@ -38,8 +38,21 @@ Default output is Markdown for agents and humans. Use --json only for automation
 EOF
   exit "$status"
 }
+cockpit_port() {
+  local config_file="$HOME/.config/pr-cockpit/config"
+  local env_port="${COCKPIT_PORT:-}"
+  if [[ -f "$config_file" ]]; then
+    # shellcheck disable=SC1090
+    source "$config_file"
+  fi
+  printf '%s\n' "${env_port:-${COCKPIT_PORT:-4820}}"
+}
+
 if [[ "${1:-}" = "update" ]]; then
   [[ "$#" -eq 1 ]] || usage
+  bun_bin=$(command -v bun || true)
+  [[ -n "$bun_bin" ]] || { echo "pr-cockpit: bun is required" >&2; exit 1; }
+  port=$(cockpit_port)
   source_path="${BASH_SOURCE[0]}"
   while [[ -L "$source_path" ]]; do
     source_dir="$(cd "$(dirname "$source_path")" && pwd -P)"
@@ -51,7 +64,37 @@ if [[ "${1:-}" = "update" ]]; then
     fi
   done
   root="$(cd "$(dirname "$source_path")/.." && pwd -P)"
-  exec env COCKPIT_HOME="$root" "$root/scripts/bootstrap"
+  version_url="http://127.0.0.1:$port/api/version"
+  old_version=$(curl --noproxy '*' -sS --fail-with-body "$version_url" 2>/dev/null) || {
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      exec env COCKPIT_HOME="$root" "$root/scripts/bootstrap"
+    fi
+    echo "pr-cockpit: the headless server must be running to update it" >&2
+    exit 1
+  }
+  old_rev=$(printf '%s' "$old_version" | "$bun_bin" -e 'console.log((await Bun.stdin.json()).rev)')
+  response=$(curl --noproxy '*' -sS --fail-with-body -X POST "http://127.0.0.1:$port/api/update") || {
+    printf '%s\n' "$response" >&2
+    exit 1
+  }
+  target_rev=$(git -C "$root" rev-parse HEAD)
+  if [[ "$target_rev" == "$old_rev" ]]; then
+    echo "pr-cockpit: already up to date; install reconciliation started"
+    exit 0
+  fi
+  deadline=$((SECONDS + 120))
+  while ((SECONDS < deadline)); do
+    sleep 1
+    if version=$(curl --noproxy '*' -sS --fail-with-body "$version_url" 2>/dev/null); then
+      running_rev=$(printf '%s' "$version" | "$bun_bin" -e 'console.log((await Bun.stdin.json()).rev)')
+      if [[ "$running_rev" == "$target_rev" ]]; then
+        echo "pr-cockpit: updated to ${target_rev:0:7}"
+        exit 0
+      fi
+    fi
+  done
+  echo "pr-cockpit: update was pulled but the server did not restart within 120 seconds" >&2
+  exit 1
 fi
 
 
@@ -131,16 +174,9 @@ done
 [[ -n "$ref" || "$command" != "resolve" ]] || usage
 [[ "$command" != "resolve" || ( "$mode" = "summary" && -z "$since" && "$comments" = "1" && "$thread_handle" =~ ^[0-9a-f]{10}$ ) ]] || usage
 
-config_file="$HOME/.config/pr-cockpit/config"
-env_port="${COCKPIT_PORT:-}"
-if [[ -f "$config_file" ]]; then
-  # shellcheck disable=SC1090
-  source "$config_file"
-fi
-port="${env_port:-${COCKPIT_PORT:-4820}}"
+port=$(cockpit_port)
 bun_bin=$(command -v bun || true)
 [[ -n "$bun_bin" ]] || { echo "pr-cockpit: bun is required" >&2; exit 1; }
-
 json_transform() {
   local operation=$1 argument=${2:-}
   "$bun_bin" -e '
