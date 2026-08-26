@@ -61,7 +61,7 @@ fi
 
 bun="$(command -v bun)"
 gh_bin="$(command -v gh)"
-launch_path="$(dirname "$bun"):$(dirname "$gh_bin"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+launch_path="$HOME/.local/bin:$(dirname "$bun"):$(dirname "$gh_bin"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 stage "1/6" "Install dependencies"
 quiet_in "root dependency install" "$root" "$bun" install

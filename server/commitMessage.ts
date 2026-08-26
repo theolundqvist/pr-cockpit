@@ -88,6 +88,7 @@ export async function generateCommitMessage(input: {
     "--no-extensions",
     "--no-skills",
     "--no-rules",
+    "--no-prewalk",
     "--no-lsp",
     "--no-title",
     "--max-time", "8s",

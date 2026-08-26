@@ -68,7 +68,8 @@ async function install(loadedRoot: string | null) {
       proc.exited,
     ]);
     const calls = readFileSync(fake.calls, "utf8");
-    return { stdout, stderr, exitCode, calls, root: fake.root };
+    const serverPlist = readFileSync(join(home, "home", "Library/LaunchAgents/app.pr-cockpit.server.plist"), "utf8");
+    return { stdout, stderr, exitCode, calls, root: fake.root, serverPlist, localBin: join(home, "home/.local/bin") };
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -82,6 +83,7 @@ test("an app registration left behind by another root is replaced", async () => 
   expect(result.calls).toContain(`bootout gui/${uid}/app.pr-cockpit\n`);
   expect(result.calls).toContain(`bootstrap gui/${uid} `);
   expect(result.calls).toContain("Library/LaunchAgents/app.pr-cockpit.plist");
+  expect(result.serverPlist).toContain(`<string>PATH=${result.localBin}:`);
 });
 
 test("no loaded registration bootstraps the app", async () => {
