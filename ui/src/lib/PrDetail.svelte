@@ -2046,6 +2046,8 @@
       } else if (e.key === "o") {
         const url = tab === "actions" ? actionsRunUrl : pr?.url;
         if (url) window.open(url, "_blank", "noopener");
+      } else if (e.key === "t" && pr?.localCheckoutPath && !onLocalBranch) {
+        if (!localBranchBusy) switchToLocalBranch();
       } else if (e.key === "T") {
         focusTerminal();
       } else if (e.key === "p") {
@@ -2118,6 +2120,10 @@
       return agent?.state !== "running" ? [{ key: a.keybind, label: a.name || "custom agent" }] : [];
     }),
   );
+  let localCheckoutKeys = $derived([
+    ...(pr?.localCheckoutPath && !onLocalBranch ? [{ key: "t", label: "switch branch" }] : []),
+    ...(pr ? [{ key: "⇧T", label: "focus terminal" }] : []),
+  ]);
   let conversationKeys = $derived([
     { key: "d", label: "files" },
     { key: "c", label: "comment" },
@@ -2133,7 +2139,7 @@
     { key: "x", label: "close" },
     ...autoMergeKeys,
     { key: "o", label: "github" },
-    ...(pr ? [{ key: "⇧T", label: "focus terminal" }] : []),
+    ...localCheckoutKeys,
     { key: "esc", label: "back" },
   ]);
   let filesKeys = $derived([
@@ -2151,14 +2157,14 @@
     mergeKey,
     ...autoMergeKeys,
     { key: "o", label: "github" },
-    ...(pr ? [{ key: "⇧T", label: "focus terminal" }] : []),
+    ...localCheckoutKeys,
     { key: "esc", label: "back" },
   ]);
   let tabKeys = $derived([
     { key: "⌘1 / ⌘2 / ⌘3 / ⌘4", label: "switch tab" },
     { key: "x", label: "close" },
     { key: "o", label: tab === "actions" && actionsRunUrl ? "github run" : "github" },
-    ...(pr ? [{ key: "⇧T", label: "focus terminal" }] : []),
+    ...localCheckoutKeys,
     { key: "esc", label: "back" },
   ]);
 </script>
