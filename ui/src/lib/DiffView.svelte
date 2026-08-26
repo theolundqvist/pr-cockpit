@@ -942,8 +942,8 @@
     try {
       const content = editor.eol === "\r\n" ? editor.content.replace(/\n/g, "\r\n") : editor.content;
       await onCommitFileEdit(editor.path, editor.expectedHeadOid, content, message);
-      if (editor.externalSessionId) await onFinishExternalEdit?.(editor.externalSessionId);
       if (fileEditor === editor) fileEditor = null;
+      if (editor.externalSessionId) await onFinishExternalEdit?.(editor.externalSessionId);
     } catch (error) {
       if (fileEditor?.path === editor.path) {
         fileEditor.phase = "review";
@@ -1597,7 +1597,7 @@
             <label class="file-edit-message">
               <span>
                 Commit message
-                {#if fileEditor.suggestionPhase === "generating"}<span class="hint">Generating with Sonnet…</span>{/if}
+                {#if fileEditor.suggestionPhase === "generating"}<span class="hint">Generating with Haiku…</span>{/if}
               </span>
               <input
                 bind:value={fileEditor.message}

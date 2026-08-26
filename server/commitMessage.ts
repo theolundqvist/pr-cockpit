@@ -2,7 +2,7 @@ import { ompBinPath } from "./harness.ts";
 
 const OMP_PACKAGE = "@oh-my-pi/pi-coding-agent";
 const INSTALL_TIMEOUT_MS = 120_000;
-const GENERATION_TIMEOUT_MS = 45_000;
+const GENERATION_TIMEOUT_MS = 12_000;
 let installPromise: Promise<string> | null = null;
 
 export class CommitMessageError extends Error {
@@ -81,7 +81,8 @@ export async function generateCommitMessage(input: {
     binary,
     "--print",
     "--mode", "text",
-    "--model", "anthropic/claude-sonnet-5",
+    "--model", "anthropic/claude-haiku-4-5",
+    "--thinking", "off",
     "--no-tools",
     "--no-session",
     "--no-extensions",
@@ -89,7 +90,7 @@ export async function generateCommitMessage(input: {
     "--no-rules",
     "--no-lsp",
     "--no-title",
-    "--max-time", "30s",
+    "--max-time", "8s",
     commitMessagePrompt(input),
   ], {
     stdout: "pipe",
@@ -113,7 +114,7 @@ export async function generateCommitMessage(input: {
     throw new CommitMessageError("omp-generation", "OMP could not generate a commit message.");
   }
   if (!output || output.length > 200 || /[\r\n]/.test(output)) {
-    throw new CommitMessageError("omp-generation", "Sonnet returned an invalid commit message.");
+    throw new CommitMessageError("omp-generation", "Haiku returned an invalid commit message.");
   }
   return output;
 }
