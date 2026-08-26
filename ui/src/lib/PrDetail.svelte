@@ -29,7 +29,7 @@
   import { loadDiffDocument } from "./diffDocument.js";
   import { renderMarkdown } from "./markdown.js";
   import { loadPrIndex, prSummary } from "./prIndex.svelte.js";
-  import { imageFallback, prKeyOwner, shouldCopyPrCockpitUrl, shouldCopyPrUrl } from "./dom.js";
+  import { imageFallback, prKeyOwner, shouldCopyPrCockpitUrl, shouldCopyPrUrl, shouldToggleHoveredViewed } from "./dom.js";
   import { readLastViewed, writeLastViewed } from "./lastViewed.js";
   import { durationText, relativeTime } from "./time.js";
   import { mermaidDiagrams } from "./mermaid.js";
@@ -108,11 +108,12 @@
 
   const TREE_WIDTH_KEY = "pr-cockpit:file-tree-width";
   const VIEWED_FILES_KEY_PREFIX = "pr-cockpit:viewed-files:";
-  const TREE_MIN_WIDTH = 160;
+  const TREE_MIN_WIDTH = 220;
   const TREE_DEFAULT_WIDTH = 250;
+  const TREE_MAX_WIDTH = 300;
   let treeDesiredWidth = $state(Number(localStorage.getItem(TREE_WIDTH_KEY)) || TREE_DEFAULT_WIDTH);
-  let treeMaxWidth = $state(600);
-  let treeWidth = $derived(Math.min(treeDesiredWidth, treeMaxWidth));
+  let treeMaxWidth = $state(TREE_MAX_WIDTH);
+  let treeWidth = $derived(Math.max(TREE_MIN_WIDTH, Math.min(treeDesiredWidth, treeMaxWidth)));
 
   let activeFetch;
   let loadedKey = null;
@@ -1545,6 +1546,7 @@
   let fileIndex = $state(0);
   let collapsedFiles = $state(new Set());
   let viewedFiles = $state(new Set());
+  let hoveredDiffPath = $state(null);
   let selectedPath = $derived(files[fileIndex]?.path ?? null);
 
   let testPattern = $derived(testMatcher(prefs.testPathRegex));
@@ -1585,9 +1587,9 @@
       if (!name) return;
       const context = document.createElement("canvas").getContext("2d");
       context.font = getComputedStyle(name).font;
-      let widest = TREE_MIN_WIDTH;
+      let widest = TREE_DEFAULT_WIDTH;
       for (const path of paths) widest = Math.max(widest, context.measureText(path).width + 96);
-      treeMaxWidth = widest;
+      treeMaxWidth = Math.min(TREE_MAX_WIDTH, widest);
     });
   });
 
@@ -1596,7 +1598,7 @@
     const target = e.currentTarget;
     target.setPointerCapture(e.pointerId);
     const startX = e.clientX;
-    const startWidth = treeDesiredWidth;
+    const startWidth = target.previousElementSibling?.getBoundingClientRect().width ?? treeWidth;
     function onMove(ev) {
       treeDesiredWidth = Math.max(TREE_MIN_WIDTH, Math.min(treeMaxWidth, startWidth + (ev.clientX - startX)));
     }
@@ -1976,6 +1978,14 @@
         e.preventDefault();
         return;
       }
+      const hoveredFile = shouldToggleHoveredViewed(e, tab, hoveredDiffPath)
+        ? files.find((file) => file.path === hoveredDiffPath)
+        : null;
+      if (hoveredFile) {
+        setFileViewed(hoveredFile, !viewedFiles.has(hoveredFile.path));
+        e.preventDefault();
+        return;
+      }
       if (e.key === "d") {
         goToTab(tab === "files" ? "conversation" : "files");
       } else if (tab === "files" && e.key === "J") {
@@ -2113,6 +2123,7 @@
   let filesKeys = $derived([
     { key: "d", label: "conversation" },
     { key: "J / K", label: "file" },
+    { key: "v", label: "toggle file viewed" },
     { key: "c", label: "changes range" },
     { key: "x", label: "hide tests" },
     { key: "h", label: "file history" },
@@ -2491,7 +2502,7 @@
               <span>Changed files</span>
               {#if diffState === "ready"}<span class="fcount">{treeFiles.length}</span>{/if}
             </div>
-            <FileTree files={treeFiles} {selectedPath} onSelect={selectFileByPath} />
+            <FileTree files={treeFiles} {selectedPath} hoveredPath={hoveredDiffPath} onSelect={selectFileByPath} />
           </aside>
           <div class="tree-resizer" role="separator" aria-orientation="vertical" onpointerdown={startTreeResize}></div>
           <div class="diff-pane">
@@ -2520,6 +2531,7 @@
                 {repo}
                 viewed={viewedFiles}
                 onToggleViewed={(file) => setFileViewed(file, !viewedFiles.has(file.path))}
+                onHoverFile={(path) => (hoveredDiffPath = path)}
                 headSha={range?.head ?? pr.headRefOid}
                 diffIdentity={displayedDiffKey}
                 {pendingInline}
@@ -6109,7 +6121,7 @@
     margin-left: 0;
   }
   .files-layout {
-    grid-template-columns: clamp(220px, var(--tree-width), 300px) 6px minmax(0, 1fr);
+    grid-template-columns: var(--tree-width) 6px minmax(0, 1fr);
   }
   .files-toolbar {
     grid-column: 1 / -1;

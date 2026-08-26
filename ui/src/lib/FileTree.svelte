@@ -2,7 +2,7 @@
   import { tick, untrack } from "svelte";
   import Chevron from "./Chevron.svelte";
 
-  let { files, selectedPath, onSelect } = $props();
+  let { files, selectedPath, hoveredPath = null, onSelect } = $props();
 
   const INDENT = 16;
   let lastSelectedPath = null;
@@ -174,6 +174,7 @@
       <button
         class="row file"
         class:selected={value.path === selectedPath}
+        class:hovered={value.path === hoveredPath}
         style="padding-left: {row.depth * INDENT + 8}px"
         onclick={() => onSelect(value.path)}
       >
@@ -217,7 +218,8 @@
     border-radius: 8px;
     white-space: nowrap;
   }
-  .row:hover {
+  .row:hover,
+  .row.hovered {
     background: var(--ghost-hover);
   }
   .file.selected {

@@ -25,6 +25,7 @@
     onToggleFile,
     viewed = new Set(),
     onToggleViewed = null,
+    onHoverFile = null,
     repo,
     headSha,
     pendingInline,
@@ -1148,6 +1149,7 @@
   }
 
   $effect(() => () => {
+    onHoverFile?.(null);
     observer?.disconnect();
     prefetchObserver?.disconnect();
     fileResizeObserver?.disconnect();
@@ -1461,7 +1463,15 @@
     {@const isCollapsed = collapsed.has(file.path)}
     {@const isViewed = viewed.has(file.path)}
     {@const whole = wholeFile.get(file.path)}
-    <section class="file" class:collapsed={isCollapsed} id="diff-file-{i}" style="--est-h:{fileHeight(file, isCollapsed, whole)}px" use:nearViewport={file.path}>
+    <section
+      class="file"
+      class:collapsed={isCollapsed}
+      id="diff-file-{i}"
+      style="--est-h:{fileHeight(file, isCollapsed, whole)}px"
+      use:nearViewport={file.path}
+      onmouseenter={() => onHoverFile?.(file.path)}
+      onmouseleave={() => onHoverFile?.(null)}
+    >
       {#if hotPaths.has(file.path)}
       <div class="file-head-row">
         <button
