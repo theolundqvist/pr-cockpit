@@ -81,6 +81,7 @@
   let lastG = 0;
   const copied = timedFlag(1200);
   const branchCopied = timedFlag(1200);
+  const fixPromptCopied = timedFlag(1200);
 
   let pr = $state(null);
   let actionsRunUrl = $state(null);
@@ -1203,6 +1204,14 @@
     return "No checks have been reported";
   });
 
+  function copyCiFixPrompt() {
+    if (!pr || !failingChecks.length) return;
+    const prompt = ciFixPrompt({ repo, number, branch: pr.headRefName, checks: failingChecks });
+    navigator.clipboard.writeText(prompt).then(
+      () => fixPromptCopied.show("ci"),
+      () => showFlash("Couldn't copy the CI fix prompt."),
+    );
+  }
 
   function conflictFixPrompt() {
     if (!pr) return "";
@@ -1210,6 +1219,13 @@
     return `Resolve the merge conflicts on ${repo} PR #${number}.\n\nPR: https://github.com/${repo}/pull/${number}\nBranch: ${pr.headRefName}\nBase: ${pr.baseRefName}\n\nConflicting files:\n${paths}\n\nFetch origin/${pr.baseRefName} and merge it into ${pr.headRefName}. Resolve every conflict faithfully, preserving the intent of both sides. Do not change unrelated code. Run the narrowest relevant validation, commit the merge resolution, and push only to ${pr.headRefName}.`;
   }
 
+  function copyConflictFixPrompt() {
+    if (!pr || conflictFilesState !== "ready" || !conflictFiles.length) return;
+    navigator.clipboard.writeText(conflictFixPrompt()).then(
+      () => fixPromptCopied.show("conflict"),
+      () => showFlash("Couldn't copy the conflict fix prompt."),
+    );
+  }
 
   let mergeGate = $derived.by(() => evalMergeGate(pr, rollup?.state ?? null));
 
@@ -2362,8 +2378,25 @@
               </div>
               <div class="ci-failure-actions">
                 <button
+                  type="button"
+                  class="fix-prompt-copy"
+                  aria-label="Copy fix prompt"
+                  title={fixPromptCopied.value === "ci" ? "Fix prompt copied" : "Copy fix prompt"}
+                  onclick={copyCiFixPrompt}
+                >
+                  {#if fixPromptCopied.value === "ci"}
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 8.25 2.75 2.75 6.25-6.25"></path></svg>
+                  {:else}
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <rect x="9" y="9" width="10" height="10" rx="1.5"></rect>
+                      <path d="M15 9V6.5A1.5 1.5 0 0 0 13.5 5h-7A1.5 1.5 0 0 0 5 6.5v7A1.5 1.5 0 0 0 6.5 15H9"></path>
+                    </svg>
+                  {/if}
+                </button>
+                <button
                   class="ci-agent-button shortcut-action"
                   disabled={ciFixBusy || agent?.state === "running"}
+                  aria-label={ciFixBusy ? "Starting agent" : agent?.state === "running" ? "Agent running" : "Fix with agent"}
                   onclick={requestCiFix}
                 >
                   {ciFixBusy ? "Starting…" : agent?.state === "running" ? "Agent running" : "Fix with agent"}
@@ -2407,8 +2440,25 @@
               {#if conflictFilesState === "ready" && conflictFiles.length}
                 <div class="conflict-actions">
                   <button
+                    type="button"
+                    class="fix-prompt-copy"
+                    aria-label="Copy fix prompt"
+                    title={fixPromptCopied.value === "conflict" ? "Fix prompt copied" : "Copy fix prompt"}
+                    onclick={copyConflictFixPrompt}
+                  >
+                    {#if fixPromptCopied.value === "conflict"}
+                      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 8.25 2.75 2.75 6.25-6.25"></path></svg>
+                    {:else}
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <rect x="9" y="9" width="10" height="10" rx="1.5"></rect>
+                        <path d="M15 9V6.5A1.5 1.5 0 0 0 13.5 5h-7A1.5 1.5 0 0 0 5 6.5v7A1.5 1.5 0 0 0 6.5 15H9"></path>
+                      </svg>
+                    {/if}
+                  </button>
+                  <button
                     class="conflict-primary shortcut-action"
                     disabled={conflictResolveBusy || agent?.state === "running"}
+                    aria-label={conflictResolveBusy ? "Starting agent" : agent?.state === "running" ? "Agent running" : "Fix with agent"}
                     onclick={requestConflictResolution}
                   >
                     {conflictResolveBusy ? "Starting…" : agent?.state === "running" ? "Agent running" : "Fix with agent"}
@@ -3245,6 +3295,8 @@
       <div class="keybar merge-flash">{mergeFlash.value}</div>
     {:else if branchCopied.value}
       <div class="keybar copied-flash">Copied branch name</div>
+    {:else if fixPromptCopied.value}
+      <div class="keybar copied-flash">Copied {fixPromptCopied.value === "ci" ? "failing CI" : "merge conflict"} fix prompt</div>
     {:else if copied.value}
       <div class="keybar copied-flash">{copied.value}</div>
     {:else}
@@ -5028,6 +5080,40 @@
   .conflict-alert-copy .attention-label {
     background: var(--fail-bg);
     color: var(--fail);
+  }
+  .fix-prompt-copy {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--text-dim);
+    box-shadow: var(--shadow-control-hairline);
+    cursor: pointer;
+    transition: transform 120ms var(--ease-out), background-color 120ms ease, color 120ms ease;
+  }
+  .fix-prompt-copy svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .fix-prompt-copy:hover {
+      background: var(--surface-hover);
+      color: var(--text);
+    }
+  }
+  .fix-prompt-copy:active {
+    transform: scale(0.97);
   }
   .ci-failure-actions {
     display: flex;
