@@ -55,7 +55,7 @@
         { key: "x", label: "close / tests" },
         { key: "h", label: "file history" },
         { key: "o", label: "open on github" },
-        { key: "⇧T", label: "focus terminal" },
+        { key: "t", label: "switch branch" },
         { key: "z", label: "undo archive" },
         { key: "⌘⌥C", label: "copy GitHub PR URL" },
         { key: "⌘⇧C", label: "copy PR Cockpit link (PR page)" },

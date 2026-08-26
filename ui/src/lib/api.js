@@ -340,32 +340,6 @@ export async function switchLocalBranch(repo, headRef) {
   return body;
 }
 
-const tmuxFocusErrorMessages = {
-  "target-not-found": "No terminal pane is working on this PR",
-  "stale-pane": "The pane for this PR is gone",
-  "no-client": "No attached tmux client on that host",
-  "host-unreachable": "Terminal host unreachable",
-  "server-missing": "Terminal host unreachable",
-  "snapshot-unavailable": "Terminal host unreachable",
-  "launch-failed": "Could not activate terminal",
-};
-
-export async function focusTmux(repo, number) {
-  const res = await fetch("/api/tmux/focus", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ repo, number }),
-  });
-  const body = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(body?.error || `focus terminal ${res.status}`);
-  return body;
-}
-
-export function tmuxFocusErrorMessage(error) {
-  const code = error instanceof Error ? error.message : "";
-  return tmuxFocusErrorMessages[code] ?? "Could not focus terminal";
-}
-
 export async function fetchAgents() {
   const res = await fetch("/api/agents");
   if (!res.ok) throw new Error(`agents ${res.status}`);

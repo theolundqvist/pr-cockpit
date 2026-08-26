@@ -5,7 +5,7 @@
 
 <script>
   import { untrack } from "svelte";
-  import { fetchInbox, fetchRecentClosed, fetchPrDetails, setArchived, focusTmux, tmuxFocusErrorMessage, saveSettings, reorderPr, fetchSettings, fetchRelayStatus, fetchRelayCoverage, autofixAgent, customAgent, rescoreAgent } from "./api.js";
+  import { fetchInbox, fetchRecentClosed, fetchPrDetails, setArchived, saveSettings, reorderPr, fetchSettings, fetchRelayStatus, fetchRelayCoverage, autofixAgent, customAgent, rescoreAgent } from "./api.js";
   import { cacheDetail, cachedHeadSha } from "./detailCache.js";
   import { filterPrs, countMatches, wantsHistory } from "./prFilter.js";
   import { relativeTime } from "./time.js";
@@ -536,7 +536,6 @@
     }
     keys.push({ key: "⇧J / ⇧K", label: "select range" });
     keys.push({ key: "o", label: "github" });
-    if (pr) keys.push({ key: "⇧T", label: "focus terminal" });
     return keys;
   });
 
@@ -548,14 +547,6 @@
 
   function openGithub(pr) {
     window.open(`https://github.com/${pr.repo}/pull/${pr.number}`, "_blank", "noopener");
-  }
-
-  async function focusTerminal(pr) {
-    try {
-      await focusTmux(pr.repo, pr.number);
-    } catch (err) {
-      showFlash(tmuxFocusErrorMessage(err));
-    }
   }
 
   let multiRange = $derived(multiAnchor === null ? null : { lo: Math.min(multiAnchor, selected), hi: Math.max(multiAnchor, selected) });
@@ -707,8 +698,6 @@
         }
       } else if (e.key === "o") {
         if (pr) openGithub(pr);
-      } else if (view === "open" && e.key === "T") {
-        if (pr) focusTerminal(pr);
       } else if (view === "open" && keybindAgents.some((a) => a.id !== "fixer" && a.keybind === e.key)) {
         const def = keybindAgents.find((a) => a.id !== "fixer" && a.keybind === e.key);
         if (def.id === "autofix") openAutofixConfirm();

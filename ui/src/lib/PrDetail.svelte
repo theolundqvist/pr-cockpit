@@ -22,8 +22,6 @@
     rescoreAgent,
     fetchRepoUsers,
     switchLocalBranch,
-    focusTmux,
-    tmuxFocusErrorMessage,
   } from "./api.js";
   import { anchorThreads, fileDiffFingerprint } from "./diff.js";
   import { loadDiffDocument } from "./diffDocument.js";
@@ -1252,15 +1250,6 @@
     }
   }
 
-  async function focusTerminal() {
-    if (!pr) return;
-    try {
-      await focusTmux(repo, number);
-    } catch (err) {
-      showFlash(tmuxFocusErrorMessage(err));
-    }
-  }
-
   function editorTargetFromDiff() {
     if (tab !== "files" || files.length === 0) return null;
     const pane = document.querySelector(".diff-pane");
@@ -2048,8 +2037,6 @@
         if (url) window.open(url, "_blank", "noopener");
       } else if (e.key === "t" && pr?.localCheckoutPath && !onLocalBranch) {
         if (!localBranchBusy) switchToLocalBranch();
-      } else if (e.key === "T") {
-        focusTerminal();
       } else if (e.key === "p") {
         promptOpen = true;
       } else if (autofixDef?.keybind === e.key && fixShortcutTarget) {
@@ -2120,10 +2107,7 @@
       return agent?.state !== "running" ? [{ key: a.keybind, label: a.name || "custom agent" }] : [];
     }),
   );
-  let localCheckoutKeys = $derived([
-    ...(pr?.localCheckoutPath && !onLocalBranch ? [{ key: "t", label: "switch branch" }] : []),
-    ...(pr ? [{ key: "⇧T", label: "focus terminal" }] : []),
-  ]);
+  let localCheckoutKeys = $derived(pr?.localCheckoutPath && !onLocalBranch ? [{ key: "t", label: "switch branch" }] : []);
   let conversationKeys = $derived([
     { key: "d", label: "files" },
     { key: "c", label: "comment" },
