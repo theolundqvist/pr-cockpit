@@ -322,7 +322,7 @@ if (!diffColumns.some((c) => c.name === "fetched_at")) {
 
 const storedEpoch = (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
 if (storedEpoch !== SCHEMA_EPOCH) {
-  db.exec("DELETE FROM prs; DELETE FROM diffs; DELETE FROM pr_index; DELETE FROM pr_detail_cache;");
+  db.exec("DELETE FROM diffs; DELETE FROM pr_detail_cache;");
   db.exec(`PRAGMA user_version = ${SCHEMA_EPOCH}`);
 }
 
