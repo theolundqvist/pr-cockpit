@@ -1,8 +1,7 @@
 <script>
-  import { quotaOutLabel } from "./quotaImpact.js";
   import Kbd from "./Kbd.svelte";
 
-  let { number, url, impact, onClose } = $props();
+  let { url, impact, onClose } = $props();
 
   function clock(iso) {
     return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -15,17 +14,14 @@
 </script>
 
 <div class="qm-backdrop" onclick={onClose} role="presentation">
-  <div class="qm" role="dialog" aria-modal="true" aria-label="Merge blocked by GitHub quota" onclick={(e) => e.stopPropagation()}>
-    <div class="qm-title">{quotaOutLabel(impact)}</div>
-    <p class="qm-body">
-      Cockpit cannot merge #{number} right now: the merge needs GitHub API calls that would fail.
-      Quota returns at <strong>{clock(impact.restoresAt)}</strong>, after which merging works here again.
-    </p>
+  <div class="qm" role="dialog" aria-modal="true" aria-label={`GitHub quota exhausted. Available at ${clock(impact.restoresAt)}`} onclick={(e) => e.stopPropagation()}>
+    <div class="qm-title">GitHub quota exhausted</div>
+    <div class="qm-reset">Available <strong>{clock(impact.restoresAt)}</strong></div>
     <div class="qm-actions">
-      <button class="qm-btn primary" type="button" onclick={openGithub}>Merge on GitHub</button>
       <button class="qm-btn shortcut-action" type="button" onclick={onClose}>
         Cancel <Kbd keys="enter" /><span aria-hidden="true">/</span><Kbd keys="esc" />
       </button>
+      <button class="qm-btn primary" type="button" onclick={openGithub}>Merge on GitHub</button>
     </div>
   </div>
 </div>
@@ -42,7 +38,7 @@
   }
 
   .qm {
-    width: min(440px, calc(100vw - 48px));
+    width: min(400px, calc(100vw - 48px));
     padding: 20px;
     border: 1px solid var(--fail);
     border-radius: 12px;
@@ -52,18 +48,18 @@
 
   .qm-title {
     color: var(--fail);
-    font-size: 12px;
-    font-weight: 600;
+    font-size: 16px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
   }
 
-  .qm-body {
-    margin: 9px 0 18px;
+  .qm-reset {
+    margin: 8px 0 18px;
     color: var(--text-dim);
-    font-size: 13px;
-    line-height: 1.5;
+    font-size: 12px;
   }
 
-  .qm-body strong {
+  .qm-reset strong {
     color: var(--text);
   }
 

@@ -1,8 +1,11 @@
 import type { MergeMethod } from "./mergeMethod.ts";
 import { mockGithub } from "./mockGithub.ts";
-
-let cachedToken: string | null = null;
-const ghExecutable = process.env.COCKPIT_GH_BIN || "gh";
+import {
+  githubAuthStatus as liveGithubAuthStatus,
+  liveGithubToken,
+  startGithubSetup as startLiveGithubSetup,
+  type GithubAuthStatus,
+} from "./githubAuth.ts";
 const strictUtf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 type GithubGraphqlError = { type?: string; message?: string };
@@ -20,59 +23,28 @@ export class StalePrHeadError extends Error {
     this.name = "StalePrHeadError";
   }
 }
-export interface GithubAuthStatus {
-  ok: boolean;
-  login: string | null;
-  error: string | null;
+
+
+export async function githubAuthStatus(scopes: readonly string[] = ["repo", "workflow"]): Promise<GithubAuthStatus> {
+  if (!mockGithub) return liveGithubAuthStatus(scopes);
+  return {
+    ok: true,
+    state: "ready",
+    login: mockGithub.viewerLogin,
+    error: null,
+    requiredScopes: [...scopes],
+    missingScopes: [],
+  };
 }
 
-export async function githubAuthStatus(): Promise<GithubAuthStatus> {
-  if (mockGithub) return { ok: true, login: mockGithub.viewerLogin, error: null };
-
-  const notSignedIn = { ok: false, login: null, error: "GitHub CLI is not signed in. Sign in with: gh auth login" };
-
-  // The token is what every other call actually uses, so it decides the verdict.
-  let token: string;
-  try {
-    token = await runGh(["auth", "token"]);
-  } catch {
-    return { ok: false, login: null, error: "GitHub CLI is not installed. Install it with: brew install gh" };
-  }
-  if (!token) return notSignedIn;
-
-  return { ok: true, login: await ghLogin(), error: null };
+export async function startGithubSetup(scopes: readonly string[] = ["repo", "workflow"]): Promise<GithubAuthStatus> {
+  if (!mockGithub) return startLiveGithubSetup(scopes);
+  return githubAuthStatus(scopes);
 }
-
-// `gh auth status --json` needs gh 2.66+, so fall back rather than call an older gh signed out.
-async function ghLogin(): Promise<string | null> {
-  const statusText = await runGh(["auth", "status", "--json", "hosts"]).catch(() => "");
-  if (statusText) {
-    try {
-      const status = JSON.parse(statusText) as { hosts?: Record<string, Array<{ active?: boolean; login?: string; state?: string }>> };
-      const account = status.hosts?.["github.com"]?.find((candidate) => candidate.active && candidate.state === "success");
-      if (account?.login) return account.login;
-    } catch {}
-  }
-  return (await runGh(["api", "user", "--jq", ".login"]).catch(() => "")) || null;
-}
-
-// Resolves to trimmed stdout, empty on a non-zero exit; rejects only when gh cannot be spawned.
-async function runGh(args: string[]): Promise<string> {
-  const proc = Bun.spawn([ghExecutable, ...args], { stdout: "pipe", stderr: "ignore" });
-  const out = await new Response(proc.stdout).text();
-  return (await proc.exited) === 0 ? out.trim() : "";
-}
-
 
 export async function ghToken(): Promise<string> {
   if (mockGithub) return "fixture-token";
-  if (cachedToken) return cachedToken;
-  const proc = Bun.spawn([ghExecutable, "auth", "token"], { stdout: "pipe" });
-  const token = (await new Response(proc.stdout).text()).trim();
-  await proc.exited;
-  if (!token) throw new Error("gh auth token returned empty output");
-  cachedToken = token;
-  return token;
+  return liveGithubToken();
 }
 
 let cachedViewerLogin: string | null = null;
@@ -1235,25 +1207,75 @@ export interface RunJob {
   run_id: number;
   run_attempt: number;
   head_sha: string;
+  head_branch?: string;
+  workflow_name?: string;
   name: string;
   status: string;
   conclusion: string | null;
   started_at: string | null;
   completed_at: string | null;
   html_url: string | null;
+  runner_name?: string | null;
+  runner_group_name?: string | null;
+  labels?: string[];
   steps: RunJobStep[];
 }
 
-// filter=latest is GitHub's default and drops jobs superseded by a re-run attempt
-export async function fetchRunJobs(repo: string, runId: number): Promise<RunJob[]> {
-  if (mockGithub) return mockGithub.runJobs(repo, runId);
+export interface WorkflowRun {
+  id: number;
+  run_attempt: number;
+  head_sha: string;
+  head_branch: string;
+  name: string;
+  path: string;
+  status: string;
+  conclusion: string | null;
+  updated_at: string;
+  html_url: string | null;
+}
+export async function fetchWorkflowRun(repo: string, runId: number): Promise<WorkflowRun> {
+  if (mockGithub) return mockGithub.workflowRun(repo, runId);
   const token = await ghToken();
-  const res = await fetch(`https://api.github.com/repos/${repo}/actions/runs/${runId}/jobs?per_page=100&filter=latest`, {
+  const res = await fetch(`https://api.github.com/repos/${repo}/actions/runs/${runId}`, {
     headers: { Authorization: `bearer ${token}`, Accept: "application/vnd.github+json" },
   });
-  if (!res.ok) throw new Error(`run jobs fetch failed: ${res.status} ${await res.text()}`);
-  const payload = (await res.json()) as { jobs?: RunJob[] };
-  return payload.jobs ?? [];
+  if (!res.ok) throw new Error(`workflow run fetch failed: ${res.status} ${await res.text()}`);
+  return res.json() as Promise<WorkflowRun>;
+}
+
+
+export async function fetchWorkflowRuns(repo: string, headSha: string): Promise<WorkflowRun[]> {
+  const token = await ghToken();
+  const runs: WorkflowRun[] = [];
+  for (let page = 1;; page++) {
+    const res = await fetch(`https://api.github.com/repos/${repo}/actions/runs?head_sha=${encodeURIComponent(headSha)}&per_page=100&page=${page}`, {
+      headers: { Authorization: `bearer ${token}`, Accept: "application/vnd.github+json" },
+    });
+    if (!res.ok) throw new Error(`workflow runs fetch failed: ${res.status} ${await res.text()}`);
+    const payload = (await res.json()) as { workflow_runs?: WorkflowRun[] };
+    const batch = payload.workflow_runs ?? [];
+    runs.push(...batch);
+    if (batch.length < 100) return runs;
+  }
+}
+
+export async function fetchRunJobs(repo: string, runId: number, attempt?: number): Promise<RunJob[]> {
+  if (mockGithub) return mockGithub.runJobs(repo, runId);
+  const token = await ghToken();
+  const jobs: RunJob[] = [];
+  for (let page = 1;; page++) {
+    const endpoint = attempt === undefined
+      ? `https://api.github.com/repos/${repo}/actions/runs/${runId}/jobs?per_page=100&filter=latest&page=${page}`
+      : `https://api.github.com/repos/${repo}/actions/runs/${runId}/attempts/${attempt}/jobs?per_page=100&page=${page}`;
+    const res = await fetch(endpoint, {
+      headers: { Authorization: `bearer ${token}`, Accept: "application/vnd.github+json" },
+    });
+    if (!res.ok) throw new Error(`run jobs fetch failed: ${res.status} ${await res.text()}`);
+    const payload = (await res.json()) as { jobs?: RunJob[] };
+    const batch = payload.jobs ?? [];
+    jobs.push(...batch);
+    if (batch.length < 100) return jobs;
+  }
 }
 
 // The logs endpoint answers 302 with a Location that expires after a minute, and that storage host
@@ -1369,118 +1391,125 @@ export type PrFileEdit = {
   message: string;
 };
 
-const PR_FILE_EDIT_HEAD_QUERY = `
-query($owner: String!, $name: String!, $number: Int!, $fileExpression: String!, $parentExpression: String!) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) {
-      state
-      headRefName
-      headRefOid
-      headRepository {
-        nameWithOwner
-        file: object(expression: $fileExpression) {
-          __typename
-          ... on Blob { isBinary }
-        }
-        parent: object(expression: $parentExpression) {
-          __typename
-          ... on Tree { entries { name type mode } }
-        }
-      }
-    }
-  }
-}`;
+type RestPull = {
+  state: string;
+  head: {
+    sha: string;
+    ref: string;
+    repo: { full_name: string } | null;
+  };
+};
 
-const CREATE_PR_FILE_COMMIT_MUTATION = `
-mutation($input: CreateCommitOnBranchInput!) {
-  createCommitOnBranch(input: $input) {
-    commit { oid }
-  }
-}`;
+type RestTreeEntry = {
+  path: string;
+  mode: string;
+  type: string;
+  sha: string;
+};
 
-function isExpectedHeadRace(error: unknown): boolean {
-  if (!(error instanceof GithubRequestError)) return false;
-  const details = [
-    error.message,
-    ...error.graphqlErrors.map(({ type, message }) => `${type ?? ""} ${message ?? ""}`),
-  ].join("\n");
-  return /\bSTALE_DATA\b|expected branch to point to/i.test(details)
-    || (/expected.?head.?oid/i.test(details) && /(?:mismatch|match|current|changed|stale)/i.test(details));
+async function githubRestResponse(method: string, path: string, body?: unknown): Promise<Response> {
+  const token = await ghToken();
+  return fetch(`https://api.github.com${path}`, {
+    method,
+    headers: {
+      Authorization: `bearer ${token}`,
+      Accept: "application/vnd.github+json",
+      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
+async function githubRestJson<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const response = await githubRestResponse(method, path, body);
+  if (!response.ok) {
+    throw new GithubRequestError(
+      `GitHub REST request failed: ${response.status} ${await response.text()}`,
+      response.status === 404 ? 404 : 502,
+    );
+  }
+  return response.json() as Promise<T>;
+}
+
+function encodedRepo(repo: string): string {
+  return repo.split("/").map(encodeURIComponent).join("/");
+}
+
+function isRefUpdateRace(error: unknown): boolean {
+  return error instanceof GithubRequestError
+    && /REST request failed: (?:409|422)\b/i.test(error.message)
+    && /(?:fast.?forward|reference update|expected|stale)/i.test(error.message);
 }
 
 export async function commitPrFileEdit(input: PrFileEdit): Promise<{ commitOid: string }> {
   const [owner, name] = input.repo.split("/");
   if (!owner || !name) throw new GithubRequestError(`Invalid repository: ${input.repo}`, 404);
   const expectedHeadOid = input.expectedHeadOid.toLowerCase();
-  const fileExpression = `${expectedHeadOid}:${input.path}`;
-  const lastSlash = input.path.lastIndexOf("/");
-  const parentPath = lastSlash === -1 ? "" : input.path.slice(0, lastSlash);
-  const basename = input.path.slice(lastSlash + 1);
-  const parentExpression = `${expectedHeadOid}:${parentPath}`;
-
-  const data = await graphql<{
-    repository: {
-      pullRequest: {
-        state: string;
-        headRefName: string | null;
-        headRefOid: string | null;
-        headRepository: {
-          nameWithOwner: string;
-          file: { __typename: string; isBinary?: boolean | null } | null;
-          parent: {
-            __typename: string;
-            entries?: Array<{ name: string; type: string; mode: number }> | null;
-          } | null;
-        } | null;
-      } | null;
-    } | null;
-  }>(PR_FILE_EDIT_HEAD_QUERY, { owner, name, number: input.number, fileExpression, parentExpression });
-  const pullRequest = data.repository?.pullRequest;
-  if (!pullRequest) throw new GithubRequestError(`${input.repo}#${input.number} was not found`, 404);
-  if (pullRequest.state !== "OPEN") throw new StalePrHeadError("PR is no longer open");
-  if (!pullRequest.headRefName || !pullRequest.headRefOid || !pullRequest.headRepository?.nameWithOwner) {
+  const baseRepo = encodedRepo(input.repo);
+  const pullRequest = await githubRestJson<RestPull>("GET", `/repos/${baseRepo}/pulls/${input.number}`);
+  if (pullRequest.state !== "open") throw new StalePrHeadError("PR is no longer open");
+  if (!pullRequest.head?.ref || !pullRequest.head.repo?.full_name) {
     throw new StalePrHeadError("PR head is unavailable");
   }
-  if (pullRequest.headRefOid !== expectedHeadOid) throw new StalePrHeadError();
-  const file = pullRequest.headRepository.file;
-  const parent = pullRequest.headRepository.parent;
-  const entry = parent?.entries?.find((candidate) => candidate.name === basename);
-  if (
-    file?.__typename !== "Blob"
-    || file?.isBinary !== false
-    || parent?.__typename !== "Tree"
-    || entry?.type !== "blob"
-    || entry?.mode !== 0o100644
-  ) {
+  if (pullRequest.head.sha.toLowerCase() !== expectedHeadOid) throw new StalePrHeadError();
+
+  const headRepo = encodedRepo(pullRequest.head.repo.full_name);
+  const commit = await githubRestJson<{ tree: { sha: string } }>(
+    "GET",
+    `/repos/${headRepo}/git/commits/${expectedHeadOid}`,
+  );
+  const segments = input.path.split("/");
+  let treeSha = commit.tree.sha;
+  for (let index = 0; index < segments.length; index += 1) {
+    const tree = await githubRestJson<{ tree: RestTreeEntry[] }>(
+      "GET",
+      `/repos/${headRepo}/git/trees/${encodeURIComponent(treeSha)}`,
+    );
+    const entry = tree.tree.find((candidate) => candidate.path === segments[index]);
+    const isFile = index === segments.length - 1;
+    if (!entry || (isFile ? entry.type !== "blob" || entry.mode !== "100644" : entry.type !== "tree")) {
+      throw new StalePrHeadError("PR file is no longer editable");
+    }
+    treeSha = entry.sha;
+  }
+  const currentBlob = await githubRestJson<{ content: string; encoding: string }>(
+    "GET",
+    `/repos/${headRepo}/git/blobs/${encodeURIComponent(treeSha)}`,
+  );
+  if (currentBlob.encoding !== "base64") throw new StalePrHeadError("PR file is no longer editable");
+  try {
+    if (strictUtf8Decoder.decode(Buffer.from(currentBlob.content, "base64")).includes("\0")) {
+      throw new StalePrHeadError("PR file is no longer editable");
+    }
+  } catch (error) {
+    if (error instanceof StalePrHeadError) throw error;
     throw new StalePrHeadError("PR file is no longer editable");
   }
 
+  const blob = await githubRestJson<{ sha: string }>("POST", `/repos/${headRepo}/git/blobs`, {
+    content: Buffer.from(input.content).toString("base64"),
+    encoding: "base64",
+  });
+  const nextTree = await githubRestJson<{ sha: string }>("POST", `/repos/${headRepo}/git/trees`, {
+    base_tree: commit.tree.sha,
+    tree: [{ path: input.path, mode: "100644", type: "blob", sha: blob.sha }],
+  });
+  const nextCommit = await githubRestJson<{ sha: string }>("POST", `/repos/${headRepo}/git/commits`, {
+    message: input.message,
+    tree: nextTree.sha,
+    parents: [expectedHeadOid],
+  });
+  const encodedRef = pullRequest.head.ref.split("/").map(encodeURIComponent).join("/");
   try {
-    const result = await graphql<{
-      createCommitOnBranch: { commit: { oid: string } | null } | null;
-    }>(CREATE_PR_FILE_COMMIT_MUTATION, {
-      input: {
-        branch: {
-          repositoryNameWithOwner: pullRequest.headRepository.nameWithOwner,
-          branchName: pullRequest.headRefName,
-        },
-        message: { headline: input.message },
-        fileChanges: {
-          additions: [{
-            path: input.path,
-            contents: Buffer.from(input.content).toString("base64"),
-          }],
-        },
-        expectedHeadOid,
-      },
+    await githubRestJson("PATCH", `/repos/${headRepo}/git/refs/heads/${encodedRef}`, {
+      sha: nextCommit.sha,
+      force: false,
     });
-    const commitOid = result.createCommitOnBranch?.commit?.oid;
-    if (!commitOid) throw new GithubRequestError("GitHub did not return a commit OID", 502);
-    return { commitOid };
   } catch (error) {
-    if (isExpectedHeadRace(error)) throw new StalePrHeadError();
+    if (isRefUpdateRace(error)) throw new StalePrHeadError();
     throw error;
   }
+  return { commitOid: nextCommit.sha };
 }
 
 export class RestRequestError extends Error {
@@ -1492,18 +1521,9 @@ export class RestRequestError extends Error {
 
 async function restRequest(method: string, path: string, body: unknown): Promise<void> {
   if (mockGithub) return;
-  const token = await ghToken();
-  const res = await fetch(`https://api.github.com${path}`, {
-    method,
-    headers: {
-      Authorization: `bearer ${token}`,
-      "Content-Type": "application/json",
-      Accept: "application/vnd.github+json",
-    },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    throw new RestRequestError(`${method} ${path} failed: ${res.status} ${await res.text()}`, res.status);
+  const response = await githubRestResponse(method, path, body);
+  if (!response.ok) {
+    throw new RestRequestError(`${method} ${path} failed: ${response.status} ${await response.text()}`, response.status);
   }
 }
 

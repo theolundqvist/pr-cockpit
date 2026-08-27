@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,10 +7,11 @@ const uid = process.getuid?.() ?? 0;
 
 // The installer only reaches its LaunchAgent logic through the real script, so the
 // harness fakes a checkout plus the binaries it shells out to.
-function fakeInstall(home: string, loadedRoot: string | null) {
+function fakeInstall(home: string, loadedRoot: string | null, platform: "Darwin" | "Linux") {
   const root = join(home, "checkout");
   const bin = join(home, "bin");
   const calls = join(home, "launchctl-calls");
+  writeFileSync(calls, "");
   mkdirSync(join(root, "scripts"), { recursive: true });
   mkdirSync(join(root, "ui"), { recursive: true });
   mkdirSync(join(root, "shell"), { recursive: true });
@@ -29,6 +30,7 @@ function fakeInstall(home: string, loadedRoot: string | null) {
     : `printf 'gui/${uid}/app.pr-cockpit = {\\n\\tstate = running\\n\\targuments = {\\n\\t\\tCOCKPIT_ROOT=${resolved}\\n\\t}\\n}\\n'`;
   for (const [name, body] of [
     ["bun", "exit 0"],
+    ["uname", `printf '${platform}\\n'`],
     ["gh", "exit 0"],
     // the readiness probe needs the server agent to own the listening port
     ["lsof", 'printf "4242\\n"'],
@@ -53,10 +55,10 @@ exit 0`,
   return { root, calls, path: `${bin}:/usr/bin:/bin:/usr/sbin` };
 }
 
-async function install(loadedRoot: string | null) {
+async function install(loadedRoot: string | null, platform: "Darwin" | "Linux" = "Darwin") {
   const home = mkdtempSync(join(tmpdir(), "cockpit-install-"));
   try {
-    const fake = fakeInstall(home, loadedRoot);
+    const fake = fakeInstall(home, loadedRoot, platform);
     const proc = Bun.spawn([join(fake.root, "scripts/install")], {
       env: { PATH: fake.path, HOME: join(home, "home"), COCKPIT_PORT: "4820" },
       stdout: "pipe",
@@ -68,11 +70,22 @@ async function install(loadedRoot: string | null) {
       proc.exited,
     ]);
     const calls = readFileSync(fake.calls, "utf8");
-    return { stdout, stderr, exitCode, calls, root: fake.root };
+    const serverPlistPath = join(home, "home", "Library/LaunchAgents/app.pr-cockpit.server.plist");
+    const serverPlist = existsSync(serverPlistPath) ? readFileSync(serverPlistPath, "utf8") : "";
+    return { stdout, stderr, exitCode, calls, root: fake.root, serverPlist, localBin: join(home, "home/.local/bin") };
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
 }
+
+test("headless Linux install builds server assets without macOS registration", async () => {
+  const result = await install(null, "Linux");
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout).toContain("[3/3] Build UI");
+  expect(result.stdout).toContain("headless server build is ready");
+  expect(result.calls).toBe("");
+  expect(result.serverPlist).toBe("");
+});
 
 test("an app registration left behind by another root is replaced", async () => {
   const result = await install("/tmp/some-other-checkout");
@@ -82,6 +95,7 @@ test("an app registration left behind by another root is replaced", async () => 
   expect(result.calls).toContain(`bootout gui/${uid}/app.pr-cockpit\n`);
   expect(result.calls).toContain(`bootstrap gui/${uid} `);
   expect(result.calls).toContain("Library/LaunchAgents/app.pr-cockpit.plist");
+  expect(result.serverPlist).toContain(`<string>PATH=${result.localBin}:`);
 });
 
 test("no loaded registration bootstraps the app", async () => {

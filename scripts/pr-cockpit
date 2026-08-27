@@ -14,6 +14,7 @@ Usage:
   pr-cockpit                                  # list cached PRs for current repository
   pr-cockpit listen [pr://owner/repo/123]
   pr-cockpit resolve owner/repo#123 THREAD
+  pr-cockpit cache-run owner/repo#123 RUN_ID
   pr-cockpit update
 
 Commands:
@@ -21,9 +22,11 @@ Commands:
                       returns immediately when the current PR has failed CI or open comments
                       without REF, watch the current repository
   resolve REF THREAD  resolve one cached review thread by its displayed handle
+  cache-run REF RUN_ID  fetch one Actions run and keep its jobs and unsuccessful logs cached
   update              fast-forward, rebuild, and reconcile the installed app
 
 Options:
+  --jobs              cached Actions jobs, including queued and running state
   --json              machine-readable Cockpit status
   --diff              cached unified diff
   --file PATH         file contents at the PR head
@@ -37,8 +40,21 @@ Default output is Markdown for agents and humans. Use --json only for automation
 EOF
   exit "$status"
 }
+cockpit_port() {
+  local config_file="$HOME/.config/pr-cockpit/config"
+  local env_port="${COCKPIT_PORT:-}"
+  if [[ -f "$config_file" ]]; then
+    # shellcheck disable=SC1090
+    source "$config_file"
+  fi
+  printf '%s\n' "${env_port:-${COCKPIT_PORT:-4820}}"
+}
+
 if [[ "${1:-}" = "update" ]]; then
   [[ "$#" -eq 1 ]] || usage
+  bun_bin=$(command -v bun || true)
+  [[ -n "$bun_bin" ]] || { echo "pr-cockpit: bun is required" >&2; exit 1; }
+  port=$(cockpit_port)
   source_path="${BASH_SOURCE[0]}"
   while [[ -L "$source_path" ]]; do
     source_dir="$(cd "$(dirname "$source_path")" && pwd -P)"
@@ -50,12 +66,42 @@ if [[ "${1:-}" = "update" ]]; then
     fi
   done
   root="$(cd "$(dirname "$source_path")/.." && pwd -P)"
-  exec env COCKPIT_HOME="$root" "$root/scripts/bootstrap"
+  version_url="http://127.0.0.1:$port/api/version"
+  old_version=$(curl --noproxy '*' -sS --fail-with-body "$version_url" 2>/dev/null) || {
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      exec env COCKPIT_HOME="$root" "$root/scripts/bootstrap"
+    fi
+    echo "pr-cockpit: the headless server must be running to update it" >&2
+    exit 1
+  }
+  old_rev=$(printf '%s' "$old_version" | "$bun_bin" -e 'console.log((await Bun.stdin.json()).rev)')
+  response=$(curl --noproxy '*' -sS --fail-with-body -X POST "http://127.0.0.1:$port/api/update") || {
+    printf '%s\n' "$response" >&2
+    exit 1
+  }
+  target_rev=$(git -C "$root" rev-parse HEAD)
+  if [[ "$target_rev" == "$old_rev" ]]; then
+    echo "pr-cockpit: already up to date; install reconciliation started"
+    exit 0
+  fi
+  deadline=$((SECONDS + 120))
+  while ((SECONDS < deadline)); do
+    sleep 1
+    if version=$(curl --noproxy '*' -sS --fail-with-body "$version_url" 2>/dev/null); then
+      running_rev=$(printf '%s' "$version" | "$bun_bin" -e 'console.log((await Bun.stdin.json()).rev)')
+      if [[ "$running_rev" == "$target_rev" ]]; then
+        echo "pr-cockpit: updated to ${target_rev:0:7}"
+        exit 0
+      fi
+    fi
+  done
+  echo "pr-cockpit: update was pulled but the server did not restart within 120 seconds" >&2
+  exit 1
 fi
 
 
 command="read"
-if [[ "${1:-}" = "listen" || "${1:-}" = "resolve" ]]; then
+if [[ "${1:-}" = "listen" || "${1:-}" = "resolve" || "${1:-}" = "cache-run" ]]; then
   command="$1"
   shift
 fi
@@ -68,11 +114,16 @@ since=""
 comments="1"
 listen_scope="all"
 thread_handle=""
+run_id=""
 while (($#)); do
   case "$1" in
     --json)
       [[ "$mode" = "summary" ]] || usage
       mode="json"
+      ;;
+    --jobs)
+      [[ "$mode" = "summary" ]] || usage
+      mode="jobs"
       ;;
     --diff)
       [[ "$mode" = "summary" ]] || usage
@@ -114,6 +165,8 @@ while (($#)); do
         ref="$1"
       elif [[ "$command" = "resolve" && -z "$thread_handle" ]]; then
         thread_handle="$1"
+      elif [[ "$command" = "cache-run" && -z "$run_id" ]]; then
+        run_id="$1"
       else
         usage
       fi
@@ -125,17 +178,12 @@ done
 [[ "$comments" = "1" || "$mode" = "summary" || "$mode" = "json" ]] || usage
 [[ -n "$ref" || "$command" != "resolve" ]] || usage
 [[ "$command" != "resolve" || ( "$mode" = "summary" && -z "$since" && "$comments" = "1" && "$thread_handle" =~ ^[0-9a-f]{10}$ ) ]] || usage
+[[ -n "$ref" || "$command" != "cache-run" ]] || usage
+[[ "$command" != "cache-run" || ( "$mode" = "summary" && -z "$since" && "$comments" = "1" && "$run_id" =~ ^[1-9][0-9]*$ ) ]] || usage
 
-config_file="$HOME/.config/pr-cockpit/config"
-env_port="${COCKPIT_PORT:-}"
-if [[ -f "$config_file" ]]; then
-  # shellcheck disable=SC1090
-  source "$config_file"
-fi
-port="${env_port:-${COCKPIT_PORT:-4820}}"
+port=$(cockpit_port)
 bun_bin=$(command -v bun || true)
 [[ -n "$bun_bin" ]] || { echo "pr-cockpit: bun is required" >&2; exit 1; }
-
 json_transform() {
   local operation=$1 argument=${2:-}
   "$bun_bin" -e '
@@ -286,6 +334,7 @@ case "$ref" in
 esac
 [[ -z "$uri_comments" ]] || comments="$uri_comments"
 [[ "$command" != "resolve" || -z "$uri_comments" ]] || usage
+[[ "$command" != "cache-run" || -z "$uri_comments" ]] || usage
 owner=${repo%/*}
 name=${repo#*/}
 base_url="http://127.0.0.1:$port/api/agent/pr/$owner/$name/$number"
@@ -314,6 +363,13 @@ wait_for_pr_change() {
     [[ "$current" = "$previous" ]] || return 0
   done
 }
+activate_actions_lease() {
+  curl --noproxy '*' -sS --fail-with-body -X POST -H "X-PR-Cockpit-CLI: 1" "$base_url/actions-lease" >/dev/null
+}
+
+if [[ "$mode" = "jobs" || "$mode" = "logs" || ( "$command" = "listen" && "$listen_scope" != "comments" ) ]]; then
+  activate_actions_lease
+fi
 
 if [[ "$command" = "listen" ]]; then
   [[ -n "$since" ]] || since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -323,6 +379,11 @@ fi
 if [[ "$command" = "resolve" ]]; then
   curl --noproxy '*' -sS --fail-with-body -X POST -H "X-PR-Cockpit-CLI: 1" "$base_url/threads/$thread_handle"
   printf '\n'
+  exit 0
+fi
+
+if [[ "$command" = "cache-run" ]]; then
+  curl --noproxy '*' -sS --fail-with-body -X POST -H "X-PR-Cockpit-CLI: 1" "$base_url/runs/$run_id/cache"
   exit 0
 fi
 
@@ -339,6 +400,7 @@ case "$mode" in
     curl --noproxy '*' -sS --fail-with-body "${args[@]}" "$base_url"
     ;;
   diff) curl --noproxy '*' -sS --fail-with-body "$base_url/diff" ;;
+  jobs) curl --noproxy '*' -sS --fail-with-body "$base_url/jobs" ;;
   file) curl --noproxy '*' -sS --fail-with-body --get --data-urlencode "path=$file_path" "$base_url/file" ;;
   logs) curl --noproxy '*' -sS --fail-with-body --get --data-urlencode "check=$check_name" "$base_url/logs" ;;
 esac

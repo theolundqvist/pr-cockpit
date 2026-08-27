@@ -197,8 +197,8 @@ if command -v gh >/dev/null 2>&1 && ! gh auth status >/dev/null 2>&1; then
   if ! confirm "gh is not authenticated, run 'gh auth login' now?"; then
     die "gh needs access to read your pull requests — run 'gh auth login', then rerun this command"
   fi
-  # Cockpit reads PRs and posts reviews through gh, so the token needs repo scope.
-  run gh auth login --hostname github.com --git-protocol https --scopes repo <&3
+  # Workflow files require GitHub's workflow scope in addition to repository access.
+  run gh auth login --hostname github.com --git-protocol https --scopes repo,workflow <&3
   if [[ "$dry_run" != "1" ]] && ! gh auth status >/dev/null 2>&1; then
     die "gh is still not authenticated — run 'gh auth login', then rerun this command"
   fi

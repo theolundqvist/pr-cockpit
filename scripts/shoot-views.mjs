@@ -170,6 +170,7 @@ const scenarios = [
   {
     ...detail("detail-conversation", 101, "Green PR conversation with approvals, threads, comments, and successful checks."),
     verify: async (page) => {
+      await page.locator(".approval-summary.approved").getByText("Approved by reviewer-one", { exact: true }).waitFor();
       await page.locator(".current-branch-badge").getByText("current", { exact: true }).waitFor();
       const backArrow = page.locator(".app-history").getByRole("button", { name: /Back/ });
       await backArrow.waitFor();
@@ -180,6 +181,15 @@ const scenarios = [
       await page.waitForFunction(() => location.hash === "#/");
       await page.goto(detailUrl, { waitUntil: "domcontentloaded" });
       await page.locator(".detail .pr-head").waitFor();
+    },
+  },
+  {
+    ...detail("detail-approval-required", 102, "Clickable approval-required marker in the PR header."),
+    interact: async (page) => page.getByRole("button", { name: "Approval required. Review this pull request" }).click(),
+    verify: async (page) => {
+      await page.locator("#verdict-control").waitFor();
+      const focused = await page.locator("#verdict-control").evaluate((element) => element === document.activeElement);
+      if (!focused) throw new Error("approval marker did not focus the review control");
     },
   },
   {
@@ -335,24 +345,24 @@ const scenarios = [
     }),
     interact: async (page) => {
       await page.keyboard.press("m");
-      await page.getByRole("alertdialog", { name: "Merge pull request #101?" }).waitFor();
+      await page.getByRole("alertdialog", { name: "Merge #101?" }).waitFor();
     },
     verify: async (page) => {
-      const dialog = page.getByRole("alertdialog", { name: "Merge pull request #101?" });
+      const dialog = page.getByRole("alertdialog", { name: "Merge #101?" });
       await dialog.getByText("fixture/pr-101", { exact: true }).waitFor();
       await dialog.getByLabel("fixture/pr-101 into main").getByText("main", { exact: true }).waitFor();
       const focusedLabel = await page.evaluate(() => document.activeElement?.getAttribute("aria-label"));
-      if (focusedLabel !== "Merge pull request") throw new Error(`unexpected initial merge-dialog focus: ${focusedLabel}`);
+      if (focusedLabel !== "Merge") throw new Error(`unexpected initial merge-dialog focus: ${focusedLabel}`);
       await page.keyboard.press("Tab");
       const wrappedLabel = await page.evaluate(() => document.activeElement?.getAttribute("aria-label"));
-      if (wrappedLabel !== "Cancel merge") throw new Error(`merge-dialog focus did not wrap to cancel: ${wrappedLabel}`);
+      if (wrappedLabel !== "Cancel") throw new Error(`merge-dialog focus did not wrap to cancel: ${wrappedLabel}`);
       await page.keyboard.press("Shift+Tab");
       const restoredLabel = await page.evaluate(() => document.activeElement?.getAttribute("aria-label"));
-      if (restoredLabel !== "Merge pull request") throw new Error(`merge-dialog reverse focus did not wrap: ${restoredLabel}`);
+      if (restoredLabel !== "Merge") throw new Error(`merge-dialog reverse focus did not wrap: ${restoredLabel}`);
       await page.keyboard.press("Escape");
       await dialog.waitFor({ state: "detached" });
       await page.keyboard.press("m");
-      await page.getByRole("alertdialog", { name: "Merge pull request #101?" }).waitFor();
+      await page.getByRole("alertdialog", { name: "Merge #101?" }).waitFor();
       const mergeRequestPending = page.waitForRequest((request) => request.method() === "POST" && request.url().endsWith("/api/mutations"));
       await page.keyboard.press("Enter");
       const mergeRequest = await mergeRequestPending;
@@ -362,16 +372,20 @@ const scenarios = [
       }
       await dialog.waitFor({ state: "detached" });
       await page.keyboard.press("m");
-      await page.getByRole("alertdialog", { name: "Merge pull request #101?" }).waitFor();
+      await page.getByRole("alertdialog", { name: "Merge #101?" }).waitFor();
     },
   },
   {
     ...detail("detail-close-confirmation", 101, "Close confirmation without closing the pull request."),
     interact: async (page) => {
       await page.keyboard.press("x");
-      await page.locator(".close-confirm").waitFor();
+      await page.getByRole("alertdialog", { name: "Close #101?" }).waitFor();
     },
-    verify: async (page) => page.getByText("close PR #101?", { exact: true }).waitFor(),
+    verify: async (page) => {
+      const dialog = page.getByRole("alertdialog", { name: "Close #101?" });
+      await dialog.getByRole("button", { name: "Close pull request", exact: true }).waitFor();
+      if (await page.locator(".keybar.merge-confirm").count()) throw new Error("close confirmation is still rendering in the bottom bar");
+    },
   },
   {
     ...detail("detail-find-bar", 101, "Find-in-page bar with deterministic matches highlighted."),
@@ -395,9 +409,14 @@ const scenarios = [
     ...detail("detail-conversation-blocked-admin", 112, "Branch-protection block with the admin force-merge confirmation visible.", "fixture/admin-cockpit"),
     interact: async (page) => {
       await page.keyboard.press("Shift+M");
-      await page.getByRole("alertdialog", { name: "Force-merge pull request #112?" }).waitFor();
+      await page.getByRole("alertdialog", { name: "Force-merge #112?" }).waitFor();
     },
-    verify: async (page) => page.getByText("Required approvals will be bypassed.", { exact: false }).waitFor(),
+    verify: async (page) => {
+      const dialog = page.getByRole("alertdialog", { name: "Force-merge #112?" });
+      await dialog.getByRole("button", { name: "Force-merge", exact: true }).waitFor();
+      if (await dialog.getByText("Bypass approval rule", { exact: true }).count()) throw new Error("force-merge eyebrow is still visible");
+      if (await dialog.getByText("Required approvals will be bypassed.", { exact: false }).count()) throw new Error("force-merge explanation is still visible");
+    },
   },
   {
     ...detail("detail-conversation-conflicts", 103, "PR with exact conflict paths and an agent resolution action."),
@@ -750,7 +769,7 @@ const scenarios = [
   },
   onboardingStep("onboarding-step-1-connect", 1, "Successful GitHub authentication step."),
   onboardingStep("onboarding-step-2-repositories", 2, "Successful repository selection step."),
-  onboardingStep("onboarding-step-3-live-updates", 3, "Successful live-update coverage step."),
+  onboardingStep("onboarding-step-3-live-updates", 3, "Minimal hosted relay setup."),
   onboardingStep("onboarding-step-4-ready", 4, "Successful initial inbox sync step."),
   {
     name: "quota-exhausted",
@@ -818,19 +837,24 @@ function onboardingStep(name, step, description) {
     route: "#/",
     description,
     prepare: clearConfiguredRepos,
-    beforeGoto: onboardingFixtureRoutes,
+    beforeGoto: (page) => onboardingFixtureRoutes(page, { relayCovered: step < 3 }),
     ready: ".onb-page",
     interact: step === 1 ? undefined : async (page) => advanceOnboarding(page, step),
     verify: async (page) => {
       await page.getByText(`Step ${step} of 4`, { exact: true }).waitFor();
       if (step === 1) await page.getByText("Connected as", { exact: false }).waitFor();
-      if (step === 3) await page.getByText("Live updates confirmed for every selected repository.", { exact: true }).waitFor();
+      if (step === 3) {
+        await page.getByRole("button", { name: "Install on GitHub", exact: true }).waitFor();
+        await page.getByRole("button", { name: "Use polling", exact: true }).waitFor();
+        await page.getByRole("link", { name: "Source", exact: true }).waitFor();
+        await page.getByRole("link", { name: "Self-host", exact: true }).waitFor();
+      }
       if (step === 4) await page.getByText("Your inbox is ready.", { exact: true }).waitFor();
     },
   };
 }
 
-async function onboardingFixtureRoutes(page) {
+async function onboardingFixtureRoutes(page, { relayCovered = true } = {}) {
   await page.route("**/api/auth/status", (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
@@ -849,7 +873,7 @@ async function onboardingFixtureRoutes(page) {
     return route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ repos: Object.fromEntries(repos.map((repo) => [repo, true])), installUrl: "https://github.com/apps/pr-cockpit" }),
+      body: JSON.stringify({ repos: Object.fromEntries(repos.map((repo) => [repo, relayCovered])), installUrl: "https://github.com/apps/pr-cockpit" }),
     });
   });
   await page.route("**/api/refresh", (route) => route.fulfill({
@@ -866,8 +890,8 @@ async function advanceOnboarding(page, targetStep) {
   if (targetStep === 2) return;
   await page.locator(".repo-row input").first().check();
   await page.getByRole("button", { name: "Continue with 1", exact: true }).click();
-  await page.getByText("Live updates confirmed for every selected repository.", { exact: true }).waitFor();
   if (targetStep === 3) return;
+  await page.getByRole("button", { name: "Use polling", exact: true }).click();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await page.getByText("Your inbox is ready.", { exact: true }).waitFor();
 }

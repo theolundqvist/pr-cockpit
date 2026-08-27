@@ -37,6 +37,27 @@ export async function fetchPrDetail(repo, number) {
   if (!res.ok) throw new Error(`detail ${res.status}`);
   return res.json();
 }
+export async function fetchActions(repo, number) {
+  const res = await fetch(`/api/pr/${repo}/${number}/actions`);
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.error || `actions ${res.status}`);
+  return body;
+}
+export async function fetchActionGraph(repo, number) {
+  const res = await fetch(`/api/pr/${repo}/${number}/actions/graph`);
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.error || `action graph ${res.status}`);
+  return body;
+}
+
+
+export async function fetchActionLog(repo, number, jobId) {
+  const res = await fetch(`/api/pr/${repo}/${number}/actions/jobs/${jobId}/log`);
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.error || `action log ${res.status}`);
+  return body;
+}
+
 
 export async function fetchPrCommitStats(repo, number) {
   const res = await fetch(`/api/pr/${repo}/${number}/commit-stats`);
@@ -61,7 +82,7 @@ export async function fetchPrDiff(repo, number, range = null) {
       return { ok: false, building: true, retryAfterMs: (Number(res.headers.get("retry-after")) || 5) * 1000 };
     }
     if (!res.ok) return { ok: false, building: false };
-    return { ok: true, text: await res.text() };
+    return { ok: true, bytes: await res.arrayBuffer() };
   } catch {
     return { ok: false, building: false };
   }
@@ -116,10 +137,26 @@ export async function commitPrFileEdit(repo, number, path, expectedHeadOid, cont
   if (!res.ok) {
     const error = new Error(body?.error || `pr-file-edit ${res.status}`);
     error.code = body?.code;
+    error.auth = body?.auth;
     error.status = res.status;
     throw error;
   }
   return body;
+}
+
+export async function generateCommitMessage(repo, number, path, hunk) {
+  const res = await fetch("/api/commit-message", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ repo, number, path, hunk }),
+  });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    const error = new Error(body?.error || `commit-message ${res.status}`);
+    error.code = body?.code;
+    throw error;
+  }
+  return body.message;
 }
 
 export async function fetchFileHistory(repo, path, base, symbol = null, baseSha = null) {
@@ -188,9 +225,20 @@ export async function searchPrs(q) {
   if (!res.ok) throw new Error(`search ${res.status}`);
   return (await res.json()).results;
 }
-export async function fetchAuthStatus() {
-  const res = await fetch("/api/auth/status");
+export async function fetchAuthStatus(scopes = ["repo", "workflow"]) {
+  const params = new URLSearchParams({ scopes: scopes.join(",") });
+  const res = await fetch(`/api/auth/status?${params}`);
   if (!res.ok) throw new Error(`auth status ${res.status}`);
+  return res.json();
+}
+
+export async function startGithubSetup(scopes) {
+  const res = await fetch("/api/auth/setup", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ scopes }),
+  });
+  if (!res.ok) throw new Error(`auth setup ${res.status}`);
   return res.json();
 }
 
@@ -290,32 +338,6 @@ export async function switchLocalBranch(repo, headRef) {
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new Error(body?.error || `switch branch ${res.status}`);
   return body;
-}
-
-const tmuxFocusErrorMessages = {
-  "target-not-found": "No terminal pane is working on this PR",
-  "stale-pane": "The pane for this PR is gone",
-  "no-client": "No attached tmux client on that host",
-  "host-unreachable": "Terminal host unreachable",
-  "server-missing": "Terminal host unreachable",
-  "snapshot-unavailable": "Terminal host unreachable",
-  "launch-failed": "Could not activate terminal",
-};
-
-export async function focusTmux(repo, number) {
-  const res = await fetch("/api/tmux/focus", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ repo, number }),
-  });
-  const body = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(body?.error || `focus terminal ${res.status}`);
-  return body;
-}
-
-export function tmuxFocusErrorMessage(error) {
-  const code = error instanceof Error ? error.message : "";
-  return tmuxFocusErrorMessages[code] ?? "Could not focus terminal";
 }
 
 export async function fetchAgents() {

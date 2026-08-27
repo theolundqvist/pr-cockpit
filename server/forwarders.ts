@@ -3,7 +3,7 @@ import { listWebhookRegistrations } from "./db.ts";
 import { cockpitWebhooksEnabled, settingsRepos } from "./settings.ts";
 
 const WEBHOOK_EVENTS =
-  "pull_request,pull_request_review,pull_request_review_comment,pull_request_review_thread,issue_comment,check_run,check_suite,status,push,workflow_run";
+  "pull_request,pull_request_review,pull_request_review_comment,pull_request_review_thread,issue_comment,check_run,check_suite,status,push,workflow_run,workflow_job";
 const FORWARDING_HOOK_URL = "https://webhook-forwarder.github.com/hook";
 
 interface Forwarder {

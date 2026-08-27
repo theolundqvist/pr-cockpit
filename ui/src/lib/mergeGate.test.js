@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mergeGate, forceMergeAvailable } from "./mergeGate.js";
+import { mergeGate, forceMergeAvailable, forceMergeShortcutAction, mergeabilityPending } from "./mergeGate.js";
 
 function pr(overrides) {
   return {
@@ -74,7 +74,17 @@ describe("mergeGate", () => {
   });
 
   test("unknown status and unmergeable falls through", () => {
-    expect(mergeGate(pr({ mergeStateStatus: "UNKNOWN", mergeable: "UNKNOWN" }), "SUCCESS").reason).toBe("Checking for ability to merge automatically…");
+    expect(mergeGate(pr({ mergeStateStatus: "UNKNOWN", mergeable: "UNKNOWN" }), "SUCCESS").reason).toBe("Checking whether this pull request can be merged…");
+  });
+});
+
+describe("mergeabilityPending", () => {
+  test("waits only for unresolved fields on an open pull request", () => {
+    expect(mergeabilityPending(pr({ mergeStateStatus: "UNKNOWN" }))).toBe(true);
+    expect(mergeabilityPending(pr({ mergeable: "UNKNOWN" }))).toBe(true);
+    expect(mergeabilityPending(pr())).toBe(false);
+    expect(mergeabilityPending(pr({ state: "MERGED", mergeStateStatus: "UNKNOWN" }))).toBe(false);
+    expect(mergeabilityPending(pr({ isDraft: true, mergeStateStatus: "UNKNOWN" }))).toBe(false);
   });
 });
 
@@ -94,5 +104,19 @@ describe("forceMergeAvailable", () => {
   test("true when open and blocked short of a clean merge", () => {
     expect(forceMergeAvailable(pr({ mergeStateStatus: "BLOCKED" }), { action: null })).toBe(true);
     expect(forceMergeAvailable(pr({ mergeStateStatus: "BEHIND" }), { action: "update" })).toBe(true);
+  });
+});
+
+describe("forceMergeShortcutAction", () => {
+  test("falls back to a regular merge when force-merge is unnecessary", () => {
+    expect(forceMergeShortcutAction(pr(), { action: "merge" })).toBe("merge");
+  });
+
+  test("keeps force-merge for an otherwise blocked pull request", () => {
+    expect(forceMergeShortcutAction(pr({ mergeStateStatus: "BLOCKED" }), { action: null })).toBe("force");
+  });
+
+  test("does nothing when neither merge path is available", () => {
+    expect(forceMergeShortcutAction(pr({ mergeable: "CONFLICTING" }), { action: null })).toBeNull();
   });
 });

@@ -16,9 +16,12 @@ This repository is worked on by humans and coding agents alike. Leave it easier 
 - `cd ui && bun run dev` for a hot-reloading UI. It proxies `/api` to `127.0.0.1:4820`, so it needs a server on that port.
 - `bun test server/<file>.test.ts` for a targeted test. Prefer targeted runs over the whole suite while iterating.
 - Screenshot harnesses render at `1600x1200`; keep their default viewport and PNG dimension checks aligned.
+- PR detail headers and tabs use the standard width; Conversation centers its 816px primary column and adjacent sidebar beneath them, and Files alone expands to full width.
 - Verify landing-page search queries against live GitHub results; captured PR titles can disappear from the search index while the fixture remains valid.
 - Match the surrounding style. Comments are for a non-obvious constraint, not for narration.
 - Pull-request actions follow GitHub semantics: merge green, update neutral, and destructive actions red.
+- Workflow jobs use commit-check semantics: green check for success, red cross for failure, orange spinner while active, and gray minus when skipped. Logs preserve ANSI colors and open at the bottom.
+- File status lives in the colored leading icon; moved files use a distinct move glyph, never a text badge beside the name.
 - Do not perform Vercel or `forge.scape.app` infrastructure work from this repository.
 - For manual app recordings, launch `/Users/theo/dev/pr-cockpit`; this `pr-cockpit-v3` checkout is the legacy landing worktree.
 
@@ -81,6 +84,9 @@ After a task needs non-obvious investigation, repeated failed attempts, or a rec
 - Agent workflow, operational runbooks, and environment traps go here.
 - A reproducible code failure gets an automated test instead of a paragraph.
 - Record only evidence-backed, reusable guidance. No credentials, no transient PIDs, no diary of one-off failures.
+- GitHub prerequisite and onboarding flows are server-classified and resolved in-app; never send users to Terminal. Match the landing page: one short headline, no subtitle, flat controls, and only copy needed for the next action; open browser setup automatically and retain the device code as recovery.
+- Conflict cards refresh the mirror and compare the PR head with the current base branch; never use cached base revisions, invent repository-level conflict copy, or offer copy-prompt controls.
+- Installed updates replace shell files without changing the running Electron process. Renderer code must tolerate the prior shell response shape until relaunch; verify shell changes in a separate fresh process and never restart the installed renderer.
 - The Forgejo host mounts `/run` with `noexec`; invoke migration helpers through `bash` or `python3` rather than executing files there directly.
 - Forgejo hides pull requests when `repository.is_mirror` is true even if the unit is enabled. Keep the `mirror` row, clear only `is_mirror`, limit its refspecs to heads and tags, and maintain each native PR's hidden `refs/pull/<N>/head`; create an ordinary fallback branch only for an active fork PR and write both refs as UID/GID `994:984`.
 - Long authenticated browser benchmarks run one measured process at a time. Retry and discard only transport-failed iterations, checkpoint each complete product sample set under `.scratch`, and publish only after every product reaches the declared successful sample count.

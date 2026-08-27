@@ -61,20 +61,37 @@ fi
 
 bun="$(command -v bun)"
 gh_bin="$(command -v gh)"
-launch_path="$(dirname "$bun"):$(dirname "$gh_bin"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+launch_path="$HOME/.local/bin:$(dirname "$bun"):$(dirname "$gh_bin"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-stage "1/6" "Install dependencies"
+platform="$(uname -s)"
+if [[ "$platform" != "Darwin" && "$platform" != "Linux" ]]; then
+  echo "pr-cockpit: unsupported platform: $platform"
+  exit 1
+fi
+stage_count=6
+if [[ "$platform" == "Linux" ]]; then
+  stage_count=3
+fi
+
+stage "1/$stage_count" "Install dependencies"
 quiet_in "root dependency install" "$root" "$bun" install
 quiet_in "UI dependency install" "$root/ui" "$bun" install
-quiet_in "shell dependency install" "$root/shell" "$bun" install
+if [[ "$platform" == "Darwin" ]]; then
+  quiet_in "shell dependency install" "$root/shell" "$bun" install
+fi
 
 # Both guards import from node_modules, so they only run once install has populated it.
-stage "2/6" "Verify release"
+stage "2/$stage_count" "Verify release"
 quiet_in "release check" "$root" "$bun" scripts/check-release.ts
 quiet_in "worktree runtime check" "$root" "$bun" scripts/check-worktree-runtime.ts
 
-stage "3/6" "Build UI"
+stage "3/$stage_count" "Build UI"
 quiet_in "UI build" "$root/ui" "$bun" run build
+
+if [[ "$platform" == "Linux" ]]; then
+  echo "pr-cockpit: headless server build is ready"
+  exit 0
+fi
 
 stage "4/6" "Install desktop app"
 COCKPIT_GH_BIN="$gh_bin" "$root/scripts/make-app.sh"

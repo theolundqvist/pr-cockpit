@@ -466,9 +466,10 @@ kbd {
 }
 
 .md {
+  --md-divider: color-mix(in srgb, var(--text-faint) 45%, var(--border));
   font-family: var(--md-font);
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.65;
   color: var(--md-body);
   max-width: 780px;
   overflow-wrap: anywhere;
@@ -491,14 +492,14 @@ kbd {
   font-size: 20px;
   margin: 26px 0 10px;
   padding-bottom: 5px;
-  border-bottom: 1px solid var(--border-soft);
+  border-bottom: 1px solid var(--md-divider);
 }
 .md h2 {
   font-size: 16.5px;
   letter-spacing: -0.003em;
   margin: 24px 0 9px;
   padding-bottom: 4px;
-  border-bottom: 1px solid var(--border-soft);
+  border-bottom: 1px solid var(--md-divider);
 }
 .md h3 {
   font-size: 15px;
@@ -705,7 +706,7 @@ kbd {
 }
 .md hr {
   border: none;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--md-divider);
   margin: 16px 0;
 }
 

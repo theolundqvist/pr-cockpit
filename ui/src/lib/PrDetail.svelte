@@ -1,9 +1,10 @@
 <script>
-  import { tick, untrack } from "svelte";
+  import { onDestroy, tick, untrack } from "svelte";
   import {
     fetchPrDetail,
     fetchPrDiff,
     commitPrFileEdit,
+    generateCommitMessage,
     fetchConflictFiles,
     fetchPrCommitStats,
     fetchMutations,
@@ -21,15 +22,14 @@
     rescoreAgent,
     fetchRepoUsers,
     switchLocalBranch,
-    focusTmux,
-    tmuxFocusErrorMessage,
   } from "./api.js";
-  import { parseDiff, anchorThreads, fileDiffFingerprint } from "./diff.js";
+  import { anchorThreads, fileDiffFingerprint } from "./diff.js";
+  import { loadDiffDocument } from "./diffDocument.js";
   import { renderMarkdown } from "./markdown.js";
   import { loadPrIndex, prSummary } from "./prIndex.svelte.js";
   import { imageFallback, prKeyOwner, shouldCopyPrCockpitUrl, shouldCopyPrUrl } from "./dom.js";
   import { readLastViewed, writeLastViewed } from "./lastViewed.js";
-  import { relativeTime } from "./time.js";
+  import { durationText, relativeTime } from "./time.js";
   import { mermaidDiagrams } from "./mermaid.js";
   import { theme } from "./theme.svelte.js";
   import { setViewerLogin } from "./viewer.svelte.js";
@@ -43,11 +43,14 @@
   import { prKeyOf } from "./prKey.js";
   import { getDetail, cacheDetail } from "./detailCache.js";
   import { buildChecks, countChecks, summarizeChecks, sectionizeChecks, ciFixPrompt } from "./checks.js";
-  import { mergeGate as evalMergeGate, forceMergeAvailable as evalForceMerge } from "./mergeGate.js";
+  import { mergeGate as evalMergeGate, forceMergeAvailable as evalForceMerge, forceMergeShortcutAction, mergeabilityPending } from "./mergeGate.js";
   import { quota } from "./quota.svelte.js";
   import { quotaImpact } from "./quotaImpact.js";
+  import ActionsView from "./ActionsView.svelte";
   import QuotaMergeModal from "./QuotaMergeModal.svelte";
   import MergeDecisionDialog from "./MergeDecisionDialog.svelte";
+  import ConfirmDialog from "./ConfirmDialog.svelte";
+  import SplitButton from "./SplitButton.svelte";
   import DiffView from "./DiffView.svelte";
   import FileHistory from "./FileHistory.svelte";
   import Telescope from "./Telescope.svelte";
@@ -62,6 +65,11 @@
   import Reactions from "./Reactions.svelte";
   import UserPicker from "./UserPicker.svelte";
   import CurrentBranchBadge from "./CurrentBranchBadge.svelte";
+  const VERDICT_OPTIONS = [
+    { value: "APPROVE", label: "Approve", tone: "green" },
+    { value: "COMMENT", label: "Comment", tone: "neutral" },
+    { value: "REQUEST_CHANGES", label: "Request changes", tone: "red" },
+  ];
 
   let { repo, number, tab, historyPath = null, historySymbol = null, refreshRevision = 0 } = $props();
   let handledRefreshRevision = refreshRevision;
@@ -71,11 +79,13 @@
   let lastG = 0;
   const copied = timedFlag(1200);
   const branchCopied = timedFlag(1200);
-  const ciCopied = timedFlag(1200);
-  const conflictCopied = timedFlag(1200);
+  const fixPromptCopied = timedFlag(1200);
 
   let pr = $state(null);
+  let actionsRunUrl = $state(null);
   let files = $state([]);
+  let diffDocument = null;
+  onDestroy(() => diffDocument?.dispose());
   let error = $state(null);
   let showLoading = $state(false);
   let loadingSummary = $derived(prSummary(repo, number));
@@ -97,17 +107,20 @@
 
   const TREE_WIDTH_KEY = "pr-cockpit:file-tree-width";
   const VIEWED_FILES_KEY_PREFIX = "pr-cockpit:viewed-files:";
-  const TREE_MIN_WIDTH = 160;
+  const TREE_MIN_WIDTH = 220;
   const TREE_DEFAULT_WIDTH = 250;
+  const TREE_MAX_WIDTH = 300;
   let treeDesiredWidth = $state(Number(localStorage.getItem(TREE_WIDTH_KEY)) || TREE_DEFAULT_WIDTH);
-  let treeMaxWidth = $state(600);
-  let treeWidth = $derived(Math.min(treeDesiredWidth, treeMaxWidth));
+  let treeMaxWidth = $state(TREE_MAX_WIDTH);
+  let treeWidth = $derived(Math.max(TREE_MIN_WIDTH, Math.min(treeDesiredWidth, treeMaxWidth)));
 
   let activeFetch;
   let loadedKey = null;
   let detailLoadPromise = null;
   let detailRefreshPromise = null;
   let detailRefreshQueued = false;
+  let externalEditorBusy = $state(false);
+  let preparedEditorKey = null;
 
   $effect(() => {
     const key = prKeyOf(repo, number);
@@ -124,6 +137,8 @@
       if (activeFetch === token && !pr && !error) showLoading = true;
     }, 250);
     files = [];
+    diffDocument?.dispose();
+    diffDocument = null;
     error = null;
     mutations = [];
     fileIndex = 0;
@@ -136,8 +151,9 @@
     mergeConfirm = false;
     quotaMergeModal = false;
     forceMergeConfirm = false;
-    closeConfirm = false;
+    confirmAction = null;
     mergeMenuOpen = false;
+    reviewMenuOpen = false;
     editingTitle = false;
     editingBody = false;
     localBranchBusy = false;
@@ -227,6 +243,7 @@
 
   let diffFetch;
   let loadedDiffKey = null;
+  let displayedDiffKey = $state(null);
   let buildingKey = "";
   let buildingDeadline = 0;
   const BUILD_CAP_MS = 120_000;
@@ -246,19 +263,32 @@
     Promise.all([
       fetchPrDiff(repo, number, r),
       isSince ? fetchPrDiff(repo, number, null) : Promise.resolve(null),
-    ]).then(([res, prRes]) => {
+    ]).then(async ([res, prRes]) => {
       if (diffFetch !== token) return;
       if (res.ok) {
-        let parsed = res.text ? parseDiff(res.text) : [];
-        if (isSince && prRes?.ok) {
-          const ownPaths = new Set((prRes.text ? parseDiff(prRes.text) : []).map((f) => f.path));
-          const own = parsed.filter((f) => ownPaths.has(f.path));
+        const [document, prDocument] = await Promise.all([
+          loadDiffDocument(res.bytes),
+          isSince && prRes?.ok ? loadDiffDocument(prRes.bytes) : Promise.resolve(null),
+        ]);
+        if (diffFetch !== token) {
+          document.dispose();
+          prDocument?.dispose();
+          return;
+        }
+        let parsed = document.files;
+        if (prDocument) {
+          const ownPaths = new Set(prDocument.files.map((file) => file.path));
+          const own = parsed.filter((file) => ownPaths.has(file.path));
           churnBaseRef = own.length < parsed.length ? pr.baseRefName : null;
           parsed = own;
+          prDocument.dispose();
         } else {
           churnBaseRef = null;
         }
+        diffDocument?.dispose();
+        diffDocument = document;
         syncViewedFiles(parsed);
+        displayedDiffKey = dkey;
         files = parsed;
         fileIndex = 0;
         diffState = "ready";
@@ -283,6 +313,10 @@
         diffState = "error";
         buildingKey = "";
       }
+    }).catch(() => {
+      if (diffFetch !== token) return;
+      diffState = "error";
+      buildingKey = "";
     });
     return () => clearTimeout(retryTimer);
   });
@@ -291,6 +325,20 @@
     diffState = "building";
     buildingKey = "";
     diffNonce++;
+  }
+
+  function warmDiffFile(path, visible) {
+    if (visible) return diffDocument?.hydrate(path);
+    const document = diffDocument;
+    if (!document) return null;
+    return document.prefetch(path).catch(() => {
+      if (document === diffDocument) diffState = "error";
+      return null;
+    });
+  }
+
+  function releaseDiffFile(path) {
+    return diffDocument?.release(path);
   }
 
   $effect(() => {
@@ -426,6 +474,12 @@
     if (refreshRevision === handledRefreshRevision) return;
     handledRefreshRevision = refreshRevision;
     untrack(() => refreshDetail());
+  });
+
+  $effect(() => {
+    if (!mergeabilityPending(pr)) return;
+    const timer = setInterval(() => untrack(refreshDetail), 2_000);
+    return () => clearInterval(timer);
   });
 
   $effect(() => {
@@ -600,9 +654,14 @@
   let verdictEvent = $state("APPROVE");
   let verdictBody = $state("");
   let verdictSubmitting = $state(false);
+  let verdictBodyFocused = $state(false);
+  let reviewMenuOpen = $state(false);
   let verdictMutation = $derived(mutations.find((m) => m.kind === "review-verdict"));
+  let selectedVerdict = $derived(VERDICT_OPTIONS.find((option) => option.value === verdictEvent) ?? VERDICT_OPTIONS[0]);
 
   async function submitVerdict() {
+    if (verdictSubmitting) return;
+    reviewMenuOpen = false;
     verdictSubmitting = true;
     try {
       await enqueueMutation(repo, number, { kind: "review-verdict", event: verdictEvent, body: verdictBody });
@@ -613,11 +672,18 @@
     }
   }
 
+  function onVerdictKeydown(e) {
+    if (e.isComposing || e.shiftKey || e.altKey) return;
+    if (!(e.metaKey || e.ctrlKey) || e.key !== "Enter") return;
+    e.preventDefault();
+    submitVerdict();
+  }
+
   let mergeMutation = $derived(mutations.find((m) => m.kind === "merge"));
   let mergeMethodLabel = $derived(pr.mergeMethod === "merge" ? "merge commit" : pr.mergeMethod ?? "squash");
+  let mergeActionMethodLabel = $derived(pr.mergeMethod === "merge" ? "commit" : pr.mergeMethod ?? "squash");
   let mergeConfirm = $state(false);
   let forceMergeConfirm = $state(false);
-  let closeConfirm = $state(false);
   let mergeMenuOpen = $state(false);
   let mergeMethodBusy = $state(false);
   let quotaStatus = $derived(quotaImpact(quota.resources));
@@ -634,6 +700,14 @@
     mergeMenuOpen = false;
     forceMergeConfirm = force;
     mergeConfirm = !force;
+  }
+
+  function requestForceMergeShortcut() {
+    if (mergeMutation) return false;
+    const action = forceMergeShortcutAction(pr, mergeGate);
+    if (action === null) return false;
+    requestMerge(action === "force");
+    return true;
   }
 
   function cancelMergeDecision() {
@@ -690,9 +764,57 @@
   let autoMergeMutation = $derived(mutations.find((m) => m.kind === "auto-merge"));
   let githubAutoMergeMutation = $derived(mutations.find((m) => m.kind === "github-auto-merge"));
   let githubAutoMergeEnabled = $derived(Boolean(pr.autoMergeRequest));
-  let autoMergeConfirm = $state(false);
-  let autofixConfirm = $state(false);
-  let customConfirm = $state(null);
+  // one modal serves every plain yes/no confirmation, each entry carrying its own copy and action
+  let confirmAction = $state(null);
+
+  function runConfirmAction() {
+    const action = confirmAction;
+    confirmAction = null;
+    action.run();
+  }
+
+  function requestClose() {
+    confirmAction = { title: `Close #${number}?`, confirmLabel: "Close pull request", danger: true, run: submitClose };
+  }
+
+  function requestAutoMerge() {
+    const enable = !pr.autoMergeEnabled;
+    confirmAction = {
+      title: `${enable ? "Arm" : "Disarm"} the auto-merge bot for #${number}?`,
+      confirmLabel: enable ? "Arm" : "Disarm",
+      run: () => submitAutoMerge(enable),
+    };
+  }
+
+  function requestAutofix() {
+    confirmAction = { title: `Arm the auto-fix agent for #${number}?`, confirmLabel: "Arm agent", run: submitAutofix };
+  }
+
+  function requestCiFix() {
+    confirmAction = {
+      title: "Fix failing CI with an agent?",
+      message: `${failingChecks.length} failing check${failingChecks.length === 1 ? "" : "s"} on ${pr.headRefName}`,
+      confirmLabel: "Fix with agent",
+      run: submitCiFix,
+    };
+  }
+
+  function requestConflictResolution() {
+    confirmAction = {
+      title: "Resolve conflicts with an agent?",
+      message: `Conflicts in ${conflictFiles.length} file${conflictFiles.length === 1 ? "" : "s"}, pushed to ${pr.headRefName}`,
+      confirmLabel: "Resolve conflicts",
+      run: submitConflictResolution,
+    };
+  }
+
+  function requestCustomAgent(def) {
+    confirmAction = {
+      title: def.id === "rescorer" ? `Re-score #${number}?` : `Arm the "${def.name || "custom"}" agent for #${number}?`,
+      confirmLabel: def.id === "rescorer" ? "Re-score" : "Arm agent",
+      run: () => submitCustom(def),
+    };
+  }
 
   let keybindAgents = $derived(prefs.agents.filter((a) => a.trigger === "keybind" && a.enabled && a.keybind));
   const runLabel = (run) => (run.agent_id && prefs.agents.find((a) => a.id === run.agent_id)?.name) || run.kind;
@@ -717,7 +839,6 @@
   let agent = $state(null);
   let agentLog = $state(null);
   let showAgentLog = $state(false);
-  let killConfirm = $state(false);
 
   async function loadAgent() {
     try {
@@ -733,9 +854,12 @@
     if (showAgentLog) agentLog = await fetchAgentLog(repo, number);
   }
 
-  async function confirmKillAgent() {
+  function requestKillAgent() {
+    confirmAction = { title: "Kill the running agent?", confirmLabel: "Kill agent", danger: true, run: killRunningAgent };
+  }
+
+  async function killRunningAgent() {
     await killAgent(repo, number);
-    killConfirm = false;
     await loadAgent();
     if (tab === "agents") await loadAgentRuns();
   }
@@ -815,11 +939,6 @@
     return summary ? `→ ${turn.toolName} — ${summary}` : `→ ${turn.toolName}`;
   }
 
-  function durationText(startedAt, endedAt) {
-    const ms = new Date(endedAt) - new Date(startedAt);
-    const mins = Math.round(ms / 60000);
-    return mins < 1 ? "<1m" : `${mins}m`;
-  }
 
   function runHealth(run) {
     if (run.state === "running") return "running";
@@ -879,13 +998,11 @@
   let autofixError = $state(null);
   let conflictResolveBusy = $state(false);
   let conflictResolveError = $state(null);
-  let conflictResolveConfirm = $state(false);
   let ciFixBusy = $state(false);
   let ciFixError = $state(null);
-  let ciFixConfirm = $state(false);
 
   async function submitAutofix() {
-    if (autofixBusy || agent?.state === "running" || prIsGreen) return;
+    if (autofixBusy || agent?.state === "running" || prIsGreen || mergedState) return;
     autofixBusy = true;
     autofixError = null;
     try {
@@ -999,6 +1116,8 @@
   });
 
   let liveState = $derived(!!pr && pr.state.toUpperCase() === "OPEN");
+  let mergedState = $derived(!!pr && pr.state.toUpperCase() === "MERGED");
+  let canReview = $derived(!mergedState && !pr?.viewerIsAuthor);
   let onLocalBranch = $derived(!!pr && pr.localBranch === pr.headRefName);
   let hasConflicts = $derived(!!pr && (pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "DIRTY"));
 
@@ -1087,23 +1206,21 @@
     if (!pr || !failingChecks.length) return;
     const prompt = ciFixPrompt({ repo, number, branch: pr.headRefName, checks: failingChecks });
     navigator.clipboard.writeText(prompt).then(
-      () => ciCopied.show(),
+      () => fixPromptCopied.show("ci"),
       () => showFlash("Couldn't copy the CI fix prompt."),
     );
   }
 
   function conflictFixPrompt() {
     if (!pr) return "";
-    const paths = conflictFiles.length
-      ? conflictFiles.map((path) => `- ${path}`).join("\n")
-      : "- Git reported a repository-level conflict without individual file paths";
+    const paths = conflictFiles.map((path) => `- ${path}`).join("\n");
     return `Resolve the merge conflicts on ${repo} PR #${number}.\n\nPR: https://github.com/${repo}/pull/${number}\nBranch: ${pr.headRefName}\nBase: ${pr.baseRefName}\n\nConflicting files:\n${paths}\n\nFetch origin/${pr.baseRefName} and merge it into ${pr.headRefName}. Resolve every conflict faithfully, preserving the intent of both sides. Do not change unrelated code. Run the narrowest relevant validation, commit the merge resolution, and push only to ${pr.headRefName}.`;
   }
 
   function copyConflictFixPrompt() {
-    if (!pr || conflictFilesState !== "ready") return;
+    if (!pr || conflictFilesState !== "ready" || !conflictFiles.length) return;
     navigator.clipboard.writeText(conflictFixPrompt()).then(
-      () => conflictCopied.show(),
+      () => fixPromptCopied.show("conflict"),
       () => showFlash("Couldn't copy the conflict fix prompt."),
     );
   }
@@ -1130,15 +1247,6 @@
       showFlash(err instanceof Error ? err.message : "Couldn't switch branches.");
     } finally {
       localBranchBusy = false;
-    }
-  }
-
-  async function focusTerminal() {
-    if (!pr) return;
-    try {
-      await focusTmux(repo, number);
-    } catch (err) {
-      showFlash(tmuxFocusErrorMessage(err));
     }
   }
 
@@ -1181,7 +1289,11 @@
     return { path: files[index].path, line: Number.isInteger(line) && line > 0 ? line : null };
   }
 
-  async function openEditor() {
+  function currentEditorTarget() {
+    return editorTargetFromDiff() ?? (files[fileIndex] ? { path: files[fileIndex].path, line: null } : null);
+  }
+
+  async function openInlineEditor() {
     if (!pr || !fileEditable) {
       showFlash("Inline editing is only available for the current open pull request.");
       return;
@@ -1194,9 +1306,66 @@
       await new Promise((resolve) => requestAnimationFrame(resolve));
     }
     if (!diffView || !(await diffView.openEditor(editorTargetFromDiff()))) {
-      showFlash("Choose an editable file before opening the editor.");
+      showFlash("Choose an editable file before opening the inline editor.");
     }
   }
+
+  async function finishExternalEdit(sessionId) {
+    const result = await window.cockpitShell?.finishEditor?.(sessionId);
+    if (result?.error) showFlash(result.error);
+  }
+
+  async function openExternalEditor() {
+    if (externalEditorBusy) return;
+    if (!pr || !fileEditable) {
+      showFlash("External editing is only available for the current open pull request.");
+      return;
+    }
+    if (!window.cockpitShell?.openEditor) {
+      showFlash("External editing is only available in the desktop app.");
+      return;
+    }
+    const target = currentEditorTarget();
+    if (!target) {
+      showFlash("Choose an editable file before opening the external editor.");
+      return;
+    }
+    externalEditorBusy = true;
+    let result;
+    try {
+      result = await window.cockpitShell.openEditor(repo, number, target, pr.headRefOid);
+    } catch (error) {
+      showFlash(error instanceof Error ? error.message : "Couldn't open the external editor.");
+      return;
+    } finally {
+      externalEditorBusy = false;
+    }
+    if (result?.error) {
+      showFlash(result.error);
+      return;
+    }
+    if (result?.warning) showFlash(result.warning);
+    if (!result?.changed) return;
+    if (tab !== "files") {
+      goToTab("files");
+      await tick();
+    }
+    for (let attempt = 0; attempt < 20 && !diffView; attempt++) {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    if (!diffView || !(await diffView.reviewExternalEdit(target, result.content, result.sessionId))) {
+      await finishExternalEdit(result.sessionId);
+      showFlash("Couldn't show the editor changes for this file.");
+    }
+  }
+
+  $effect(() => {
+    if (!fileEditable || !pr?.headRefOid || !window.cockpitShell?.prepareEditor) return;
+    const key = `${repo}#${number}@${pr.headRefOid}`;
+    if (key === preparedEditorKey) return;
+    preparedEditorKey = key;
+    void window.cockpitShell.prepareEditor(repo, number, pr.headRefOid);
+  });
 
   function copyBranchName() {
     if (!pr?.headRefName) return;
@@ -1240,6 +1409,17 @@
     }
     return [...latest.entries()].map(([login, v]) => ({ login, state: v.state, avatarUrl: v.avatarUrl }));
   });
+  let approvedReviewers = $derived(reviewers.filter((reviewer) => reviewer.state === "APPROVED"));
+  let primaryApprover = $derived(approvedReviewers[0] ?? null);
+
+  function activateApprovalMarker() {
+    if (canReview) {
+      if (tab !== "conversation" && !goToTab("conversation")) return;
+      requestAnimationFrame(() => focusWhenReady("#verdict-control"));
+      return;
+    }
+    pickerMode = "review";
+  }
 
   let greptileMeta = $derived(pr ? greptileReviewMeta(pr) : { confidence: null, reviewedSha: null, unresolvedCount: 0 });
   let greptileState = $derived(pr ? greptileStatus(greptileMeta, pr.headRefOid) : null);
@@ -1331,12 +1511,29 @@
     const pendingEvents = pendingComments.map((mutation) => ({ kind: "pending-comment", id: `pending-comment-${mutation.id}`, mutation }));
     return prefs.newestCommentsFirst ? [...pendingEvents, ...orderedEvents.reverse()] : [...orderedEvents, ...pendingEvents];
   });
+  const FAILED_CI_STATES = new Set(["FAILURE", "ERROR"]);
+  const RUNNING_CI_STATES = new Set(["PENDING", "EXPECTED"]);
+
+  function commitCiLabel(state) {
+    if (state === "SUCCESS") return "Checks passed";
+    if (FAILED_CI_STATES.has(state)) return "Checks failed";
+    if (RUNNING_CI_STATES.has(state)) return "Checks running";
+    return "No workflow runs";
+  }
 
   let threadSplit = $derived(anchorThreads(files, pr?.reviewThreads.nodes ?? []));
   let unresolvedTotal = $derived(
     (pr?.reviewThreads.nodes ?? []).filter((t) => !t.isResolved).length,
   );
   let prIsGreen = $derived(mergeGate.action === "merge" && unresolvedTotal === 0);
+  let autofixDef = $derived(keybindAgents.find((a) => a.id === "autofix"));
+  let fixShortcutTarget = $derived.by(() => {
+    if (!autofixDef || agent?.state === "running" || mergedState) return null;
+    if (failingChecks.length && !ciFixBusy) return "ci";
+    if (hasConflicts && conflictFilesState === "ready" && conflictFiles.length && !conflictResolveBusy) return "conflict";
+    if (!mergedState && !prIsGreen && !autofixBusy) return "autofix";
+    return null;
+  });
 
   const reviewTone = (state) =>
     state === "APPROVED"
@@ -1354,6 +1551,7 @@
   let fileIndex = $state(0);
   let collapsedFiles = $state(new Set());
   let viewedFiles = $state(new Set());
+  let hoveredDiffPath = $state(null);
   let selectedPath = $derived(files[fileIndex]?.path ?? null);
 
   let testPattern = $derived(testMatcher(prefs.testPathRegex));
@@ -1388,24 +1586,15 @@
 
   $effect(() => {
     if (tab !== "files" || diffState !== "ready" || treeFiles.length === 0) return;
+    const paths = treeFiles.map((file) => file.path);
     requestAnimationFrame(() => {
-      const rows = document.querySelectorAll(".tree-pane .row");
-      if (!rows.length) return;
-      // .name flexes wider or narrower than its natural text width; probe outside flex to measure it
-      const probe = document.createElement("span");
-      probe.style.cssText = "position:absolute;visibility:hidden;white-space:nowrap;left:-9999px;top:-9999px;";
-      document.body.appendChild(probe);
-      let widest = TREE_MIN_WIDTH;
-      for (const row of rows) {
-        const name = row.querySelector(".name");
-        if (!name) continue;
-        probe.style.font = getComputedStyle(name).font;
-        probe.textContent = name.textContent;
-        const ideal = row.clientWidth - name.clientWidth + probe.offsetWidth;
-        widest = Math.max(widest, ideal);
-      }
-      probe.remove();
-      treeMaxWidth = widest + 16;
+      const name = document.querySelector(".tree-pane .name");
+      if (!name) return;
+      const context = document.createElement("canvas").getContext("2d");
+      context.font = getComputedStyle(name).font;
+      let widest = TREE_DEFAULT_WIDTH;
+      for (const path of paths) widest = Math.max(widest, context.measureText(path).width + 96);
+      treeMaxWidth = Math.min(TREE_MAX_WIDTH, widest);
     });
   });
 
@@ -1414,7 +1603,7 @@
     const target = e.currentTarget;
     target.setPointerCapture(e.pointerId);
     const startX = e.clientX;
-    const startWidth = treeDesiredWidth;
+    const startWidth = target.previousElementSibling?.getBoundingClientRect().width ?? treeWidth;
     function onMove(ev) {
       treeDesiredWidth = Math.max(TREE_MIN_WIDTH, Math.min(treeMaxWidth, startWidth + (ev.clientX - startX)));
     }
@@ -1713,9 +1902,9 @@
         e.preventDefault();
         return;
       }
-      if (e.metaKey && ["1", "2", "3"].includes(e.key)) {
+      if (e.metaKey && ["1", "2", "3", "4"].includes(e.key)) {
         if (!rangeOpen && !pickerMode && !telescopeOpen) {
-          goToTab(e.key === "1" ? "conversation" : e.key === "2" ? "files" : "agents");
+          goToTab(e.key === "1" ? "conversation" : e.key === "2" ? "files" : e.key === "3" ? "agents" : "actions");
         }
         e.preventDefault();
         return;
@@ -1756,53 +1945,23 @@
       }
       if (rangeOpen) return;
       if (historyOpen) return;
-      if (mergeMenuOpen) {
+      if (reviewMenuOpen) {
         if (e.key === "Escape") {
-          mergeMenuOpen = false;
-          e.preventDefault();
-        } else if (e.key === "M" && forceMergeAvailable && liveState && !mergeMutation) {
-          requestMerge(true);
+          reviewMenuOpen = false;
           e.preventDefault();
         }
         return;
       }
-      if (mergeConfirm || forceMergeConfirm) return;
-      if (closeConfirm) {
-        if (e.key === "Enter") submitClose();
-        closeConfirm = false;
-        e.preventDefault();
+      if (mergeMenuOpen) {
+        if (e.key === "Escape") {
+          mergeMenuOpen = false;
+          e.preventDefault();
+        } else if (e.key === "M" && liveState && requestForceMergeShortcut()) {
+          e.preventDefault();
+        }
         return;
       }
-      if (autoMergeConfirm) {
-        if (e.key === "Enter") submitAutoMerge(!pr.autoMergeEnabled);
-        autoMergeConfirm = false;
-        e.preventDefault();
-        return;
-      }
-      if (autofixConfirm) {
-        if (e.key === "Enter") submitAutofix();
-        autofixConfirm = false;
-        e.preventDefault();
-        return;
-      }
-      if (ciFixConfirm) {
-        if (e.key === "Enter") submitCiFix();
-        ciFixConfirm = false;
-        e.preventDefault();
-        return;
-      }
-      if (conflictResolveConfirm) {
-        if (e.key === "Enter") submitConflictResolution();
-        conflictResolveConfirm = false;
-        e.preventDefault();
-        return;
-      }
-      if (customConfirm) {
-        if (e.key === "Enter") submitCustom(customConfirm);
-        customConfirm = null;
-        e.preventDefault();
-        return;
-      }
+      if (mergeConfirm || forceMergeConfirm || confirmAction) return;
       if (e.key === "Escape") {
         if (tab === "files") goToTab("conversation");
         else if (finishFileEdit()) location.hash = "#/";
@@ -1841,26 +2000,24 @@
       } else if (tab === "files" && e.key === "h") {
         if (files[fileIndex]) openFileHistory(files[fileIndex].path);
       } else if (e.key === "x") {
-        if (liveState && !mergeMutation && !closeMutation) closeConfirm = true;
+        if (liveState && !mergeMutation && !closeMutation) requestClose();
       } else if (tab === "files" && e.key === "c") {
         rangeOpen = true;
       } else if (tab === "conversation" && e.key === "c") {
         focusTarget("#composer-input");
-      } else if (tab === "conversation" && e.key === "v") {
-        if (pr.viewerIsAuthor) {
-          showFlash("Can't review your own PR — GitHub blocks self-approval.");
-        } else {
-          focusTarget("#verdict-control");
-        }
+      } else if (tab === "conversation" && e.key === "v" && canReview) {
+        focusTarget("#verdict-control");
       } else if (e.key === "r") {
         revealReply();
       } else if (e.key === "e") {
-        openEditor();
+        openInlineEditor();
+      } else if (e.key === "E") {
+        openExternalEditor();
       } else if (e.key === "m") {
         if (mergeGate.action === "merge" && !mergeMutation) requestMerge();
         else if (mergeGate.reason) mergeFlash.show(mergeGate.reason);
       } else if (e.key === "M") {
-        if (forceMergeAvailable && !mergeMutation) requestMerge(true);
+        requestForceMergeShortcut();
       } else if (e.key === "u" && mergeGate.action === "update") {
         if (!updateMutation) submitUpdateBranch();
       } else if (e.key === "s") {
@@ -1868,23 +2025,26 @@
       } else if (e.key === "q") {
         pickerMode = "review";
       } else if (e.key === "o") {
-        if (pr) window.open(pr.url, "_blank", "noopener");
-      } else if (e.key === "T") {
-        focusTerminal();
+        const url = tab === "actions" ? actionsRunUrl : pr?.url;
+        if (url) window.open(url, "_blank", "noopener");
+      } else if (e.key === "t" && pr?.localCheckoutPath && !onLocalBranch) {
+        if (!localBranchBusy) switchToLocalBranch();
       } else if (e.key === "p") {
         promptOpen = true;
-      } else if (tab === "conversation" && e.key === "E" && pr.body && !editingBody && !editBodyMutation) {
-        startEditBody();
+      } else if (autofixDef?.keybind === e.key && fixShortcutTarget) {
+        if (fixShortcutTarget === "ci") requestCiFix();
+        else if (fixShortcutTarget === "conflict") requestConflictResolution();
+        else requestAutofix();
       } else if (keybindAgents.some((a) => a.keybind === e.key)) {
         const def = keybindAgents.find((a) => a.keybind === e.key);
         if (def.id === "fixer") {
-          if (!autoMergeMutation) autoMergeConfirm = true;
+          if (!autoMergeMutation) requestAutoMerge();
         } else if (def.id === "autofix") {
-          if (!autofixBusy && agent?.state !== "running" && !prIsGreen) autofixConfirm = true;
+          if (!autofixBusy && agent?.state !== "running" && !prIsGreen && !mergedState) requestAutofix();
         } else if (def.id === "rescorer") {
-          if (!customBusy) customConfirm = def;
+          if (!customBusy) requestCustomAgent(def);
         } else if (!customBusy && agent?.state !== "running") {
-          customConfirm = def;
+          requestCustomAgent(def);
         }
       } else {
         return;
@@ -1897,9 +2057,10 @@
       holdScrollRelease(document.querySelector(".page"));
     }
     function onPointerDown(e) {
-      if (!mergeMenuOpen) return;
-      if (e.target instanceof Element && e.target.closest(".merge-split")) return;
+      if (!mergeMenuOpen && !reviewMenuOpen) return;
+      if (e.target instanceof Element && e.target.closest("[data-split-action]")) return;
       mergeMenuOpen = false;
+      reviewMenuOpen = false;
     }
     function onKeyUp(e) {
       if (e.code === "KeyJ" || e.code === "ArrowDown") {
@@ -1933,18 +2094,19 @@
   let agentActionKeys = $derived(
     keybindAgents.flatMap((a) => {
       if (a.id === "fixer") return [];
-      if (a.id === "autofix") return agent?.state !== "running" && !prIsGreen ? [{ key: a.keybind, label: "auto-fix" }] : [];
+      if (a.id === "autofix") return agent?.state !== "running" && !prIsGreen && !mergedState ? [{ key: a.keybind, label: "auto-fix" }] : [];
       if (a.id === "rescorer") return [{ key: a.keybind, label: "re-score" }];
       return agent?.state !== "running" ? [{ key: a.keybind, label: a.name || "custom agent" }] : [];
     }),
   );
+  let localCheckoutKeys = $derived(pr?.localCheckoutPath && !onLocalBranch ? [{ key: "t", label: "switch branch" }] : []);
   let conversationKeys = $derived([
     { key: "d", label: "files" },
     { key: "c", label: "comment" },
     { key: "r", label: "reply" },
-    { key: "e", label: "editor" },
-    ...(pr?.body ? [{ key: "⇧E", label: "edit description" }] : []),
-    ...(pr?.viewerIsAuthor ? [] : [{ key: "v", label: "review" }]),
+    { key: "e", label: "edit inline" },
+    { key: "⇧E", label: "editor" },
+    ...(canReview ? [{ key: "v", label: "review" }] : []),
     { key: "s", label: "assign" },
     { key: "q", label: "request review" },
     { key: "p", label: "prompt agent" },
@@ -1953,30 +2115,32 @@
     { key: "x", label: "close" },
     ...autoMergeKeys,
     { key: "o", label: "github" },
-    ...(pr ? [{ key: "⇧T", label: "focus terminal" }] : []),
+    ...localCheckoutKeys,
     { key: "esc", label: "back" },
   ]);
   let filesKeys = $derived([
     { key: "d", label: "conversation" },
     { key: "J / K", label: "file" },
+    { key: "v", label: "toggle file viewed" },
     { key: "c", label: "changes range" },
     { key: "x", label: "hide tests" },
     { key: "h", label: "file history" },
     { key: "r", label: "reply" },
-    { key: "e", label: "editor" },
+    { key: "e", label: "edit inline" },
+    { key: "⇧E", label: "editor" },
     { key: "s", label: "assign" },
     { key: "q", label: "request review" },
     mergeKey,
     ...autoMergeKeys,
     { key: "o", label: "github" },
-    ...(pr ? [{ key: "⇧T", label: "focus terminal" }] : []),
+    ...localCheckoutKeys,
     { key: "esc", label: "back" },
   ]);
-  let agentsKeys = $derived([
-    { key: "⌘1 / ⌘2 / ⌘3", label: "switch tab" },
+  let tabKeys = $derived([
+    { key: "⌘1 / ⌘2 / ⌘3 / ⌘4", label: "switch tab" },
     { key: "x", label: "close" },
-    { key: "o", label: "github" },
-    ...(pr ? [{ key: "⇧T", label: "focus terminal" }] : []),
+    { key: "o", label: tab === "actions" && actionsRunUrl ? "github run" : "github" },
+    ...localCheckoutKeys,
     { key: "esc", label: "back" },
   ]);
 </script>
@@ -2085,7 +2249,7 @@
               {/if}
               <span class="sep">·</span>
               <span>{relativeTime(pr.updatedAt)}</span>
-              {#if liveState && mergeGate.reason && !pr.isDraft && pr.mergeable !== "CONFLICTING" && pr.mergeStateStatus !== "DIRTY"}
+              {#if liveState && mergeGate.reason && pr.reviewDecision !== "REVIEW_REQUIRED" && !pr.isDraft && pr.mergeable !== "CONFLICTING" && pr.mergeStateStatus !== "DIRTY"}
                 <span class="sep">·</span>
                 <span class="chip badge wait">{mergeGate.reason}</span>
               {/if}
@@ -2129,24 +2293,54 @@
               {/each}
             </div>
           {/if}
-          {#if liveState}
-            <div class="ci-summary {ci.tone}" role="status" aria-label={`${ci.text}. ${ciDetail}`}>
-              <span class="ci-summary-icon" aria-hidden="true">
-                {#if ci.icon === "success"}
-                  <svg class="status-success" viewBox="0 0 14 14">
-                    <circle cx="7" cy="7" r="6.5"></circle>
-                    <path d="m3.9 7.1 2 2 4.25-4.25"></path>
-                  </svg>
-                {:else if ci.icon === "failure"}
-                  <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"></circle><path d="m5.5 5.5 5 5m0-5-5 5"></path></svg>
-                {:else if ci.icon === "pending"}
-                  <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 4.5V8l2.4 1.5"></path></svg>
-                {:else}
-                  <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"></circle><path d="M5.5 8h5"></path></svg>
-                {/if}
-              </span>
-              <span class="ci-summary-label">{ci.text}</span>
-              <span class="ci-summary-detail">{ciDetail}</span>
+          {#if liveState || (pr.reviewDecision === "APPROVED" && primaryApprover)}
+            <div class="pr-head-statuses">
+              {#if liveState && pr.reviewDecision === "REVIEW_REQUIRED"}
+                <button
+                  type="button"
+                  class="approval-summary required"
+                  aria-label={canReview ? "Approval required. Review this pull request" : "Approval required. Choose a reviewer"}
+                  title={canReview ? "Review this pull request" : "Choose a reviewer"}
+                  onclick={activateApprovalMarker}
+                >
+                  <span class="approval-summary-icon" aria-hidden="true">
+                    <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 4.5V8l2.4 1.5"></path></svg>
+                  </span>
+                  <span>Approval required</span>
+                </button>
+              {:else if pr.reviewDecision === "APPROVED" && primaryApprover}
+                <div
+                  class="approval-summary approved"
+                  role="status"
+                  aria-label={`Approved by ${approvedReviewers.map((reviewer) => reviewer.login).join(", ")}`}
+                >
+                  <span class="approval-summary-icon" aria-hidden="true">
+                    <svg class="approval-check" viewBox="0 0 14 14"><circle cx="7" cy="7" r="6.5"></circle><path d="m3.9 7.1 2 2 4.25-4.25"></path></svg>
+                  </span>
+                  <Avatar login={primaryApprover.login} url={primaryApprover.avatarUrl} size={16} />
+                  <span>Approved by <strong>{primaryApprover.login}</strong>{#if approvedReviewers.length > 1} +{approvedReviewers.length - 1}{/if}</span>
+                </div>
+              {/if}
+              {#if liveState}
+                <div class="ci-summary {ci.tone}" role="status" aria-label={`${ci.text}. ${ciDetail}`}>
+                  <span class="ci-summary-icon" aria-hidden="true">
+                    {#if ci.icon === "success"}
+                      <svg class="status-success" viewBox="0 0 14 14">
+                        <circle cx="7" cy="7" r="6.5"></circle>
+                        <path d="m3.9 7.1 2 2 4.25-4.25"></path>
+                      </svg>
+                    {:else if ci.icon === "failure"}
+                      <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"></circle><path d="m5.5 5.5 5 5m0-5-5 5"></path></svg>
+                    {:else if ci.icon === "pending"}
+                      <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 4.5V8l2.4 1.5"></path></svg>
+                    {:else}
+                      <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"></circle><path d="M5.5 8h5"></path></svg>
+                    {/if}
+                  </span>
+                  <span class="ci-summary-label">{ci.text}</span>
+                  <span class="ci-summary-detail">{ciDetail}</span>
+                </div>
+              {/if}
             </div>
           {/if}
         </div>
@@ -2162,18 +2356,33 @@
                   <strong>{failingChecks.length} failing check{failingChecks.length === 1 ? "" : "s"}</strong>
                   <span class="attention-chip attention-label">Action required</span>
                 </div>
-                <span class="attention-description">Open the exact logs below or copy a ready-to-fix prompt.</span>
+                <span class="attention-description">Open the exact logs below or send them to an agent.</span>
               </div>
               <div class="ci-failure-actions">
-                <button class="ci-copy-button" onclick={copyCiFixPrompt}>
-                  {ciCopied.value ? "Copied" : "Copy fix prompt"}
+                <button
+                  type="button"
+                  class="fix-prompt-copy"
+                  aria-label="Copy fix prompt"
+                  title={fixPromptCopied.value === "ci" ? "Fix prompt copied" : "Copy fix prompt"}
+                  onclick={copyCiFixPrompt}
+                >
+                  {#if fixPromptCopied.value === "ci"}
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 8.25 2.75 2.75 6.25-6.25"></path></svg>
+                  {:else}
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <rect x="9" y="9" width="10" height="10" rx="1.5"></rect>
+                      <path d="M15 9V6.5A1.5 1.5 0 0 0 13.5 5h-7A1.5 1.5 0 0 0 5 6.5v7A1.5 1.5 0 0 0 6.5 15H9"></path>
+                    </svg>
+                  {/if}
                 </button>
                 <button
-                  class="ci-agent-button"
+                  class="ci-agent-button shortcut-action"
                   disabled={ciFixBusy || agent?.state === "running"}
-                  onclick={() => (ciFixConfirm = true)}
+                  aria-label={ciFixBusy ? "Starting agent" : agent?.state === "running" ? "Agent running" : "Fix with agent"}
+                  onclick={requestCiFix}
                 >
                   {ciFixBusy ? "Starting…" : agent?.state === "running" ? "Agent running" : "Fix with agent"}
+                  {#if fixShortcutTarget === "ci"}<Kbd keys={autofixDef.keybind} />{/if}
                 </button>
               </div>
             </div>
@@ -2210,17 +2419,32 @@
                 </div>
                 <span class="attention-description">This PR cannot merge until they are resolved.</span>
               </div>
-              {#if conflictFilesState === "ready"}
+              {#if conflictFilesState === "ready" && conflictFiles.length}
                 <div class="conflict-actions">
-                  <button class="conflict-copy-button" onclick={copyConflictFixPrompt}>
-                    {conflictCopied.value ? "Copied" : "Copy fix prompt"}
+                  <button
+                    type="button"
+                    class="fix-prompt-copy"
+                    aria-label="Copy fix prompt"
+                    title={fixPromptCopied.value === "conflict" ? "Fix prompt copied" : "Copy fix prompt"}
+                    onclick={copyConflictFixPrompt}
+                  >
+                    {#if fixPromptCopied.value === "conflict"}
+                      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 8.25 2.75 2.75 6.25-6.25"></path></svg>
+                    {:else}
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <rect x="9" y="9" width="10" height="10" rx="1.5"></rect>
+                        <path d="M15 9V6.5A1.5 1.5 0 0 0 13.5 5h-7A1.5 1.5 0 0 0 5 6.5v7A1.5 1.5 0 0 0 6.5 15H9"></path>
+                      </svg>
+                    {/if}
                   </button>
                   <button
-                    class="conflict-primary"
+                    class="conflict-primary shortcut-action"
                     disabled={conflictResolveBusy || agent?.state === "running"}
-                    onclick={() => (conflictResolveConfirm = true)}
+                    aria-label={conflictResolveBusy ? "Starting agent" : agent?.state === "running" ? "Agent running" : "Fix with agent"}
+                    onclick={requestConflictResolution}
                   >
                     {conflictResolveBusy ? "Starting…" : agent?.state === "running" ? "Agent running" : "Fix with agent"}
+                    {#if fixShortcutTarget === "conflict"}<Kbd keys={autofixDef.keybind} />{/if}
                   </button>
                 </div>
               {/if}
@@ -2240,8 +2464,6 @@
                     <li title={path}>{path}</li>
                   {/each}
                 </ul>
-              {:else}
-                <div class="conflict-alert-note">Repository-level conflict · no individual paths reported</div>
               {/if}
             {/if}
             {#if conflictResolveError}<div class="conflict-alert-error">{conflictResolveError}</div>{/if}
@@ -2279,13 +2501,19 @@
         <a class="tab" class:active={tab === "agents"} href="#/pr/{repo}/{number}/agents" onclick={(event) => guardTabNavigation(event, "agents")}>
           Agents {#if agent?.state === "running"}<span class="tab-count">1</span>{/if} {#if tab !== "agents"}<Kbd keys="⌘3" />{/if}
         </a>
+        <a class="tab" class:active={tab === "actions"} href="#/pr/{repo}/{number}/actions" onclick={(event) => guardTabNavigation(event, "actions")}>
+          Actions {#if tab !== "actions"}<Kbd keys="⌘4" />{/if}
+        </a>
       </nav>
+
+      <div style:display={tab === "actions" ? "contents" : "none"}>
+        <ActionsView {repo} {number} headSha={pr.headRefOid} bind:runUrl={actionsRunUrl} />
+      </div>
 
       {#if tab === "files"}
         <div class="files-layout">
           <div class="files-toolbar">
             <div class="toolbar-left">
-              <span class="toolbar-label">Compare</span>
               <RangePicker
                 {commits}
                 {rangeKey}
@@ -2306,7 +2534,7 @@
               <span>Changed files</span>
               {#if diffState === "ready"}<span class="fcount">{treeFiles.length}</span>{/if}
             </div>
-            <FileTree files={treeFiles} {selectedPath} onSelect={selectFileByPath} />
+            <FileTree files={treeFiles} {selectedPath} hoveredPath={hoveredDiffPath} onSelect={selectFileByPath} />
           </aside>
           <div class="tree-resizer" role="separator" aria-orientation="vertical" onpointerdown={startTreeResize}></div>
           <div class="diff-pane">
@@ -2326,6 +2554,8 @@
               <DiffView
                 bind:this={diffView}
                 {files}
+                onWarmFile={warmDiffFile}
+                onReleaseFile={releaseDiffFile}
                 anchored={threadSplit.anchored}
                 {threadProps}
                 collapsed={collapsedFiles}
@@ -2333,7 +2563,9 @@
                 {repo}
                 viewed={viewedFiles}
                 onToggleViewed={(file) => setFileViewed(file, !viewedFiles.has(file.path))}
+                onHoverFile={(path) => (hoveredDiffPath = path)}
                 headSha={range?.head ?? pr.headRefOid}
+                diffIdentity={displayedDiffKey}
                 {pendingInline}
                 {commentable}
                 onInlineComment={submitInlineComment}
@@ -2345,6 +2577,8 @@
                 onLookupDefinition={(symbol, fromPath, position) => telescope?.openDefinition(symbol, fromPath, position)}
                 editable={fileEditable}
                 onCommitFileEdit={commitFileEdit}
+                onGenerateCommitMessage={(path, hunk) => generateCommitMessage(repo, number, path, hunk)}
+                onFinishExternalEdit={finishExternalEdit}
                 layout={prefs.diffLayout}
               />
             {/if}
@@ -2379,12 +2613,7 @@
                 </span>
                 {#if runDetail.run.exit_reason}<span class="run-exit">{runDetail.run.exit_reason}</span>{/if}
                 {#if runDetail.run.state === "running"}
-                  {#if killConfirm}
-                    <button class="link danger" onclick={confirmKillAgent}>confirm kill</button>
-                    <button class="link" onclick={() => (killConfirm = false)}>cancel</button>
-                  {:else}
-                    <button class="link" onclick={() => (killConfirm = true)}>kill agent</button>
-                  {/if}
+                  <button class="link" onclick={requestKillAgent}>kill agent</button>
                 {/if}
                 <button class="link" onclick={() => (showRawLog = !showRawLog)}>{showRawLog ? "hide raw log" : "raw log"}</button>
               </div>
@@ -2427,7 +2656,7 @@
             {/if}
           </div>
         </div>
-      {:else}
+      {:else if tab !== "actions"}
         <div class="cols">
         <div class="left">
           {#if pr.body}
@@ -2445,14 +2674,15 @@
                   </div>
                 </div>
               {:else}
-                <div class="md" use:imageFallback use:mermaidDiagrams={theme.name + "" + displayBody}>{@html renderMarkdown(displayBody)}</div>
+                {#if !editBodyMutation}
+                  <button class="link body-edit shortcut-action" onclick={startEditBody}>Edit <Kbd keys={["shift", "e"]} /></button>
+                {/if}
+                <div class="md" use:imageFallback use:mermaidDiagrams={theme.name + "" + displayBody}>{@html renderMarkdown(displayBody)}</div>
                 {#if editBodyMutation}
                   <div class="body-mut">
                     <MutationBadge state={editBodyMutation.state} onRetry={() => handleRetry(editBodyMutation.id)} onDiscard={() => handleDiscard(editBodyMutation.id)} />
                     {#if editBodyMutation.error}<span class="mut-error">{editBodyMutation.error}</span>{/if}
                   </div>
-                {:else}
-                  <button class="link body-edit shortcut-action" onclick={startEditBody}>Edit <Kbd keys={["shift", "e"]} /></button>
                 {/if}
                 <Reactions reactions={pr.reactions} />
               {/if}
@@ -2477,38 +2707,59 @@
             {#each timeline as event (event.id)}
               {#if event.kind === "commit"}
                 {@const lines = commitLineCounts[event.oid] ?? (event.additions === null ? null : { additions: event.additions, deletions: event.deletions, skippedTests: false, testsOnly: false })}
-                <button
-                  class="commit-row"
-                  class:clickable={event.parentOid}
-                  disabled={!event.parentOid}
-                  title={event.parentOid ? "View this commit's changes" : ""}
-                  onclick={() => selectCommit(event.oid)}
-                >
-                  <span class="commit-glyph"></span>
-                  <Avatar login={event.author} url={event.avatarUrl} size={16} />
-                  <span class="commit-headline">{event.headline}</span>
-                  <span
-                    class="commit-lines"
-                    class:tests-only={lines?.testsOnly}
-                    title={lines?.testsOnly ? "Only test files changed" : lines?.skippedTests ? "Lines changed outside test files" : "Lines changed"}
+                {@const when = relativeTime(event.at)}
+                <div class="commit-row" class:clickable={event.parentOid}>
+                  <button
+                    class="commit-row-main"
+                    disabled={!event.parentOid}
+                    title={event.parentOid ? "View this commit's changes" : ""}
+                    onclick={() => selectCommit(event.oid)}
                   >
-                    {#if lines}
-                      <b class="add">+{lines.additions}</b><b class="del">−{lines.deletions}</b>
-                    {/if}
-                  </span>
-                  {#if event.ciState === "SUCCESS"}
-                    <span class="commit-ci pass" aria-label="Checks passed" title="Checks passed">
+                    <span class="commit-glyph"></span>
+                    <Avatar login={event.author} url={event.avatarUrl} size={16} />
+                    <span class="commit-headline">{event.headline}</span>
+                    <span
+                      class="commit-lines"
+                      class:tests-only={lines?.testsOnly}
+                      title={lines?.testsOnly ? "Only test files changed" : lines?.skippedTests ? "Lines changed outside test files" : "Lines changed"}
+                    >
+                      {#if lines}
+                        <b class="add">+{lines.additions}</b><b class="del">−{lines.deletions}</b>
+                      {/if}
+                    </span>
+                  </button>
+                  <a
+                    class="commit-ci"
+                    class:pass={event.ciState === "SUCCESS"}
+                    class:fail={FAILED_CI_STATES.has(event.ciState)}
+                    class:running={RUNNING_CI_STATES.has(event.ciState)}
+                    class:neutral={!event.ciState}
+                    href="https://github.com/{repo}/commit/{event.oid}/checks"
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label="{commitCiLabel(event.ciState)} for {event.oid.slice(0, 7)}. View workflow runs"
+                    title="{commitCiLabel(event.ciState)} · View workflow runs for {event.oid.slice(0, 7)}"
+                  >
+                    {#if event.ciState === "SUCCESS"}
                       <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5"></circle><path d="m4.8 8 2 2 4.4-4.4"></path></svg>
-                    </span>
-                  {:else if event.ciState === "FAILURE" || event.ciState === "ERROR"}
-                    <span class="commit-ci fail" aria-label="Checks failed" title="Checks failed">
+                    {:else if FAILED_CI_STATES.has(event.ciState)}
                       <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5"></circle><path d="m5.5 5.5 5 5m0-5-5 5"></path></svg>
-                    </span>
-                  {:else}
-                    <span class="commit-ci" aria-hidden="true"></span>
-                  {/if}
-                  <span class="when">{relativeTime(event.at)}</span>
-                </button>
+                    {:else if RUNNING_CI_STATES.has(event.ciState)}
+                      <span class="commit-ci-dot" aria-hidden="true"></span>
+                    {:else}
+                      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5"></circle><path d="M5.5 8h5"></path></svg>
+                    {/if}
+                  </a>
+                  <button
+                    class="when commit-when"
+                    disabled={!event.parentOid}
+                    title={event.parentOid ? "View this commit's changes" : ""}
+                    aria-label="View changes from {when} ago"
+                    onclick={() => selectCommit(event.oid)}
+                  >
+                    {when}
+                  </button>
+                </div>
               {:else if event.kind === "thread"}
                 <Thread thread={event.thread} {...threadProps(event.thread)} />
               {:else if event.kind === "pending-comment"}
@@ -2559,22 +2810,25 @@
               <h3 class="side-title">Actions</h3>
               <div class="actions">
                 {#snippet mergeControl(enabled)}
-                  <div class="merge-split">
-                    <button class="merge-btn merge-main" class:blocked={enabled && mergeBlockedByQuota} disabled={!enabled} onclick={() => requestMerge()}>
+                  <SplitButton
+                    tone={enabled && mergeBlockedByQuota ? "blocked" : "green"}
+                    open={mergeMenuOpen}
+                    mainDisabled={!enabled}
+                    optionsLabel="Merge options"
+                    onMain={() => requestMerge()}
+                    onToggle={() => ((reviewMenuOpen = false), (mergeMenuOpen = !mergeMenuOpen))}
+                  >
+                    {#snippet main()}
                       <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
                         <circle cx="6" cy="6" r="2.5"></circle>
                         <circle cx="18" cy="18" r="2.5"></circle>
                         <path d="M6 8.5V13a5 5 0 0 0 5 5h4.5"></path>
                       </svg>
                       <span>Merge</span>
-                      <span class="action-method">{mergeMethodLabel}</span>
+                      <span class="action-method">{mergeActionMethodLabel}</span>
                       {#if enabled}<Kbd keys="m" />{/if}
-                    </button>
-                    <button class="merge-btn merge-caret" class:open={mergeMenuOpen} aria-label="Merge options" aria-expanded={mergeMenuOpen} aria-haspopup="menu" onclick={() => (mergeMenuOpen = !mergeMenuOpen)}>
-                      {#if mergeMenuOpen}<Kbd keys="esc" />{/if}
-                      <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"></path></svg>
-                    </button>
-                    {#if mergeMenuOpen}
+                    {/snippet}
+                    {#snippet menu()}
                       <div class="merge-menu" role="menu">
                         {#each mergeMethods as method}
                           <button
@@ -2622,8 +2876,8 @@
                           </button>
                         {/if}
                       </div>
-                    {/if}
-                  </div>
+                    {/snippet}
+                  </SplitButton>
                 {/snippet}
                 {#if pr.isDraft}
                   {#if readyMutation?.state === "pending"}
@@ -2689,7 +2943,7 @@
                       onDiscard={() => handleDiscard(closeMutation.id)}
                     />
                   {:else}
-                    <button class="merge-btn fail close-action" onclick={() => (closeConfirm = true)}>
+                    <button class="merge-btn fail close-action" onclick={requestClose}>
                       <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
                         <circle cx="12" cy="12" r="8.5"></circle>
                         <path d="m9 9 6 6m0-6-6 6"></path>
@@ -2702,14 +2956,14 @@
               </div>
             </div>
           {/if}
-          {#if agentRuns.length || !prIsGreen}
+          {#if agentRuns.length || (!prIsGreen && !mergedState)}
             <div class="side-block">
               <h3 class="side-title">Agents</h3>
-              {#if !prIsGreen}
-                <button class="btn wide shortcut-action" disabled={autofixBusy || agent?.state === "running"} onclick={() => (autofixConfirm = true)}>
+              {#if !prIsGreen && !mergedState}
+                <button class="btn wide shortcut-action" disabled={autofixBusy || agent?.state === "running"} onclick={requestAutofix}>
                   {autofixBusy ? "Starting…" : "Auto-fix"}
-                  {#if !autofixBusy && agent?.state !== "running" && keybindAgents.some((a) => a.id === "autofix")}
-                    <Kbd keys={keybindAgents.find((a) => a.id === "autofix").keybind} />
+                  {#if fixShortcutTarget === "autofix"}
+                    <Kbd keys={autofixDef.keybind} />
                   {/if}
                 </button>
               {/if}
@@ -2766,12 +3020,7 @@
                 <div class="am-actions">
                   <button class="link" onclick={toggleAgentLog}>{showAgentLog ? "hide log" : "view log"}</button>
                   {#if agent.state === "running"}
-                    {#if killConfirm}
-                      <button class="link danger" onclick={confirmKillAgent}>confirm kill</button>
-                      <button class="link" onclick={() => (killConfirm = false)}>cancel</button>
-                    {:else}
-                      <button class="link" onclick={() => (killConfirm = true)}>kill agent</button>
-                    {/if}
+                    <button class="link" onclick={requestKillAgent}>kill agent</button>
                   {/if}
                 </div>
                 {#if showAgentLog}
@@ -2783,34 +3032,61 @@
               {/if}
             </div>
           {/if}
-          <div class="side-block">
-            <h3 class="side-title">Review</h3>
-            {#if pr.viewerIsAuthor}
-              <div class="own-pr-note">Your PR — approve / request changes post as a comment.</div>
-            {/if}
-            {#if verdictMutation}
-              <div class="verdict-badge">
-                <MutationBadge
-                  state={verdictMutation.state}
-                  onRetry={() => handleRetry(verdictMutation.id)}
-                  onDiscard={() => handleDiscard(verdictMutation.id)}
-                />
+          {#if canReview}
+            <div class="side-block">
+              <h3 class="side-title">Review</h3>
+              {#if verdictMutation}
+                <div class="verdict-badge">
+                  <MutationBadge
+                    state={verdictMutation.state}
+                    onRetry={() => handleRetry(verdictMutation.id)}
+                    onDiscard={() => handleDiscard(verdictMutation.id)}
+                  />
+                </div>
+              {/if}
+              <div class="verdict-body-wrap">
+                <textarea
+                  id="verdict-control"
+                  class="verdict-body"
+                  placeholder="Optional body…"
+                  bind:value={verdictBody}
+                  onkeydown={onVerdictKeydown}
+                  onfocus={() => (verdictBodyFocused = true)}
+                  onblur={() => (verdictBodyFocused = false)}
+                ></textarea>
+                {#if tab === "conversation"}<span class="verdict-key"><Kbd keys="v" /></span>{/if}
               </div>
-            {/if}
-            <div class="verdict-select-wrap">
-              <select id="verdict-control" class="verdict-select" bind:value={verdictEvent}>
-                <option value="APPROVE">Approve</option>
-                <option value="REQUEST_CHANGES">Request changes</option>
-                <option value="COMMENT">Comment</option>
-              </select>
-              {#if tab === "conversation" && !pr.viewerIsAuthor}<span class="verdict-key"><Kbd keys="v" /></span>{/if}
-              <span class="verdict-select-chevron"><Chevron size={16} /></span>
+              <SplitButton
+                tone={selectedVerdict.tone}
+                open={reviewMenuOpen}
+                mainDisabled={verdictSubmitting}
+                caretDisabled={verdictSubmitting}
+                optionsLabel="Review options"
+                onMain={submitVerdict}
+                onToggle={() => ((mergeMenuOpen = false), (reviewMenuOpen = !reviewMenuOpen))}
+              >
+                {#snippet main()}
+                  <span>{verdictSubmitting ? "Submitting…" : selectedVerdict.label}</span>
+                  {#if !verdictSubmitting && verdictBodyFocused}<Kbd keys={["cmd", "enter"]} />{/if}
+                {/snippet}
+                {#snippet menu()}
+                  <div class="merge-menu review-menu" role="menu">
+                    {#each VERDICT_OPTIONS as option}
+                      {#if option.value !== verdictEvent}
+                        <button
+                          role="menuitem"
+                          class:danger={option.tone === "red"}
+                          onclick={() => ((verdictEvent = option.value), (reviewMenuOpen = false))}
+                        >
+                          {option.label}
+                        </button>
+                      {/if}
+                    {/each}
+                  </div>
+                {/snippet}
+              </SplitButton>
             </div>
-            <textarea class="verdict-body" placeholder="Optional body…" bind:value={verdictBody}></textarea>
-            <button class="btn wide" disabled={verdictSubmitting} onclick={submitVerdict}>
-              {verdictSubmitting ? "Submitting…" : "Submit review"}
-            </button>
-          </div>
+          {/if}
 
           <div class="side-block">
             <h3 class="side-title">Reviewers <span class="side-key"><Kbd keys="q" /></span></h3>
@@ -2928,7 +3204,7 @@
 
     {#if pickerMode}
       <UserPicker
-        title={pickerMode === "assign" ? "Assign people" : "Request review from"}
+        title={pickerMode === "assign" ? "Assign" : "Reviewers"}
         users={repoUsers}
         current={pickerMode === "assign" ? assignedLogins : requestedLogins}
         onPick={pickerMode === "assign" ? submitAssign : submitRequestReviewer}
@@ -2937,15 +3213,15 @@
     {/if}
 
     {#if quotaMergeModal}
-      <QuotaMergeModal {number} url={pr.url} impact={quotaStatus} onClose={() => (quotaMergeModal = false)} />
+      <QuotaMergeModal url={pr.url} impact={quotaStatus} onClose={() => (quotaMergeModal = false)} />
     {/if}
 
     {#if promptOpen}
       <div class="prompt-overlay" role="presentation" onclick={() => (promptOpen = false)}>
-        <div class="prompt-box" role="presentation" onclick={(e) => e.stopPropagation()}>
+        <div class="prompt-box" role="dialog" aria-modal="true" aria-label={`Agent prompt for pull request #${number}`} tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
           <div class="prompt-head">
-            <span class="prompt-title">prompt an agent on #{number}</span>
-            <span class="prompt-sub">runs opus in the PR worktree · does what you say · pushes</span>
+            <span class="prompt-title">Agent prompt</span>
+            <span class="prompt-pr">#{number}</span>
           </div>
           <textarea
             class="prompt-input"
@@ -2953,11 +3229,20 @@
             onkeydown={onPromptKey}
             use:focusOnMount
             disabled={promptBusy}
-            placeholder="e.g. remove the comments you just added"
+            placeholder="What should change?"
             spellcheck="false"
           ></textarea>
           {#if promptError}<div class="prompt-error">{promptError}</div>{/if}
-          <div class="prompt-keys"><Kbd keys="enter" /> launch · <Kbd keys={["shift", "enter"]} /> newline · <Kbd keys="esc" /> cancel</div>
+          <div class="prompt-footer">
+            <span class="prompt-newline"><Kbd keys={["shift", "enter"]} /> newline</span>
+            <div class="prompt-actions">
+              <button class="prompt-button" type="button" onclick={() => (promptOpen = false)}>Cancel <Kbd keys="esc" /></button>
+              <button class="prompt-button primary" type="button" disabled={!promptText.trim() || promptBusy} onclick={submitPrompt}>
+                {promptBusy ? "Launching…" : "Launch"}
+                {#if !promptBusy}<Kbd keys="enter" />{/if}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     {/if}
@@ -2965,7 +3250,6 @@
     {#if mergeConfirm || forceMergeConfirm}
       <MergeDecisionDialog
         {number}
-        title={pr.title}
         headRef={pr.headRefName}
         baseRef={pr.baseRefName}
         methodLabel={mergeMethodLabel}
@@ -2973,50 +3257,32 @@
         onConfirm={confirmMergeDecision}
         onCancel={cancelMergeDecision}
       />
-    {:else if closeConfirm}
-      <div class="keybar merge-confirm close-confirm">
-        <span>close PR #{number}?</span>
-        <span class="confirm-keys"><Kbd keys="enter" /> confirm · <Kbd keys="esc" /> cancel</span>
-      </div>
-    {:else if peopleFlash.value}
+    {/if}
+
+    {#if confirmAction}
+      <ConfirmDialog
+        title={confirmAction.title}
+        confirmLabel={confirmAction.confirmLabel}
+        danger={Boolean(confirmAction.danger)}
+        detail={confirmAction.message ? confirmMessage : null}
+        onConfirm={runConfirmAction}
+        onCancel={() => (confirmAction = null)}
+      />
+      {#snippet confirmMessage()}{confirmAction.message}{/snippet}
+    {/if}
+
+    {#if peopleFlash.value}
       <div class="keybar merge-flash">{peopleFlash.value}</div>
-    {:else if autoMergeConfirm}
-      <div class="keybar merge-confirm">
-        <span>
-          {pr.autoMergeEnabled
-            ? `disarm auto-merge bot for #${number}?`
-            : `arm auto-merge bot + fixer agent for #${number}?`}
-        </span>
-        <span class="confirm-keys"><Kbd keys="enter" /> confirm · <Kbd keys="esc" /> cancel</span>
-      </div>
-    {:else if autofixConfirm}
-      <div class="keybar merge-confirm">
-        <span>arm auto-fix agent for #{number}?</span>
-        <span class="confirm-keys"><Kbd keys="enter" /> confirm · <Kbd keys="esc" /> cancel</span>
-      </div>
-    {:else if ciFixConfirm}
-      <div class="keybar merge-confirm">
-        <span>launch an agent to fix {failingChecks.length} failing CI check{failingChecks.length === 1 ? "" : "s"} on {pr.headRefName}?</span>
-        <span class="confirm-keys"><Kbd keys="enter" /> confirm · <Kbd keys="esc" /> cancel</span>
-      </div>
-    {:else if conflictResolveConfirm}
-      <div class="keybar merge-confirm">
-        <span>{conflictFiles.length ? `resolve conflicts in ${conflictFiles.length} file${conflictFiles.length === 1 ? "" : "s"}` : "resolve repository-level conflict"} and push to {pr.headRefName}?</span>
-        <span class="confirm-keys"><Kbd keys="enter" /> confirm · <Kbd keys="esc" /> cancel</span>
-      </div>
-    {:else if customConfirm}
-      <div class="keybar merge-confirm">
-        <span>{customConfirm.id === "rescorer" ? `re-score #${number}?` : `arm "${customConfirm.name || "custom"}" agent for #${number}?`}</span>
-        <span class="confirm-keys"><Kbd keys="enter" /> confirm · <Kbd keys="esc" /> cancel</span>
-      </div>
     {:else if mergeFlash.value}
       <div class="keybar merge-flash">{mergeFlash.value}</div>
     {:else if branchCopied.value}
       <div class="keybar copied-flash">Copied branch name</div>
+    {:else if fixPromptCopied.value}
+      <div class="keybar copied-flash">Copied {fixPromptCopied.value === "ci" ? "failing CI" : "merge conflict"} fix prompt</div>
     {:else if copied.value}
       <div class="keybar copied-flash">{copied.value}</div>
     {:else}
-      <KeyBar keys={tab === "files" ? filesKeys : tab === "agents" ? agentsKeys : conversationKeys} />
+      <KeyBar keys={tab === "files" ? filesKeys : tab === "agents" || tab === "actions" ? tabKeys : conversationKeys} />
     {/if}
 
     <Telescope bind:this={telescope} {repo} headSha={pr.headRefOid} headRef={pr.headRefName} {testsHidden} changedFiles={files} onOpenChangedFile={openChangedFile} onOpenHistory={openFileHistory} bind:open={telescopeOpen} />
@@ -3095,33 +3361,6 @@
     max-width: 1120px;
     padding: 32px 0 48px;
   }
-  .merge-confirm {
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    height: 38px;
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    padding: 0 24px;
-    background: var(--overlay-bg);
-    border-top: 2px solid var(--ready);
-    backdrop-filter: blur(8px);
-    z-index: 20;
-    font-size: 12.5px;
-    color: var(--text);
-  }
-  .merge-confirm strong {
-    color: var(--ready);
-    font-weight: 600;
-  }
-  .merge-confirm .confirm-keys {
-    color: var(--text-dim);
-  }
-  .merge-confirm.close-confirm {
-    border-top-color: var(--fail);
-  }
   .prompt-overlay {
     position: fixed;
     inset: 0;
@@ -3132,34 +3371,34 @@
     background: var(--overlay-bg);
   }
   .prompt-box {
-    width: min(640px, calc(var(--general-width) - 48px));
+    width: min(520px, calc(var(--general-width) - 48px));
     background: var(--panel-raised);
     border: 1px solid var(--border);
     border-radius: 12px;
-    padding: 18px;
+    padding: 16px;
     box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
   }
   .prompt-head {
     display: flex;
-    flex-direction: column;
-    gap: 3px;
+    align-items: center;
+    gap: 8px;
     margin-bottom: 12px;
   }
   .prompt-title {
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--text-dim);
+    color: var(--text);
+    font-size: 16px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
   }
-  .prompt-sub {
-    font-size: 11.5px;
+  .prompt-pr {
     color: var(--text-faint);
+    font-family: var(--mono);
+    font-size: 12px;
   }
   .prompt-input {
     width: 100%;
     box-sizing: border-box;
-    min-height: 96px;
+    min-height: 88px;
     resize: vertical;
     background: var(--panel);
     border: 1px solid var(--border);
@@ -3182,10 +3421,47 @@
     font-size: 12px;
     margin-top: 8px;
   }
-  .prompt-keys {
+  .prompt-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 12px;
+  }
+  .prompt-newline {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     color: var(--text-faint);
     font-size: 11px;
-    margin-top: 10px;
+  }
+  .prompt-actions {
+    display: flex;
+    gap: 8px;
+  }
+  .prompt-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 32px;
+    padding: 0 13px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--surface);
+    box-shadow: var(--shadow-control-outlined);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .prompt-button.primary {
+    background: var(--link);
+    box-shadow: var(--shadow-control-filled);
+    color: var(--on-brand);
+  }
+  .prompt-button:disabled {
+    opacity: 0.45;
   }
   .copied-flash {
     position: fixed;
@@ -3315,20 +3591,6 @@
   .actions .merge-btn {
     width: 100%;
     padding: 6px 12px;
-  }
-  .merge-split {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 34px;
-    position: relative;
-  }
-  .actions .merge-split .merge-main {
-    border-radius: 6px 0 0 6px;
-  }
-  .actions .merge-split .merge-caret {
-    width: 34px;
-    border-left: 0;
-    border-radius: 0 6px 6px 0;
-    padding: 6px;
   }
   .merge-menu {
     position: absolute;
@@ -3730,10 +3992,19 @@
     gap: 8px;
     margin-top: 8px;
   }
-  .body-edit {
-    position: absolute;
-    top: 12px;
-    right: 14px;
+  .body-card .body-edit {
+    float: right;
+    min-height: 28px;
+    margin: -4px -4px 4px 10px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-dim);
+    font-family: var(--sans);
+    font-size: 11px;
+    text-decoration: none;
+    cursor: pointer;
     opacity: 0;
     transition: opacity 0.12s ease;
   }
@@ -3741,18 +4012,20 @@
   .body-edit:focus-visible {
     opacity: 1;
   }
-  .body-edit,
   .body-editor .link {
-    background: none;
+    padding: 0;
     border: none;
+    background: none;
     color: var(--text-dim);
     font-family: var(--sans);
     font-size: 11px;
-    cursor: pointer;
-    padding: 0;
     text-decoration: underline;
+    cursor: pointer;
   }
-  .body-edit:hover,
+  .body-card .body-edit:hover:not(:disabled) {
+    background: var(--surface-hover);
+    color: var(--text);
+  }
   .body-editor .link:hover {
     color: var(--text);
   }
@@ -3834,9 +4107,26 @@
     text-align: left;
     cursor: default;
   }
+  .commit-row-main {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+    padding: 0;
+    color: inherit;
+    font: inherit;
+    background: none;
+    border: 0;
+    text-align: left;
+    cursor: default;
+  }
   .commit-row.clickable {
     cursor: pointer;
     border-radius: 6px;
+  }
+  .commit-row.clickable .commit-row-main {
+    cursor: pointer;
   }
   .commit-row.clickable:hover {
     background: var(--hunk-hover);
@@ -3898,12 +4188,36 @@
   .commit-ci.fail {
     color: var(--fail);
   }
+  .commit-ci.running {
+    color: var(--review);
+  }
+  .commit-ci.neutral {
+    color: var(--text-faint);
+  }
+  .commit-ci-dot {
+    width: 8px;
+    height: 8px;
+    margin: auto;
+    border-radius: 50%;
+    background: currentColor;
+  }
+  .commit-ci:hover {
+    filter: brightness(1.15);
+  }
   .commit-row .when {
     flex: none;
     min-width: 30px;
-    text-align: right;
+    padding: 0;
     color: var(--text-faint);
+    font: inherit;
     font-size: 11px;
+    text-align: right;
+    background: none;
+    border: 0;
+    opacity: 1;
+  }
+  .commit-row.clickable .commit-when {
+    cursor: pointer;
   }
   .event-head .author {
     color: var(--text);
@@ -4222,9 +4536,6 @@
   .am-actions .link:hover {
     color: var(--text);
   }
-  .am-actions .link.danger {
-    color: var(--fail);
-  }
   .am-log {
     margin: 10px 0 0;
     padding: 8px;
@@ -4243,33 +4554,6 @@
     margin-bottom: 8px;
     font-family: var(--sans);
     font-size: 11px;
-  }
-  .verdict-select {
-    width: 100%;
-    background: var(--panel-raised);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    color: var(--text);
-    font-size: 12.5px;
-    padding: 6px 8px;
-    margin-bottom: 8px;
-  }
-  .verdict-body {
-    width: 100%;
-    resize: vertical;
-    min-height: 50px;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    color: var(--text);
-    font-size: 12.5px;
-    padding: 8px;
-    margin-bottom: 8px;
-  }
-  .verdict-body:focus,
-  .verdict-select:focus {
-    outline: none;
-    border-color: var(--text-faint);
   }
 
   /* Shared detail primitives: one strong header surface, then calm working space. */
@@ -4566,12 +4850,82 @@
     padding-top: 12px;
     border-top: 1px solid var(--border-soft);
   }
+  .pr-head-statuses {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+  }
+  .approval-summary {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 28px;
+    padding: 0 10px 0 7px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--surface);
+    box-shadow: var(--shadow-control-hairline);
+    color: var(--text-dim);
+    font-family: var(--sans);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  button.approval-summary {
+    cursor: pointer;
+    transition: background-color 120ms ease, color 120ms ease, transform 120ms var(--ease-out);
+  }
+  .approval-summary-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 16px;
+    height: 16px;
+    color: var(--text-faint);
+  }
+  .approval-summary-icon svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .approval-summary.required .approval-summary-icon {
+    color: var(--review);
+  }
+  .approval-summary.approved .approval-summary-icon {
+    color: var(--ready);
+  }
+  .approval-summary .approval-check circle {
+    fill: currentColor;
+    stroke: none;
+  }
+  .approval-summary .approval-check path {
+    stroke: var(--native-on-accent);
+    stroke-width: 1.4;
+  }
+  .approval-summary strong {
+    color: var(--text);
+    font-weight: 500;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    button.approval-summary:hover {
+      background: color-mix(in srgb, var(--surface) 88%, var(--text) 12%);
+      color: var(--text);
+    }
+  }
+  button.approval-summary:active {
+    transform: scale(0.99);
+  }
   .ci-summary {
     display: inline-flex;
     align-items: center;
     gap: 7px;
     min-height: 28px;
-    margin-left: auto;
+    margin-left: 0;
     padding: 0 10px 0 7px;
     border: 0;
     border-radius: 999px;
@@ -4709,33 +5063,39 @@
     background: var(--fail-bg);
     color: var(--fail);
   }
-  .ci-copy-button,
-  .conflict-copy-button {
+  .fix-prompt-copy {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     flex: none;
-    min-width: 112px;
-    min-height: 28px;
-    padding: 0 10px;
+    width: 28px;
+    height: 28px;
+    padding: 0;
     border: 0;
-    border-radius: 7px;
+    border-radius: 999px;
     background: var(--surface);
     color: var(--text-dim);
-    font-family: var(--sans);
-    font-size: 11px;
-    font-weight: 650;
-    text-align: center;
+    box-shadow: var(--shadow-control-hairline);
     cursor: pointer;
-    transition: transform 120ms var(--ease-out), background 120ms ease;
+    transition: transform 120ms var(--ease-out), background-color 120ms ease, color 120ms ease;
+  }
+  .fix-prompt-copy svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
   @media (hover: hover) and (pointer: fine) {
-    .ci-copy-button:hover,
-    .conflict-copy-button:hover {
+    .fix-prompt-copy:hover {
       background: var(--surface-hover);
       color: var(--text);
     }
   }
-  .ci-copy-button:active,
-  .conflict-copy-button:active {
-    transform: scale(0.99);
+  .fix-prompt-copy:active {
+    transform: scale(0.97);
   }
   .ci-failure-actions {
     display: flex;
@@ -5017,9 +5377,6 @@
     border-bottom-color: var(--border);
     box-shadow: var(--shadow-xs);
   }
-  .detail-frame.conversation-tab > .detail {
-    max-width: 1120px;
-  }
   .cols {
     grid-template-columns: minmax(0, 1fr) minmax(248px, 278px);
     gap: 26px;
@@ -5113,7 +5470,6 @@
     border-radius: 14px;
     box-shadow: var(--shadow-dialog);
   }
-  .merge-confirm,
   .copied-flash,
   .merge-flash {
     left: var(--app-rail-width, 0px);
@@ -5205,6 +5561,11 @@
       align-items: flex-start;
       flex-direction: column;
     }
+    .pr-head-statuses {
+      align-items: flex-start;
+      flex-direction: column;
+      margin-left: 0;
+    }
     .branch-context {
       width: 100%;
     }
@@ -5242,7 +5603,6 @@
       width: 100%;
       margin-left: 0;
     }
-    .ci-copy-button,
     .ci-agent-button {
       flex: 1 1 0;
     }
@@ -5280,7 +5640,6 @@
       width: 100%;
       margin-left: 0;
     }
-    .conflict-copy-button,
     .conflict-primary {
       flex: 1 1 0;
     }
@@ -5461,8 +5820,9 @@
     }
   }
   .cols {
-    grid-template-columns: minmax(0, 1fr) minmax(240px, 264px);
+    grid-template-columns: minmax(0, 816px) minmax(240px, 264px);
     gap: 32px;
+    justify-content: center;
   }
   .right {
     gap: 0;
@@ -5472,7 +5832,7 @@
     padding: 18px;
     border: 0;
     border-radius: var(--radius-lg);
-    background: var(--panel);
+    background: color-mix(in srgb, var(--panel) 88%, var(--surface));
     box-shadow: var(--shadow-surface);
   }
   .side-block {
@@ -5480,7 +5840,7 @@
     padding: 14px;
     border: 0;
     border-radius: var(--radius-lg);
-    background: var(--panel);
+    background: color-mix(in srgb, var(--panel) 88%, var(--surface));
     box-shadow: var(--shadow-surface);
   }
   .side-block + .side-block {
@@ -5496,9 +5856,14 @@
   .event,
   .run-row,
   .diff-status {
-    border-color: var(--border-soft);
+    border-color: var(--border);
     border-radius: var(--radius-md);
-    box-shadow: none;
+    background: color-mix(in srgb, var(--panel) 88%, var(--surface));
+  }
+  .event:not(.activity-event),
+  .run-row,
+  .diff-status {
+    box-shadow: var(--shadow-surface);
   }
   .event-head {
     background: color-mix(in srgb, var(--surface) 56%, transparent);
@@ -5506,9 +5871,9 @@
   .event {
     margin-bottom: 8px;
     overflow: hidden;
-    border-color: var(--border-soft);
+    border-color: var(--border);
     border-radius: 10px;
-    background: var(--panel);
+    background: color-mix(in srgb, var(--panel) 88%, var(--surface));
   }
   .event-head {
     min-height: 40px;
@@ -5555,7 +5920,7 @@
   .greptile-event :global(.md) {
     color: var(--text-dim);
     font-size: 13.5px;
-    line-height: 1.52;
+    line-height: 1.65;
   }
   .greptile-event :global(.md h1),
   .greptile-event :global(.md h2),
@@ -5638,13 +6003,6 @@
     background: var(--brand-disabled);
     color: var(--on-brand);
   }
-  .merge-split .merge-btn {
-    background: light-dark(#1f883d, #238636);
-  }
-  .merge-split .merge-btn:disabled {
-    background: color-mix(in srgb, light-dark(#1f883d, #238636) 38%, var(--bg));
-    color: var(--on-brand);
-  }
   .composer .btn {
     height: 36px;
     background: var(--link);
@@ -5656,22 +6014,6 @@
     box-shadow: none;
     color: var(--on-brand);
   }
-  .actions .merge-split .merge-main {
-    border-radius: 999px 0 0 999px;
-  }
-  .actions .merge-split .merge-caret {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-left: 1px solid color-mix(in srgb, #fff 24%, transparent);
-    border-radius: 0 999px 999px 0;
-  }
-  .actions .merge-split .merge-caret.open {
-    width: auto;
-    gap: 4px;
-    padding: 0 6px;
-  }
-  .merge-main,
   .close-action {
     display: flex;
     align-items: center;
@@ -5742,9 +6084,6 @@
       background: var(--brand-hover);
       filter: none;
     }
-    .merge-split .merge-btn:hover:not(:disabled):not(.blocked) {
-      background: light-dark(#1a7f37, #2ea043);
-    }
     .composer .btn:hover:not(:disabled) {
       background: var(--brand-hover);
     }
@@ -5775,8 +6114,6 @@
   .merge-btn:active:not(:disabled) {
     transform: scale(0.99);
   }
-  .ci-copy-button,
-  .conflict-copy-button,
   .ci-agent-button,
   .conflict-primary {
     min-height: 28px;
@@ -5786,12 +6123,6 @@
     font-family: var(--sans);
     font-size: 12px;
     font-weight: 500;
-  }
-  .ci-copy-button,
-  .conflict-copy-button {
-    background: color-mix(in srgb, var(--fail-bg) 78%, var(--panel));
-    box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--fail) 28%, transparent);
-    color: var(--fail);
   }
   .ci-agent-button {
     background: var(--fail);
@@ -5804,11 +6135,6 @@
     color: var(--on-brand);
   }
   @media (hover: hover) and (pointer: fine) {
-    .ci-copy-button:hover,
-    .conflict-copy-button:hover {
-      background: color-mix(in srgb, var(--fail-bg) 78%, var(--fail) 10%);
-      color: var(--fail);
-    }
     .ci-agent-button:hover:not(:disabled) {
       background: color-mix(in srgb, var(--fail) 88%, black);
     }
@@ -5816,7 +6142,6 @@
       background: var(--brand-hover);
     }
   }
-  .verdict-select,
   .verdict-body,
   .composer textarea,
   .prompt-input {
@@ -5826,51 +6151,18 @@
     font-family: var(--sans);
     font-size: 14px;
   }
-  .verdict-select-wrap {
+  .verdict-body-wrap {
     position: relative;
     margin-bottom: 8px;
-    border-radius: 999px;
-    background: var(--panel);
-    box-shadow: var(--shadow-control-outlined);
-  }
-  .verdict-select {
-    appearance: none;
-    display: block;
-    height: 36px;
-    margin: 0;
-    padding: 0 72px 0 14px;
-    border: 0;
-    border-radius: inherit;
-    background: transparent;
-    box-shadow: none;
-    font-weight: 500;
-  }
-  .verdict-select-chevron {
-    position: absolute;
-    top: 50%;
-    right: 13px;
-    pointer-events: none;
-    transform: translateY(-50%);
-  }
-  .verdict-key {
-    position: absolute;
-    top: 50%;
-    right: 36px;
-    display: inline-flex;
-    pointer-events: none;
-    transform: translateY(-50%);
-  }
-  .verdict-select-wrap:focus-within {
-    box-shadow: 0 0 0 3px var(--focus-ring), var(--shadow-control-outlined);
-  }
-  .verdict-select:focus {
-    border: 0;
-    box-shadow: none;
   }
   .verdict-body {
-    height: 36px;
-    min-height: 36px;
-    padding: 7px 12px;
+    width: 100%;
+    resize: vertical;
+    color: var(--text);
+    height: 58px;
+    min-height: 58px;
+    margin: 0;
+    padding: 8px 42px 8px 12px;
     border: 0;
     border-radius: var(--radius-md);
     background: var(--panel);
@@ -5879,10 +6171,15 @@
   .verdict-body::-webkit-resizer {
     opacity: 0;
   }
-  @media (hover: hover) and (pointer: fine) {
-    .verdict-select-wrap:hover {
-      background: var(--surface);
-    }
+  .verdict-key {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    display: inline-flex;
+    pointer-events: none;
+  }
+  .review-menu {
+    min-width: 180px;
   }
   .detail-frame.files-tab > .detail {
     --files-content-left: 0px;
@@ -5894,7 +6191,7 @@
     margin-left: 0;
   }
   .files-layout {
-    grid-template-columns: clamp(220px, var(--tree-width), 300px) 6px minmax(0, 1fr);
+    grid-template-columns: var(--tree-width) 6px minmax(0, 1fr);
   }
   .files-toolbar {
     grid-column: 1 / -1;

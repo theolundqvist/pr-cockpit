@@ -7,20 +7,26 @@
   import { getHighlighter, ensureTheme, langForPath, tokenizeLine } from "./highlight.js";
   import { renderMarkdown } from "./markdown.js";
   import { theme } from "./theme.svelte.js";
-  import { buildWholeFile, buildGapRows, fileUsesSplitLayout, hunkOldOffset, revertHunk, splitDiffRows } from "./diff.js";
+  import { buildGapPage, buildWholeFile, fileUsesSplitLayout, hunkOldOffset, revertChange, revertFile, splitDiffRows } from "./diff.js";
   import { fetchFileContents } from "./api.js";
+  import { shouldToggleHoveredViewed } from "./dom.js";
   import { columnWithin, createDefinitionHover, tokenAtPoint } from "./wordAtPoint.js";
   import Chevron from "./Chevron.svelte";
   import Kbd from "./Kbd.svelte";
+  import GithubSetupModal from "./GithubSetupModal.svelte";
 
   let {
     files,
+    diffIdentity = "",
+    onWarmFile = null,
+    onReleaseFile = null,
     anchored,
     threadProps,
     collapsed,
     onToggleFile,
     viewed = new Set(),
     onToggleViewed = null,
+    onHoverFile = null,
     repo,
     headSha,
     pendingInline,
@@ -30,6 +36,8 @@
     commentable = true,
     editable = false,
     onCommitFileEdit = null,
+    onGenerateCommitMessage = null,
+    onFinishExternalEdit = null,
     base = null,
     onOpenHistory = null,
     onLookupDefinition = null,
@@ -60,6 +68,7 @@
   let fileEditRequest;
   let editMenu = $state(null);
   let editMenuRequest = 0;
+  let githubSetup = $state(null);
   let editMenuNode;
   let commentDrag = $state(null);
   let fileEditSpan = $derived.by(() => {
@@ -122,6 +131,54 @@
   function renderedFileBody(section) {
     return section.querySelector(".file-diff-content > .hunks, .file-diff-content > .binary, .file-diff-content > div");
   }
+
+  function scrollParent(el) {
+    for (let node = el.parentElement; node; node = node.parentElement) {
+      const overflowY = getComputedStyle(node).overflowY;
+      if ((overflowY === "auto" || overflowY === "scroll") && node.scrollHeight > node.clientHeight) return node;
+    }
+    return null;
+  }
+
+  let hoveredFilePath = null;
+  let hoveredFileSection = null;
+
+  function hoverFile(path, section = null) {
+    hoveredFilePath = path;
+    hoveredFileSection = section;
+    onHoverFile?.(path);
+  }
+
+  // collapsing a file removes document height above the reader; hold its sticky header where it sat so the next files stay in place
+  async function keepingHeaderPlace(head, file, run) {
+    const scroller = collapsed.has(file.path) ? null : head && scrollParent(head);
+    const target = scroller ? head.getBoundingClientRect().top : 0;
+    run();
+    if (!scroller) return;
+    await tick();
+    // estimated placeholder heights (content-visibility) settle over the next frames; re-align until they stop moving
+    let frames = 8;
+    const settle = () => {
+      const delta = head.getBoundingClientRect().top - target;
+      if (delta) scroller.scrollTop += delta;
+      if (--frames > 0) requestAnimationFrame(settle);
+    };
+    settle();
+  }
+
+  function onViewedKey(event) {
+    if (!onToggleViewed || !shouldToggleHoveredViewed(event, "files", hoveredFilePath)) return;
+    const file = files.find((candidate) => candidate.path === hoveredFilePath);
+    const head = hoveredFileSection?.querySelector(".file-head-row");
+    if (!file || !head) return;
+    void keepingHeaderPlace(head, file, () => onToggleViewed(file));
+    event.preventDefault();
+  }
+
+  $effect(() => {
+    window.addEventListener("keydown", onViewedKey);
+    return () => window.removeEventListener("keydown", onViewedKey);
+  });
 
   function editPlacement(section, lineEl, column = 0) {
     const line = Number(lineEl?.dataset.newLine);
@@ -218,12 +275,25 @@
     editMenu = { ...editMenu, x: (viewportX - rect.left) / scale, y: (viewportY - rect.top) / scale };
   }
 
+  function changedRowAt(hunk, lineEl) {
+    if (!hunk || !lineEl) return null;
+    const oldLine = Number(lineEl.dataset.oldLine);
+    const newLine = Number(lineEl.dataset.newLine);
+    const row = hunk.rows.find((candidate) =>
+      (Number.isInteger(oldLine) ? candidate.oldNum === oldLine : candidate.oldNum === null) &&
+      (Number.isInteger(newLine) ? candidate.newNum === newLine : candidate.newNum === null)
+    );
+    return row && (row.type !== "context" || row.wsOnly) ? row : null;
+  }
+
   function onEditContextMenu(event, file) {
     if (!editable || file.isBinary || file.isDeleted || fileEditor) return;
     const hunkNode = event.target.closest("[data-hunk-index]");
     const hunkIndex = Number(hunkNode?.dataset.hunkIndex);
     const hunk = !file.isNew && Number.isInteger(hunkIndex) ? file.hunks[hunkIndex] : null;
     const lineEl = event.target.closest(".line");
+    const changeRow = changedRowAt(hunk, lineEl);
+    const canRevertFile = !file.isNew && file.hunks.length > 0;
     const line = Number(lineEl?.dataset.newLine);
     const section = event.currentTarget.closest(".file");
     let placement = null;
@@ -232,11 +302,13 @@
       const column = code && event.clientX >= code.getBoundingClientRect().left ? columnAtPoint(code, event.clientX, event.clientY) : 0;
       placement = editPlacement(section, lineEl, column);
     }
-    if (!placement && !hunk) return;
+    if (!placement && !hunk && !canRevertFile) return;
     const selection = placement ? selectedEditRange(section, event) : null;
     const menu = {
       file,
       hunk,
+      changeRow,
+      canRevertFile,
       canEdit: !!placement,
       placement: placement
         ? selection
@@ -258,13 +330,23 @@
     startFileEdit(file, placement);
   }
 
-  function startContextRevert() {
-    if (!editMenu?.hunk) return;
-    const { file, hunk, placement } = editMenu;
+  function startContextRevertChange() {
+    if (!editMenu?.hunk || !editMenu.changeRow) return;
+    const { file, hunk, changeRow, placement } = editMenu;
     editMenu = null;
     startFileEdit(file, placement, {
-      apply: (content) => revertHunk(content, hunk),
-      message: `Revert hunk in ${file.path.split("/").pop()}`,
+      apply: (content) => revertChange(content, hunk, changeRow),
+      message: `Revert change in ${file.path.split("/").pop()}`,
+    });
+  }
+
+  function startContextRevertFile() {
+    if (!editMenu?.canRevertFile) return;
+    const { file, placement } = editMenu;
+    editMenu = null;
+    startFileEdit(file, placement, {
+      apply: (content) => revertFile(content, file),
+      message: `Revert file ${file.path.split("/").pop()}`,
     });
   }
 
@@ -410,37 +492,97 @@
     }
     return pairs;
   }
+  const VIRTUAL_ROW_THRESHOLD = 600;
+  const ROW_CHUNK_SIZE = 200;
+  const rowChunksCache = new WeakMap();
+  function rowChunks(rows) {
+    let chunks = rowChunksCache.get(rows);
+    if (!chunks) {
+      chunks = [];
+      for (let start = 0; start < rows.length; start += ROW_CHUNK_SIZE) {
+        chunks.push({ rows: rows.slice(start, start + ROW_CHUNK_SIZE) });
+      }
+      rowChunksCache.set(rows, chunks);
+    }
+    return chunks;
+  }
+
+  const hotRowChunks = new SvelteSet();
+  let measuredRowChunks = new WeakMap();
+  const observedRowChunks = new Map();
+  const measuredFiles = new SvelteMap();
+  const hydratedFiles = new SvelteMap();
+  let filesIdentity = null;
+  let rowObserver;
+  let rowResizeObserver;
+
+  function rowChunkHeight(chunk) {
+    return measuredRowChunks.get(chunk) ?? chunk.rows.length * LINE_H * diffLayoutScale;
+  }
+  function visibleHighlightRows(rows, split, hotChunks) {
+    const displayed = split ? pairedRows(rows) : rows;
+    if (displayed.length <= VIRTUAL_ROW_THRESHOLD) return rows;
+    const selected = new Set();
+    for (const chunk of rowChunks(displayed)) {
+      if (!hotChunks.has(chunk)) continue;
+      if (split) {
+        for (const pair of chunk.rows) {
+          if (pair.left) selected.add(pair.left);
+          if (pair.right) selected.add(pair.right);
+        }
+      } else {
+        for (const row of chunk.rows) selected.add(row);
+      }
+    }
+    return selected;
+  }
   function usesSplitLayout(file) {
     return !compactLayout && fileUsesSplitLayout(file, layout);
   }
   let wholeFile = $state(new Map());
   let gapRows = $state(new Map());
+  let gapFiles = $state(new Map());
 
   const HEAD_H = 37;
+  const FILE_MESSAGE_H = 45;
   const LINE_H = 20;
   const HUNK_HEAD_TEXT_H = 20;
   const HUNK_HEAD_PADDING_H = 6;
   const HUNK_HEAD_BORDER_H = 2;
   const MAX_HIGHLIGHT_LINE = 1000;
+  const GAP_PAGE_LINES = 70;
   const SLICE_MAX_ROWS = 150;
   const SLICE_BUDGET_MS = 8;
   const IDLE_TIMEOUT_MS = 300;
   let diffLayoutScale = $derived(theme.diffScale / theme.generalScale);
   let generalLayoutScale = $derived(theme.generalScale / 100);
+  $effect(() => {
+    diffLayoutScale;
+    measuredFiles.clear();
+    measuredRowChunks = new WeakMap();
+  });
 
   function estimateHeight(file, isCollapsed, whole = null) {
-    if (isCollapsed || file.isBinary) return HEAD_H;
+    if (isCollapsed) return HEAD_H;
+    if (file.isUnchangedRename) return HEAD_H + FILE_MESSAGE_H;
+    if (file.isBinary) return HEAD_H;
     const split = usesSplitLayout(file);
     if (whole?.status === "ready") {
       return HEAD_H + (split ? pairedRows(whole.rows).length : whole.rows.length) * LINE_H * diffLayoutScale;
     }
     let rows = 0;
-    for (const hunk of file.hunks) rows += split ? pairedRows(hunk.rows).length : hunk.rows.length;
+    for (const hunk of file.hunks) {
+      rows += split ? (hunk.splitRowCount ?? pairedRows(hunk.rows).length) : (hunk.rowCount ?? hunk.rows.length);
+    }
     return (
       HEAD_H +
       rows * LINE_H * diffLayoutScale +
       file.hunks.length * (HUNK_HEAD_TEXT_H * diffLayoutScale + HUNK_HEAD_PADDING_H + HUNK_HEAD_BORDER_H / generalLayoutScale)
     );
+  }
+  function fileHeight(file, isCollapsed, whole = null) {
+    if (isCollapsed) return HEAD_H;
+    return measuredFiles.get(file.path) ?? estimateHeight(file, false, whole);
   }
 
   function hunkNewBounds(hunk) {
@@ -455,31 +597,72 @@
     return { first: first ?? 1, last: last ?? 0 };
   }
 
-  function gapBounds(file, hi) {
-    const to = hunkNewBounds(file.hunks[hi]).first;
+  function gapBounds(file, hi, lineCount = null) {
+    const to = hi < file.hunks.length
+      ? hunkNewBounds(file.hunks[hi]).first
+      : lineCount === null ? null : lineCount + 1;
     const from = hi === 0 ? 0 : hunkNewBounds(file.hunks[hi - 1]).last;
     return { from, to };
   }
 
-  async function expandGap(file, hi) {
-    const key = `${file.path}#${hi}`;
-    if (gapRows.has(key)) return;
-    const { from, to } = gapBounds(file, hi);
-    const oldOffset = hunkOldOffset(file.hunks[hi].range);
-    if (to - from <= 1) return;
-    const loading = new Map(gapRows);
-    loading.set(key, "loading");
-    gapRows = loading;
-    let rows = null;
+  function gapKey(file, hi) {
+    return `${file.path}#${hi}`;
+  }
+
+  function gapHasMore(file, hi, rows, lineCount = null) {
+    const { from, to } = gapBounds(file, hi, lineCount);
+    if (to === null) return true;
+    if (to - from <= 1) return false;
+    if (!Array.isArray(rows) || rows.length === 0) return true;
+    return hi === file.hunks.length
+      ? rows.at(-1).newNum < to - 1
+      : rows[0].newNum > from + 1;
+  }
+
+  async function loadGapFile(file) {
+    const current = gapFiles.get(file.path);
+    if (current?.status === "ready") return current;
+    if (current?.status === "loading") return null;
+    const loading = new Map(gapFiles);
+    loading.set(file.path, { status: "loading" });
+    gapFiles = loading;
+    const requestIdentity = diffIdentity;
+    const requestHeadSha = headSha;
+    let entry = null;
     try {
-      const result = await fetchFileContents(repo, file.path, headSha);
-      if (!result.tooLarge) rows = buildGapRows(result.content, from, to, oldOffset);
+      const result = await fetchFileContents(repo, file.path, requestHeadSha);
+      if (!result.tooLarge) {
+        entry = {
+          status: "ready",
+          content: result.content,
+          lineCount: fileContentLines(result.content).lines.length,
+        };
+      }
     } catch {
-      rows = null;
+      entry = null;
     }
+    if (requestIdentity !== diffIdentity || requestHeadSha !== headSha) return null;
+    const next = new Map(gapFiles);
+    if (entry) next.set(file.path, entry);
+    else next.delete(file.path);
+    gapFiles = next;
+    return entry;
+  }
+
+  async function expandGap(file, hi) {
+    const loaded = await loadGapFile(file);
+    if (!loaded) return;
+    const key = gapKey(file, hi);
+    const current = gapRows.get(key) ?? [];
+    if (!gapHasMore(file, hi, current, loaded.lineCount)) return;
+    const { from, to } = gapBounds(file, hi, loaded.lineCount);
+    const trailing = hi === file.hunks.length;
+    const oldOffset = trailing ? file.deletions - file.additions : hunkOldOffset(file.hunks[hi].range);
+    const page = trailing
+      ? buildGapPage(loaded.content, current.at(-1)?.newNum ?? from, to, oldOffset, "down", GAP_PAGE_LINES)
+      : buildGapPage(loaded.content, from, current[0]?.newNum ?? to, oldOffset, "up", GAP_PAGE_LINES);
     const next = new Map(gapRows);
-    if (rows && rows.length) next.set(key, rows);
-    else next.delete(key);
+    next.set(key, trailing ? [...current, ...page] : [...page, ...current]);
     gapRows = next;
   }
 
@@ -575,6 +758,47 @@
   function fileEditError(error, fallback) {
     return error instanceof Error && error.message ? error.message : fallback;
   }
+  function fileEditHunk(span) {
+    return [
+      `@@ -${span.oldStart},${span.oldCount} +${span.newStart},${span.newCount} @@`,
+      ...(span.beforeContext === null ? [] : [` ${span.beforeContext}`]),
+      ...span.removed.map((line) => `-${line}`),
+      ...(span.newlineChanged ? [`- ${span.oldEndsWithNewline ? "ends with newline" : "no trailing newline"}`] : []),
+      ...span.added.map((line) => `+${line}`),
+      ...(span.newlineChanged ? [`+ ${span.newEndsWithNewline ? "ends with newline" : "no trailing newline"}`] : []),
+      ...(span.afterContext === null ? [] : [` ${span.afterContext}`]),
+    ].join("\n");
+  }
+
+  async function suggestCommitMessage() {
+    if (!fileEditor || fileEditor.phase !== "review" || fileEditor.message.trim() || !onGenerateCommitMessage) return;
+    const editor = fileEditor;
+    const span = changedLineSpan(editor.original, editor.content);
+    if (!span) return;
+    editor.suggestionPhase = "generating";
+    editor.suggestionError = null;
+    editor.suggestionCode = null;
+    try {
+      const message = await onGenerateCommitMessage(editor.path, fileEditHunk(span));
+      if (fileEditor !== editor) return;
+      if (!editor.message.trim()) editor.message = message;
+      editor.suggestionPhase = "ready";
+    } catch (error) {
+      if (fileEditor !== editor) return;
+      editor.suggestionPhase = "error";
+      editor.suggestionError = fileEditError(error, "Couldn't suggest a commit message.");
+      editor.suggestionCode = error?.code ?? null;
+    }
+  }
+
+  async function openSetup(action, fallbackCommand) {
+    const result = window.cockpitShell?.openSetup
+      ? await window.cockpitShell.openSetup(action)
+      : await navigator.clipboard.writeText(fallbackCommand).then(() => ({ warning: "Command copied. Run it in a terminal." }));
+    if (!fileEditor || !result?.error) return;
+    fileEditor.error = result.error;
+  }
+
 
   async function startFileEdit(file, placement, change = null) {
     if (!editable || file.isBinary || file.isDeleted || fileEditor || !placement) return;
@@ -587,8 +811,12 @@
       original: "",
       content: "",
       message: change?.message ?? "",
+      externalSessionId: change?.externalSessionId ?? null,
       phase: "loading",
       error: null,
+      suggestionPhase: change?.message ? "ready" : "idle",
+      suggestionError: null,
+      suggestionCode: null,
       ...placement,
     };
     try {
@@ -602,11 +830,12 @@
       } else {
         fileEditor = {
           ...fileEditor,
-          eol: normalized.eol,
+          eol: change?.eol ?? normalized.eol,
           original: normalized.content,
           content: change ? change.apply(normalized.content) : normalized.content,
           phase: change ? "review" : "editing",
         };
+        if (change) void suggestCommitMessage();
       }
       fileEditRequest = null;
     } catch (error) {
@@ -616,10 +845,12 @@
     }
   }
 
-  function discardFileEdit() {
+  async function discardFileEdit() {
     if (fileEditor?.phase === "committing") return;
+    const editor = fileEditor;
     fileEditRequest = null;
-    fileEditor = null;
+    if (editor?.externalSessionId) await onFinishExternalEdit?.(editor.externalSessionId);
+    if (fileEditor === editor) fileEditor = null;
   }
 
   export function finishFileEdit() {
@@ -653,6 +884,28 @@
     const line = target?.line;
     const row = Number.isInteger(line) ? section.querySelector(`.file-diff-content .line[data-new-line="${line}"]`) : null;
     await startFileEdit(file, row ? editPlacement(section, row) : fallbackEditPlacement(section));
+    return true;
+  }
+
+  export async function reviewExternalEdit(target, content, sessionId) {
+    if (fileEditor || !editable || !target || typeof content !== "string" || !sessionId) return false;
+    const normalized = normalizeFileEndings(content);
+    if (!normalized) return false;
+    const index = files.findIndex((file) => file.path === target.path);
+    const file = files[index];
+    const section = document.getElementById(`diff-file-${index}`);
+    if (!file || !section || file.isBinary || file.isDeleted) return false;
+    if (collapsed.has(file.path)) {
+      onToggleFile(file);
+      await tick();
+    }
+    const line = target.line;
+    const row = Number.isInteger(line) ? section.querySelector(`.file-diff-content .line[data-new-line="${line}"]`) : null;
+    await startFileEdit(file, row ? editPlacement(section, row) : fallbackEditPlacement(section), {
+      apply: () => normalized.content,
+      eol: normalized.eol,
+      externalSessionId: sessionId,
+    });
     return true;
   }
 
@@ -692,6 +945,7 @@
     }
     fileEditor.error = null;
     fileEditor.phase = "review";
+    void suggestCommitMessage();
   }
 
   function returnToFileEdit() {
@@ -721,50 +975,254 @@
     try {
       const content = editor.eol === "\r\n" ? editor.content.replace(/\n/g, "\r\n") : editor.content;
       await onCommitFileEdit(editor.path, editor.expectedHeadOid, content, message);
-      if (fileEditor?.path === editor.path) fileEditor = null;
+      if (fileEditor === editor) fileEditor = null;
+      if (editor.externalSessionId) await onFinishExternalEdit?.(editor.externalSessionId);
     } catch (error) {
       if (fileEditor?.path === editor.path) {
         fileEditor.phase = "review";
         fileEditor.error = fileEditError(error, "Couldn't commit this file.");
+        if (error?.code === "github-setup" && error.auth) githubSetup = error.auth;
       }
     }
   }
 
+  function finishGithubSetup() {
+    githubSetup = null;
+    if (fileEditor?.phase === "review") void commitFileEdit();
+  }
+
 
   const hotPaths = new SvelteSet();
+  const observedFiles = new Map();
+  const observedFileNodes = [];
   let observer;
+  let prefetchObserver;
+  let fileResizeObserver;
+  let observerSetup = false;
+  let observerRoot;
 
-  function nearViewport(node, path) {
-    observer ??= new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) {
-            hotPaths.add(entry.target.dataset.path);
-            observer.unobserve(entry.target);
-          }
-        }
-      },
-      { rootMargin: "2000px 0px" },
-    );
-    node.dataset.path = path;
-    observer.observe(node);
+  function retainFile(path, visible) {
+    const file = onWarmFile?.(path, visible);
+    if (file?.then) {
+      file.then((hydrated) => {
+        if (hydrated && hotPaths.has(path) && hydratedFiles.get(path) !== hydrated) hydratedFiles.set(path, hydrated);
+      });
+    } else if (file && hydratedFiles.get(path) !== file) {
+      hydratedFiles.set(path, file);
+    }
+  }
+
+  function releaseFile(path) {
+    hydratedFiles.delete(path);
+    onReleaseFile?.(path);
+  }
+  function warmVisibleFiles() {
+    if (!observerRoot || observedFiles.size === 0) return;
+
+    const rootRect = observerRoot.getBoundingClientRect();
+    const top = Math.max(rootRect.top, 0);
+    const bottom = Math.min(rootRect.bottom, window.innerHeight);
+    let low = 0;
+    let high = files.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      const node = observedFileNodes[middle];
+      if (node && node.getBoundingClientRect().bottom < top) low = middle + 1;
+      else high = middle;
+    }
+    let last = low;
+    while (last < files.length && observedFileNodes[last]?.getBoundingClientRect().top < bottom) last++;
+    let ready = true;
+    for (let index = low; index < last; index++) {
+      const path = files[index].path;
+      if (!hotPaths.has(path) || !hydratedFiles.has(path)) {
+        ready = false;
+        break;
+      }
+    }
+    if (ready) return;
+    for (let index = low; index < last; index++) {
+      const path = files[index].path;
+      hotPaths.add(path);
+      retainFile(path, true);
+    }
+  }
+
+  function warmVisibleRowChunks() {
+    if (!observerRoot || observedRowChunks.size === 0) return;
+    const first = observedFiles.keys().next().value;
+    const diffRect = first.closest(".diff").getBoundingClientRect();
+    const rootRect = observerRoot.getBoundingClientRect();
+    const x = Math.min(diffRect.right - 1, diffRect.left + 20);
+    const top = Math.max(rootRect.top, 0);
+    const bottom = Math.min(rootRect.bottom, window.innerHeight);
+    const center = document.elementFromPoint(x, (top + bottom) / 2)?.closest?.(".row-chunk");
+    const centerChunk = observedRowChunks.get(center);
+    if (!centerChunk || hotRowChunks.has(centerChunk)) return;
+    for (const y of [top + 1, Math.max(top + 1, bottom - 1)]) {
+      const node = document.elementsFromPoint(x, y).map((element) => element.closest?.(".row-chunk")).find(Boolean);
+      const chunk = observedRowChunks.get(node);
+      if (chunk) hotRowChunks.add(chunk);
+    }
+  }
+
+  function updateHotRowChunks(entries) {
+    for (const entry of entries) {
+      const chunk = observedRowChunks.get(entry.target);
+      if (!chunk) continue;
+      if (entry.isIntersecting) hotRowChunks.add(chunk);
+      else hotRowChunks.delete(chunk);
+    }
+  }
+
+  function measureRowChunks(entries) {
+    for (const entry of entries) {
+      const chunk = observedRowChunks.get(entry.target);
+      if (chunk && hotRowChunks.has(chunk)) measuredRowChunks.set(chunk, entry.borderBoxSize[0]?.blockSize ?? entry.contentRect.height);
+    }
+  }
+
+  function nearRowViewport(node, chunk) {
+    observedRowChunks.set(node, chunk);
+    rowObserver?.observe(node);
+    rowResizeObserver?.observe(node);
+    if (observerRoot) {
+      const rootRect = observerRoot.getBoundingClientRect();
+      const rect = node.getBoundingClientRect();
+      const margin = rootRect.height * 5;
+      if (rect.bottom >= rootRect.top - margin && rect.top <= rootRect.bottom + margin) hotRowChunks.add(chunk);
+    }
     return {
       destroy() {
-        observer.unobserve(node);
+        rowObserver?.unobserve(node);
+        rowResizeObserver?.unobserve(node);
+        hotRowChunks.delete(chunk);
+        observedRowChunks.delete(node);
       },
     };
   }
 
-  $effect(() => () => observer?.disconnect());
+  function onDiffScroll() {
+    warmVisibleFiles();
+    warmVisibleRowChunks();
+  }
 
-  // only on empty: range switches reuse keyed sections whose actions won't re-observe
+
+  function measureFiles(entries) {
+    for (const entry of entries) {
+      const path = observedFiles.get(entry.target);
+      if (path && hotPaths.has(path)) measuredFiles.set(path, entry.borderBoxSize[0]?.blockSize ?? entry.contentRect.height);
+    }
+  }
+
+  function updateHotPaths(entries) {
+    for (const entry of entries) {
+      const path = observedFiles.get(entry.target);
+      if (entry.isIntersecting) {
+        hotPaths.add(path);
+        retainFile(path, false);
+      } else {
+        hydratedFiles.delete(path);
+        hotPaths.delete(path);
+      }
+    }
+  }
+
+  function updatePrefetchPaths(entries) {
+    for (const entry of entries) {
+      const path = observedFiles.get(entry.target);
+      if (entry.isIntersecting) retainFile(path, false);
+      else if (!hotPaths.has(path)) releaseFile(path);
+    }
+  }
+
+  async function setupObserver() {
+    if (observer || observerSetup || observedFiles.size === 0) return;
+    observerSetup = true;
+    await tick();
+    observerSetup = false;
+    if (observer || observedFiles.size === 0) return;
+    observerRoot = scrollParent(observedFiles.keys().next().value);
+    observer = new IntersectionObserver(updateHotPaths, { root: observerRoot, rootMargin: "400% 0px" });
+    prefetchObserver = new IntersectionObserver(updatePrefetchPaths, { root: observerRoot, rootMargin: "2000% 0px" });
+    rowObserver = new IntersectionObserver(updateHotRowChunks, { root: observerRoot, rootMargin: "300% 0px" });
+    rowResizeObserver = new ResizeObserver(measureRowChunks);
+    fileResizeObserver = new ResizeObserver(measureFiles);
+    for (const node of observedFiles.keys()) {
+      observer.observe(node);
+      prefetchObserver.observe(node);
+      fileResizeObserver.observe(node);
+    }
+    observerRoot?.addEventListener("scroll", onDiffScroll, { passive: true });
+    warmVisibleFiles();
+  }
+  function nearViewport(node, path) {
+    node.dataset.path = path;
+    observedFiles.set(node, path);
+    observer?.observe(node);
+    observedFileNodes[Number(node.id.slice("diff-file-".length))] = node;
+    prefetchObserver?.observe(node);
+    fileResizeObserver?.observe(node);
+    void setupObserver();
+    return {
+      update(nextPath) {
+        observedFiles.set(node, nextPath);
+        node.dataset.path = nextPath;
+      },
+      destroy() {
+        observer?.unobserve(node);
+        prefetchObserver?.unobserve(node);
+        fileResizeObserver?.unobserve(node);
+        hotPaths.delete(observedFiles.get(node));
+        releaseFile(observedFiles.get(node));
+        observedFileNodes[Number(node.id.slice("diff-file-".length))] = null;
+        observedFiles.delete(node);
+      },
+    };
+  }
+
+  $effect(() => () => {
+    hoverFile(null);
+    observer?.disconnect();
+    prefetchObserver?.disconnect();
+    fileResizeObserver?.disconnect();
+    rowObserver?.disconnect();
+    rowResizeObserver?.disconnect();
+    observerRoot?.removeEventListener("scroll", onDiffScroll);
+  });
   $effect(() => {
-    if (files.length === 0) hotPaths.clear();
+    const nextIdentity = diffIdentity;
+    if (nextIdentity === filesIdentity) return;
+    filesIdentity = nextIdentity;
+    measuredFiles.clear();
+    measuredRowChunks = new WeakMap();
+    hydratedFiles.clear();
+    gapRows = new Map();
+    gapFiles = new Map();
+    void tick().then(async () => {
+      await setupObserver();
+      observedFileNodes.length = 0;
+      for (const node of observedFiles.keys()) {
+        observedFileNodes[Number(node.id.slice("diff-file-".length))] = node;
+      }
+      warmVisibleFiles();
+    });
+  });
+
+  $effect(() => {
+    if (files.length !== 0) return;
+    hotPaths.clear();
+    hotRowChunks.clear();
+    measuredFiles.clear();
+    measuredRowChunks = new WeakMap();
   });
 
   $effect(() => {
     const snapshot = files;
+    const hydratedSnapshot = new Map(hydratedFiles);
     const hotSnapshot = new Set(hotPaths);
+    const chunkSnapshot = new Set(hotRowChunks);
+    const layoutSnapshot = layout;
     const wholeSnapshot = wholeFile;
     const gapSnapshot = gapRows;
     const themeName = theme.shiki;
@@ -795,16 +1253,20 @@
         }
         return true;
       };
-      for (const file of snapshot) {
-        if (!hotSnapshot.has(file.path)) continue;
+      for (const indexedFile of snapshot) {
+        const file = hydratedSnapshot.get(indexedFile.path) ?? indexedFile;
+        if (!hotSnapshot.has(file.path) || file.hydrated === false) continue;
         const lang = langForPath(file.path);
         if (!lang || !loaded.has(lang)) continue;
-        for (const hunk of file.hunks) if (!(await tokenize(hunk.rows, lang))) return;
+        const split = fileUsesSplitLayout(file, layoutSnapshot);
+        for (const hunk of file.hunks) {
+          if (!(await tokenize(visibleHighlightRows(hunk.rows, split, chunkSnapshot), lang))) return;
+        }
         const whole = wholeSnapshot.get(file.path);
-        if (whole?.status === "ready" && !(await tokenize(whole.rows, lang))) return;
-        for (let hi = 0; hi < file.hunks.length; hi++) {
-          const g = gapSnapshot.get(`${file.path}#${hi}`);
-          if (Array.isArray(g) && !(await tokenize(g, lang))) return;
+        if (whole?.status === "ready" && !(await tokenize(visibleHighlightRows(whole.rows, split, chunkSnapshot), lang))) return;
+        for (let hi = 0; hi <= file.hunks.length; hi++) {
+          const g = gapSnapshot.get(gapKey(file, hi));
+          if (Array.isArray(g) && !(await tokenize(visibleHighlightRows(g, split, chunkSnapshot), lang))) return;
         }
       }
       for (const row of [...rowTokens.keys()]) {
@@ -845,6 +1307,10 @@
     return out;
   }
 </script>
+{#if githubSetup}
+  <GithubSetupModal initialStatus={githubSetup} onReady={finishGithubSetup} onClose={() => (githubSetup = null)} />
+{/if}
+
 
 {#snippet codeContent(row)}
   {#if row.intra}
@@ -907,6 +1373,7 @@
     class:ws-only={row.wsOnly}
     class:comment-selected={isCommentSelected(file, row)}
     data-new-line={row.newNum ?? undefined}
+    data-old-line={row.oldNum ?? undefined}
     data-hunk-index={hunkIndex ?? undefined}
     title={row.wsOnly ? "whitespace-only change" : undefined}
   >
@@ -940,6 +1407,7 @@
     class:ws-only={row?.wsOnly}
     class:comment-selected={row && (side === "right" || row.type === "del") && isCommentSelected(file, row)}
     data-new-line={row?.newNum ?? undefined}
+    data-old-line={row?.oldNum ?? undefined}
     data-hunk-index={hunkIndex ?? undefined}
     title={row?.wsOnly ? "whitespace-only change" : undefined}
   >
@@ -987,22 +1455,74 @@
 
 {#snippet diffRows(file, rows, hunkIndex)}
   {#if usesSplitLayout(file)}
-    {#each pairedRows(rows) as pair}{@render splitPair(file, pair, hunkIndex)}{/each}
+    {@const pairs = pairedRows(rows)}
+    {#if pairs.length > VIRTUAL_ROW_THRESHOLD}
+      {#each rowChunks(pairs) as chunk}
+        <div
+          class="row-chunk"
+          class:cold={!hotRowChunks.has(chunk)}
+          style:height={hotRowChunks.has(chunk) ? undefined : `${rowChunkHeight(chunk)}px`}
+          use:nearRowViewport={chunk}
+        >
+          {#if hotRowChunks.has(chunk)}
+            {#each chunk.rows as pair}{@render splitPair(file, pair, hunkIndex)}{/each}
+          {/if}
+        </div>
+      {/each}
+    {:else}
+      {#each pairs as pair}{@render splitPair(file, pair, hunkIndex)}{/each}
+    {/if}
+  {:else if rows.length > VIRTUAL_ROW_THRESHOLD}
+    {#each rowChunks(rows) as chunk}
+      <div
+        class="row-chunk"
+        class:cold={!hotRowChunks.has(chunk)}
+        style:height={hotRowChunks.has(chunk) ? undefined : `${rowChunkHeight(chunk)}px`}
+        use:nearRowViewport={chunk}
+      >
+        {#if hotRowChunks.has(chunk)}
+          {#each chunk.rows as row}{@render lineRow(file, row, hunkIndex)}{/each}
+        {/if}
+      </div>
+    {/each}
   {:else}
     {#each rows as row}{@render lineRow(file, row, hunkIndex)}{/each}
   {/if}
 {/snippet}
 
 <div class="diff" class:file-editing={!!fileEditor}>
-  {#each files as file, i (file.path)}
+  {#each files as indexedFile, i (indexedFile.path)}
+    {@const file = hydratedFiles.get(indexedFile.path) ?? indexedFile}
     {@const isCollapsed = collapsed.has(file.path)}
     {@const isViewed = viewed.has(file.path)}
     {@const whole = wholeFile.get(file.path)}
-    <section class="file" class:collapsed={isCollapsed} id="diff-file-{i}" style="--est-h:{estimateHeight(file, isCollapsed, whole)}px" use:nearViewport={file.path}>
+    <section
+      class="file"
+      class:collapsed={isCollapsed}
+      id="diff-file-{i}"
+      style="--est-h:{fileHeight(file, isCollapsed, whole)}px"
+      use:nearViewport={file.path}
+      onmouseenter={(event) => hoverFile(file.path, event.currentTarget)}
+      onmouseleave={(event) => {
+        if (hoveredFileSection === event.currentTarget) hoverFile(null);
+      }}
+    >
+      {#if hotPaths.has(file.path)}
       <div class="file-head-row">
-        <button class="file-head mono" onclick={() => (fileEditor?.path === file.path ? finishFileEdit() : onToggleFile(file))}>
+        <button
+          class="file-head mono"
+          onclick={(event) => (fileEditor?.path === file.path ? finishFileEdit() : keepingHeaderPlace(event.currentTarget.closest(".file-head-row"), file, () => onToggleFile(file)))}
+        >
           <Chevron direction={isCollapsed ? "right" : "down"} />
-          <span class="file-path">{file.path}</span>
+          {#if file.previousPath}
+            <span class="rename-paths">
+              <span class="file-path" title={file.previousPath}>{file.previousPath}</span>
+              <span class="rename-arrow" aria-hidden="true">→</span>
+              <span class="file-path" title={file.path}>{file.path}</span>
+            </span>
+          {:else}
+            <span class="file-path">{file.path}</span>
+          {/if}
           <span
             class="path-copy"
             role="button"
@@ -1021,8 +1541,11 @@
           <span class="file-stat">
             {#if file.isNew}<span class="new">new</span>{/if}
             {#if file.isDeleted}<span class="del">deleted</span>{/if}
-            <span class="add">+{file.additions}</span>
-            <span class="del">−{file.deletions}</span>
+            {#if file.previousPath}<span class="renamed">renamed</span>{/if}
+            {#if !file.isUnchangedRename}
+              <span class="add">+{file.additions}</span>
+              <span class="del">−{file.deletions}</span>
+            {/if}
           </span>
         </button>
         {#if fileEditor?.path === file.path}
@@ -1033,7 +1556,7 @@
               <button class="cbtn ghost" onclick={discardFileEdit}>Close</button>
             {/if}
           </div>
-        {:else if !isCollapsed && editable && !file.isBinary && !file.isDeleted}
+        {:else if !isCollapsed && editable && !file.isBinary && !file.isDeleted && !file.isUnchangedRename}
           <button class="whole-btn file-edit-btn" onclick={(event) => startFileEdit(file, toolbarEditPlacement(event.currentTarget))}>Edit</button>
         {/if}
         {#if onToggleViewed}
@@ -1042,13 +1565,13 @@
             class:active={isViewed}
             aria-pressed={isViewed}
             aria-label={isViewed ? "Mark file unviewed" : "Mark file viewed"}
-            onclick={() => onToggleViewed(file)}
+            onclick={(event) => keepingHeaderPlace(event.currentTarget.closest(".file-head-row"), file, () => onToggleViewed(file))}
           >
             <span class="viewed-check" aria-hidden="true">{isViewed ? "✓" : ""}</span>
             <span class="viewed-label">Viewed</span>
           </button>
         {/if}
-        {#if !isCollapsed && !file.isBinary && !file.isDeleted}
+        {#if !isCollapsed && !file.isBinary && !file.isDeleted && !file.isUnchangedRename}
           <button class="whole-btn" disabled={whole?.status === "loading"} onclick={() => toggleWholeFile(file)}>
             {whole?.status === "ready"
               ? "hunks"
@@ -1065,6 +1588,9 @@
           </button>
         {/if}
       </div>
+      {:else}
+        <div class="file-head-placeholder" style="height:{HEAD_H}px"></div>
+      {/if}
       {#if !isCollapsed && fileEditor?.path === file.path}
         {#if fileEditor.phase === "loading"}
           <div class="file-editor-state" style="height:{fileEditor.bodyHeight}px">
@@ -1104,14 +1630,29 @@
               </div>
             {/if}
             <label class="file-edit-message">
-              Commit message
+              <span>
+                Commit message
+                {#if fileEditor.suggestionPhase === "generating"}<span class="hint">Generating with Haiku…</span>{/if}
+              </span>
               <input
                 bind:value={fileEditor.message}
                 maxlength="200"
+                placeholder={fileEditor.suggestionPhase === "generating" ? "Generating…" : ""}
                 disabled={fileEditor.phase === "committing"}
               />
+              {#if fileEditor.suggestionError}
+                <span class="file-edit-suggestion-error">
+                  {fileEditor.suggestionError}
+                  {#if fileEditor.suggestionCode === "omp-auth"}
+                    <button class="reset-link" type="button" onclick={() => openSetup("omp-anthropic", "omp")}>Connect Anthropic</button>
+                  {/if}
+                  <button class="reset-link" type="button" onclick={suggestCommitMessage}>Retry</button>
+                </span>
+              {/if}
             </label>
-            {#if fileEditor.error}<div class="file-edit-error" role="alert">{fileEditor.error}</div>{/if}
+            {#if fileEditor.error}
+              <div class="file-edit-error" role="alert">{fileEditor.error}</div>
+            {/if}
             <div class="file-editor-actions">
               <button class="cbtn ghost" disabled={fileEditor.phase === "committing"} onclick={returnToFileEdit}>Back</button>
               <button class="cbtn primary" disabled={fileEditor.phase === "committing" || !fileEditor.message.trim()} onclick={commitFileEdit}>
@@ -1124,8 +1665,10 @@
       {/if}
       {#if !isCollapsed}
       <div class="file-diff-content" hidden={fileEditor?.path === file.path}>
-        {#if !hotPaths.has(file.path)}
-        <div style="height:{estimateHeight(file, false, whole) - HEAD_H}px"></div>
+        {#if !hotPaths.has(file.path) || file.hydrated === false}
+        <div style="height:{fileHeight(file, false, whole) - HEAD_H}px"></div>
+      {:else if file.isUnchangedRename}
+        <div class="file-message">File renamed without changes.</div>
       {:else if file.isBinary}
         <div class="binary">Binary file not shown</div>
       {:else if whole?.status === "ready"}
@@ -1149,26 +1692,51 @@
           oncontextmenu={(event) => onEditContextMenu(event, file)}
         >
           {#each file.hunks as hunk, hi}
-            {@const gap = gapRows.get(`${file.path}#${hi}`)}
-            {@const bounds = gapBounds(file, hi)}
-            {@const expandable = !file.isNew && bounds.to - bounds.from > 1}
-            {#if Array.isArray(gap)}
-              {@render diffRows(file, gap, null)}
-            {:else}
+            {@const key = gapKey(file, hi)}
+            {@const gap = gapRows.get(key)}
+            {@const gapFile = gapFiles.get(file.path)}
+            {@const expandable = !file.isNew && gapHasMore(file, hi, gap, gapFile?.lineCount)}
+            {@const loading = gapFile?.status === "loading"}
+            {#if expandable || !Array.isArray(gap)}
               <button
                 class="hunk-head"
                 class:expandable
                 data-hunk-index={hi}
-                disabled={!expandable}
+                disabled={!expandable || loading}
+                aria-label={expandable ? "Expand up to 70 more lines above" : undefined}
                 onclick={() => expandGap(file, hi)}
               >
                 <span class="ln"></span><span class="ln"></span>
                 <span class="hunk-label">{hunk.range}{hunk.context ? " " + hunk.context : ""}</span>
-                {#if expandable}<span class="hunk-expand">expand ↕</span>{/if}
+                {#if expandable}<span class="hunk-expand">{loading ? "loading…" : "expand more ↑"}</span>{/if}
               </button>
+            {/if}
+            {#if Array.isArray(gap)}
+              {@render diffRows(file, gap, null)}
             {/if}
             {@render diffRows(file, hunk.rows, hi)}
           {/each}
+          {#if !file.isNew && !file.isDeleted}
+            {@const tailIndex = file.hunks.length}
+            {@const tailGap = gapRows.get(gapKey(file, tailIndex))}
+            {@const tailFile = gapFiles.get(file.path)}
+            {@const tailExpandable = gapHasMore(file, tailIndex, tailGap, tailFile?.lineCount)}
+            {#if Array.isArray(tailGap)}
+              {@render diffRows(file, tailGap, null)}
+            {/if}
+            {#if tailExpandable}
+              <button
+                class="hunk-head expandable"
+                data-hunk-index={tailIndex}
+                disabled={tailFile?.status === "loading"}
+                aria-label="Expand up to 70 more lines below"
+                onclick={() => expandGap(file, tailIndex)}
+              >
+                <span class="ln"></span><span class="ln"></span>
+                <span class="hunk-expand">{tailFile?.status === "loading" ? "loading…" : "expand more ↓"}</span>
+              </button>
+            {/if}
+          {/if}
         </div>
       {/if}
       </div>
@@ -1186,9 +1754,13 @@
     >
       {#if editMenu.canEdit}
         <button role="menuitem" use:focusOnMount onclick={startContextEdit}>Edit here</button>
-        {#if editMenu.hunk}<button role="menuitem" onclick={startContextRevert}>Revert hunk</button>{/if}
-      {:else if editMenu.hunk}
-        <button role="menuitem" use:focusOnMount onclick={startContextRevert}>Revert hunk</button>
+        {#if editMenu.changeRow}<button role="menuitem" onclick={startContextRevertChange}>Revert change</button>{/if}
+        {#if editMenu.canRevertFile}<button role="menuitem" onclick={startContextRevertFile}>Revert file</button>{/if}
+      {:else if editMenu.changeRow}
+        <button role="menuitem" use:focusOnMount onclick={startContextRevertChange}>Revert change</button>
+        {#if editMenu.canRevertFile}<button role="menuitem" onclick={startContextRevertFile}>Revert file</button>{/if}
+      {:else if editMenu.canRevertFile}
+        <button role="menuitem" use:focusOnMount onclick={startContextRevertFile}>Revert file</button>
       {/if}
     </div>
   {/if}
@@ -1290,6 +1862,19 @@
     cursor: default;
     color: var(--text-faint);
   }
+  .rename-paths {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .rename-paths .file-path {
+    flex: 1 1 0;
+  }
+  .rename-arrow {
+    flex: none;
+    color: var(--text-faint);
+  }
   .file-path {
     flex: 0 1 auto;
     min-width: 0;
@@ -1324,13 +1909,17 @@
   .file-stat .new {
     color: var(--ready);
   }
+  .file-stat .renamed {
+    color: var(--text-dim);
+  }
   .file-stat .add {
     color: var(--ready);
   }
   .file-stat .del {
     color: var(--fail);
   }
-  .binary {
+  .binary,
+  .file-message {
     padding: 14px 16px;
     color: var(--text-faint);
     font-size: 12.5px;
@@ -1433,6 +2022,15 @@
     outline: none;
     border-color: var(--link);
     box-shadow: 0 0 0 3px var(--focus-ring);
+  }
+  .file-edit-suggestion-error {
+    color: var(--fail);
+    font-size: 12px;
+  }
+  .file-edit-message > span:first-child {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
   }
   .file-edit-error {
     color: var(--fail);

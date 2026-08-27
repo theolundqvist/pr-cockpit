@@ -11,6 +11,8 @@ export function parseDiff(text) {
   const pushFile = (path) => {
     file = {
       path,
+      previousPath: null,
+      similarity: null,
       isNew: false,
       isDeleted: false,
       isBinary: false,
@@ -67,13 +69,52 @@ export function parseDiff(text) {
       }
     } else if (line.startsWith("index ")) {
       file.index = line.slice("index ".length).trim();
+    } else if (line.startsWith("similarity index ")) {
+      file.similarity = Number.parseInt(line.slice("similarity index ".length), 10);
     } else if (line.startsWith("new file mode")) file.isNew = true;
     else if (line.startsWith("deleted file mode")) file.isDeleted = true;
     else if (line.startsWith("Binary files")) file.isBinary = true;
+    else if (line.startsWith("rename from ")) file.previousPath = line.slice("rename from ".length);
     else if (line.startsWith("rename to ")) file.path = line.slice("rename to ".length);
   }
-  for (const file of files) for (const hunk of file.hunks) alignWhitespaceOnly(file, hunk);
+  for (const file of files) {
+    file.isUnchangedRename = file.previousPath !== null && file.similarity === 100 && file.hunks.length === 0;
+    for (const hunk of file.hunks) alignWhitespaceOnly(file, hunk);
+  }
   return files;
+}
+function compactNewLines(rows) {
+  const ranges = [];
+  for (const row of rows) {
+    if (row.newNum === null) continue;
+    const last = ranges.at(-1);
+    if (last && last[1] + 1 === row.newNum) last[1] = row.newNum;
+    else if (!last || last[1] !== row.newNum) ranges.push([row.newNum, row.newNum]);
+  }
+  return ranges;
+}
+
+export function indexDiff(text) {
+  const starts = [];
+  const marker = /^diff --git /gm;
+  for (let match = marker.exec(text); match; match = marker.exec(text)) starts.push(match.index);
+  return parseDiff(text).map((file, index) => ({
+    ...file,
+    fingerprint: fileDiffFingerprint(file),
+    patchStart: starts[index],
+    patchEnd: starts[index + 1] ?? text.length,
+    hydrated: false,
+    hunks: file.hunks.map((hunk) => ({
+      range: hunk.range,
+      context: hunk.context,
+      oldNoNewline: hunk.oldNoNewline,
+      newNoNewline: hunk.newNoNewline,
+      rowCount: hunk.rows.length,
+      splitRowCount: splitDiffRows(hunk.rows).length,
+      newLineRanges: compactNewLines(hunk.rows),
+      rows: null,
+    })),
+  }));
 }
 
 export function splitDiffRows(rows) {
@@ -171,6 +212,7 @@ export function fileUsesSplitLayout(file, layout) {
 }
 
 export function fileDiffFingerprint(file) {
+  if (file.fingerprint) return file.fingerprint;
   let first = 0x811c9dc5;
   let second = 0x9e3779b9;
   const add = (value) => {
@@ -184,6 +226,8 @@ export function fileDiffFingerprint(file) {
     second = Math.imul(second ^ 0, 0x85ebca6b);
   };
   add(file.isNew);
+  add(file.previousPath);
+  add(file.similarity);
   add(file.isDeleted);
   add(file.isBinary);
   add(file.index);
@@ -220,7 +264,7 @@ export function hunkOldOffset(range) {
   return hunk ? hunk.oldStart - hunk.newStart : 0;
 }
 
-export function revertHunk(content, hunk) {
+function revertRows(content, hunk, first, last) {
   const range = parseHunkRange(hunk.range);
   if (!range) throw new Error("Couldn't read this hunk.");
 
@@ -228,19 +272,52 @@ export function revertHunk(content, hunk) {
   const lines = content.split("\n");
   if (endsWithNewline) lines.pop();
 
-  const start = Math.max(0, range.newStart - 1);
-  const current = hunk.rows.filter((row) => row.type !== "del").map((row) => row.text);
-  const original = hunk.rows.filter((row) => row.type !== "add").map((row) => row.oldText ?? row.text);
-  const actual = lines.slice(start, start + range.newCount);
-  if (actual.length !== current.length || actual.some((line, index) => line !== current[index])) {
+  const before = hunk.rows.slice(0, first);
+  const rows = hunk.rows.slice(first, last);
+  const start = Math.max(0, range.newStart - 1 + before.filter((row) => row.type !== "del").length);
+  const current = rows.filter((row) => row.type !== "del").map((row) => row.text);
+  const original = rows.filter((row) => row.type !== "add").map((row) => row.oldText ?? row.text);
+  const actual = lines.slice(start, start + current.length);
+  const beforeContext = before.filter((row) => row.type !== "del").at(-1);
+  const afterContext = hunk.rows.slice(last).find((row) => row.type !== "del");
+  const mismatched =
+    actual.length !== current.length ||
+    actual.some((line, index) => line !== current[index]) ||
+    (beforeContext && lines[start - 1] !== beforeContext.text) ||
+    (afterContext && lines[start + current.length] !== afterContext.text);
+  if (mismatched) {
     throw new Error("The file no longer matches this hunk. Refresh the pull request and try again.");
   }
 
-  const touchesEnd = start + range.newCount === lines.length;
-  lines.splice(start, range.newCount, ...original);
+  const touchesEnd = last === hunk.rows.length && start + current.length === lines.length;
+  lines.splice(start, current.length, ...original);
   const revertedEndsWithNewline =
     touchesEnd && (hunk.oldNoNewline || hunk.newNoNewline) ? !hunk.oldNoNewline : endsWithNewline;
   return `${lines.join("\n")}${revertedEndsWithNewline ? "\n" : ""}`;
+}
+
+function isChangedRow(row) {
+  return row.type !== "context" || row.wsOnly;
+}
+
+export function revertChange(content, hunk, selectedRow) {
+  const index = hunk.rows.indexOf(selectedRow);
+  if (index < 0 || !isChangedRow(selectedRow)) throw new Error("Choose a changed line to revert.");
+  let first = index;
+  let last = index + 1;
+  while (first > 0 && isChangedRow(hunk.rows[first - 1])) first--;
+  while (last < hunk.rows.length && isChangedRow(hunk.rows[last])) last++;
+  return revertRows(content, hunk, first, last);
+}
+
+export function revertHunk(content, hunk) {
+  return revertRows(content, hunk, 0, hunk.rows.length);
+}
+
+export function revertFile(content, file) {
+  let reverted = content;
+  for (const hunk of [...file.hunks].reverse()) reverted = revertHunk(reverted, hunk);
+  return reverted;
 }
 
 export function buildWholeFile(file, content) {
@@ -296,24 +373,25 @@ export function buildGapRows(content, fromNewNum, toNewNum, oldOffset) {
   return rows;
 }
 
-export function anchorThreads(files, threads) {
-  const newLinesByPath = new Map();
-  for (const file of files) {
-    const lines = new Set();
-    for (const hunk of file.hunks) {
-      for (const row of hunk.rows) {
-        if (row.newNum !== null) lines.add(row.newNum);
-      }
-    }
-    newLinesByPath.set(file.path, lines);
-  }
+export function buildGapPage(content, fromNewNum, toNewNum, oldOffset, direction, limit) {
+  const pageFrom = direction === "down" ? fromNewNum : Math.max(fromNewNum, toNewNum - limit - 1);
+  const pageTo = direction === "down" ? Math.min(toNewNum, fromNewNum + limit + 1) : toNewNum;
+  return buildGapRows(content, pageFrom, pageTo, oldOffset);
+}
 
+export function anchorThreads(files, threads) {
+  const filesByPath = new Map(files.map((file) => [file.path, file]));
   const anchored = new Map();
   const unanchored = [];
   for (const thread of threads) {
-    const lines = newLinesByPath.get(thread.path);
-    if (thread.line !== null && thread.diffSide === "RIGHT" && lines?.has(thread.line)) {
-      const key = `${thread.path}:${thread.line}`;
+    const file = filesByPath.get(thread.path);
+    const line = thread.line;
+    const matches = line !== null && thread.diffSide === "RIGHT" && file?.hunks.some((hunk) => {
+      if (hunk.rows) return hunk.rows.some((row) => row.newNum === line);
+      return hunk.newLineRanges?.some(([start, end]) => line >= start && line <= end);
+    });
+    if (matches) {
+      const key = `${thread.path}:${line}`;
       if (!anchored.has(key)) anchored.set(key, []);
       anchored.get(key).push(thread);
     } else {

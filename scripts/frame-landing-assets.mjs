@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,9 +10,6 @@ const MANIFEST = resolve(OUTPUT, "landing-assets.json");
 const SHOT = { width: 1200, height: 900 };
 // The landing page owns the corner radius and the drop shadow on .shot-shell, so these assets are
 // the bare app window: no wallpaper border, nothing baked that a responsive layout would then scale.
-// The .scratch captures below have drifted from the compositions that shipped (the revert-menu one
-// lost its cursor and zoom level), so a re-run replaces content, not just framing. Diff against
-// git HEAD before publishing anything this script overwrites.
 
 const assets = [
   { name: "landing-inbox.png", source: ".scratch/landing-real/inbox-light.png", scenario: "microsoft/vscode frozen inbox" },
@@ -32,12 +30,13 @@ async function dataUrl(path) {
 
 const only = new Set(process.argv.slice(2).flatMap((arg, index, argv) => (argv[index - 1] === "--only" ? arg.split(",") : [])));
 const selected = only.size ? assets.filter((asset) => only.has(asset.name)) : assets;
+const versions = new Map();
 if (only.size !== 0 && selected.length !== only.size) throw new Error(`unknown asset in --only: ${[...only].join(",")}`);
 
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage({ viewport: SHOT, deviceScaleFactor: 1, colorScheme: "light" });
 const entries = new Map(
-  only.size ? JSON.parse(await readFile(MANIFEST, "utf8")).assets.map((entry) => [entry.path, entry]) : [],
+  JSON.parse(await readFile(MANIFEST, "utf8")).assets.map((entry) => [entry.path, entry]),
 );
 
 for (const asset of selected) {
@@ -53,10 +52,18 @@ body{display:grid;place-items:center;background:${background}}
 </style></head><body><img class="content" src="${image}" alt=""></body></html>`, { waitUntil: "load" });
   await page.evaluate(() => Promise.all([...document.images].map((image) => image.decode())));
   const path = resolve(OUTPUT, asset.name);
-  await page.screenshot({ path, type: "png", animations: "disabled" });
+  const png = await page.screenshot({ path, type: "png", animations: "disabled" });
+  versions.set(asset.name, createHash("sha256").update(png).digest("hex").slice(0, 12));
   entries.set(`docs/screenshots/${asset.name}`, { path: `docs/screenshots/${asset.name}`, width: SHOT.width, height: asset.contentHeight ?? SHOT.height, theme: "light", treatment: asset.raw ? "raw GitHub screenshot on white" : "bare app window, radius and shadow applied by the page", source: asset.source, scenario: asset.scenario });
   console.log(path);
 }
 
 await browser.close();
+const indexPath = resolve(ROOT, "docs/index.html");
+let index = await readFile(indexPath, "utf8");
+for (const [name, version] of versions) {
+  const escaped = name.replaceAll(".", "\\.");
+  index = index.replaceAll(new RegExp(`screenshots/${escaped}(?:\\?v=[^"'\\s>]+)?`, "g"), `screenshots/${name}?v=${version}`);
+}
+await writeFile(indexPath, index);
 await writeFile(MANIFEST, `${JSON.stringify({ assets: [...entries.values()] }, null, 2)}\n`);

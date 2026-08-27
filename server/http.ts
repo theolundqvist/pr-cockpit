@@ -16,6 +16,7 @@ import {
   listPrIndex,
   listPrs,
   listRunJobs,
+  workflowRunsForLease,
   saveDiff,
   saveFileContents,
   setArchived,
@@ -28,6 +29,8 @@ import {
   type MutationRow,
   type PrIndexRow,
   type PrRow,
+  type RunJobRow,
+  type WorkflowRunRow,
 } from "./db.ts";
 import { localCheckoutBranchFor, localCheckoutPathFor, setLocalCheckoutBranch, worktreePathFor, worktreeWindowIdFor } from "./worktreeScan.ts";
 import { prKey } from "./prKey.ts";
@@ -43,6 +46,7 @@ import {
   fetchGithubQuota,
   GithubRequestError,
   githubAuthStatus,
+  startGithubSetup,
   StalePrHeadError,
   getViewerLogin,
   lookupPr,
@@ -56,12 +60,14 @@ import {
   type PrCommentSince,
   type PrDetail,
 } from "./github.ts";
+import type { GithubAuthStatus } from "./githubAuth.ts";
 import { type CommitFileStat, commitStatsFromMirror, conflictFilesFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError } from "./mirror.ts";
 import { checkState, type CheckState } from "./checkState.ts";
 import { currentBaseRef, discardMutation, enqueueMutation, mutationsForPr, retryMutation, type MutationPayload } from "./mutations.ts";
 import { isMergeMethod, mergeMethodFor, mergeMethodSourceFor, setMergeMethodPreference } from "./mergeMethod.ts";
 import { AGENT_DEFAULTS, readSettings, relayConfig, RELAY_APP_INSTALL_URL, RELAY_APP_SLUG, settingsRepos, writeSettings, type AgentSetting, type Settings } from "./settings.ts";
 import { claudeBinPath, ompBinPath } from "./harness.ts";
+import { CommitMessageError, generateCommitMessage } from "./commitMessage.ts";
 import { relayStatus } from "./relayClient.ts";
 import { relayCoverage } from "./relayCoverage.ts";
 import { testMatcher } from "../ui/src/lib/testPath.js";
@@ -94,7 +100,7 @@ import { createTmuxFocusHandler } from "./tmuxFocus.ts";
 import type { TmuxFocusHandler } from "./tmuxFocus.ts";
 import { needsMeRank } from "./rank.ts";
 import { invalidateInbox, invalidatePr } from "./rendererInvalidation.ts";
-import { cachedJobLogs, formatJobLogs, syncRunJobs } from "./runLogs.ts";
+import { actionJobLog, actionWorkflowGraphs, activateActionsLease, cacheActionsRun, cachedJobLogs, formatJobLogs, formatRunJobs } from "./runLogs.ts";
 const cockpitRoot = process.cwd();
 
 function json(data: unknown, status = 200): Response {
@@ -348,9 +354,16 @@ type HttpDependencies = {
   fetchPrCommentsSince: typeof fetchPrCommentsSince;
   lookupPrIndexes: typeof lookupPrIndexes;
   commitPrFileEdit: typeof commitPrFileEdit;
+  githubAuthStatus: typeof githubAuthStatus;
+  startGithubSetup: typeof startGithubSetup;
+  generateCommitMessage: typeof generateCommitMessage;
   resolveReviewThread: typeof resolveReviewThread;
   refreshPr: typeof refreshPr;
   handleTmuxFocus: TmuxFocusHandler;
+  activateActionsLease: typeof activateActionsLease;
+  cacheActionsRun: typeof cacheActionsRun;
+  actionWorkflowGraphs: typeof actionWorkflowGraphs;
+  actionJobLog: typeof actionJobLog;
 };
 
 type HttpRuntime = HttpDependencies & {
@@ -364,9 +377,16 @@ const defaultHttpDependencies: HttpDependencies = {
   fetchPrCommentsSince,
   lookupPrIndexes,
   commitPrFileEdit,
+  githubAuthStatus,
+  startGithubSetup,
+  generateCommitMessage,
   resolveReviewThread,
   refreshPr,
   handleTmuxFocus: createTmuxFocusHandler(),
+  activateActionsLease,
+  cacheActionsRun,
+  actionWorkflowGraphs,
+  actionJobLog,
 };
 async function handleGithubQuota(runtime: HttpRuntime): Promise<Response> {
   try {
@@ -770,6 +790,9 @@ function formatPrAgentDigest(summary: PrAgentSummary, includeComments: boolean, 
       lines.push(`Read a cached log with \`pr-cockpit ${summary.ref} --logs [check name]\`.`);
     }
   }
+  if (summary.ci.running > 0) {
+    lines.push(`Inspect queued and running Actions state with \`pr-cockpit ${summary.ref} --jobs\`.`);
+  }
   if (includeComments) {
     const commentLines = summary.newComments.length > 0
       ? summary.newComments.map(newCommentLine)
@@ -826,6 +849,9 @@ export function formatPrAgentSummary(summary: PrAgentSummary, options: AgentSumm
   }
   if (summary.ci.checks.some((check) => check.logBytes !== null)) {
     lines.push("", `Read a cached log with \`pr-cockpit ${summary.ref} --logs [check name]\` instead of polling GitHub Actions.`);
+  }
+  if (summary.ci.running > 0) {
+    lines.push("", `Inspect queued and running Actions state with \`pr-cockpit ${summary.ref} --jobs\` instead of polling GitHub Actions.`);
   }
 
   if (includeComments && summary.newCommentsSince) {
@@ -1001,21 +1027,20 @@ async function handlePrConflicts(owner: string, repo: string, number: string): P
   if (!ctx) return json({ error: "PR is not cached yet" }, 404);
   if (isMockGithub) return json({ files: mockGithub!.conflictFiles(repoName, num) });
 
-  let result = await conflictFilesFromMirror(repoName, ctx.baseSha ?? `refs/heads/${ctx.baseRef}`, ctx.headSha);
-  if (result.status === "no-mirror" || result.status === "missing-commit" || !ctx.baseSha) {
-    try {
-      await fetchMirror(repoName, INCREMENTAL_FETCH_TIMEOUT_MS);
-      result = await conflictFilesFromMirror(repoName, ctx.baseSha ?? `refs/heads/${ctx.baseRef}`, ctx.headSha);
-    } catch (err) {
-      console.error(`conflict file fetch failed for ${repoName}#${num}:`, err);
-      return json({ error: "conflict files are still loading" }, 503);
-    }
+  try {
+    await fetchMirror(repoName, INCREMENTAL_FETCH_TIMEOUT_MS);
+  } catch (err) {
+    console.error(`conflict file fetch failed for ${repoName}#${num}:`, err);
+    return json({ error: "Conflict files are still loading" }, 503);
   }
-  if (result.status === "conflicts" || result.status === "clean") return json({ files: result.files });
+
+  const result = await conflictFilesFromMirror(repoName, `refs/heads/${ctx.baseRef}`, ctx.headSha);
+  if (result.status === "conflicts") return json({ files: result.files });
+  if (result.status === "clean") return json({ error: "No conflicts found against the latest base branch" }, 409);
   if (result.status === "merge-failed") {
     console.error(`conflict merge-tree failed for ${repoName}#${num}: ${result.error}`);
   }
-  return json({ error: "couldn't determine conflict files" }, 503);
+  return json({ error: "Couldn't determine conflicting files" }, 503);
 }
 
 // Per-commit file counts for the timeline. The mirror is the only source of per-commit file lists;
@@ -1156,26 +1181,157 @@ async function handleAgentPrDiff(owner: string, repo: string, number: string, ur
   return handlePrDiff(owner, repo, number, url);
 }
 
-async function handleAgentPrLogs(owner: string, repo: string, number: string, url: URL): Promise<Response> {
+function cachedActionsContext(owner: string, repo: string, number: string): {
+  repoName: string;
+  num: number;
+  headSha: string;
+} | Response {
   if (!validPrReference(owner, repo, number)) return json({ error: "invalid PR reference" }, 400);
   const repoName = `${owner}/${repo}`;
   const num = Number(number);
   const cached = getPr(repoName, num) ?? getCachedPrDetail(repoName, num);
   if (!cached) return json({ error: "PR is not cached yet" }, 404);
   const detail = JSON.parse(cached.detail_json) as PrDetail;
-  const check = url.searchParams.get("check") ?? undefined;
+  return { repoName, num, headSha: detail.headRefOid };
+}
 
-  let entries = cachedJobLogs(repoName, detail.headRefOid, check);
-  if (entries.every((entry) => entry.body === null)) {
-    // an agent asking for a log outright is worth the REST reserve the background sync protects
-    try {
-      await syncRunJobs(repoName, detail, { background: false });
-    } catch (err) {
-      console.error(`run job sync failed for ${repoName}#${num}:`, err);
-    }
-    entries = cachedJobLogs(repoName, detail.headRefOid, check);
+async function handleActionsLease(owner: string, repo: string, number: string, runtime: HttpRuntime): Promise<Response> {
+  const context = cachedActionsContext(owner, repo, number);
+  if (context instanceof Response) return context;
+  await runtime.activateActionsLease(context.repoName, context.num, context.headSha);
+  return json({ ok: true });
+}
+
+function serializeActionRun(run: WorkflowRunRow) {
+  return {
+    id: run.run_id,
+    attempt: run.run_attempt,
+    workflowName: run.workflow_name,
+    workflowPath: run.workflow_path,
+    status: run.status,
+    conclusion: run.conclusion,
+    eventAt: run.event_at,
+    htmlUrl: run.html_url,
+  };
+}
+
+function serializeActionJob(job: RunJobRow) {
+  const labels = JSON.parse(job.labels_json) as string[];
+  return {
+    id: job.job_id,
+    runId: job.run_id,
+    attempt: job.run_attempt,
+    workflowName: job.workflow_name,
+    name: job.name,
+    status: job.status,
+    conclusion: job.conclusion,
+    startedAt: job.started_at,
+    completedAt: job.completed_at,
+    htmlUrl: job.html_url,
+    runnerName: job.runner_name,
+    runnerGroupName: job.runner_group_name,
+    labels,
+    failedStep: job.failed_step,
+    logBytes: job.log_bytes,
+    logError: job.log_error,
+  };
+}
+
+async function handleActions(owner: string, repo: string, number: string, runtime: HttpRuntime): Promise<Response> {
+  const context = cachedActionsContext(owner, repo, number);
+  if (context instanceof Response) return context;
+  void runtime.activateActionsLease(context.repoName, context.num, context.headSha).catch((error) => {
+    console.error(`Actions cache refresh failed for ${context.repoName}#${context.num}:`, error);
+  });
+  try {
+    const runs = workflowRunsForLease(context.repoName, context.num, context.headSha)
+      .sort((left, right) => Date.parse(right.event_at) - Date.parse(left.event_at))
+      .map(serializeActionRun);
+    const jobs = listRunJobs(context.repoName, context.headSha).map(serializeActionJob);
+    return json({ headSha: context.headSha, runs, jobs });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 502);
   }
-  return new Response(formatJobLogs(detail.headRefOid, entries), {
+}
+async function handleActionGraphs(owner: string, repo: string, number: string, runtime: HttpRuntime): Promise<Response> {
+  const context = cachedActionsContext(owner, repo, number);
+  if (context instanceof Response) return context;
+  void runtime.activateActionsLease(context.repoName, context.num, context.headSha).catch((error) => {
+    console.error(`Actions cache refresh failed for ${context.repoName}#${context.num}:`, error);
+  });
+  try {
+    const workflows = await runtime.actionWorkflowGraphs(context.repoName, context.num, context.headSha);
+    return json({ headSha: context.headSha, workflows });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 502);
+  }
+}
+
+
+async function handleActionLog(
+  owner: string,
+  repo: string,
+  number: string,
+  jobId: string,
+  runtime: HttpRuntime,
+): Promise<Response> {
+  const context = cachedActionsContext(owner, repo, number);
+  if (context instanceof Response) return context;
+  const id = Number(jobId);
+  if (!Number.isSafeInteger(id) || id <= 0) return json({ error: "invalid job id" }, 400);
+  try {
+    const result = await runtime.actionJobLog(context.repoName, context.headSha, id);
+    if (!result) return json({ error: "job is not cached for this PR head" }, 404);
+    return json({
+      job: serializeActionJob(result.job),
+      body: result.body,
+      state: result.state,
+    });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 502);
+  }
+}
+
+function handleAgentPrJobs(owner: string, repo: string, number: string): Response {
+  const context = cachedActionsContext(owner, repo, number);
+  if (context instanceof Response) return context;
+  return new Response(formatRunJobs(context.headSha, listRunJobs(context.repoName, context.headSha)), {
+    headers: { "content-type": "text/plain; charset=utf-8" },
+  });
+}
+
+async function handleAgentCacheRun(
+  owner: string,
+  repo: string,
+  number: string,
+  runId: string,
+  runtime: HttpRuntime,
+): Promise<Response> {
+  const context = cachedActionsContext(owner, repo, number);
+  if (context instanceof Response) return context;
+  const id = Number(runId);
+  if (!Number.isSafeInteger(id) || id <= 0) return json({ error: "valid Actions run ID required" }, 400);
+
+  try {
+    const result = await runtime.cacheActionsRun(context.repoName, context.num, context.headSha, id);
+    if (result === "head-mismatch") {
+      return json({ error: "Actions run does not belong to the current PR head" }, 409);
+    }
+    const jobs = listRunJobs(context.repoName, context.headSha).filter((job) => job.run_id === id);
+    return new Response(`Actions run ${id}: ${result}\n\n${formatRunJobs(context.headSha, jobs)}`, {
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 502);
+  }
+}
+
+async function handleAgentPrLogs(owner: string, repo: string, number: string, url: URL): Promise<Response> {
+  const context = cachedActionsContext(owner, repo, number);
+  if (context instanceof Response) return context;
+  const check = url.searchParams.get("check") ?? undefined;
+  const entries = await cachedJobLogs(context.repoName, context.headSha, check);
+  return new Response(formatJobLogs(context.headSha, entries), {
     headers: { "content-type": "text/plain; charset=utf-8" },
   });
 }
@@ -1263,6 +1419,37 @@ async function handleFile(url: URL): Promise<Response> {
 
 const CANONICAL_REPO_RE = /^(?!\.{1,2}\/)[A-Za-z0-9_.-]+\/(?!\.{1,2}$)[A-Za-z0-9_.-]+$/;
 const MAX_COMMIT_HEADLINE_LENGTH = 200;
+function isRepoFilePath(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length > 0
+    && !value.startsWith("/")
+    && !value.includes("\0")
+    && value.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+
+function isWorkflowScopeError(path: string, error: unknown): boolean {
+  return path.startsWith(".github/workflows/")
+    && error instanceof GithubRequestError
+    && (
+      error.graphqlErrors.some(({ type, message }) =>
+        type === "FORBIDDEN" && /personal access token/i.test(message ?? ""))
+      || /REST request failed: 403.*(?:personal access token|resource not accessible)/is.test(error.message)
+    );
+}
+const AUTH_SCOPE_ALLOWED: Record<string, true> = { repo: true, workflow: true };
+
+function requestedAuthScopes(value: unknown): string[] | null {
+  if (value === undefined) return ["repo", "workflow"];
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const scopes = [...new Set(value)];
+  return scopes.every((scope) => typeof scope === "string" && AUTH_SCOPE_ALLOWED[scope]) ? scopes.sort() as string[] : null;
+}
+
+function githubSetupResponse(auth: GithubAuthStatus, status = 401): Response {
+  return json({ error: auth.error ?? "GitHub setup required.", code: "github-setup", auth }, status);
+}
+
+
 
 
 async function handlePrFileEdit(req: Request, runtime: HttpRuntime): Promise<Response> {
@@ -1283,11 +1470,7 @@ async function handlePrFileEdit(req: Request, runtime: HttpRuntime): Promise<Res
     || typeof number !== "number"
     || !Number.isSafeInteger(number)
     || number <= 0
-    || typeof path !== "string"
-    || !(path.length > 0
-      && !path.startsWith("/")
-      && !path.includes("\0")
-      && path.split("/").every((segment) => segment !== "" && segment !== "." && segment !== ".."))
+    || !isRepoFilePath(path)
     || typeof expectedHeadOid !== "string"
     || !FULL_SHA_RE.test(expectedHeadOid)
     || typeof content !== "string"
@@ -1317,8 +1500,61 @@ async function handlePrFileEdit(req: Request, runtime: HttpRuntime): Promise<Res
     if (error instanceof StalePrHeadError) {
       return json({ error: error.message, code: "stale-head" }, 409);
     }
+    const workflowScopeMissing = isWorkflowScopeError(path, error);
+    const requiredScopes = workflowScopeMissing ? ["repo", "workflow"] : ["repo"];
+    let auth = await runtime.githubAuthStatus(requiredScopes);
+    if (workflowScopeMissing && auth.ok) {
+      auth = { ...auth, ok: false, state: "missing-scopes", error: "Allow workflow access.", missingScopes: ["workflow"] };
+    }
+    if (!auth.ok) return githubSetupResponse(auth, 403);
     console.error(`PR file edit failed for ${repo}#${number}:`, error);
     return json({ error: "GitHub commit failed" }, 502);
+  }
+}
+
+async function handleCommitMessage(req: Request, runtime: HttpRuntime): Promise<Response> {
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: "invalid JSON body" }, 400);
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return json({ error: "invalid commit message request" }, 400);
+  }
+  const { repo, number, path, hunk } = body as Record<string, unknown>;
+  if (
+    typeof repo !== "string"
+    || !CANONICAL_REPO_RE.test(repo)
+    || typeof number !== "number"
+    || !Number.isSafeInteger(number)
+    || number <= 0
+    || !isRepoFilePath(path)
+    || typeof hunk !== "string"
+    || hunk.length === 0
+    || hunk.length > 30_000
+    || !hunk.isWellFormed()
+  ) {
+    return json({ error: "invalid commit message request" }, 400);
+  }
+
+  const stored = getPr(repo, number) ?? getCachedPrDetail(repo, number);
+  if (!stored) return json({ error: "PR is not cached yet" }, 404);
+  const detail = JSON.parse(stored.detail_json) as { title?: string };
+  const title = detail.title ?? ("title" in stored ? stored.title : "");
+  try {
+    const message = await runtime.generateCommitMessage({
+      title,
+      path,
+      hunk,
+    });
+    return json({ message });
+  } catch (error) {
+    if (error instanceof CommitMessageError) {
+      return json({ error: error.message, code: error.code }, error.code === "omp-auth" ? 409 : 503);
+    }
+    console.error(`Commit message generation failed for ${repo}#${number}:`, error);
+    return json({ error: "Commit message generation failed" }, 502);
   }
 }
 
@@ -1640,6 +1876,7 @@ const GITHUB_APP_EVENTS = [
   "status",
   "push",
   "workflow_run",
+  "workflow_job",
 ];
 
 function handleGithubAppStart(url: URL, port: number): Response {
@@ -1875,6 +2112,8 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     }
     if (isMockGithub && req.method !== "GET") {
       let allowed = (req.method === "POST" && url.pathname === "/api/archive")
+        || (req.method === "POST" && url.pathname === "/api/commit-message")
+        || (req.method === "POST" && url.pathname === "/api/auth/setup")
         || (req.method === "PUT" && url.pathname === "/api/settings")
         || (req.method === "POST" && parts.length === 6 && parts[0] === "api" && parts[1] === "pr" && parts[5] === "merge-method");
       if (!allowed && req.method === "POST" && url.pathname === "/api/mutations") {
@@ -1906,7 +2145,13 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       return handleClosed(url);
     }
     if (req.method === "GET" && url.pathname === "/api/auth/status") {
-      return json(await githubAuthStatus());
+      const scopes = requestedAuthScopes(url.searchParams.get("scopes")?.split(","));
+      return scopes ? json(await runtime.githubAuthStatus(scopes)) : json({ error: "invalid auth scopes" }, 400);
+    }
+    if (req.method === "POST" && url.pathname === "/api/auth/setup") {
+      const body = await req.json().catch(() => null) as { scopes?: unknown } | null;
+      const scopes = requestedAuthScopes(body?.scopes);
+      return scopes ? json(await runtime.startGithubSetup(scopes)) : json({ error: "invalid auth scopes" }, 400);
     }
     if (req.method === "GET" && url.pathname === "/api/onboarding/repos") {
       return handleOnboardingRepos();
@@ -1934,6 +2179,9 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     }
     if (req.method === "POST" && url.pathname === "/api/pr-file-edit") {
       return handlePrFileEdit(req, runtime);
+    }
+    if (req.method === "POST" && url.pathname === "/api/commit-message") {
+      return handleCommitMessage(req, runtime);
     }
     if (req.method === "GET" && url.pathname === "/api/file-history") {
       return handleFileHistory(req, url);
@@ -2101,6 +2349,36 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       parts.length === 6 &&
       parts[0] === "api" &&
       parts[1] === "pr" &&
+      parts[5] === "actions"
+    ) {
+      return handleActions(parts[2]!, parts[3]!, parts[4]!, runtime);
+    }
+    if (
+      req.method === "GET" &&
+      parts.length === 7 &&
+      parts[0] === "api" &&
+      parts[1] === "pr" &&
+      parts[5] === "actions" &&
+      parts[6] === "graph"
+    ) {
+      return handleActionGraphs(parts[2]!, parts[3]!, parts[4]!, runtime);
+    }
+    if (
+      req.method === "GET" &&
+      parts.length === 9 &&
+      parts[0] === "api" &&
+      parts[1] === "pr" &&
+      parts[5] === "actions" &&
+      parts[6] === "jobs" &&
+      parts[8] === "log"
+    ) {
+      return handleActionLog(parts[2]!, parts[3]!, parts[4]!, parts[7]!, runtime);
+    }
+    if (
+      req.method === "GET" &&
+      parts.length === 6 &&
+      parts[0] === "api" &&
+      parts[1] === "pr" &&
       parts[5] === "conflicts"
     ) {
       return handlePrConflicts(parts[2]!, parts[3]!, parts[4]!);
@@ -2131,10 +2409,39 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       parts[2] === "pr"
     ) {
       if (parts[6] === "diff") return handleAgentPrDiff(parts[3]!, parts[4]!, parts[5]!, url);
+      if (parts[6] === "jobs") return handleAgentPrJobs(parts[3]!, parts[4]!, parts[5]!);
       if (parts[6] === "logs") return handleAgentPrLogs(parts[3]!, parts[4]!, parts[5]!, url);
       if (parts[6] === "file") return handleAgentPrFile(parts[3]!, parts[4]!, parts[5]!, url);
     }
+    if (
+      req.method === "POST" &&
+      parts.length === 9 &&
+      parts[0] === "api" &&
+      parts[1] === "agent" &&
+      parts[2] === "pr" &&
+      parts[6] === "runs" &&
+      parts[8] === "cache"
+    ) {
+      const trustedCliHost = /^(?:127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(req.headers.get("host") ?? url.host);
+      if (!trustedCliHost || req.headers.get("x-pr-cockpit-cli") !== "1") {
+        return json({ error: "trusted CLI request required" }, 403);
+      }
+      return handleAgentCacheRun(parts[3]!, parts[4]!, parts[5]!, parts[7]!, runtime);
+    }
     const trustedCliHost = /^(?:127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(req.headers.get("host") ?? url.host);
+    if (
+      req.method === "POST" &&
+      parts.length === 7 &&
+      parts[0] === "api" &&
+      parts[1] === "agent" &&
+      parts[2] === "pr" &&
+      parts[6] === "actions-lease"
+    ) {
+      if (!trustedCliHost || req.headers.get("x-pr-cockpit-cli") !== "1") {
+        return json({ error: "trusted CLI request required" }, 403);
+      }
+      return handleActionsLease(parts[3]!, parts[4]!, parts[5]!, runtime);
+    }
     if (
       req.method === "POST" &&
       parts.length === 8 &&

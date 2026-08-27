@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -341,21 +341,117 @@ test("resolve rejects PR resource query options", async () => {
 });
 
 
-test("update resolves an installed symlink to its checkout and rejects extra arguments", async () => {
+test("jobs and logs activate the lease before their cache-only GET", async () => {
+  const requests: Array<{ method: string; path: string }> = [];
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const url = new URL(request.url);
+      requests.push({ method: request.method, path: url.pathname });
+      return new Response(url.pathname.endsWith("actions-lease") ? "" : "cached\n");
+    },
+  });
+  try {
+    for (const args of [
+      ["owner/repo#17", "--jobs"],
+      ["owner/repo#17", "--logs"],
+    ]) {
+      const process = Bun.spawn([join(import.meta.dir, "pr-cockpit"), ...args], {
+        env: { ...Bun.env, COCKPIT_PORT: String(server.port) },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(await process.exited).toBe(0);
+    }
+    expect(requests).toEqual([
+      { method: "POST", path: "/api/agent/pr/owner/repo/17/actions-lease" },
+      { method: "GET", path: "/api/agent/pr/owner/repo/17/jobs" },
+      { method: "POST", path: "/api/agent/pr/owner/repo/17/actions-lease" },
+      { method: "GET", path: "/api/agent/pr/owner/repo/17/logs" },
+    ]);
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("cache-run requests one Actions run through the trusted local endpoint", async () => {
+  const requests: Array<{ method: string; path: string; trusted: string | null }> = [];
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const url = new URL(request.url);
+      requests.push({ method: request.method, path: url.pathname, trusted: request.headers.get("x-pr-cockpit-cli") });
+      return new Response("Actions run 987: fetched\n");
+    },
+  });
+  try {
+    const process = Bun.spawn([
+      join(import.meta.dir, "pr-cockpit"),
+      "cache-run",
+      "owner/repo#17",
+      "987",
+    ], {
+      env: { ...Bun.env, COCKPIT_PORT: String(server.port) },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(await process.exited).toBe(0);
+    expect(await new Response(process.stdout).text()).toBe("Actions run 987: fetched\n");
+    expect(requests).toEqual([{
+      method: "POST",
+      path: "/api/agent/pr/owner/repo/17/runs/987/cache",
+      trusted: "1",
+    }]);
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("update delegates to the running server and waits for the new revision", async () => {
   const root = mkdtempSync(join(tmpdir(), "pr-cockpit-update-"));
   const scripts = join(root, "scripts");
   const bin = join(root, "bin");
   const command = join(bin, "pr-cockpit");
+  const requests: string[] = [];
   mkdirSync(scripts);
   mkdirSync(bin);
+  writeFileSync(join(root, "app.ts"), "seed\n");
+  for (const args of [
+    ["init", "-q"],
+    ["config", "user.email", "t@t.t"],
+    ["config", "user.name", "t"],
+    ["add", "app.ts"],
+    ["commit", "-q", "-m", "seed"],
+  ]) {
+    expect(Bun.spawnSync(["git", "-C", root, ...args]).success).toBe(true);
+  }
+  const targetRev = Bun.spawnSync(["git", "-C", root, "rev-parse", "HEAD"]).stdout.toString().trim();
+  let updateStarted = false;
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const url = new URL(request.url);
+      requests.push(`${request.method} ${url.pathname}`);
+      if (url.pathname === "/api/version") {
+        return Response.json({ updateAvailable: !updateStarted, rev: updateStarted ? targetRev : "old-revision" });
+      }
+      if (url.pathname === "/api/update" && request.method === "POST") {
+        updateStarted = true;
+        return Response.json({ ok: true });
+      }
+      return new Response("not found", { status: 404 });
+    },
+  });
   copyFileSync(join(import.meta.dir, "pr-cockpit"), join(scripts, "pr-cockpit"));
-  writeFileSync(join(scripts, "bootstrap"), '#!/usr/bin/env bash\nprintf "%s\\n" "$COCKPIT_HOME"\n');
   chmodSync(join(scripts, "pr-cockpit"), 0o755);
-  chmodSync(join(scripts, "bootstrap"), 0o755);
   symlinkSync(join(scripts, "pr-cockpit"), command);
 
   try {
-    const update = Bun.spawn([command, "update"], { stdout: "pipe", stderr: "pipe" });
+    const update = Bun.spawn([command, "update"], {
+      env: { ...Bun.env, COCKPIT_PORT: String(server.port) },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
     const [output, error, exitCode] = await Promise.all([
       new Response(update.stdout).text(),
       new Response(update.stderr).text(),
@@ -363,9 +459,14 @@ test("update resolves an installed symlink to its checkout and rejects extra arg
     ]);
     expect(exitCode).toBe(0);
     expect(error).toBe("");
-    expect(output).toBe(`${realpathSync(root)}\n`);
+    expect(output).toBe(`pr-cockpit: updated to ${targetRev.slice(0, 7)}\n`);
+    expect(requests).toEqual(["GET /api/version", "POST /api/update", "GET /api/version"]);
 
-    const invalid = Bun.spawn([command, "update", "unexpected"], { stdout: "pipe", stderr: "pipe" });
+    const invalid = Bun.spawn([command, "update", "unexpected"], {
+      env: { ...Bun.env, COCKPIT_PORT: String(server.port) },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
     const [invalidError, invalidExitCode] = await Promise.all([
       new Response(invalid.stderr).text(),
       invalid.exited,
@@ -373,6 +474,7 @@ test("update resolves an installed symlink to its checkout and rejects extra arg
     expect(invalidExitCode).toBe(2);
     expect(invalidError).toContain("pr-cockpit update");
   } finally {
+    server.stop(true);
     rmSync(root, { recursive: true, force: true });
   }
 });

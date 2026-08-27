@@ -24,7 +24,6 @@ import { onPrActivity } from "./activity.ts";
 import { scoreReviewers } from "./reviewScore.ts";
 import { invalidateInbox, invalidatePr, publishPollCompleted } from "./rendererInvalidation.ts";
 import { GRAPHQL_BACKGROUND_RESERVE } from "../ui/src/lib/quotaImpact.js";
-import { syncRunJobs } from "./runLogs.ts";
 
 const INDEX_SWEEP_MS = 1_800_000;
 
@@ -165,8 +164,6 @@ async function refreshPrNow(repo: string, number: number): Promise<void> {
   }]);
 
   prefetchDetailImages(detail);
-  // failing jobs' logs are what an agent reads next, so they are cached before it asks
-  void syncRunJobs(repo, detail).catch((err) => console.error(`run job sync failed for ${repo}#${number}:`, err));
 
   // keyed on the freshly observed state, not the pre-await `previous` snapshot - closed prs can't be re-armed
   if (detail.state === "MERGED" || detail.state === "CLOSED") setAutoMergeArmed(repo, number, false);

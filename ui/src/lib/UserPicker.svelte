@@ -44,14 +44,14 @@
 
 <div class="picker-backdrop" onclick={onClose} onkeydown={null} role="presentation">
   <div class="picker" onclick={(e) => e.stopPropagation()} role="dialog" aria-label={title}>
-    <div class="picker-title">{title}</div>
+    <div class="picker-title"><span>{title}</span><button class="picker-close" type="button" aria-label="Close" onclick={onClose}><Kbd keys="esc" /></button></div>
     <input
       bind:this={inputEl}
       bind:value={query}
       onkeydown={onKey}
       use:mount
       class="picker-input"
-      placeholder="Filter people…"
+      placeholder="Search"
       spellcheck="false"
       autocomplete="off"
     />
@@ -68,13 +68,12 @@
           >
             <Avatar login={user.login} url={user.avatarUrl} size={18} />
             <span class="picker-login">{user.login}</span>
-            {#if current.has(user.login)}<span class="picker-added">added</span>{/if}
+            {#if current.has(user.login)}<span class="picker-added" aria-label="Added">✓</span>{/if}
             {#if i === index}<Kbd keys="enter" />{/if}
           </button>
         {/each}
       {/if}
     </div>
-    <div class="picker-hint"><kbd>↑↓</kbd> move · <kbd>enter</kbd> toggle · <kbd>esc</kbd> close</div>
   </div>
 </div>
 
@@ -105,6 +104,12 @@
     font-size: 12px;
     color: var(--text-dim);
     border-bottom: 1px solid var(--border-soft);
+  }
+  .picker-close {
+    display: inline-flex;
+    padding: 0;
+    border: 0;
+    background: none;
   }
   .picker-input {
     margin: 10px 12px 8px;
@@ -162,17 +167,6 @@
     color: var(--text-faint);
     font-size: 12.5px;
   }
-  .picker-hint {
-    padding: 8px 14px;
-    border-top: 1px solid var(--border-soft);
-    font-size: 11px;
-    color: var(--text-faint);
-  }
-  .picker-hint kbd {
-    color: color-mix(in srgb, var(--text-dim) 80%, transparent);
-    font-family: var(--sans);
-    font-weight: 500;
-  }
 
   .picker-backdrop {
     background: color-mix(in srgb, var(--text) 22%, transparent);
@@ -185,7 +179,10 @@
     box-shadow: var(--shadow-dialog);
   }
   .picker-title {
-    padding: 13px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 11px 14px;
     background: var(--surface);
     color: var(--text);
     font-family: var(--sans);

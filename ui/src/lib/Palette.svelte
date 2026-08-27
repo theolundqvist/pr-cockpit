@@ -117,6 +117,7 @@
     query = "";
     live = [];
     selected = 0;
+    held = "none";
     fetchInbox()
       .then((res) => (cached = res.prs))
       .catch(() => (cached = []));
@@ -161,6 +162,26 @@
     close();
   }
 
+  function chooseInNewWindow(result) {
+    if (standalone) {
+      location.hash = `#/palette/window/${result.repo}/${result.number}`;
+      return;
+    }
+    const hash = `#/pr/${result.repo}/${result.number}`;
+    if (window.cockpitShell?.openWindow) window.cockpitShell.openWindow(hash);
+    else window.open(`${location.pathname}${hash}`, "_blank");
+    close();
+  }
+
+  function chooseOnGithub(result) {
+    if (standalone) {
+      location.hash = `#/palette/github/${result.repo}/${result.number}`;
+      return;
+    }
+    window.open(`https://github.com/${result.repo}/pull/${result.number}`, "_blank", "noopener");
+    close();
+  }
+
   function scrollSelectedIntoView() {
     requestAnimationFrame(() => {
       document.querySelectorAll(".palette-result")[selected]?.scrollIntoView({ block: "nearest" });
@@ -189,7 +210,12 @@
         selected = Math.max(0, selected - 1);
         scrollSelectedIntoView();
       } else if (e.key === "Enter") {
-        if (results[selected]) choose(results[selected]);
+        const result = results[selected];
+        if (result) {
+          if (e.shiftKey) chooseInNewWindow(result);
+          else if (e.metaKey || e.ctrlKey) chooseOnGithub(result);
+          else choose(result);
+        }
       } else {
         return;
       }
@@ -199,14 +225,28 @@
     window.addEventListener("keydown", onKey, { capture: true });
     return () => window.removeEventListener("keydown", onKey, { capture: true });
   });
+
+  // the hint row names the action the held modifier will take, so ⇧ and ⌘ are discoverable
+  let held = $state("none");
+  $effect(() => {
+    if (!open) return;
+    const sync = (e) => (held = e.shiftKey ? "shift" : e.metaKey || e.ctrlKey ? "meta" : "none");
+    const clear = () => (held = "none");
+    window.addEventListener("keydown", sync);
+    window.addEventListener("keyup", sync);
+    window.addEventListener("blur", clear);
+    return () => {
+      window.removeEventListener("keydown", sync);
+      window.removeEventListener("keyup", sync);
+      window.removeEventListener("blur", clear);
+    };
+  });
+  let enterKeys = $derived(held === "shift" ? "shift+enter" : held === "meta" ? "cmd+enter" : "enter");
 </script>
 
 {#if open}
   <div class="scrim" class:standalone onmousedown={close}>
     <div class="palette" class:standalone onmousedown={(e) => e.stopPropagation()}>
-      {#if standalone}
-        <div class="palette-standalone-head">Find a pull request</div>
-      {/if}
       <div class="palette-input-row">
         <svg class="palette-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
           <circle cx="10.5" cy="10.5" r="5.5" />
@@ -216,7 +256,7 @@
           class="palette-input"
           bind:this={inputEl}
           bind:value={query}
-          placeholder="Jump to a PR — title, #number, or branch…"
+          placeholder="PR, branch, or #"
           spellcheck="false"
           autocomplete="off"
         />
@@ -237,12 +277,19 @@
             {#if result.rankTone}
               <span class="pr-rank {result.rankTone}"></span>
             {/if}
-            {#if i === selected}<Kbd keys="enter" />{/if}
+            {#if i === selected}<Kbd keys={enterKeys} />{/if}
           </button>
         {:else}
-          <div class="palette-empty">{query.trim() ? "No matching PRs" : "Type to search"}</div>
+          <div class="palette-empty">{query.trim() ? "No matching PRs" : ""}</div>
         {/each}
       </div>
+      {#if results.length}
+        <div class="palette-hint">
+          <span class="hint" class:on={held === "none"}><Kbd keys="enter" />open</span>
+          <span class="hint" class:on={held === "shift"}><Kbd keys="shift+enter" />new window</span>
+          <span class="hint" class:on={held === "meta"}><Kbd keys="cmd+enter" />github</span>
+        </div>
+      {/if}
     </div>
   </div>
 {/if}
@@ -287,7 +334,7 @@
     box-shadow: 0 12px 28px rgb(0 0 0 / 0.16), 0 2px 6px rgb(0 0 0 / 0.1);
   }
   .palette.standalone .palette-results {
-    max-height: min(540px, calc(var(--general-height) - 250px));
+    max-height: min(540px, calc(var(--general-height) - 240px));
   }
   .palette-input {
     width: 100%;
@@ -328,17 +375,28 @@
     font-family: var(--mono);
     font-size: 9.5px;
   }
-  .palette-standalone-head {
-    padding: 18px 18px 10px;
-    color: var(--text);
-    font-size: 19px;
-    font-weight: 650;
-    letter-spacing: -0.025em;
-  }
   .palette-results {
     max-height: 52vh;
     overflow-y: auto;
     padding: 6px;
+  }
+  .palette-hint {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 9px 14px;
+    border-top: 1px solid var(--border);
+    font-size: 11.5px;
+    color: var(--text-dim);
+  }
+  .hint {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    transition: color 110ms ease;
+  }
+  .hint.on {
+    color: var(--text);
   }
   .palette-result {
     display: flex;

@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const runLogsUrl = new URL("./runLogs.ts", import.meta.url).href;
+const dbUrl = new URL("./db.ts", import.meta.url).href;
 
-// Every assertion runs in a child process so db.ts opens SQLite inside this test's own data dir.
 async function runScenario(prefix: string, scenario: string): Promise<Record<string, any>> {
   const dataDir = mkdtempSync(join(tmpdir(), prefix));
   try {
@@ -26,181 +26,544 @@ async function runScenario(prefix: string, scenario: string): Promise<Record<str
   }
 }
 
-test("cleaning strips Actions noise and keeps the tail's failure evidence", async () => {
-  const result = await runScenario("pr-cockpit-log-clean-", `
-    const { cleanJobLog, JOB_LOG_TAIL_BYTES } = await import(${JSON.stringify(runLogsUrl)});
-    const out = {};
+const seed = `
+  const head = "a".repeat(40);
+  dbm.upsertPr({
+    repo: "acme/app", number: 7, state: "OPEN", is_draft: 0, title: "Cache Actions",
+    author: "theo", base_ref: "main", head_ref: "feature", head_sha: head,
+    updated_at: "2026-08-24T10:00:00Z", additions: 1, deletions: 0, changed_files: 1,
+    commit_count: 1, mergeable: "MERGEABLE", merge_state_status: "CLEAN",
+    auto_merge_enabled: 0, viewer_is_author: 1, viewer_review_requested: 0,
+    viewer_review_state: null, ci_status: "PENDING", review_decision: null,
+    unresolved_count: 0, needs_me_rank: 0, greptile_confidence: null,
+    greptile_reviewed_sha: null, greptile_unresolved_count: 0,
+    detail_json: JSON.stringify({ headRefOid: head }), fetched_at: "2026-08-24T10:00:00Z",
+  });
+`;
 
-    const small = cleanJobLog("\\uFEFF2026-07-15T09:05:01.1234567Z \\u001b[31mFAIL\\u001b[0m one\\n2026-07-15T09:05:02.1234567Z done\\n");
-    out.smallBody = small.body;
-    out.smallTruncated = small.truncated;
-
-    const filler = Array.from({ length: 40_000 }, (_, i) => \`2026-07-15T09:05:01.1234567Z filler line \${i}\`).join("\\n");
-    const big = cleanJobLog(\`\${filler}\\n2026-07-15T09:09:09.1234567Z FAIL src/flight.test.ts > lands the plane\\n2026-07-15T09:09:10.1234567Z ##[error]Process completed with exit code 1\\n\`);
-    out.bigTruncated = big.truncated;
-    out.bigBytes = Buffer.byteLength(big.body);
-    out.keptFailure = big.body.includes("FAIL src/flight.test.ts > lands the plane");
-    out.keptExitCode = big.body.includes("##[error]Process completed with exit code 1");
-    out.startsMidLine = /^filler line \\d+$/.test(big.body.split("\\n")[0] ?? "");
-    out.tailLimit = JOB_LOG_TAIL_BYTES;
-
-    console.log(JSON.stringify(out));
+test("event ingestion is monotonic, runner-complete, REST-free without a lease, and head-only", async () => {
+  const result = await runScenario("pr-cockpit-actions-events-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    let restCalls = 0;
+    const fetchers = {
+      fetchWorkflowRuns: async () => { restCalls++; return []; },
+      fetchRunJobs: async () => { restCalls++; return []; },
+      fetchJobLog: async () => { restCalls++; return ""; },
+      restRemaining: async () => { restCalls++; return 5000; },
+    };
+    const job = (status, conclusion, runnerName = null) => ({ job: {
+      id: 31, runId: 20, attempt: 1, headSha: head, headBranch: "feature",
+      workflowName: "CI", name: "test", status, conclusion, startedAt: null,
+      completedAt: status === "completed" ? "2026-08-24T10:03:00Z" : null,
+      htmlUrl: null, runnerName, runnerGroupName: runnerName ? "hosted" : null,
+      labels: runnerName ? ["ubuntu-latest"] : [], failedStep: conclusion === "failure" ? "bun test" : null,
+    } });
+    await actions.ingestActionsState("acme/app", job("queued", null), fetchers);
+    await actions.ingestActionsState("acme/app", job("in_progress", null, "runner-4"), fetchers);
+    await actions.ingestActionsState("acme/app", job("completed", "failure", "runner-4"), fetchers);
+    await actions.ingestActionsState("acme/app", job("in_progress", null, "runner-9"), fetchers);
+    await actions.ingestActionsState("acme/app", job("queued", null), fetchers);
+    const run = (status, conclusion, eventAt) => ({ run: {
+      id: 20, attempt: 1, headSha: head, headBranch: "feature", workflowName: "CI",
+      status, conclusion, eventAt, htmlUrl: null,
+    } });
+    await actions.ingestActionsState("acme/app", run("queued", null, "2026-08-24T10:00:00Z"), fetchers);
+    await actions.ingestActionsState("acme/app", run("completed", "failure", "2026-08-24T10:04:00Z"), fetchers);
+    await actions.ingestActionsState("acme/app", run("queued", null, "2026-08-24T10:05:00Z"), fetchers);
+    await actions.ingestActionsState("acme/app", { job: { ...job("completed", "failure").job, id: 32, headSha: "b".repeat(40), headBranch: "main" } }, fetchers);
+    await actions.ingestActionsState("acme/app", run("in_progress", null, "2026-08-24T10:06:00Z"), fetchers);
+    const compact = actions.compactActionsPayload("workflow_job", { workflow_job: {
+      id: 40, run_id: 22, run_attempt: 1, head_sha: head, head_branch: "feature",
+      workflow_name: "CI", name: "build", status: "in_progress", conclusion: null,
+      started_at: null, completed_at: null, html_url: null, runner_name: "runner-8",
+      runner_group_name: "self-hosted", labels: ["arm64"], steps: [],
+    } });
+    await actions.ingestActionsState("acme/app", compact, fetchers);
+    console.log(JSON.stringify({
+      restCalls,
+      jobs: dbm.db.query("SELECT job_id,status,conclusion,runner_name,runner_group_name,labels_json,failed_step FROM run_jobs ORDER BY job_id").all(),
+      jobsOutput: actions.formatRunJobs(head, dbm.listRunJobs("acme/app", head)),
+      runs: dbm.db.query("SELECT status,conclusion FROM workflow_runs").all(),
+    }));
   `);
-
-  // timestamps, ANSI and the BOM go; the text does not
-  expect(result.smallBody).toBe("FAIL one\ndone\n");
-  expect(result.smallTruncated).toBe(false);
-  // a 1.5 MB log is cut to the tail, and the cut lands on a line boundary
-  expect(result.bigTruncated).toBe(true);
-  expect(result.bigBytes).toBeLessThanOrEqual(result.tailLimit);
-  expect(result.bigBytes).toBeGreaterThan(result.tailLimit - 200);
-  expect(result.keptFailure).toBe(true);
-  expect(result.keptExitCode).toBe(true);
-  expect(result.startsMidLine).toBe(true);
+  expect(result.restCalls).toBe(0);
+  expect(result.jobs).toEqual([
+    { job_id: 31, status: "completed", conclusion: "failure", runner_name: "runner-4", runner_group_name: "hosted", labels_json: "[\"ubuntu-latest\"]", failed_step: "bun test" },
+    { job_id: 40, status: "in_progress", conclusion: null, runner_name: "runner-8", runner_group_name: "self-hosted", labels_json: "[\"arm64\"]", failed_step: null },
+  ]);
+  expect(result.runs).toEqual([{ status: "completed", conclusion: "failure" }]);
+  expect(result.jobsOutput).toContain("runner hosted/runner-4");
 });
 
-test("only failed and cancelled runs are visited, and only their unsuccessful jobs are downloaded", async () => {
-  const result = await runScenario("pr-cockpit-log-sync-", `
-    const { syncRunJobs, failingRunIds, cachedJobLogs } = await import(${JSON.stringify(runLogsUrl)});
-    const { db } = await import(${JSON.stringify(new URL("./db.ts", import.meta.url).href)});
-    const out = {};
-    const head = "c".repeat(40);
-    const check = (name, conclusion, runId) => ({
-      __typename: "CheckRun",
-      name,
-      status: "COMPLETED",
-      conclusion,
-      detailsUrl: null,
-      startedAt: null,
-      completedAt: null,
-      isRequired: true,
-      checkSuite: { workflowRun: { databaseId: runId, workflow: { name: "CI" } } },
-    });
-    const detail = {
-      headRefOid: head,
-      lastCommit: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [
-        check("lint", "FAILURE", 900),
-        check("tests", "CANCELLED", 901),
-        check("build", "SUCCESS", 902),
-        check("flaky", "FAILURE", 900),
-      ] } } } }] },
-    };
-    out.runIds = failingRunIds(detail).sort();
-
-    const job = (id, runId, name, conclusion, status = "completed") => ({
-      id, run_id: runId, run_attempt: 1, head_sha: head, name, status, conclusion,
-      started_at: "2026-07-15T09:00:00Z", completed_at: "2026-07-15T09:05:00Z",
-      html_url: \`https://github.com/acme/app/actions/runs/\${runId}/job/\${id}\`,
-      steps: [{ name: "Run tests", number: 2, status: "completed", conclusion, started_at: null, completed_at: null }],
-    });
-    const logCalls = [];
+test("a terminal job event normalizes stale status and caches a rerun log", async () => {
+  const result = await runScenario("pr-cockpit-actions-terminal-job-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    dbm.db.query("INSERT INTO actions_leases(repo,number,head_sha,expires_at,bootstrapped_at) VALUES(?,?,?,?,?)")
+      .run("acme/app", 7, head, "2099-08-24T10:00:00Z", "2026-08-24T10:00:00Z");
+    let logFetches = 0;
     const fetchers = {
-      fetchRunJobs: async (_repo, runId) => runId === 900
-        ? [job(1, 900, "lint", "failure"), job(2, 900, "unit", "success"), job(3, 900, "smoke", "skipped")]
-        : [job(4, 901, "tests", "cancelled"), job(5, 901, "late", null, "in_progress")],
-      fetchJobLog: async (_repo, jobId) => {
-        logCalls.push(jobId);
-        return \`2026-07-15T09:05:01.1234567Z log for job \${jobId}\\n\`;
+      fetchWorkflowRuns: async () => [],
+      fetchRunJobs: async () => [],
+      fetchJobLog: async () => { logFetches++; return "rerun failure evidence"; },
+      restRemaining: async () => 5000,
+    };
+    await actions.ingestActionsState("acme/app", { job: {
+      id: 41, runId: 20, attempt: 2, headSha: head, headBranch: "feature",
+      workflowName: "CI", name: "rerun", status: "in_progress", conclusion: "failure",
+      startedAt: "2026-08-24T10:00:00Z", completedAt: "2026-08-24T10:03:00Z",
+      htmlUrl: "https://github.com/acme/app/actions/runs/20/job/41", runnerName: "runner-4",
+      runnerGroupName: "hosted", labels: ["arm64"], failedStep: "bun test",
+    } }, fetchers);
+    const cached = await actions.cachedJobLogs("acme/app", head);
+    const selected = await actions.actionJobLog("acme/app", head, 41, fetchers);
+    console.log(JSON.stringify({
+      logFetches,
+      row: dbm.db.query("SELECT status,conclusion,log_gz IS NOT NULL AS logged FROM run_jobs WHERE job_id=41").get(),
+      cachedBody: cached[0]?.body,
+      selectedState: selected?.state,
+    }));
+  `);
+  expect(result).toEqual({
+    logFetches: 1,
+    row: { status: "completed", conclusion: "failure", logged: 1 },
+    cachedBody: "rerun failure evidence",
+    selectedState: "ready",
+  });
+});
+
+test("concurrent activation bootstraps once and terminal attempts reconcile once with complete unsuccessful logs", async () => {
+  const result = await runScenario("pr-cockpit-actions-lease-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    const calls = { runs: 0, jobs: [], logs: [] };
+    const run = (id, status, conclusion) => ({
+      id, run_attempt: 1, head_sha: head, head_branch: "feature", name: "CI",
+      status, conclusion, updated_at: "2026-08-24T10:04:00Z", html_url: null,
+    });
+    const job = (id, runId, status, conclusion) => ({
+      id, run_id: runId, run_attempt: 1, head_sha: head, head_branch: "feature",
+      workflow_name: "CI", name: \`job-\${id}\`, status, conclusion,
+      started_at: null, completed_at: status === "completed" ? "2026-08-24T10:04:00Z" : null,
+      html_url: null, runner_name: null, runner_group_name: null, labels: [], steps: [],
+    });
+    const huge = Array.from({ length: 30000 }, (_, i) => \`2026-08-24T10:00:00.000Z line-\${i} \\u001b[31mred\\u001b[0m\`).join("\\n");
+    const fetchers = {
+      fetchWorkflowRuns: async () => { calls.runs++; await Bun.sleep(5); return [run(10, "in_progress", null), run(11, "completed", "failure")]; },
+      fetchRunJobs: async (_repo, id, attempt) => {
+        calls.jobs.push([id, attempt ?? null]);
+        return id === 10 ? [job(100, 10, "in_progress", null)] : [
+          job(110, 11, "completed", "failure"),
+          job(111, 11, "completed", "success"),
+          job(112, 11, "completed", "skipped"),
+          job(113, 11, "completed", "startup_failure"),
+          job(114, 11, "completed", "stale"),
+        ];
+      },
+      fetchJobLog: async (_repo, id) => { calls.logs.push(id); return huge; },
+      restRemaining: async () => 5000,
+    };
+    dbm.db.query("INSERT INTO actions_leases(repo,number,head_sha,expires_at,bootstrapped_at) VALUES(?,?,?,?,NULL)")
+      .run("acme/app", 7, head, "2099-08-24T10:00:00Z");
+    await Promise.all([
+      actions.resumeActionsLeases(fetchers),
+      actions.activateActionsLease("acme/app", 7, head, fetchers),
+    ]);
+    const first = JSON.parse(JSON.stringify(calls));
+    await actions.activateActionsLease("acme/app", 7, head, fetchers);
+    const cached = await actions.cachedJobLogs("acme/app", head);
+    const body = cached[0].body;
+    console.log(JSON.stringify({
+      first, after: calls, cachedJobs: cached.map(({ job }) => job.job_id).sort((a, b) => a - b),
+      successfulStored: dbm.db.query("SELECT log_gz IS NOT NULL AS stored FROM run_jobs WHERE job_id=111").get().stored,
+      bytes: dbm.db.query("SELECT log_bytes,log_truncated FROM run_jobs WHERE job_id=110").get(),
+      returnedBytes: Buffer.byteLength(body),
+      cleaned: !body.includes("2026-08-24T10:00:00.000Z"),
+      ansiPreserved: body.includes("\\u001b[31mred\\u001b[0m"),
+      reconciled: dbm.db.query("SELECT reconciled_at IS NOT NULL AS done FROM workflow_runs WHERE run_id=11").get().done,
+    }));
+  `);
+  expect(result.first).toEqual({ runs: 1, jobs: [[10, null], [11, 1]], logs: [110, 111, 113, 114] });
+  expect(result.after).toEqual(result.first);
+  expect(result.cachedJobs).toEqual([110, 113, 114]);
+  expect(result.successfulStored).toBe(1);
+  expect(result.bytes.log_truncated).toBe(0);
+  expect(result.returnedBytes).toBe(result.bytes.log_bytes);
+  expect(result.returnedBytes).toBeGreaterThan(262_144);
+  expect(result.cleaned).toBe(true);
+  expect(result.ansiPreserved).toBe(true);
+  expect(result.reconciled).toBe(1);
+});
+
+test("an explicit run request caches one current-head run once and rejects another head", async () => {
+  const result = await runScenario("pr-cockpit-actions-requested-run-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    let runFetches = 0;
+    let jobFetches = 0;
+    let logFetches = 0;
+    const rawRun = {
+      id: 55, run_attempt: 1, head_sha: head, head_branch: "feature", name: "CI",
+      path: ".github/workflows/ci.yml", status: "completed", conclusion: "failure",
+      updated_at: "2026-08-24T10:04:00Z", html_url: "https://github.com/acme/app/actions/runs/55",
+    };
+    const fetchers = {
+      fetchWorkflowRun: async () => { runFetches++; return rawRun; },
+      fetchWorkflowRuns: async () => { throw new Error("broad fetch not allowed"); },
+      fetchRunJobs: async () => {
+        jobFetches++;
+        return [{
+          id: 551, run_id: 55, run_attempt: 1, head_sha: head, head_branch: "feature",
+          workflow_name: "CI", name: "test", status: "completed", conclusion: "failure",
+          started_at: "2026-08-24T10:01:00Z", completed_at: "2026-08-24T10:04:00Z",
+          html_url: "https://github.com/acme/app/actions/runs/55/job/551",
+          runner_name: "runner-4", runner_group_name: "hosted", labels: ["arm64"],
+          steps: [{ name: "Run tests", number: 1, status: "completed", conclusion: "failure", started_at: null, completed_at: null }],
+        }];
+      },
+      fetchJobLog: async () => { logFetches++; return "failure evidence"; },
+      restRemaining: async () => 5000,
+    };
+    const first = await actions.cacheActionsRun("acme/app", 7, head, 55, fetchers);
+    const second = await actions.cacheActionsRun("acme/app", 7, head, 55, fetchers);
+    const mismatch = await actions.cacheActionsRun("acme/app", 7, head, 56, {
+      ...fetchers,
+      fetchWorkflowRun: async () => ({ ...rawRun, id: 56, head_sha: "b".repeat(40) }),
+    });
+    console.log(JSON.stringify({
+      first,
+      second,
+      mismatch,
+      runFetches,
+      jobFetches,
+      logFetches,
+      runs: dbm.db.query("SELECT run_id, reconciled_at IS NOT NULL AS reconciled FROM workflow_runs ORDER BY run_id").all(),
+      jobs: dbm.db.query("SELECT job_id, log_gz IS NOT NULL AS logged FROM run_jobs ORDER BY job_id").all(),
+      lease: dbm.db.query("SELECT head_sha FROM actions_leases WHERE repo=? AND number=?").get("acme/app", 7),
+    }));
+  `);
+
+  expect(result).toEqual({
+    first: "fetched",
+    second: "cached",
+    mismatch: "head-mismatch",
+    runFetches: 1,
+    jobFetches: 1,
+    logFetches: 1,
+    runs: [{ run_id: 55, reconciled: 1 }],
+    jobs: [{ job_id: 551, logged: 1 }],
+    lease: { head_sha: "a".repeat(40) },
+  });
+});
+
+test("an explicit activation for a new head queues behind a startup repair for the old head", async () => {
+  const result = await runScenario("pr-cockpit-actions-head-change-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    const nextHead = "b".repeat(40);
+    dbm.db.query("INSERT INTO actions_leases(repo,number,head_sha,expires_at,bootstrapped_at) VALUES(?,?,?,?,NULL)")
+      .run("acme/app", 7, head, "2099-08-24T10:00:00Z");
+    const heads = [];
+    const fetchers = {
+      fetchWorkflowRuns: async (_repo, sha) => { heads.push(sha); await Bun.sleep(5); return []; },
+      fetchRunJobs: async () => [],
+      fetchJobLog: async () => "",
+      restRemaining: async () => 5000,
+    };
+    const resume = actions.resumeActionsLeases(fetchers);
+    await Bun.sleep(1);
+    const explicit = actions.activateActionsLease("acme/app", 7, nextHead, fetchers);
+    await Promise.all([resume, explicit]);
+    console.log(JSON.stringify({
+      heads,
+      lease: dbm.db.query("SELECT head_sha,bootstrapped_at IS NOT NULL AS bootstrapped FROM actions_leases").get(),
+    }));
+  `);
+  expect(result.heads).toEqual(["a".repeat(40), "b".repeat(40)]);
+  expect(result.lease).toEqual({ head_sha: "b".repeat(40), bootstrapped: 1 });
+});
+
+test("reserve defers background spend, explicit activation repairs, and a newer attempt discards stale logs", async () => {
+  const result = await runScenario("pr-cockpit-actions-repair-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    let remaining = actions.REST_BACKGROUND_RESERVE;
+    const calls = { jobs: [], logs: 0 };
+    const run = (attempt) => ({
+      id: 50, attempt, headSha: head, headBranch: "feature", workflowName: "CI",
+      status: "completed", conclusion: "failure", eventAt: \`2026-08-24T10:0\${attempt}:00Z\`, htmlUrl: null,
+    });
+    const fetchers = {
+      fetchWorkflowRuns: async () => [],
+      fetchRunJobs: async (_repo, _id, attempt) => {
+        calls.jobs.push(attempt);
+        return [{ id: 500, run_id: 50, run_attempt: attempt, head_sha: head, head_branch: "feature",
+          workflow_name: "CI", name: "fail", status: "completed", conclusion: "failure",
+          started_at: null, completed_at: null, html_url: null, labels: [], steps: [] }];
+      },
+      fetchJobLog: async () => { calls.logs++; return "failure evidence"; },
+      restRemaining: async () => remaining,
+    };
+    await actions.activateActionsLease("acme/app", 7, head, fetchers);
+    await actions.ingestActionsState("acme/app", { run: run(1) }, fetchers);
+    const deferred = dbm.db.query("SELECT reconciled_at FROM workflow_runs WHERE run_id=50 AND run_attempt=1").get();
+    await actions.activateActionsLease("acme/app", 7, head, fetchers);
+    const repaired = dbm.db.query("SELECT reconciled_at IS NOT NULL AS done,log_gz IS NOT NULL AS logged FROM workflow_runs JOIN run_jobs USING(repo,run_id,run_attempt)").get();
+    remaining = 5000;
+    await actions.ingestActionsState("acme/app", { run: run(2) }, fetchers);
+    console.log(JSON.stringify({
+      deferred, repaired, calls,
+      oldJobs: dbm.db.query("SELECT COUNT(*) AS n FROM run_jobs WHERE run_id=50 AND run_attempt=1").get().n,
+      visible: (await actions.cachedJobLogs("acme/app", head)).length,
+    }));
+  `);
+  expect(result.deferred).toEqual({ reconciled_at: null });
+  expect(result.repaired).toEqual({ done: 1, logged: 1 });
+  expect(result.calls.jobs).toEqual([1, 2]);
+  expect(result.calls.logs).toBe(2);
+  expect(result.oldJobs).toBe(0);
+  expect(result.visible).toBe(1);
+});
+
+test("startup resumes every active lease without extending expiry and retries transient log failures", async () => {
+  const result = await runScenario("pr-cockpit-actions-resume-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    const expiry = "2099-08-24T10:00:00Z";
+    dbm.db.query("INSERT INTO actions_leases(repo,number,head_sha,expires_at,bootstrapped_at) VALUES(?,?,?,?,NULL)")
+      .run("acme/app", 7, head, expiry);
+    let logCalls = 0;
+    const fetchers = {
+      fetchWorkflowRuns: async () => [{ id: 80, run_attempt: 1, head_sha: head, head_branch: "feature",
+        name: "CI", status: "completed", conclusion: "failure", updated_at: "2026-08-24T10:00:00Z", html_url: null }],
+      fetchRunJobs: async () => [{ id: 800, run_id: 80, run_attempt: 1, head_sha: head, head_branch: "feature",
+        workflow_name: "CI", name: "queued-build", status: "completed", conclusion: "failure",
+        started_at: null, completed_at: null, html_url: null, runner_name: null, runner_group_name: null,
+        labels: ["arm64", "macOS"], steps: [] }],
+      fetchJobLog: async () => {
+        logCalls++;
+        if (logCalls === 1) throw new Error("temporary download failure");
+        return "complete log";
       },
       restRemaining: async () => 5000,
     };
-    await syncRunJobs("acme/app", detail, { fetchers });
-    out.logCalls = logCalls.sort();
-    out.rows = db.query("SELECT job_id, conclusion, failed_step, log_bytes, log_truncated, log_error, log_gz IS NOT NULL AS stored FROM run_jobs ORDER BY job_id").all();
-    out.cached = cachedJobLogs("acme/app", head).map((entry) => [entry.job.job_id, entry.job.conclusion, entry.body]);
-    out.filtered = cachedJobLogs("acme/app", head, "LINT").map((entry) => entry.job.name);
-
-    // a second pass must not re-download an already cached log
-    await syncRunJobs("acme/app", detail, { fetchers });
-    out.logCallsAfterSecondPass = logCalls.length;
-
-    console.log(JSON.stringify(out));
-    db.close();
+    await actions.resumeActionsLeases(fetchers);
+    const afterResume = dbm.db.query("SELECT expires_at FROM actions_leases").get().expires_at;
+    const beforeRetry = dbm.db.query("SELECT reconciled_at FROM workflow_runs").get().reconciled_at;
+    await actions.activateActionsLease("acme/app", 7, head, fetchers);
+    const afterRetry = dbm.db.query("SELECT reconciled_at IS NOT NULL AS done,log_gz IS NOT NULL AS logged FROM workflow_runs JOIN run_jobs USING(repo,run_id,run_attempt)").get();
+    const jobsOutput = actions.formatRunJobs(head, dbm.listRunJobs("acme/app", head));
+    console.log(JSON.stringify({ expiry, afterResume, beforeRetry, afterRetry, logCalls, jobsOutput }));
   `);
-
-  // one run id per failing check, deduplicated; the successful check's run is never visited
-  expect(result.runIds).toEqual([900, 901]);
-  // logs only for the failure and the cancellation: success, skipped and still-running jobs are skipped
-  expect(result.logCalls).toEqual([1, 4]);
-  expect(result.logCallsAfterSecondPass).toBe(2);
-  // every job's metadata is cached, conclusion verbatim, so no reader re-derives cancelled vs failed
-  expect(result.rows).toEqual([
-    { job_id: 1, conclusion: "failure", failed_step: "Run tests", log_bytes: 14, log_truncated: 0, log_error: null, stored: 1 },
-    { job_id: 2, conclusion: "success", failed_step: null, log_bytes: null, log_truncated: 0, log_error: null, stored: 0 },
-    { job_id: 3, conclusion: "skipped", failed_step: null, log_bytes: null, log_truncated: 0, log_error: null, stored: 0 },
-    { job_id: 4, conclusion: "cancelled", failed_step: null, log_bytes: 14, log_truncated: 0, log_error: null, stored: 1 },
-    { job_id: 5, conclusion: null, failed_step: null, log_bytes: null, log_truncated: 0, log_error: null, stored: 0 },
-  ]);
-  // readers see the unsuccessful jobs with their decompressed body, and can filter by check name
-  expect(result.cached).toEqual([
-    [5, null, null],
-    [4, "cancelled", "log for job 4\n"],
-    [1, "failure", "log for job 1\n"],
-  ]);
-  expect(result.filtered).toEqual(["lint"]);
+  expect(result.afterResume).toBe(result.expiry);
+  expect(result.beforeRetry).toBeNull();
+  expect(result.afterRetry).toEqual({ done: 1, logged: 1 });
+  expect(result.logCalls).toBe(2);
+  expect(result.jobsOutput).toContain("requested arm64, macOS");
 });
 
-test("a reserved REST pool and a failed download are recorded instead of thrown", async () => {
-  const result = await runScenario("pr-cockpit-log-quota-", `
-    const { syncRunJobs, REST_BACKGROUND_RESERVE } = await import(${JSON.stringify(runLogsUrl)});
-    const { db } = await import(${JSON.stringify(new URL("./db.ts", import.meta.url).href)});
-    const out = {};
-    const head = "d".repeat(40);
-    const detail = {
-      headRefOid: head,
-      lastCommit: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{
-        __typename: "CheckRun",
-        name: "lint",
-        status: "COMPLETED",
-        conclusion: "FAILURE",
-        detailsUrl: null,
-        startedAt: null,
-        completedAt: null,
-        isRequired: true,
-        checkSuite: { workflowRun: { databaseId: 700, workflow: { name: "CI" } } },
-      }] } } } }] },
-    };
-    const jobs = [{
-      id: 11, run_id: 700, run_attempt: 1, head_sha: head, name: "lint", status: "completed",
-      conclusion: "failure", started_at: null, completed_at: null, html_url: null, steps: [],
-    }];
-    let logCalls = 0;
-    const drained = {
-      fetchRunJobs: async () => jobs,
-      fetchJobLog: async () => { logCalls++; return "x"; },
-      restRemaining: async () => REST_BACKGROUND_RESERVE,
-    };
-    await syncRunJobs("acme/app", detail, { fetchers: drained });
-    out.reservedCalls = logCalls;
-    out.reservedError = db.query("SELECT log_error FROM run_jobs WHERE job_id = 11").get().log_error;
-
-    // an explicit read is allowed to spend the reserve
-    await syncRunJobs("acme/app", detail, { fetchers: drained, background: false });
-    out.foregroundCalls = logCalls;
-
-    const broken = {
-      fetchRunJobs: async () => jobs,
-      fetchJobLog: async () => { throw new Error("job log fetch failed: 410 gone"); },
+test("reactivating an expired lease on the same head bootstraps missed events", async () => {
+  const result = await runScenario("pr-cockpit-actions-expired-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    dbm.db.query("INSERT INTO actions_leases(repo,number,head_sha,expires_at,bootstrapped_at) VALUES(?,?,?,?,?)")
+      .run("acme/app", 7, head, "2020-01-01T00:00:00Z", "2020-01-01T00:00:00Z");
+    let runLists = 0;
+    const fetchers = {
+      fetchWorkflowRuns: async () => { runLists++; return []; },
+      fetchRunJobs: async () => [],
+      fetchJobLog: async () => "",
       restRemaining: async () => 5000,
     };
-    db.query("UPDATE run_jobs SET log_gz = NULL WHERE job_id = 11").run();
-    await syncRunJobs("acme/app", detail, { fetchers: broken });
-    out.brokenError = db.query("SELECT log_error FROM run_jobs WHERE job_id = 11").get().log_error;
-
-    const exploded = { fetchRunJobs: async () => { throw new Error("run jobs fetch failed: 502"); }, fetchJobLog: async () => "", restRemaining: async () => 5000 };
-    out.runFailureThrew = await syncRunJobs("acme/app", detail, { fetchers: exploded }).then(() => false, () => true);
-
-    console.log(JSON.stringify(out));
-    db.close();
+    await actions.activateActionsLease("acme/app", 7, head, fetchers);
+    console.log(JSON.stringify({
+      runLists,
+      lease: dbm.db.query("SELECT bootstrapped_at IS NOT NULL AS bootstrapped, expires_at > datetime('now') AS active FROM actions_leases").get(),
+    }));
   `);
+  expect(result.runLists).toBe(1);
+  expect(result.lease).toEqual({ bootstrapped: 1, active: 1 });
+});
 
-  // background sync leaves the reserve alone and says so on the row
-  expect(result.reservedCalls).toBe(0);
-  expect(result.reservedError).toBe("log not fetched: REST quota reserved for actions");
-  // an agent's explicit read still gets its log
-  expect(result.foregroundCalls).toBe(1);
-  // an expired or missing log is recorded, not raised
-  expect(result.brokenError).toBe("job log fetch failed: 410 gone");
-  // one broken run never fails the whole sync
-  expect(result.runFailureThrew).toBe(false);
+test("duplicate terminal deliveries and explicit activation share one reconciliation", async () => {
+  const result = await runScenario("pr-cockpit-actions-terminal-dedupe-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    dbm.db.query("INSERT INTO actions_leases(repo,number,head_sha,expires_at,bootstrapped_at) VALUES(?,?,?,?,?)")
+      .run("acme/app", 7, head, "2099-08-24T10:00:00Z", "2026-08-24T09:00:00Z");
+    const calls = { runs: 0, jobs: 0, logs: 0 };
+    const fetchers = {
+      fetchWorkflowRuns: async () => { calls.runs++; return []; },
+      fetchRunJobs: async () => {
+        calls.jobs++;
+        await Bun.sleep(5);
+        return [{ id: 990, run_id: 99, run_attempt: 1, head_sha: head, head_branch: "feature",
+          workflow_name: "CI", name: "failed", status: "completed", conclusion: "failure",
+          started_at: null, completed_at: null, html_url: null, labels: [], steps: [] }];
+      },
+      fetchJobLog: async () => { calls.logs++; return "failure"; },
+      restRemaining: async () => 5000,
+    };
+    const state = { run: {
+      id: 99, attempt: 1, headSha: head, headBranch: "feature", workflowName: "CI",
+      status: "completed", conclusion: "failure", eventAt: "2026-08-24T10:00:00Z", htmlUrl: null,
+    } };
+    await Promise.all([
+      actions.ingestActionsState("acme/app", state, fetchers),
+      actions.ingestActionsState("acme/app", state, fetchers),
+      actions.activateActionsLease("acme/app", 7, head, fetchers),
+    ]);
+    console.log(JSON.stringify({
+      calls,
+      reconciled: dbm.db.query("SELECT reconciled_at IS NOT NULL AS done FROM workflow_runs WHERE run_id=99").get().done,
+    }));
+  `);
+  expect(result.calls).toEqual({ runs: 0, jobs: 1, logs: 1 });
+  expect(result.reconciled).toBe(1);
+});
+
+test("a selected successful job fetches and serves its full log once", async () => {
+  const result = await runScenario("pr-cockpit-actions-viewer-log-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    dbm.upsertRunJob({
+      repo: "acme/app", job_id: 120, run_id: 12, run_attempt: 1, head_sha: head,
+      head_branch: "feature", workflow_name: "CI", name: "build", status: "completed",
+      conclusion: "success", started_at: "2026-08-24T10:00:00Z", completed_at: "2026-08-24T10:02:00Z",
+      html_url: null, runner_name: "runner-1", runner_group_name: "hosted",
+      labels_json: "[\\"arm64\\"]", failed_step: null,
+    });
+    const source = Array.from({ length: 30000 }, (_, i) => \`2026-08-24T10:00:00.000Z line-\${i}\`).join("\\n");
+    let fetches = 0;
+    const fetchers = {
+      fetchWorkflowRuns: async () => [],
+      fetchRunJobs: async () => [],
+      fetchJobLog: async () => { fetches++; return source; },
+      restRemaining: async () => 5000,
+    };
+    const [first, duplicate] = await Promise.all([
+      actions.actionJobLog("acme/app", head, 120, fetchers),
+      actions.actionJobLog("acme/app", head, 120, fetchers),
+    ]);
+    console.log(JSON.stringify({
+      state: first.state,
+      fetches,
+      firstBytes: Buffer.byteLength(first.body),
+      duplicateBody: duplicate.body === first.body,
+      cleaned: !first.body.includes("2026-08-24T10:00:00.000Z"),
+      stored: dbm.db.query("SELECT log_gz IS NOT NULL AS stored,log_bytes,log_error FROM run_jobs WHERE job_id=120").get(),
+    }));
+  `);
+  expect(result.fetches).toBe(1);
+  expect(result.state).toBe("ready");
+  expect(result.firstBytes).toBeGreaterThan(262_144);
+  expect(result.firstBytes).toBe(result.stored.log_bytes);
+  expect(result.duplicateBody).toBe(true);
+  expect(result.cleaned).toBe(true);
+  expect(result.stored).toEqual({ stored: 1, log_bytes: result.firstBytes, log_error: null });
+});
+
+test("opening a legacy cached log refetches ANSI once", async () => {
+  const result = await runScenario("pr-cockpit-actions-log-format-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    dbm.upsertRunJob({
+      repo: "acme/app", job_id: 121, run_id: 12, run_attempt: 1, head_sha: head,
+      head_branch: "feature", workflow_name: "CI", name: "build", status: "completed",
+      conclusion: "failure", started_at: "2026-08-24T10:00:00Z", completed_at: "2026-08-24T10:02:00Z",
+      html_url: null, runner_name: "runner-1", runner_group_name: "hosted",
+      labels_json: "[]", failed_step: "Run tests",
+    });
+    dbm.db.query("UPDATE run_jobs SET log_gz = ?, log_bytes = ?, log_format_version = 1 WHERE repo = ? AND job_id = ?")
+      .run(Bun.gzipSync("cached without color"), 20, "acme/app", 121);
+    let fetches = 0;
+    const fetchers = {
+      fetchWorkflowRuns: async () => [],
+      fetchRunJobs: async () => [],
+      fetchJobLog: async () => { fetches++; return "\\u001b[35m>> e2e mode\\u001b[0m"; },
+      restRemaining: async () => 5000,
+    };
+    const first = await actions.actionJobLog("acme/app", head, 121, fetchers);
+    const second = await actions.actionJobLog("acme/app", head, 121, fetchers);
+    const version = dbm.db.query("SELECT log_format_version FROM run_jobs WHERE job_id = 121").get().log_format_version;
+    console.log(JSON.stringify({ fetches, body: first.body, duplicate: second.body === first.body, version }));
+  `);
+  expect(result).toEqual({
+    fetches: 1,
+    body: "\u001b[35m>> e2e mode\u001b[0m",
+    duplicate: true,
+    version: 2,
+  });
+});
+
+test("a skipped job reports that no log was produced without fetching GitHub", async () => {
+  const result = await runScenario("pr-cockpit-actions-skipped-log-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    dbm.upsertRunJob({
+      repo: "acme/app", job_id: 121, run_id: 12, run_attempt: 1, head_sha: head, head_branch: "feature",
+      workflow_name: "CI", name: "skipped", status: "completed", conclusion: "skipped",
+      started_at: null, completed_at: "2026-08-24T10:02:00Z", html_url: null, runner_name: null,
+      runner_group_name: null, labels_json: "[]", failed_step: null,
+    });
+    let fetches = 0;
+    const log = await actions.actionJobLog("acme/app", head, 121, {
+      fetchWorkflowRuns: async () => [],
+      fetchRunJobs: async () => [],
+      fetchJobLog: async () => { fetches++; return ""; },
+      restRemaining: async () => 5000,
+    });
+    console.log(JSON.stringify({ fetches, state: log.state, body: log.body }));
+  `);
+  expect(result).toEqual({ fetches: 0, state: "not-produced", body: null });
+});
+
+test("workflow graphs parse dependencies and reuse cached definitions", async () => {
+  const result = await runScenario("pr-cockpit-actions-graph-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    const calls = { runs: 0, files: 0 };
+    const fetchers = {
+      fetchWorkflowRuns: async () => {
+        calls.runs++;
+        return [{
+          id: 70, run_attempt: 1, head_sha: head, head_branch: "feature", name: "CI",
+          path: ".github/workflows/ci.yml", status: "completed", conclusion: "success",
+          updated_at: "2026-08-24T10:04:00Z", html_url: null,
+        }];
+      },
+      fetchFileContents: async () => {
+        calls.files++;
+        return { content: "name: CI\\njobs:\\n  lint:\\n    name: Lint\\n    runs-on: ubuntu-latest\\n  test:\\n    name: Test\\n    needs: lint\\n    runs-on: ubuntu-latest\\n  deploy:\\n    needs: [lint, test]\\n    uses: acme/workflows/.github/workflows/deploy.yml@main\\n" };
+      },
+    };
+    const first = await actions.actionWorkflowGraphs("acme/app", 7, head, fetchers);
+    const second = await actions.actionWorkflowGraphs("acme/app", 7, head, fetchers);
+    console.log(JSON.stringify({ calls, first, same: JSON.stringify(first) === JSON.stringify(second) }));
+  `);
+  expect(result.calls).toEqual({ runs: 1, files: 1 });
+  expect(result.same).toBe(true);
+  expect(result.first).toEqual([{
+    path: ".github/workflows/ci.yml",
+    name: "CI",
+    jobs: [
+      { id: "lint", name: "Lint", needs: [], uses: null },
+      { id: "test", name: "Test", needs: ["lint"], uses: null },
+      { id: "deploy", name: "deploy", needs: ["lint", "test"], uses: "acme/workflows/.github/workflows/deploy.yml@main" },
+    ],
+  }]);
 });

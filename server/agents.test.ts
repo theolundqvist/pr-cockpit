@@ -113,6 +113,8 @@ describe("defaultFixerTemplate", () => {
     expect(template).toContain("gh pr update-branch");
     expect(template).toContain("pr-cockpit {{REPO}}#{{PR_NUMBER}}");
     expect(template).toContain("pr-cockpit listen {{REPO}}#{{PR_NUMBER}}");
+    expect(template).toContain("pr-cockpit {{REPO}}#{{PR_NUMBER}} --jobs");
+    expect(template).toContain("pr-cockpit {{REPO}}#{{PR_NUMBER}} --logs");
     expect(template).not.toContain("gh pr view");
     expect(template).not.toContain("gh run view");
   });
@@ -125,6 +127,8 @@ describe("defaultAutofixTemplate", () => {
     expect(template).toContain("gh pr update-branch");
     expect(template).toContain("pr-cockpit {{REPO}}#{{PR_NUMBER}}");
     expect(template).toContain("pr-cockpit listen {{REPO}}#{{PR_NUMBER}}");
+    expect(template).toContain("pr-cockpit {{REPO}}#{{PR_NUMBER}} --jobs");
+    expect(template).toContain("pr-cockpit {{REPO}}#{{PR_NUMBER}} --logs");
     expect(template).not.toContain("gh pr view");
     expect(template).not.toContain("gh run view");
   });

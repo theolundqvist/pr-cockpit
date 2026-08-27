@@ -200,3 +200,49 @@ test("migrates populated PR index and preserves terminal metadata on partial ups
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test("schema updates preserve the normalized PR cache", () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-schema-cache-"));
+  const seed = `
+    const { db } = await import(${JSON.stringify(dbModuleUrl)});
+    db.query(\`
+      INSERT INTO prs (
+        repo, number, state, is_draft, title, author, base_ref, head_ref, head_sha,
+        updated_at, additions, deletions, changed_files, commit_count, mergeable,
+        ci_status, unresolved_count, needs_me_rank, detail_json, fetched_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    \`).run(
+      "test/repo", 42, "OPEN", 0, "cached PR", "theo", "main", "fix", "cached-head",
+      "2026-08-26T00:00:00.000Z", 1, 0, 1, 1, "MERGEABLE", "passing", 0, 0,
+      "{}", "2026-08-26T00:00:00.000Z",
+    );
+    db.query(\`
+      INSERT INTO pr_index (repo, number, title, state, is_draft, author, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    \`).run("test/repo", 42, "cached PR", "OPEN", 0, "theo", "2026-08-26T00:00:00.000Z");
+    db.exec("PRAGMA user_version = 1");
+    db.close();
+  `;
+  const inspect = `
+    const { db, getPr } = await import(${JSON.stringify(dbModuleUrl)});
+    console.log(JSON.stringify({
+      title: getPr("test/repo", 42)?.title,
+      indexed: db.query("SELECT COUNT(*) AS count FROM pr_index").get().count,
+    }));
+    db.close();
+  `;
+
+  try {
+    const seeded = Bun.spawnSync([Bun.which("bun") ?? "bun", "-e", seed], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir },
+    });
+    if (!seeded.success) throw new Error(seeded.stderr.toString());
+    const inspected = Bun.spawnSync([Bun.which("bun") ?? "bun", "-e", inspect], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir },
+    });
+    if (!inspected.success) throw new Error(inspected.stderr.toString());
+    expect(JSON.parse(inspected.stdout.toString())).toEqual({ title: "cached PR", indexed: 1 });
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});

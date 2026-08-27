@@ -10,6 +10,7 @@ import type {
   PrIndexEntry,
   SearchHit,
   ViewerRepo,
+  WorkflowRun,
 } from "./github.ts";
 import { needsMeRank } from "./rank.ts";
 import { mockAvatarDataUri } from "./mockImages.ts";
@@ -363,15 +364,9 @@ new file mode 100644
 index 0000000..3333333
 Binary files /dev/null and b/assets/cockpit.bin differ
 diff --git a/docs/old-name.md b/docs/new-name.md
-similarity index 91%
+similarity index 100%
 rename from docs/old-name.md
 rename to docs/new-name.md
-index 4444444..5555555 100644
---- a/docs/old-name.md
-+++ b/docs/new-name.md
-@@ -1 +1 @@
--# Old fixture name
-+# New fixture name
 `;
   }
   if (number === 113) return "";
@@ -470,6 +465,21 @@ function fixtureRunHeadSha(repo: string, runId: number): string {
   }
   throw new Error(`no mock run jobs for ${repo}:${runId}`);
 }
+function fixtureWorkflowRun(repo: string, runId: number): WorkflowRun {
+  return {
+    id: runId,
+    run_attempt: 1,
+    head_sha: fixtureRunHeadSha(repo, runId),
+    head_branch: "fixture",
+    name: "CI",
+    path: ".github/workflows/ci.yml",
+    status: "completed",
+    conclusion: "failure",
+    updated_at: at(43),
+    html_url: `https://github.com/${repo}/actions/runs/${runId}`,
+  };
+}
+
 
 function fixtureRunJobs(repo: string, runId: number): RunJob[] {
   const headSha = fixtureRunHeadSha(repo, runId);
@@ -602,6 +612,7 @@ export const mockGithub = isMockGithub ? {
     return prPatch(number);
   },
   runJobs: fixtureRunJobs,
+  workflowRun: fixtureWorkflowRun,
   jobLog: fixtureJobLog,
   fileHistory: (repo: string, path: string, base: string): FileHistoryCommit[] => {
     const key = capturedHistory ?? { repo: REPO, path: "src/flight.ts", base: "main" };

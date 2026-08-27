@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { prKeyOwner, shouldCopyPrCockpitUrl, shouldCopyPrUrl } from "./dom.js";
+import { prKeyOwner, shouldCopyPrCockpitUrl, shouldCopyPrUrl, shouldToggleHoveredViewed } from "./dom.js";
 
 const target = { tagName: "DIV", isContentEditable: false };
 const shortcut = { metaKey: true, ctrlKey: false, altKey: true, shiftKey: false, key: "ç", code: "KeyC", target };
@@ -33,6 +33,28 @@ describe("shouldCopyPrCockpitUrl", () => {
 
   test("does not claim Command-Option-C", () => {
     expect(shouldCopyPrCockpitUrl(shortcut)).toBe(false);
+  });
+});
+
+describe("shouldToggleHoveredViewed", () => {
+  const event = {
+    key: "v",
+    metaKey: false,
+    ctrlKey: false,
+    altKey: false,
+    shiftKey: false,
+    target,
+  };
+
+  test("claims plain V only for a hovered file in the files tab", () => {
+    expect(shouldToggleHoveredViewed(event, "files", "src/file.js")).toBe(true);
+    expect(shouldToggleHoveredViewed(event, "conversation", "src/file.js")).toBe(false);
+    expect(shouldToggleHoveredViewed(event, "files", null)).toBe(false);
+  });
+
+  test("preserves modified and typing shortcuts", () => {
+    expect(shouldToggleHoveredViewed({ ...event, shiftKey: true }, "files", "src/file.js")).toBe(false);
+    expect(shouldToggleHoveredViewed({ ...event, target: { tagName: "TEXTAREA", isContentEditable: false } }, "files", "src/file.js")).toBe(false);
   });
 });
 
