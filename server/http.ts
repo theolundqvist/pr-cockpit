@@ -967,6 +967,150 @@ function markReviewThreadResolved(repo: string, number: number, threadId: string
   invalidatePr(repo, number);
 }
 
+function fieldValue(payload: object, field: string): unknown {
+  return Reflect.get(payload, field);
+}
+
+function requiredString(payload: object, field: string): string {
+  const value = fieldValue(payload, field);
+  if (typeof value !== "string") throw new Error(`${field} must be a string`);
+  return value;
+}
+
+function requiredBoolean(payload: object, field: string): boolean {
+  const value = fieldValue(payload, field);
+  if (typeof value !== "boolean") throw new Error(`${field} must be a boolean`);
+  return value;
+}
+
+function requiredLogins(payload: object): string[] {
+  const logins = fieldValue(payload, "logins");
+  if (!Array.isArray(logins) || logins.length === 0 || !logins.every((login): login is string => typeof login === "string")) {
+    throw new Error("logins must be a non-empty string array");
+  }
+  return logins;
+}
+
+function reviewThreadByHandle(detail: PrDetail, handle: unknown) {
+  if (typeof handle !== "string" || !/^[0-9a-f]{10}$/.test(handle)) throw new Error("valid thread handle required");
+  const matches = detail.reviewThreads.nodes.filter((thread) => reviewThreadHandle(thread.id) === handle);
+  if (matches.length === 0) throw new Error("review thread handle not found");
+  if (matches.length > 1) throw new Error("review thread handle is ambiguous");
+  return matches[0]!;
+}
+
+export function normalizeAgentMutation(repo: string, number: number, detail: PrDetail, input: unknown): MutationPayload {
+  if (!input || typeof input !== "object" || Array.isArray(input) || !("kind" in input) || typeof input.kind !== "string") {
+    throw new Error("mutation kind required");
+  }
+  switch (input.kind) {
+    case "merge": {
+      const force = fieldValue(input, "force");
+      const method = fieldValue(input, "method");
+      if ("force" in input && typeof force !== "boolean") throw new Error("force must be a boolean");
+      if ("method" in input && !isMergeMethod(method)) throw new Error("invalid merge method");
+      const baseRef = currentBaseRef(repo, number);
+      return {
+        kind: "merge",
+        force: force === true,
+        baseRef,
+        method: isMergeMethod(method) ? method : mergeMethodFor(repo, baseRef),
+        source: isMergeMethod(method) ? "explicit" : mergeMethodSourceFor(repo, baseRef),
+      };
+    }
+    case "reply-to-thread": {
+      const thread = reviewThreadByHandle(detail, fieldValue(input, "threadHandle"));
+      const rootCommentId = thread.comments.nodes[0]?.databaseId;
+      if (!Number.isInteger(rootCommentId)) throw new Error("review thread has no replyable root comment");
+      return { kind: "reply-to-thread", rootCommentId: rootCommentId!, body: requiredString(input, "body") };
+    }
+    case "resolve-thread": {
+      const resolved = fieldValue(input, "resolved");
+      if ("resolved" in input && typeof resolved !== "boolean") throw new Error("resolved must be a boolean");
+      const thread = reviewThreadByHandle(detail, fieldValue(input, "threadHandle"));
+      return { kind: "resolve-thread", threadId: thread.id, resolved: resolved !== false };
+    }
+    case "comment":
+      return { kind: "comment", body: requiredString(input, "body") };
+    case "review-verdict": {
+      const event = fieldValue(input, "event");
+      if (event !== "APPROVE" && event !== "REQUEST_CHANGES" && event !== "COMMENT") throw new Error("invalid review event");
+      return { kind: "review-verdict", event, body: requiredString(input, "body") };
+    }
+    case "update-branch":
+    case "ready-for-review":
+    case "close":
+      return { kind: input.kind };
+    case "auto-merge":
+      return { kind: "auto-merge", enable: requiredBoolean(input, "enable") };
+    case "github-auto-merge": {
+      const enable = requiredBoolean(input, "enable");
+      if (!enable) return { kind: "github-auto-merge", enable: false };
+      const method = fieldValue(input, "method");
+      if (!isMergeMethod(method)) throw new Error("invalid merge method");
+      return { kind: "github-auto-merge", enable: true, method };
+    }
+    case "inline-comment": {
+      const line = fieldValue(input, "line");
+      const side = fieldValue(input, "side");
+      if (!Number.isInteger(line) || Number(line) < 1) throw new Error("line must be a positive integer");
+      if (side !== "LEFT" && side !== "RIGHT") throw new Error("side must be LEFT or RIGHT");
+      const startLine = fieldValue(input, "startLine");
+      const startSide = fieldValue(input, "startSide");
+      if (startLine === undefined && startSide === undefined) {
+        return {
+          kind: "inline-comment",
+          path: requiredString(input, "path"),
+          line: Number(line),
+          side,
+          body: requiredString(input, "body"),
+        };
+      }
+      if (!Number.isInteger(startLine) || Number(startLine) < 1) throw new Error("startLine must be a positive integer");
+      if (startSide !== "LEFT" && startSide !== "RIGHT") throw new Error("startSide must be LEFT or RIGHT");
+      return {
+        kind: "inline-comment",
+        path: requiredString(input, "path"),
+        line: Number(line),
+        side,
+        startLine: Number(startLine),
+        startSide,
+        body: requiredString(input, "body"),
+      };
+    }
+    case "assign":
+    case "unassign":
+    case "request-reviewers":
+    case "unrequest-reviewers":
+      return { kind: input.kind, logins: requiredLogins(input) };
+    case "edit-body":
+      return { kind: "edit-body", body: requiredString(input, "body") };
+    case "edit-title":
+      return { kind: "edit-title", title: requiredString(input, "title") };
+    default:
+      throw new Error(`unsupported mutation kind: ${input.kind}`);
+  }
+}
+
+async function handleAgentMutation(owner: string, repo: string, number: string, req: Request): Promise<Response> {
+  if (!validPrReference(owner, repo, number)) return json({ error: "invalid PR reference" }, 400);
+  const repoName = `${owner}/${repo}`;
+  const num = Number(number);
+  const stored = getPr(repoName, num) ?? getCachedPrDetail(repoName, num);
+  if (!stored) return json({ error: "PR is not cached yet" }, 404);
+  const detail = JSON.parse(stored.detail_json) as PrDetail;
+  const requestBody: unknown = await req.json().catch(() => null);
+  try {
+    if (!requestBody || typeof requestBody !== "object" || Array.isArray(requestBody) || !("payload" in requestBody)) {
+      throw new Error("mutation payload required");
+    }
+    const payload = normalizeAgentMutation(repoName, num, detail, requestBody.payload);
+    return json({ id: enqueueMutation({ repo: repoName, number: num, payload }) }, 201);
+  } catch (err) {
+    return json({ error: err instanceof Error ? err.message : String(err) }, 400);
+  }
+}
+
 async function handleResolveReviewThread(
   owner: string,
   repo: string,
@@ -982,10 +1126,13 @@ async function handleResolveReviewThread(
   const stored = getPr(repoName, num) ?? getCachedPrDetail(repoName, num);
   if (!stored) return json({ error: "PR is not cached yet" }, 404);
   const detail = JSON.parse(stored.detail_json) as PrDetail;
-  const matches = detail.reviewThreads.nodes.filter((thread) => reviewThreadHandle(thread.id) === handle);
-  if (matches.length === 0) return json({ error: "review thread handle not found" }, 404);
-  if (matches.length > 1) return json({ error: "review thread handle is ambiguous" }, 409);
-  const thread = matches[0]!;
+  let thread;
+  try {
+    thread = reviewThreadByHandle(detail, handle);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return json({ error: message }, message.endsWith("not found") ? 404 : message.endsWith("ambiguous") ? 409 : 400);
+  }
   const alreadyResolved = thread.isResolved;
   try {
     await runtime.resolveReviewThread(thread.id);
@@ -2438,6 +2585,19 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
         return json({ error: "trusted CLI request required" }, 403);
       }
       return handleActionsLease(parts[3]!, parts[4]!, parts[5]!, runtime);
+    }
+    if (
+      req.method === "POST" &&
+      parts.length === 7 &&
+      parts[0] === "api" &&
+      parts[1] === "agent" &&
+      parts[2] === "pr" &&
+      parts[6] === "mutations"
+    ) {
+      if (!trustedCliHost || req.headers.get("x-pr-cockpit-cli") !== "1") {
+        return json({ error: "trusted CLI request required" }, 403);
+      }
+      return handleAgentMutation(parts[3]!, parts[4]!, parts[5]!, req);
     }
     if (
       req.method === "POST" &&

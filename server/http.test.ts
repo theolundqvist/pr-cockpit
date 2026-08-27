@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildFetchHandler, buildPrAgentSummary, checkoutTargetFor, formatPrAgentSummary, mergeabilityNeedsRefresh, reviewThreadHandle, snapshotStatus, statsExcludingTests, trackedDetailIsStale } from "./http.ts";
+import { buildFetchHandler, buildPrAgentSummary, checkoutTargetFor, formatPrAgentSummary, mergeabilityNeedsRefresh, normalizeAgentMutation, reviewThreadHandle, snapshotStatus, statsExcludingTests, trackedDetailIsStale } from "./http.ts";
 import { GithubRequestError, StalePrHeadError, type PrDetail } from "./github.ts";
 import { db, getCachedPrDetail, getPr, getSetting, listRunJobs, saveDiff, saveFileContents, setSetting, upsertCachedPrDetail, upsertPr, upsertPrIndex, upsertRunJob, upsertWorkflowRun } from "./db.ts";
 import { testMatcher } from "../ui/src/lib/testPath.js";
@@ -553,6 +553,76 @@ describe("agent PR summary", () => {
     }));
     expect(await repeated.json()).toEqual({ resolved: true, alreadyResolved: true });
     expect(resolvedIds).toEqual([threadId, threadId]);
+  });
+
+  test("normalizes agent-friendly merge and thread mutations", () => {
+    const repo = "cockpit-test/agent-mutations";
+    const number = 987654327;
+    const threadId = "PRRT_agent_mutation";
+    const row = trackedPrRow({ repo, number, fetchedAt: new Date().toISOString() });
+    const detail = JSON.parse(row.detail_json) as PrDetail;
+    detail.reviewThreads.nodes = [{
+      id: threadId,
+      isResolved: false,
+      isOutdated: false,
+      path: "src/value.ts",
+      line: 7,
+      diffSide: "RIGHT",
+      comments: {
+        nodes: [{
+          databaseId: 42,
+          diffHunk: "",
+          author: null,
+          body: "root",
+          createdAt: "2026-08-27T00:00:00Z",
+          reactions: [],
+        }],
+      },
+    }];
+    upsertPr({ ...row, detail_json: JSON.stringify(detail) });
+    const threadHandle = reviewThreadHandle(threadId);
+
+    expect(normalizeAgentMutation(repo, number, detail, { kind: "merge", force: true, method: "rebase" })).toEqual({
+      kind: "merge",
+      force: true,
+      baseRef: "main",
+      method: "rebase",
+      source: "explicit",
+    });
+    expect(normalizeAgentMutation(repo, number, detail, {
+      kind: "reply-to-thread",
+      threadHandle,
+      body: "fixed",
+    })).toEqual({ kind: "reply-to-thread", rootCommentId: 42, body: "fixed" });
+    expect(normalizeAgentMutation(repo, number, detail, {
+      kind: "resolve-thread",
+      threadHandle,
+      resolved: false,
+    })).toEqual({ kind: "resolve-thread", threadId, resolved: false });
+
+    db.query("DELETE FROM prs WHERE repo = ? AND number = ?").run(repo, number);
+  });
+
+  test("accepts trusted CLI mutations through the agent route", async () => {
+    const repo = "cockpit-test/agent-mutation-route";
+    const number = 987654328;
+    upsertPr(trackedPrRow({ repo, number, fetchedAt: new Date().toISOString() }));
+    const handler = buildFetchHandler(4820);
+    const url = `http://127.0.0.1:4820/api/agent/pr/cockpit-test/agent-mutation-route/${number}/mutations`;
+    const denied = await handler(new Request(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ payload: { kind: "auto-merge", enable: true } }),
+    }));
+    expect(denied.status).toBe(403);
+
+    const accepted = await handler(new Request(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-pr-cockpit-cli": "1" },
+      body: JSON.stringify({ payload: { kind: "auto-merge", enable: true } }),
+    }));
+    expect(accepted.status).toBe(201);
+    expect(await accepted.json()).toHaveProperty("id");
   });
 
   test("recomputes tracked PR rank when resolution refresh fails", async () => {

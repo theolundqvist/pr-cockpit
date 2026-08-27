@@ -183,24 +183,32 @@ test("merge method learning semantics against an isolated database", async () =>
   }
 });
 
-test("merge worker refreshes the base before applying a queued method snapshot", async () => {
+test("merge worker refreshes the base and enforces its gate", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-merge-retarget-"));
   const scenario = `
     const { enqueueMutation, mutationsForPr } = await import(${JSON.stringify(new URL("./mutations.ts", import.meta.url).href)});
-    enqueueMutation({
+    const waitForFailure = async (id) => {
+      let row;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        row = mutationsForPr("fixture/cockpit", 102).find((candidate) => candidate.id === id);
+        if (row?.state === "failed") return row;
+        await Bun.sleep(10);
+      }
+      return row;
+    };
+    const retargeted = await waitForFailure(enqueueMutation({
       repo: "fixture/cockpit",
       number: 102,
       payload: { kind: "merge", force: false, baseRef: "production", method: "merge", source: "explicit" },
-    });
-    let row;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      row = mutationsForPr("fixture/cockpit", 102)[0];
-      if (row?.state === "failed") break;
-      await Bun.sleep(10);
-    }
-    console.log(JSON.stringify(row));
+    }));
+    const gated = await waitForFailure(enqueueMutation({
+      repo: "fixture/cockpit",
+      number: 102,
+      payload: { kind: "merge", force: false, baseRef: "main", method: "merge", source: "explicit" },
+    }));
+    console.log(JSON.stringify({ retargeted, gated }));
     await Bun.sleep(10);
-    process.exit(row?.state === "failed" ? 0 : 2);
+    process.exit(retargeted?.state === "failed" && gated?.state === "failed" ? 0 : 2);
   `;
 
   try {
@@ -215,9 +223,11 @@ test("merge worker refreshes the base before applying a queued method snapshot",
       new Response(child.stderr).text(),
     ]);
     if (exitCode !== 0) throw new Error(stderr);
-    const row = JSON.parse(stdout);
-    expect(row.state).toBe("failed");
-    expect(row.error).toContain("retargeted from production to main");
+    const result = JSON.parse(stdout);
+    expect(result.retargeted.state).toBe("failed");
+    expect(result.retargeted.error).toContain("retargeted from production to main");
+    expect(result.gated.state).toBe("failed");
+    expect(result.gated.error).toContain("Cockpit merge gate rejected BLOCKED");
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }

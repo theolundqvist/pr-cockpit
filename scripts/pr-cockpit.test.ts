@@ -478,3 +478,107 @@ test("update delegates to the running server and waits for the new revision", as
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("mutation commands enqueue every PR operation and wait for completion", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pr-cockpit-mutations-"));
+  const bodyPath = join(root, "body.txt");
+  const body = "first paragraph\n\nsecond paragraph\n";
+  writeFileSync(bodyPath, body);
+  const received: unknown[] = [];
+  let nextId = 1;
+  const server = Bun.serve({
+    port: 0,
+    async fetch(request) {
+      const url = new URL(request.url);
+      if (request.method === "POST" && url.pathname.endsWith("/mutations")) {
+        expect(request.headers.get("x-pr-cockpit-cli")).toBe("1");
+        received.push(await request.json());
+        return Response.json({ id: nextId++ }, { status: 201 });
+      }
+      if (request.method === "GET" && url.pathname === "/api/mutations") {
+        expect(url.searchParams.get("repo")).toBe("owner/repo");
+        expect(url.searchParams.get("number")).toBe("17");
+        return Response.json({ mutations: [] });
+      }
+      return new Response("not found", { status: 404 });
+    },
+  });
+  const cases: Array<{ args: string[]; payload: { kind: string; [key: string]: unknown } }> = [
+    { args: ["comment", "owner/repo#17", "--body-file", bodyPath], payload: { kind: "comment", body } },
+    { args: ["reply", "owner/repo#17", "0123456789", "--body-file", bodyPath], payload: { kind: "reply-to-thread", threadHandle: "0123456789", body } },
+    { args: ["unresolve", "owner/repo#17", "0123456789"], payload: { kind: "resolve-thread", threadHandle: "0123456789", resolved: false } },
+    { args: ["review", "owner/repo#17", "approve"], payload: { kind: "review-verdict", event: "APPROVE", body: "" } },
+    { args: ["review", "owner/repo#17", "request-changes", "--body-file", bodyPath], payload: { kind: "review-verdict", event: "REQUEST_CHANGES", body } },
+    { args: ["merge", "owner/repo#17", "--method", "rebase", "--force"], payload: { kind: "merge", force: true, method: "rebase" } },
+    { args: ["update-branch", "owner/repo#17"], payload: { kind: "update-branch" } },
+    { args: ["ready-for-review", "owner/repo#17"], payload: { kind: "ready-for-review" } },
+    { args: ["close", "owner/repo#17"], payload: { kind: "close" } },
+    { args: ["edit-body", "owner/repo#17", "--body-file", bodyPath], payload: { kind: "edit-body", body } },
+    { args: ["edit-title", "owner/repo#17", "fix(ui): preserve width"], payload: { kind: "edit-title", title: "fix(ui): preserve width" } },
+    { args: ["auto-merge", "owner/repo#17", "enable", "--method", "squash"], payload: { kind: "github-auto-merge", enable: true, method: "squash" } },
+    { args: ["auto-merge", "owner/repo#17", "disable"], payload: { kind: "github-auto-merge", enable: false } },
+    { args: ["cockpit-auto-merge", "owner/repo#17", "enable"], payload: { kind: "auto-merge", enable: true } },
+    {
+      args: ["inline-comment", "owner/repo#17", "--path", "src/a.ts", "--line", "9", "--side", "right", "--start-line", "7", "--start-side", "right", "--body-file", bodyPath],
+      payload: { kind: "inline-comment", path: "src/a.ts", line: 9, side: "RIGHT", body, startLine: 7, startSide: "RIGHT" },
+    },
+    { args: ["assign", "owner/repo#17", "theo", "bot-user"], payload: { kind: "assign", logins: ["theo", "bot-user"] } },
+    { args: ["unassign", "owner/repo#17", "theo"], payload: { kind: "unassign", logins: ["theo"] } },
+    { args: ["request-reviewers", "owner/repo#17", "reviewer"], payload: { kind: "request-reviewers", logins: ["reviewer"] } },
+    { args: ["unrequest-reviewers", "owner/repo#17", "reviewer"], payload: { kind: "unrequest-reviewers", logins: ["reviewer"] } },
+  ];
+
+  try {
+    for (const scenario of cases) {
+      const process = Bun.spawn([join(import.meta.dir, "pr-cockpit"), ...scenario.args], {
+        env: { ...Bun.env, COCKPIT_PORT: String(server.port) },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [output, error, exitCode] = await Promise.all([
+        new Response(process.stdout).text(),
+        new Response(process.stderr).text(),
+        process.exited,
+      ]);
+      expect(exitCode).toBe(0);
+      expect(error).toBe("");
+      expect(JSON.parse(output)).toEqual({ ok: true, id: received.length, kind: scenario.payload.kind });
+    }
+    expect(received).toEqual(cases.map((scenario) => ({ payload: scenario.payload })));
+  } finally {
+    server.stop(true);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("mutation commands report queued GitHub failures", async () => {
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const url = new URL(request.url);
+      if (request.method === "POST") return Response.json({ id: 91 }, { status: 201 });
+      if (url.pathname === "/api/mutations") {
+        return Response.json({ mutations: [{ id: 91, state: "failed", error: "branch protection rejected merge" }] });
+      }
+      return new Response("not found", { status: 404 });
+    },
+  });
+  const process = Bun.spawn([join(import.meta.dir, "pr-cockpit"), "merge", "owner/repo#17"], {
+    env: { ...Bun.env, COCKPIT_PORT: String(server.port) },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  try {
+    const [output, error, exitCode] = await Promise.all([
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+      process.exited,
+    ]);
+    expect(exitCode).toBe(1);
+    expect(output).toBe("");
+    expect(error).toBe("pr-cockpit: branch protection rejected merge\n");
+  } finally {
+    server.stop(true);
+  }
+});

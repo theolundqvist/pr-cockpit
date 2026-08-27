@@ -22,6 +22,7 @@ This repository is worked on by humans and coding agents alike. Leave it easier 
 - Pull-request actions follow GitHub semantics: merge green, update neutral, and destructive actions red.
 - Workflow jobs use commit-check semantics: green check for success, red cross for failure, orange spinner while active, and gray minus when skipped. Logs preserve ANSI colors and open at the bottom.
 - File status lives in the colored leading icon; moved files use a distinct move glyph, never a text badge beside the name.
+- Agents mutate existing PRs through `pr-cockpit`; use its `--body-file` commands for exact multiline text, never `gh` or direct GitHub APIs.
 - Do not perform Vercel or `forge.scape.app` infrastructure work from this repository.
 - For manual app recordings, launch `/Users/theo/dev/pr-cockpit`; this `pr-cockpit-v3` checkout is the legacy landing worktree.
 

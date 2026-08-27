@@ -32,7 +32,7 @@ import {
 import { pollOnce, refreshPr } from "./poller.ts";
 import { killFixerAgent, launchFixerAgent } from "./agents.ts";
 import { refreshRepoUsers } from "./repoUsers.ts";
-import { isMergeMethod, isMergeMethodSource, MERGEABLE_NOW_STATES, mergeWithLearning, mergeWithSelection, type MergeMethod, type MergeMethodSource } from "./mergeMethod.ts";
+import { isMergeMethod, isMergeMethodSource, mergeAllowedNow, MERGEABLE_NOW_STATES, mergeWithLearning, mergeWithSelection, type MergeMethod, type MergeMethodSource } from "./mergeMethod.ts";
 
 export type MutationPayload =
   | { kind: "comment"; body: string }
@@ -192,6 +192,11 @@ async function executeMutation(row: MutationRow): Promise<boolean> {
       const currentBase = currentBaseRef(row.repo, row.number);
       if (currentBase !== payload.baseRef) {
         throw new Error(`PR retargeted from ${payload.baseRef} to ${currentBase}; confirm the merge method again`);
+      }
+      const pr = getPr(row.repo, row.number);
+      if (!pr) throw new Error(`no cached PR for ${row.repo}#${row.number}`);
+      if (!payload.force && !mergeAllowedNow(row.repo, pr)) {
+        throw new Error(`Cockpit merge gate rejected ${pr.merge_state_status}`);
       }
       await mergeWithSelection(row.repo, row.number, payload.baseRef, payload.method, payload.source);
       return true;

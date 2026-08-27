@@ -4,39 +4,62 @@ set -euo pipefail
 usage() {
   local status=${1:-2}
   cat >&2 <<'EOF'
-Read PR Cockpit's cached PR data with the same addresses as the built-in pr:// resource.
+Read and mutate pull requests through PR Cockpit's cache and mutation queue.
 
 Usage:
-  pr-cockpit pr://owner/repo/123
-  pr-cockpit pr://123                         # current repository
-  pr-cockpit owner/repo#123                   # short form
-  pr-cockpit pr://owner/repo/123?comments=0   # omit review comments
-  pr-cockpit                                  # list cached PRs for current repository
-  pr-cockpit listen [pr://owner/repo/123]
-  pr-cockpit resolve owner/repo#123 THREAD
-  pr-cockpit cache-run owner/repo#123 RUN_ID
+  pr-cockpit [REF] [READ_OPTION]
+  pr-cockpit listen [REF]
+  pr-cockpit resolve REF THREAD
+  pr-cockpit comment REF --body-file FILE
+  pr-cockpit reply REF THREAD --body-file FILE
+  pr-cockpit merge REF [--method squash|merge|rebase] [--force]
+  pr-cockpit COMMAND REF [COMMAND_OPTIONS]
   pr-cockpit update
 
-Commands:
-  listen [REF]        wait for substantive cached state to change, print it, then exit
-                      returns immediately when the current PR has failed CI or open comments
-                      without REF, watch the current repository
-  resolve REF THREAD  resolve one cached review thread by its displayed handle
-  cache-run REF RUN_ID  fetch one Actions run and keep its jobs and unsuccessful logs cached
-  update              fast-forward, rebuild, and reconcile the installed app
+Mutation commands:
+  comment              post a PR comment from --body-file
+  reply                reply to a displayed review-thread handle from --body-file
+  resolve, unresolve   change a displayed review-thread handle
+  review               submit approve, request-changes, or comment; body via --body-file
+  merge                merge with the cached base snapshot; defaults to the repository method
+  update-branch        update the PR branch from its base
+  ready-for-review     mark a draft ready
+  close                close the PR
+  edit-body            replace the PR body from --body-file
+  edit-title           replace the PR title with one quoted positional argument
+  auto-merge           enable or disable GitHub auto-merge
+  cockpit-auto-merge   enable or disable Cockpit's autonomous merge
+  inline-comment       comment on --path, --line, and --side from --body-file
+  assign, unassign     change assignees by login
+  request-reviewers, unrequest-reviewers
 
-Options:
-  --jobs              cached Actions jobs, including queued and running state
-  --json              machine-readable Cockpit status
-  --diff              cached unified diff
-  --file PATH         file contents at the PR head
-  --logs [CHECK]      cached Actions job logs for failed and cancelled checks
-  --new-since DATE    only comments at or after DATE
-  --ci-only           with listen REF, wake only for CI changes or current failure
-  --comments-only     with listen REF, wake only for comment changes or current open comments
-  -h, --help          show this help
+Other commands:
+  listen [REF]         wait for substantive cached state to change, print it, then exit
+  cache-run REF RUN_ID fetch one Actions run and retain its unsuccessful logs
+  update               update and reconcile the installed app
 
-Default output is Markdown for agents and humans. Use --json only for automation.
+Read options:
+  --jobs               cached Actions jobs, including queued and running state
+  --json               machine-readable Cockpit status
+  --diff               cached unified diff
+  --file PATH          file contents at the PR head
+  --logs [CHECK]       cached Actions job logs for failed and cancelled checks
+  --new-since DATE     only comments at or after DATE
+  --ci-only            with listen REF, wake only for CI changes or current failure
+  --comments-only      with listen REF, wake only for comment changes or current open comments
+
+Mutation options:
+  --body-file FILE     read exact comment, review, or body text; use - for stdin
+  --method METHOD      merge method: squash, merge, or rebase
+  --force              bypass Cockpit mergeability gates
+  --path PATH          inline-comment file path
+  --line N             inline-comment ending line
+  --side LEFT|RIGHT    inline-comment diff side
+  --start-line N       inline-comment starting line
+  --start-side SIDE    inline-comment starting side
+
+Default read output is Markdown. Successful mutations print one JSON result after GitHub
+accepts the change and Cockpit refreshes its cache.
 EOF
   exit "$status"
 }
@@ -101,10 +124,19 @@ fi
 
 
 command="read"
-if [[ "${1:-}" = "listen" || "${1:-}" = "resolve" || "${1:-}" = "cache-run" ]]; then
-  command="$1"
-  shift
-fi
+case "${1:-}" in
+  listen|resolve|cache-run|comment|reply|unresolve|review|merge|update-branch|ready-for-review|close|edit-body|edit-title|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers)
+    command="$1"
+    shift
+    ;;
+esac
+
+mutation_command=0
+case "$command" in
+  comment|reply|unresolve|review|merge|update-branch|ready-for-review|close|edit-body|edit-title|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers)
+    mutation_command=1
+    ;;
+esac
 
 ref=""
 mode="summary"
@@ -113,8 +145,15 @@ check_name=""
 since=""
 comments="1"
 listen_scope="all"
-thread_handle=""
-run_id=""
+body_file=""
+mutation_method=""
+force="0"
+comment_path=""
+comment_line=""
+comment_side=""
+start_line=""
+start_side=""
+positionals=()
 while (($#)); do
   case "$1" in
     --json)
@@ -158,28 +197,66 @@ while (($#)); do
       listen_scope="comments"
       ;;
     --comments=0) comments="0" ;;
+    --body-file)
+      [[ $# -gt 1 ]] || usage
+      shift
+      body_file="$1"
+      ;;
+    --method)
+      [[ $# -gt 1 ]] || usage
+      shift
+      mutation_method="$1"
+      ;;
+    --force) force="1" ;;
+    --path)
+      [[ $# -gt 1 ]] || usage
+      shift
+      comment_path="$1"
+      ;;
+    --line)
+      [[ $# -gt 1 ]] || usage
+      shift
+      comment_line="$1"
+      ;;
+    --side)
+      [[ $# -gt 1 ]] || usage
+      shift
+      comment_side="$1"
+      ;;
+    --start-line)
+      [[ $# -gt 1 ]] || usage
+      shift
+      start_line="$1"
+      ;;
+    --start-side)
+      [[ $# -gt 1 ]] || usage
+      shift
+      start_side="$1"
+      ;;
     -h|--help) usage 0 ;;
     -*) usage ;;
     *)
       if [[ -z "$ref" ]]; then
         ref="$1"
-      elif [[ "$command" = "resolve" && -z "$thread_handle" ]]; then
-        thread_handle="$1"
-      elif [[ "$command" = "cache-run" && -z "$run_id" ]]; then
-        run_id="$1"
       else
-        usage
+        positionals+=("$1")
       fi
       ;;
   esac
   shift
 done
+
 [[ -z "$since" || "$mode" = "summary" || "$mode" = "json" ]] || usage
 [[ "$comments" = "1" || "$mode" = "summary" || "$mode" = "json" ]] || usage
-[[ -n "$ref" || "$command" != "resolve" ]] || usage
-[[ "$command" != "resolve" || ( "$mode" = "summary" && -z "$since" && "$comments" = "1" && "$thread_handle" =~ ^[0-9a-f]{10}$ ) ]] || usage
-[[ -n "$ref" || "$command" != "cache-run" ]] || usage
-[[ "$command" != "cache-run" || ( "$mode" = "summary" && -z "$since" && "$comments" = "1" && "$run_id" =~ ^[1-9][0-9]*$ ) ]] || usage
+if [[ "$command" = "resolve" ]]; then
+  [[ -n "$ref" && "$mode" = "summary" && -z "$since" && "$comments" = "1" && "${#positionals[@]}" -eq 1 && "${positionals[0]}" =~ ^[0-9a-f]{10}$ ]] || usage
+elif [[ "$command" = "cache-run" ]]; then
+  [[ -n "$ref" && "$mode" = "summary" && -z "$since" && "$comments" = "1" && "${#positionals[@]}" -eq 1 && "${positionals[0]}" =~ ^[1-9][0-9]*$ ]] || usage
+elif [[ "$mutation_command" = "1" ]]; then
+  [[ -n "$ref" && "$mode" = "summary" && -z "$since" && "$comments" = "1" ]] || usage
+else
+  [[ "${#positionals[@]}" -eq 0 && -z "$body_file" && -z "$mutation_method" && "$force" = "0" && -z "$comment_path" && -z "$comment_line" && -z "$comment_side" && -z "$start_line" && -z "$start_side" ]] || usage
+fi
 
 port=$(cockpit_port)
 bun_bin=$(command -v bun || true)
@@ -335,6 +412,7 @@ esac
 [[ -z "$uri_comments" ]] || comments="$uri_comments"
 [[ "$command" != "resolve" || -z "$uri_comments" ]] || usage
 [[ "$command" != "cache-run" || -z "$uri_comments" ]] || usage
+[[ "$mutation_command" != "1" || -z "$uri_comments" ]] || usage
 owner=${repo%/*}
 name=${repo#*/}
 base_url="http://127.0.0.1:$port/api/agent/pr/$owner/$name/$number"
@@ -377,14 +455,218 @@ if [[ "$command" = "listen" ]]; then
 fi
 
 if [[ "$command" = "resolve" ]]; then
-  curl --noproxy '*' -sS --fail-with-body -X POST -H "X-PR-Cockpit-CLI: 1" "$base_url/threads/$thread_handle"
+  curl --noproxy '*' -sS --fail-with-body -X POST -H "X-PR-Cockpit-CLI: 1" "$base_url/threads/${positionals[0]}"
   printf '\n'
   exit 0
 fi
 
 if [[ "$command" = "cache-run" ]]; then
-  curl --noproxy '*' -sS --fail-with-body -X POST -H "X-PR-Cockpit-CLI: 1" "$base_url/runs/$run_id/cache"
+  curl --noproxy '*' -sS --fail-with-body -X POST -H "X-PR-Cockpit-CLI: 1" "$base_url/runs/${positionals[0]}/cache"
   exit 0
+fi
+
+if [[ "$mutation_command" = "1" ]]; then
+  "$bun_bin" -e '
+const [
+  baseUrl,
+  repo,
+  numberText,
+  command,
+  bodyFile,
+  method,
+  forceText,
+  path,
+  lineText,
+  sideText,
+  startLineText,
+  startSideText,
+  ...args
+] = process.argv.slice(1);
+
+const fail = (message) => {
+  throw new Error(message);
+};
+const exact = (count, usage) => {
+  if (args.length !== count) fail(usage);
+};
+const uses = new Set();
+const body = async (required = true) => {
+  uses.add("body");
+  if (!bodyFile) {
+    if (required) fail(`${command} requires --body-file`);
+    return "";
+  }
+  if (bodyFile === "-") return Bun.stdin.text();
+  const file = Bun.file(bodyFile);
+  if (!(await file.exists())) fail(`body file not found: ${bodyFile}`);
+  return file.text();
+};
+const enabled = (value) => {
+  if (value === "enable") return true;
+  if (value === "disable") return false;
+  fail(`${command} expects enable or disable`);
+};
+const users = () => {
+  if (args.length === 0 || args.some((login) => !/^[A-Za-z0-9-]+$/.test(login))) {
+    fail(`${command} requires one or more GitHub logins`);
+  }
+  return args;
+};
+
+let payload;
+try {
+  switch (command) {
+    case "comment": {
+      exact(0, "comment takes only a PR reference");
+      const text = await body();
+      if (!text.trim()) fail("comment body cannot be empty");
+      payload = { kind: "comment", body: text };
+      break;
+    }
+    case "reply": {
+      exact(1, "reply requires one review-thread handle");
+      const text = await body();
+      if (!text.trim()) fail("reply body cannot be empty");
+      payload = { kind: "reply-to-thread", threadHandle: args[0], body: text };
+      break;
+    }
+    case "unresolve":
+      exact(1, "unresolve requires one review-thread handle");
+      payload = { kind: "resolve-thread", threadHandle: args[0], resolved: false };
+      break;
+    case "review": {
+      exact(1, "review requires approve, request-changes, or comment");
+      const events = { approve: "APPROVE", "request-changes": "REQUEST_CHANGES", comment: "COMMENT" };
+      const event = events[args[0]];
+      if (!event) fail("review requires approve, request-changes, or comment");
+      const text = await body(event !== "APPROVE");
+      if (event !== "APPROVE" && !text.trim()) fail("review body cannot be empty");
+      payload = { kind: "review-verdict", event, body: text };
+      break;
+    }
+    case "merge":
+      exact(0, "merge takes only a PR reference");
+      uses.add("method");
+      uses.add("force");
+      if (method && !["squash", "merge", "rebase"].includes(method)) fail("invalid merge method");
+      payload = { kind: "merge", force: forceText === "1", ...(method ? { method } : {}) };
+      break;
+    case "update-branch":
+      exact(0, "update-branch takes only a PR reference");
+      payload = { kind: "update-branch" };
+      break;
+    case "ready-for-review":
+      exact(0, "ready-for-review takes only a PR reference");
+      payload = { kind: "ready-for-review" };
+      break;
+    case "close":
+      exact(0, "close takes only a PR reference");
+      payload = { kind: "close" };
+      break;
+    case "edit-body":
+      exact(0, "edit-body takes only a PR reference");
+      payload = { kind: "edit-body", body: await body() };
+      break;
+    case "edit-title":
+      exact(1, "edit-title requires one quoted title");
+      if (!args[0].trim()) fail("pull request title cannot be empty");
+      payload = { kind: "edit-title", title: args[0] };
+      break;
+    case "auto-merge": {
+      exact(1, "auto-merge expects enable or disable");
+      uses.add("method");
+      const enable = enabled(args[0]);
+      if (method && !["squash", "merge", "rebase"].includes(method)) fail("invalid merge method");
+      if (!enable && method) fail("--method is valid only when enabling auto-merge");
+      payload = enable
+        ? { kind: "github-auto-merge", enable: true, method: method || "squash" }
+        : { kind: "github-auto-merge", enable: false };
+      break;
+    }
+    case "cockpit-auto-merge":
+      exact(1, "cockpit-auto-merge expects enable or disable");
+      payload = { kind: "auto-merge", enable: enabled(args[0]) };
+      break;
+    case "inline-comment": {
+      exact(0, "inline-comment uses named options only");
+      for (const option of ["body", "path", "line", "side", "startLine", "startSide"]) uses.add(option);
+      const line = Number(lineText);
+      const side = sideText.toUpperCase();
+      if (!path || !Number.isInteger(line) || line < 1 || !["LEFT", "RIGHT"].includes(side)) {
+        fail("inline-comment requires --path, positive --line, and --side LEFT|RIGHT");
+      }
+      if (Boolean(startLineText) !== Boolean(startSideText)) fail("--start-line and --start-side must be used together");
+      const text = await body();
+      if (!text.trim()) fail("inline comment body cannot be empty");
+      payload = { kind: "inline-comment", path, line, side, body: text };
+      if (startLineText) {
+        const startLine = Number(startLineText);
+        const startSide = startSideText.toUpperCase();
+        if (!Number.isInteger(startLine) || startLine < 1 || !["LEFT", "RIGHT"].includes(startSide)) {
+          fail("inline-comment requires a positive --start-line and --start-side LEFT|RIGHT");
+        }
+        payload.startLine = startLine;
+        payload.startSide = startSide;
+      }
+      break;
+    }
+    case "assign":
+    case "unassign":
+    case "request-reviewers":
+    case "unrequest-reviewers":
+      payload = { kind: command, logins: users() };
+      break;
+    default:
+      fail(`unsupported mutation command: ${command}`);
+  }
+
+  const supplied = {
+    body: Boolean(bodyFile),
+    method: Boolean(method),
+    force: forceText === "1",
+    path: Boolean(path),
+    line: Boolean(lineText),
+    side: Boolean(sideText),
+    startLine: Boolean(startLineText),
+    startSide: Boolean(startSideText),
+  };
+  for (const [option, present] of Object.entries(supplied)) {
+    if (present && !uses.has(option)) fail(`${command} does not accept --${option.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`);
+  }
+
+  const response = await fetch(`${baseUrl}/mutations`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-pr-cockpit-cli": "1" },
+    body: JSON.stringify({ payload }),
+  });
+  const result = await response.json().catch(() => null);
+  if (!response.ok) fail(result?.error || `mutation enqueue failed (${response.status})`);
+  if (!Number.isInteger(result?.id)) fail("mutation enqueue returned no id");
+
+  const timeout = Number(Bun.env.COCKPIT_MUTATION_TIMEOUT_MS || 120000);
+  const deadline = Date.now() + timeout;
+  const listUrl = new URL("/api/mutations", baseUrl);
+  listUrl.searchParams.set("repo", repo);
+  listUrl.searchParams.set("number", numberText);
+  while (Date.now() < deadline) {
+    const listResponse = await fetch(listUrl);
+    const list = await listResponse.json().catch(() => null);
+    if (!listResponse.ok) fail(list?.error || `mutation status failed (${listResponse.status})`);
+    const mutation = list?.mutations?.find((candidate) => candidate.id === result.id);
+    if (!mutation) {
+      console.log(JSON.stringify({ ok: true, id: result.id, kind: payload.kind }));
+      process.exit(0);
+    }
+    if (mutation.state === "failed") fail(mutation.error || `${payload.kind} failed`);
+    await Bun.sleep(100);
+  }
+  fail(`${payload.kind} did not finish within ${timeout}ms`);
+} catch (error) {
+  console.error(`pr-cockpit: ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+}
+' "$base_url" "$repo" "$number" "$command" "$body_file" "$mutation_method" "$force" "$comment_path" "$comment_line" "$comment_side" "$start_line" "$start_side" "${positionals[@]}"
+  exit $?
 fi
 
 case "$mode" in
