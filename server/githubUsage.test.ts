@@ -19,13 +19,13 @@ test("instruments queries and uses the fixed mutation cost", () => {
 
 test("aggregates attributed calls for the current quota window", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-github-usage-"));
-  const resetAt = new Date(Date.now() + 2 * 60 * 60_000).toISOString();
+  const resetAt = new Date(Math.ceil(Date.now() / 1000) * 1000 + 2 * 60 * 60_000).toISOString();
   const scenario = `
     const database = await import(${JSON.stringify(dbModuleUrl)});
     const usage = await import(${JSON.stringify(usageModuleUrl)});
     const resetAt = ${JSON.stringify(resetAt)};
     usage.recordGithubGraphqlUsage({ occurredAt: new Date().toISOString(), source: "background poll", operation: "open PR search", cost: 2, used: 42, remaining: 4958, resetAt, status: "ok" });
-    usage.recordGithubGraphqlUsage({ occurredAt: new Date().toISOString(), source: "app detail", operation: "PR detail", cost: 8, used: 50, remaining: 4950, resetAt, status: "ok" });
+    usage.recordGithubGraphqlUsage({ occurredAt: new Date().toISOString(), source: "app detail", operation: "PR detail", cost: 8, used: 50, remaining: 4950, resetAt: resetAt.replace(".000Z", "Z"), status: "ok" });
     console.log(JSON.stringify(database.githubGraphqlUsage(50, resetAt)));
     database.db.close();
   `;

@@ -1273,7 +1273,7 @@ setGithubGraphqlUsageRecorder((event: GithubGraphqlUsageEvent) => {
     $cost: event.cost,
     $used: event.used,
     $remaining: event.remaining,
-    $reset_at: event.resetAt,
+    $reset_at: event.resetAt ? new Date(event.resetAt).toISOString() : null,
     $status: event.status,
   });
 });
@@ -1305,7 +1305,7 @@ function githubUsageRows(column: "source" | "operation", resetAt: string): Githu
       COUNT(*) AS requests,
       SUM(cost IS NULL) AS unknown_cost_requests
     FROM github_graphql_usage
-    WHERE reset_at = ?
+    WHERE julianday(reset_at) = julianday(?)
     GROUP BY ${column}
     ORDER BY points DESC, requests DESC, label
   `).all(resetAt);
@@ -1318,7 +1318,7 @@ export function githubGraphqlUsage(globalUsed: number, resetAt: string): GithubG
   const localRequests = sources.reduce((sum, row) => sum + row.requests, 0);
   const unknownCostRequests = sources.reduce((sum, row) => sum + row.unknown_cost_requests, 0);
   const first = db.query<{ occurred_at: string | null }, [string]>(
-    "SELECT MIN(occurred_at) AS occurred_at FROM github_graphql_usage WHERE reset_at = ?",
+    "SELECT MIN(occurred_at) AS occurred_at FROM github_graphql_usage WHERE julianday(reset_at) = julianday(?)",
   ).get(resetAt);
   const windowStartedAt = new Date(Date.parse(resetAt) - 60 * 60_000).toISOString();
   const windowComplete = Date.parse(githubUsageTrackingStartedAt) <= Date.parse(windowStartedAt)

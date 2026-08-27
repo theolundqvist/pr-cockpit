@@ -25,7 +25,7 @@ const refreshPr = mock(async (_repo: string, _number: number) => {});
 // Modules load after the legacy database is in place so the migration sees it.
 const { db, listWebhookRegistrations } = await import("./db.ts");
 const { buildWebhookRoutes } = await import("./webhooks.ts");
-const route = buildWebhookRoutes(refreshPr);
+const route = buildWebhookRoutes(refreshPr, async () => true);
 const migratedRows = listWebhookRegistrations().sort((a, b) => a.number - b.number);
 
 async function request(path: string, body?: unknown): Promise<Response> {
