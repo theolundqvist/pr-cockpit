@@ -36,6 +36,7 @@
   {#if data?.quota && data?.usage}
     {@const quota = data.quota}
     {@const usage = data.usage}
+    {@const chartMax = Math.max(1, usage.predictedUsed ?? 0, ...usage.history.map((bucket) => bucket.used ?? 0))}
     <section class="usage-card" aria-label="GitHub GraphQL usage">
       <div class="usage-head">
         <div>
@@ -103,10 +104,10 @@
             title={`${hourLabel(bucket.resetAt)}: ${bucket.used === null ? "no observation" : `${number.format(bucket.used)} points`}${current && usage.predictedUsed !== null ? `, ${number.format(usage.predictedUsed)} predicted` : ""}`}
           >
             {#if current && usage.predictedUsed !== null}
-              <i class="history-predicted" style={`height: ${percent(usage.predictedUsed, quota.limit)}%`}></i>
+              <i class="history-predicted" style={`height: ${percent(usage.predictedUsed, chartMax)}%`}></i>
             {/if}
             {#if bucket.used !== null}
-              <i class="history-observed" style={`height: ${percent(bucket.used, quota.limit)}%`}></i>
+              <i class="history-observed" style={`height: ${percent(bucket.used, chartMax)}%`}></i>
             {:else}
               <i class="history-missing"></i>
             {/if}
