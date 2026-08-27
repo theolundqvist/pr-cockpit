@@ -6,6 +6,7 @@ import { prKey } from "./prKey.ts";
 const dataDir = Bun.env.COCKPIT_DATA_DIR ?? "data";
 mkdirSync(dataDir, { recursive: true });
 
+export const RUN_JOB_LOG_FORMAT_VERSION = 2;
 export const db = new Database(`${dataDir}/cockpit.db`);
 db.exec("PRAGMA journal_mode = WAL;");
 
@@ -200,6 +201,7 @@ CREATE TABLE IF NOT EXISTS run_jobs (
   log_bytes INTEGER,
   log_truncated INTEGER NOT NULL DEFAULT 0,
   log_error TEXT,
+  log_format_version INTEGER NOT NULL DEFAULT ${RUN_JOB_LOG_FORMAT_VERSION},
   fetched_at TEXT NOT NULL,
   PRIMARY KEY (repo, job_id)
 );
@@ -219,6 +221,7 @@ for (const [name, definition] of [
   ["runner_name", "TEXT"],
   ["runner_group_name", "TEXT"],
   ["labels_json", "TEXT NOT NULL DEFAULT '[]'"],
+  ["log_format_version", "INTEGER NOT NULL DEFAULT 1"],
 ] as const) {
   if (!runJobColumns.some((column) => column.name === name)) {
     db.exec(`ALTER TABLE run_jobs ADD COLUMN ${name} ${definition}`);
@@ -741,6 +744,7 @@ export interface RunJobRow {
   log_bytes: number | null;
   log_truncated: number;
   log_error: string | null;
+  log_format_version: number;
   fetched_at: string;
 }
 
@@ -788,7 +792,7 @@ export function upsertWorkflowRun(run: Omit<WorkflowRunRow, "jobs_fetched_at" | 
 const getRunJobStmt = db.prepare<RunJobRow, [string, number]>(
   `SELECT repo, job_id, run_id, run_attempt, head_sha, head_branch, workflow_name, name,
     status, conclusion, started_at, completed_at, html_url, runner_name, runner_group_name,
-    labels_json, failed_step, log_bytes, log_truncated, log_error, fetched_at
+    labels_json, failed_step, log_bytes, log_truncated, log_error, log_format_version, fetched_at
    FROM run_jobs WHERE repo = ? AND job_id = ?`,
 );
 const upsertRunJobStmt = db.prepare(`
@@ -806,7 +810,7 @@ const upsertRunJobStmt = db.prepare(`
     failed_step = excluded.failed_step, fetched_at = datetime('now')
 `);
 
-export function upsertRunJob(job: Omit<RunJobRow, "log_bytes" | "log_truncated" | "log_error" | "fetched_at">): boolean {
+export function upsertRunJob(job: Omit<RunJobRow, "log_bytes" | "log_truncated" | "log_error" | "log_format_version" | "fetched_at">): boolean {
   const latest = db.prepare<{ attempt: number | null }, [string, number]>(
     "SELECT MAX(run_attempt) AS attempt FROM workflow_runs WHERE repo = ? AND run_id = ?",
   ).get(job.repo, job.run_id)?.attempt;
@@ -833,7 +837,7 @@ const listRunJobsStmt = db.prepare<RunJobRow, [string, string]>(
   `SELECT j.repo, j.job_id, j.run_id, j.run_attempt, j.head_sha, j.head_branch,
     j.workflow_name, j.name, j.status, j.conclusion, j.started_at, j.completed_at,
     j.html_url, j.runner_name, j.runner_group_name, j.labels_json, j.failed_step,
-    j.log_bytes, j.log_truncated, j.log_error, j.fetched_at
+    j.log_bytes, j.log_truncated, j.log_error, j.log_format_version, j.fetched_at
    FROM run_jobs j
    WHERE j.repo = ? AND j.head_sha = ?
      AND NOT EXISTS (
@@ -857,7 +861,8 @@ export function getRunJobLog(repo: string, jobId: number): Uint8Array | null {
 }
 
 const saveRunJobLogStmt = db.prepare(
-  `UPDATE run_jobs SET log_gz = ?, log_bytes = ?, log_truncated = 0, log_error = NULL
+  `UPDATE run_jobs SET log_gz = ?, log_bytes = ?, log_truncated = 0, log_error = NULL,
+    log_format_version = ${RUN_JOB_LOG_FORMAT_VERSION}
    WHERE repo = ? AND job_id = ? AND run_id = ? AND run_attempt = ? AND head_sha = ?`,
 );
 

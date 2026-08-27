@@ -182,7 +182,8 @@ test("concurrent activation bootstraps once and terminal attempts reconcile once
       successfulStored: dbm.db.query("SELECT log_gz IS NOT NULL AS stored FROM run_jobs WHERE job_id=111").get().stored,
       bytes: dbm.db.query("SELECT log_bytes,log_truncated FROM run_jobs WHERE job_id=110").get(),
       returnedBytes: Buffer.byteLength(body),
-      cleaned: !body.includes("2026-08-24T10:00:00.000Z") && !body.includes("\\u001b[31m"),
+      cleaned: !body.includes("2026-08-24T10:00:00.000Z"),
+      ansiPreserved: body.includes("\\u001b[31mred\\u001b[0m"),
       reconciled: dbm.db.query("SELECT reconciled_at IS NOT NULL AS done FROM workflow_runs WHERE run_id=11").get().done,
     }));
   `);
@@ -194,6 +195,7 @@ test("concurrent activation bootstraps once and terminal attempts reconcile once
   expect(result.returnedBytes).toBe(result.bytes.log_bytes);
   expect(result.returnedBytes).toBeGreaterThan(262_144);
   expect(result.cleaned).toBe(true);
+  expect(result.ansiPreserved).toBe(true);
   expect(result.reconciled).toBe(1);
 });
 
@@ -470,6 +472,40 @@ test("a selected successful job fetches and serves its full log once", async () 
   expect(result.duplicateBody).toBe(true);
   expect(result.cleaned).toBe(true);
   expect(result.stored).toEqual({ stored: 1, log_bytes: result.firstBytes, log_error: null });
+});
+
+test("opening a legacy cached log refetches ANSI once", async () => {
+  const result = await runScenario("pr-cockpit-actions-log-format-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    dbm.upsertRunJob({
+      repo: "acme/app", job_id: 121, run_id: 12, run_attempt: 1, head_sha: head,
+      head_branch: "feature", workflow_name: "CI", name: "build", status: "completed",
+      conclusion: "failure", started_at: "2026-08-24T10:00:00Z", completed_at: "2026-08-24T10:02:00Z",
+      html_url: null, runner_name: "runner-1", runner_group_name: "hosted",
+      labels_json: "[]", failed_step: "Run tests",
+    });
+    dbm.db.query("UPDATE run_jobs SET log_gz = ?, log_bytes = ?, log_format_version = 1 WHERE repo = ? AND job_id = ?")
+      .run(Bun.gzipSync("cached without color"), 20, "acme/app", 121);
+    let fetches = 0;
+    const fetchers = {
+      fetchWorkflowRuns: async () => [],
+      fetchRunJobs: async () => [],
+      fetchJobLog: async () => { fetches++; return "\\u001b[35m>> e2e mode\\u001b[0m"; },
+      restRemaining: async () => 5000,
+    };
+    const first = await actions.actionJobLog("acme/app", head, 121, fetchers);
+    const second = await actions.actionJobLog("acme/app", head, 121, fetchers);
+    const version = dbm.db.query("SELECT log_format_version FROM run_jobs WHERE job_id = 121").get().log_format_version;
+    console.log(JSON.stringify({ fetches, body: first.body, duplicate: second.body === first.body, version }));
+  `);
+  expect(result).toEqual({
+    fetches: 1,
+    body: "\u001b[35m>> e2e mode\u001b[0m",
+    duplicate: true,
+    version: 2,
+  });
 });
 
 test("a skipped job reports that no log was produced without fetching GitHub", async () => {

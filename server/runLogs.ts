@@ -1,6 +1,7 @@
 import { gzip, gunzip } from "node:zlib";
 import { promisify } from "node:util";
 import {
+  RUN_JOB_LOG_FORMAT_VERSION,
   activeActionsLeases,
   actionsLease,
   getFileContents,
@@ -36,7 +37,6 @@ const gunzipAsync = promisify(gunzip);
 export const REST_BACKGROUND_RESERVE = 500;
 const LOG_WORTHY_CONCLUSION = new Set(["failure", "cancelled", "timed_out", "action_required", "neutral", "startup_failure", "stale"]);
 const TIMESTAMP_LINE_RE = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z /gm;
-const ANSI_RE = /\u001b\[[0-9;]*m/g;
 
 export interface CompactRun {
   id: number;
@@ -97,7 +97,7 @@ const reconciliations = new Map<string, { background: boolean; terminal: boolean
 const logFetches = new Map<string, Promise<void>>();
 
 export function cleanJobLog(text: string): string {
-  return text.replace(/^\uFEFF/, "").replace(TIMESTAMP_LINE_RE, "").replace(ANSI_RE, "");
+  return text.replace(/^\uFEFF/, "").replace(TIMESTAMP_LINE_RE, "");
 }
 
 function compactRun(run: WorkflowRun): CompactRun {
@@ -520,7 +520,9 @@ export async function actionJobLog(
   if (!jobIsComplete(job)) return { job, body: null, state: "pending" };
   if (!jobProducesLog(job)) return { job, body: null, state: "not-produced" };
 
-  if (getRunJobLog(repo, jobId) === null || job.log_truncated === 1) {
+  const cachedBefore = getRunJobLog(repo, jobId);
+  const canUseCached = cachedBefore !== null && job.log_truncated !== 1;
+  if (cachedBefore === null || job.log_truncated === 1 || job.log_format_version < RUN_JOB_LOG_FORMAT_VERSION) {
     const key = `${repo}:${jobId}`;
     let pending = logFetches.get(key);
     if (!pending) {
@@ -533,7 +535,7 @@ export async function actionJobLog(
           }
         } catch (error) {
           saveRunJobLogError(repo, jobId, job.run_attempt, error instanceof Error ? error.message : String(error));
-          throw error;
+          if (!canUseCached) throw error;
         }
       })().finally(() => logFetches.delete(key));
       logFetches.set(key, pending);

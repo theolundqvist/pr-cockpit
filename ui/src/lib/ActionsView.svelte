@@ -463,7 +463,7 @@
     color: var(--fail);
     font-size: 11px;
   }
-  .status-icon {
+  :global(.status-icon) {
     display: inline-flex;
     width: 16px;
     height: 16px;
@@ -473,20 +473,20 @@
     justify-content: center;
     color: var(--text-faint);
   }
-  .workflow-head .status-icon,
-  .log-title-row .status-icon {
+  .workflow-head :global(.status-icon),
+  .log-title-row :global(.status-icon) {
     margin-top: 0;
   }
-  .status-icon.ready {
+  :global(.status-icon.ready) {
     color: var(--ready);
   }
-  .status-icon.fail {
+  :global(.status-icon.fail) {
     color: var(--fail);
   }
-  .status-icon.wait {
+  :global(.status-icon.wait) {
     color: var(--review);
   }
-  .status-icon svg {
+  :global(.status-icon svg) {
     width: 16px;
     height: 16px;
     fill: none;
@@ -495,17 +495,17 @@
     stroke-linejoin: round;
     stroke-width: 1.5;
   }
-  .status-icon.ready circle,
-  .status-icon.fail circle {
+  :global(.status-icon.ready circle),
+  :global(.status-icon.fail circle) {
     fill: currentColor;
     stroke: none;
   }
-  .status-icon.ready path,
-  .status-icon.fail path {
+  :global(.status-icon.ready path),
+  :global(.status-icon.fail path) {
     stroke: var(--native-on-accent);
     stroke-width: 1.5;
   }
-  .status-spinner circle {
+  :global(.status-spinner circle) {
     stroke-dasharray: 24 14;
     transform-origin: center;
     animation: status-spin 0.9s linear infinite;
@@ -514,7 +514,7 @@
     to { transform: rotate(360deg); }
   }
   @media (prefers-reduced-motion: reduce) {
-    .status-spinner circle {
+    :global(.status-spinner circle) {
       animation: none;
     }
   }

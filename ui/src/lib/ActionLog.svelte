@@ -1,4 +1,5 @@
 <script>
+  import { tick } from "svelte";
   import { parseActionLog } from "./actionLog.js";
 
   let { body = "", jobConclusion = null, failedStep = null, statusIcon } = $props();
@@ -6,12 +7,16 @@
   let expanded = $state(new Set());
   let expandedGroups = $state(new Set());
   let parsed = $derived(parseActionLog(body, jobConclusion, failedStep));
+  let logEl = $state();
 
   $effect(() => {
     body;
     const failed = parsed.steps.filter((step) => stepTone(step.conclusion) === "failure").map((step) => step.id);
     expanded = new Set(failed.length > 0 ? failed : parsed.steps.length === 1 ? [parsed.steps[0].id] : []);
     expandedGroups = new Set();
+    void tick().then(() => {
+      if (logEl) logEl.scrollTop = logEl.scrollHeight;
+    });
   });
 
   function toggle(stepId) {
@@ -26,6 +31,11 @@
     if (next.has(groupId)) next.delete(groupId);
     else next.add(groupId);
     expandedGroups = next;
+  }
+
+  function jump(position) {
+    if (!logEl) return;
+    logEl.scrollTop = position === "top" ? 0 : logEl.scrollHeight;
   }
 
   function lineVisible(line) {
@@ -60,8 +70,21 @@
     return `${minutes}m ${seconds}s`;
   }
 </script>
+{#snippet logText(line)}
+  {#if line.segments}
+    {#each line.segments as segment}
+      <span class={`${segment.color ? `ansi-${segment.color}` : ""}${segment.bold ? " ansi-bold" : ""}`}>{segment.text}</span>
+    {/each}
+  {:else}
+    {line.text || " "}
+  {/if}
+{/snippet}
 
-<div class="structured-log">
+<div class="structured-log" bind:this={logEl}>
+  <nav class="log-nav" aria-label="Log position">
+    <button type="button" onclick={() => jump("top")} aria-label="Go to top">↑ Top</button>
+    <button type="button" onclick={() => jump("bottom")} aria-label="Go to bottom">↓ Bottom</button>
+  </nav>
   {#if parsed.annotations.length > 0}
     <section class="annotations" aria-label="Log annotations">
       <h3>Annotations <span>{parsed.annotations.length}</span></h3>
@@ -109,13 +132,13 @@
                         <svg class:expanded={expandedGroups.has(line.groupId)} class="chevron" viewBox="0 0 12 12" aria-hidden="true">
                           <path d="m4 2.5 3.5 3.5L4 9.5" />
                         </svg>
-                        <code>{line.text}</code>
+                        <code>{@render logText(line)}</code>
                       </button>
                     </div>
                   {:else}
                     <div class="output-line {line.tone}" class:blank={line.text === ""}>
                       <span class="line-number">{line.line}</span>
-                      <code>{line.text || " "}</code>
+                      <code>{@render logText(line)}</code>
                     </div>
                   {/if}
                 {/if}
@@ -136,6 +159,36 @@
     background: var(--panel);
     color: var(--text-dim);
     font-size: 12px;
+  }
+
+  .log-nav {
+    position: sticky;
+    top: 8px;
+    z-index: 4;
+    display: flex;
+    justify-content: flex-end;
+    gap: 4px;
+    height: 0;
+    padding-right: 8px;
+    pointer-events: none;
+  }
+
+  .log-nav button {
+    height: 26px;
+    padding: 0 8px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--panel);
+    box-shadow: 0 1px 4px color-mix(in srgb, black 18%, transparent);
+    color: var(--text-dim);
+    font: 600 10px/1 var(--font-ui);
+    pointer-events: auto;
+    cursor: pointer;
+  }
+
+  .log-nav button:hover {
+    border-color: var(--border-strong);
+    color: var(--text);
   }
 
   .annotations {
@@ -381,6 +434,23 @@
   .output-line.warning code {
     color: #9a6700;
   }
+  .ansi-black,
+  .ansi-bright-black { color: var(--text-faint); }
+  .ansi-red { color: #cf222e; }
+  .ansi-bright-red { color: #a40e26; }
+  .ansi-green { color: #1a7f37; }
+  .ansi-bright-green { color: #116329; }
+  .ansi-yellow { color: #9a6700; }
+  .ansi-bright-yellow { color: #7d4e00; }
+  .ansi-blue { color: #0969da; }
+  .ansi-bright-blue { color: #0550ae; }
+  .ansi-magenta { color: #8250df; }
+  .ansi-bright-magenta { color: #6639ba; }
+  .ansi-cyan { color: #1b7c83; }
+  .ansi-bright-cyan { color: #096b72; }
+  .ansi-white,
+  .ansi-bright-white { color: var(--text); }
+  .ansi-bold { font-weight: 650; }
 
   .output-empty {
     padding: 8px 58px;
@@ -389,6 +459,18 @@
 
   :global(html[data-theme="dark"]) .output-line.command code { color: #58a6ff; }
   :global(html[data-theme="dark"]) .output-line.warning code { color: #d29922; }
+  :global(html[data-theme="dark"]) .ansi-red { color: #ff7b72; }
+  :global(html[data-theme="dark"]) .ansi-bright-red { color: #ffa198; }
+  :global(html[data-theme="dark"]) .ansi-green { color: #3fb950; }
+  :global(html[data-theme="dark"]) .ansi-bright-green { color: #56d364; }
+  :global(html[data-theme="dark"]) .ansi-yellow { color: #d29922; }
+  :global(html[data-theme="dark"]) .ansi-bright-yellow { color: #e3b341; }
+  :global(html[data-theme="dark"]) .ansi-blue { color: #58a6ff; }
+  :global(html[data-theme="dark"]) .ansi-bright-blue { color: #79c0ff; }
+  :global(html[data-theme="dark"]) .ansi-magenta { color: #bc8cff; }
+  :global(html[data-theme="dark"]) .ansi-bright-magenta { color: #d2a8ff; }
+  :global(html[data-theme="dark"]) .ansi-cyan { color: #39c5cf; }
+  :global(html[data-theme="dark"]) .ansi-bright-cyan { color: #56d4dd; }
 
   @media (max-width: 860px) {
     .structured-log {

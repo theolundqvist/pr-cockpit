@@ -1,6 +1,49 @@
 const CONTROL_RE = /^##\[([^\] ]+)(?: ([^\]]*))?\](.*)$/;
 const WORKFLOW_COMMAND_RE = /^::(error|warning|notice)(?: (.*?))?::(.*)$/;
 const COMMAND_RE = /^\[command\](.*)$/;
+const ANSI_SGR_RE = /\u001b\[([0-9;]*)m/g;
+const ANSI_COLORS = new Map([
+  [30, "black"], [31, "red"], [32, "green"], [33, "yellow"],
+  [34, "blue"], [35, "magenta"], [36, "cyan"], [37, "white"],
+  [90, "bright-black"], [91, "bright-red"], [92, "bright-green"], [93, "bright-yellow"],
+  [94, "bright-blue"], [95, "bright-magenta"], [96, "bright-cyan"], [97, "bright-white"],
+]);
+
+function styledText(value) {
+  const matches = [...value.matchAll(ANSI_SGR_RE)];
+  if (matches.length === 0) return { text: value, segments: null };
+  const segments = [];
+  let cursor = 0;
+  let color = null;
+  let bold = false;
+  const append = (text) => {
+    if (!text) return;
+    const previous = segments.at(-1);
+    if (previous?.color === color && previous?.bold === bold) previous.text += text;
+    else segments.push({ text, color, bold });
+  };
+  for (const match of matches) {
+    append(value.slice(cursor, match.index));
+    const codes = match[1] === "" ? [0] : match[1].split(";").map(Number);
+    for (const code of codes) {
+      if (code === 0) {
+        color = null;
+        bold = false;
+      } else if (code === 1) {
+        bold = true;
+      } else if (code === 22) {
+        bold = false;
+      } else if (code === 39) {
+        color = null;
+      } else if (ANSI_COLORS.has(code)) {
+        color = ANSI_COLORS.get(code);
+      }
+    }
+    cursor = match.index + match[0].length;
+  }
+  append(value.slice(cursor));
+  return { text: segments.map((segment) => segment.text).join(""), segments };
+}
 
 function decodeCommandText(value) {
   return value.replaceAll("%0D", "\r").replaceAll("%0A", "\n").replaceAll("%25", "%");
@@ -77,7 +120,9 @@ export function parseActionLog(text, jobConclusion = null, failedStep = null) {
   }
 
   function addLine(line, textValue, tone = "output", fields = {}) {
-    const item = { line, text: textValue, tone, ...fields };
+    const styled = styledText(textValue);
+    const item = { line, text: styled.text, tone, ...fields };
+    if (styled.segments) item.segments = styled.segments;
     if (groupStack.length > 0) item.groups = [...groupStack];
     const step = ensureStep(postCleanup ? "Post job cleanup" : "Set up job");
     if (rootGroupDepth > 0 && step.rootGroup) item.rootGroupId = step.rootGroup.id;
@@ -139,7 +184,7 @@ export function parseActionLog(text, jobConclusion = null, failedStep = null) {
       if (command === "error" || command === "warning" || command === "notice") {
         const tone = command === "error" ? "failure" : command;
         const message = decodeCommandText(value);
-        annotations.push({ line: lineNumber, tone, text: message });
+        annotations.push({ line: lineNumber, tone, text: styledText(message).text });
         addLine(lineNumber, message, tone);
         if (tone === "failure") current.conclusion = "failure";
         else if (tone === "warning" && current.conclusion === "success") current.conclusion = "warning";
@@ -157,7 +202,7 @@ export function parseActionLog(text, jobConclusion = null, failedStep = null) {
     if (workflowCommand) {
       const tone = workflowCommand[1] === "error" ? "failure" : workflowCommand[1];
       const message = decodeCommandText(workflowCommand[3]);
-      annotations.push({ line: lineNumber, tone, text: message });
+      annotations.push({ line: lineNumber, tone, text: styledText(message).text });
       addLine(lineNumber, message, tone);
       if (tone === "failure") current.conclusion = "failure";
       else if (tone === "warning" && current.conclusion === "success") current.conclusion = "warning";
@@ -170,7 +215,8 @@ export function parseActionLog(text, jobConclusion = null, failedStep = null) {
       continue;
     }
 
-    const tone = /^\[warn\]/i.test(source) ? "warning" : "output";
+    const plain = styledText(source).text;
+    const tone = /^\[warn\]/i.test(plain) ? "warning" : "output";
     addLine(lineNumber, source, tone);
     if (tone === "warning" && current.conclusion === "success") current.conclusion = "warning";
   }

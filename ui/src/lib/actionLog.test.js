@@ -117,4 +117,16 @@ describe("parseActionLog", () => {
     expect(parsed.steps[0].lines[2].groups).toBeUndefined();
     expect(parsed.steps[0].lines[3].groups).toBeUndefined();
   });
+
+  test("preserves ANSI foreground colors as safe text segments", () => {
+    const line = parseActionLog("\u001b[35m>> e2e mode:\u001b[0m plain \u001b[1;96mcyan\u001b[0m").steps[0].lines[0];
+
+    expect(line.text).toBe(">> e2e mode: plain cyan");
+    expect(line.segments).toEqual([
+      { text: ">> e2e mode:", color: "magenta", bold: false },
+      { text: " plain ", color: null, bold: false },
+      { text: "cyan", color: "bright-cyan", bold: true },
+    ]);
+  });
+
 });
