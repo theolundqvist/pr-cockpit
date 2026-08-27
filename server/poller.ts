@@ -31,6 +31,10 @@ const GRAPHQL_WINDOW_MS = 60 * 60_000;
 
 export let lastPollAt: string | null = null;
 
+export function setLastPollAt(value: string | null): void {
+  lastPollAt = value;
+}
+
 let quotaPauseResetAt: string | null = null;
 let openInboxKeys = new Set<string>();
 

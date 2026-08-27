@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { setGithubGraphqlUsageRecorder, type GithubGraphqlUsageEvent } from "./githubUsage.ts";
@@ -1337,4 +1337,41 @@ export function githubGraphqlUsage(globalUsed: number, resetAt: string): GithubG
       unknownCostRequests: row.unknown_cost_requests,
     })),
   };
+}
+
+const REPLICA_TABLES = [
+  "prs",
+  "archived_prs",
+  "pr_index",
+  "pr_rank",
+  "repo_users",
+  "review_rescores",
+  "review_scores",
+  "fixer_agents",
+] as const;
+
+export type InboxReplica = Record<(typeof REPLICA_TABLES)[number], Array<Record<string, unknown>>>;
+
+export function readInboxReplica(): InboxReplica {
+  return Object.fromEntries(REPLICA_TABLES.map((table) => [table, db.query(`SELECT * FROM ${table}`).all()])) as InboxReplica;
+}
+
+function replicaBinding(value: unknown): SQLQueryBindings {
+  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "bigint" || typeof value === "boolean") {
+    return value;
+  }
+  throw new Error(`Unsupported replica value: ${typeof value}`);
+}
+
+const replaceInboxReplicaTxn = db.transaction((snapshot: InboxReplica) => {
+  for (const table of REPLICA_TABLES) {
+    const columns = db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().map((column) => column.name);
+    const insert = db.prepare(`INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`);
+    db.exec(`DELETE FROM ${table}`);
+    for (const row of snapshot[table]) insert.run(...columns.map((column) => replicaBinding(row[column] ?? null)));
+  }
+});
+
+export function replaceInboxReplica(snapshot: InboxReplica): void {
+  replaceInboxReplicaTxn(snapshot);
 }

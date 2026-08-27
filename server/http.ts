@@ -62,6 +62,13 @@ import {
   type PrCommentSince,
   type PrDetail,
 } from "./github.ts";
+import {
+  proxyReplicaRequest,
+  replicaEnabled,
+  replicaSnapshotResponse,
+  replicaStatus,
+  replicaViewerLogin,
+} from "./replica.ts";
 import type { GithubUsageSource } from "./githubUsage.ts";
 import type { GithubAuthStatus } from "./githubAuth.ts";
 import { commitsFromMirror, commitStatsFromMirror, conflictFilesFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError, summarizeCommitStats, type PullRequestCommit } from "./mirror.ts";
@@ -308,7 +315,7 @@ async function handleInbox(url: URL): Promise<Response> {
     };
   });
 
-  const viewerLogin = await getViewerLogin().catch(() => null);
+  const viewerLogin = replicaEnabled() ? replicaViewerLogin() : await getViewerLogin().catch(() => null);
   return json({ prs: rows, lastPollAt: isMockGithub ? MOCK_FIXTURE_CLOCK : lastPollAt, viewerLogin });
 }
 
@@ -2010,6 +2017,7 @@ async function handlePutSettings(req: Request): Promise<Response> {
     repos: string;
     default_repo: string;
     poll_interval_s: number;
+    replica_ssh_host: string;
     per_view_window_size: boolean;
     per_view_window_position: boolean;
     theme: string;
@@ -2037,7 +2045,17 @@ async function handlePutSettings(req: Request): Promise<Response> {
   } catch {
     return json({ error: "invalid JSON body" }, 400);
   }
-  return json(withAgentPromptDefaults(writeSettings(body)));
+  const previousReplica = readSettings().replica_ssh_host;
+  let settings: Settings;
+  try {
+    settings = writeSettings(body);
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 400);
+  }
+  if (settings.replica_ssh_host !== previousReplica && Bun.env.COCKPIT_LAUNCHER) {
+    setTimeout(() => process.exit(1), 250);
+  }
+  return json(withAgentPromptDefaults(settings));
 }
 
 const AGENT_PROMPT_DEFAULTS: Record<string, () => string> = {
@@ -2170,7 +2188,7 @@ async function handleGithubAppCallback(url: URL): Promise<Response> {
 }
 
 function handleHealthz(): Response {
-  return json({ root: cockpitRoot, lastPollAt, prCount: countPrs() });
+  return json({ root: cockpitRoot, lastPollAt, prCount: countPrs(), replica: replicaEnabled() ? replicaStatus() : null });
 }
 
 function handleShutdown(): Response {
@@ -2362,6 +2380,15 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       }
       if (!allowed) return json({ error: "screenshot fixture mode is read-only" }, 405);
     }
+
+    if (req.method === "GET" && url.pathname === "/api/replica/inbox") {
+      return replicaSnapshotResponse(req);
+    }
+    if (req.method === "GET" && url.pathname === "/api/replica/status") {
+      return json(replicaStatus());
+    }
+    const replicaResponse = await proxyReplicaRequest(req, url);
+    if (replicaResponse) return replicaResponse;
 
     if (req.method === "GET") {
       const openPrResponse = handleOpenPr(parts);

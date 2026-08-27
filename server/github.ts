@@ -12,6 +12,7 @@ import {
   recordGithubGraphqlUsage,
   type GithubUsageSource,
 } from "./githubUsage.ts";
+import { readSettings } from "./settings.ts";
 const strictUtf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 type GithubGraphqlError = { type?: string; message?: string };
@@ -50,6 +51,7 @@ export async function startGithubSetup(scopes: readonly string[] = ["repo", "wor
 
 export async function ghToken(): Promise<string> {
   if (mockGithub) return "fixture-token";
+  if (readSettings().replica_ssh_host) throw new Error("GitHub access is disabled while PR Cockpit uses an SSH replica");
   return liveGithubToken();
 }
 

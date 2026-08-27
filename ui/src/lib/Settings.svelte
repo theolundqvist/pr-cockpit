@@ -37,6 +37,7 @@
   let keybindOpenApp = $state("");
   let keybindOpenPalette = $state("");
   let relayUrl = $state("");
+  let replicaSshHost = $state("");
   let relayInfo = $state(null);
   let relayCoverage = $state(null);
   let githubUsage = $state(null);
@@ -114,6 +115,7 @@
     repos = toLines(s.repos);
     defaultRepo = s.default_repo;
     pollInterval = s.poll_interval_s;
+    replicaSshHost = s.replica_ssh_host;
     perViewWindowSize = s.per_view_window_size;
     perViewWindowPosition = s.per_view_window_position;
     themeName = s.theme;
@@ -211,6 +213,7 @@
         repos: toCsv(repos),
         default_repo: defaultRepo.trim(),
         poll_interval_s: Number(pollInterval),
+        replica_ssh_host: replicaSshHost.trim(),
         per_view_window_size: perViewWindowSize,
         per_view_window_position: perViewWindowPosition,
         theme: themeName,
@@ -342,6 +345,12 @@
             <span class="label">Poll interval</span>
             <span class="hint">Seconds — minimum 60 (GitHub quota), 180 recommended</span>
             <input class="input narrow" type="number" min="60" step="10" bind:value={pollInterval} />
+          </label>
+
+          <label class="field field-wide">
+            <span class="label">PR data source</span>
+            <span class="hint">Empty polls GitHub on this Mac. Set an SSH host to use that machine's PR Cockpit database and GitHub connection.</span>
+            <input class="input mono" bind:value={replicaSshHost} placeholder="scape-agent or user@host" spellcheck="false" autocomplete="off" />
           </label>
 
           <section class="field field-wide usage-card" aria-label="GitHub GraphQL usage">

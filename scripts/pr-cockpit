@@ -86,22 +86,24 @@ cockpit_port() {
   printf '%s\n' "${env_port:-${COCKPIT_PORT:-4820}}"
 }
 
+source_path="${BASH_SOURCE[0]}"
+while [[ -L "$source_path" ]]; do
+  source_dir="$(cd "$(dirname "$source_path")" && pwd -P)"
+  link_target="$(readlink "$source_path")"
+  if [[ "$link_target" = /* ]]; then
+    source_path="$link_target"
+  else
+    source_path="$source_dir/$link_target"
+  fi
+done
+root="$(cd "$(dirname "$source_path")/.." && pwd -P)"
+
+
 if [[ "${1:-}" = "update" ]]; then
   [[ "$#" -eq 1 ]] || usage
   bun_bin=$(command -v bun || true)
   [[ -n "$bun_bin" ]] || { echo "pr-cockpit: bun is required" >&2; exit 1; }
   port=$(cockpit_port)
-  source_path="${BASH_SOURCE[0]}"
-  while [[ -L "$source_path" ]]; do
-    source_dir="$(cd "$(dirname "$source_path")" && pwd -P)"
-    link_target="$(readlink "$source_path")"
-    if [[ "$link_target" = /* ]]; then
-      source_path="$link_target"
-    else
-      source_path="$source_dir/$link_target"
-    fi
-  done
-  root="$(cd "$(dirname "$source_path")/.." && pwd -P)"
   version_url="http://127.0.0.1:$port/api/version"
   old_version=$(curl --noproxy '*' -sS --fail-with-body "$version_url" 2>/dev/null) || {
     if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -307,32 +309,34 @@ fi
 bun_bin=$(command -v bun || true)
 [[ -n "$bun_bin" ]] || { echo "pr-cockpit: bun is required" >&2; exit 1; }
 
-proxy_ready() {
-  local pid listener
-  pid="$(cat "$data_dir/proxy.pid" 2>/dev/null || true)"
-  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
-  kill -0 "$pid" 2>/dev/null || return 1
-  listener="$(lsof -nP -a -p "$pid" -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true)"
-  [[ "$listener" == "$pid" ]] || return 1
-  curl --noproxy '*' --max-time 2 -fsS "http://127.0.0.1:$port/healthz" >/dev/null 2>&1
+server_health() {
+  curl --noproxy '*' --max-time 2 -fsS "http://127.0.0.1:$port/healthz" 2>/dev/null
 }
 
-if [[ -n "$proxy" ]] && ! proxy_ready; then
-  if curl --noproxy '*' --max-time 2 -fsS "http://127.0.0.1:$port/healthz" >/dev/null 2>&1; then
-    echo "pr-cockpit: port $port is occupied by a local server; stop it or choose another COCKPIT_PORT" >&2
+server_ready() {
+  local health
+  health="$(server_health)" || return 1
+  [[ -z "$proxy_arg" || "$health" == *"\"host\":\"$proxy\""* ]]
+}
+
+if [[ -n "$proxy" ]] && ! server_ready; then
+  if server_health >/dev/null; then
+    echo "pr-cockpit: port $port is serving a different Cockpit source" >&2
     exit 1
   fi
-  launcher="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/cockpit"
+  launcher="$root/scripts/cockpit"
   mkdir -p "$data_dir"
+  launcher_proxy_args=()
+  [[ -z "$proxy_arg" ]] || launcher_proxy_args=(--use-as-proxy "$proxy_arg")
   COCKPIT_PORT="$port" COCKPIT_DATA_DIR="$data_dir" COCKPIT_PROXY_PORT="$proxy_port" \
-    nohup "$launcher" --server-only --use-as-proxy "$proxy" < /dev/null > "$data_dir/proxy.log" 2>&1 &
+    nohup "$launcher" --server-only "${launcher_proxy_args[@]}" < /dev/null > "$data_dir/replica.log" 2>&1 &
   disown
   for _ in $(seq 1 100); do
-    proxy_ready && break
+    server_ready && break
     sleep 0.1
   done
-  if ! proxy_ready; then
-    echo "pr-cockpit: SSH proxy to $proxy failed — see $data_dir/proxy.log" >&2
+  if ! server_ready; then
+    echo "pr-cockpit: replica of $proxy failed — see $data_dir/replica.log" >&2
     exit 1
   fi
 fi

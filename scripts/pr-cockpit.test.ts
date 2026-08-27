@@ -584,15 +584,16 @@ test("mutation commands report queued GitHub failures", async () => {
   }
 });
 
-test("--use-as-proxy reads the authoritative server through an existing SSH forward", async () => {
+test("--use-as-proxy reads through an existing local replica", async () => {
   const home = mkdtempSync(join(tmpdir(), "pr-cockpit-proxy-cli-"));
   const dataDir = join(home, "data");
   mkdirSync(dataDir);
-  writeFileSync(join(dataDir, "proxy.pid"), `${process.pid}\n`);
   const server = Bun.serve({
     port: 0,
     fetch(request) {
-      if (new URL(request.url).pathname === "/healthz") return Response.json({ root: "/remote/pr-cockpit" });
+      if (new URL(request.url).pathname === "/healthz") {
+        return Response.json({ root: "/local/pr-cockpit", replica: { host: "scape-agent", connected: true } });
+      }
       return new Response("proxied\n");
     },
   });
@@ -625,15 +626,100 @@ test("--use-as-proxy reads the authoritative server through an existing SSH forw
   }
 });
 
-test("proxy backend binds a local port to the Cockpit port over SSH", async () => {
+test("a running server's persisted replica source overrides the install seed", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pr-cockpit-replica-setting-"));
+  const configDir = join(home, ".config", "pr-cockpit");
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(join(configDir, "config"), "COCKPIT_PROXY=scape-agent\n");
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      if (new URL(request.url).pathname === "/healthz") {
+        return Response.json({ root: "/local/pr-cockpit", replica: { host: "other-agent", connected: true } });
+      }
+      return new Response("persisted replica\n");
+    },
+  });
+
+  try {
+    const child = Bun.spawn([join(import.meta.dir, "pr-cockpit"), "owner/repo#1"], {
+      env: { ...Bun.env, HOME: home, COCKPIT_PORT: String(server.port) },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [output, error, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect(exitCode).toBe(0);
+    expect(error).toBe("");
+    expect(output).toBe("persisted replica\n");
+  } finally {
+    server.stop(true);
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("an installed CLI symlink starts the repository launcher", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pr-cockpit-symlink-launcher-"));
+  const root = join(home, "app");
+  const scripts = join(root, "scripts");
+  const bin = join(home, "bin");
+  const dataDir = join(home, "data");
+  const ready = join(home, "ready");
+  mkdirSync(scripts, { recursive: true });
+  mkdirSync(bin);
+  copyFileSync(join(import.meta.dir, "pr-cockpit"), join(scripts, "pr-cockpit"));
+  writeFileSync(join(scripts, "cockpit"), `#!/usr/bin/env bash\ntouch ${JSON.stringify(ready)}\n`);
+  writeFileSync(join(bin, "curl"), `#!/usr/bin/env bash
+if [[ "$*" == *"/healthz"* ]]; then
+  [[ -f ${JSON.stringify(ready)} ]] || exit 22
+  printf '{"replica":{"host":"scape-agent"}}'
+else
+  printf 'proxied\\n'
+fi
+`);
+  chmodSync(join(scripts, "pr-cockpit"), 0o755);
+  chmodSync(join(scripts, "cockpit"), 0o755);
+  chmodSync(join(bin, "curl"), 0o755);
+  symlinkSync(join(scripts, "pr-cockpit"), join(bin, "pr-cockpit"));
+
+  try {
+    const child = Bun.spawn([join(bin, "pr-cockpit"), "--use-as-proxy", "scape-agent", "owner/repo#1"], {
+      env: {
+        ...Bun.env,
+        HOME: home,
+        PATH: `${bin}:${Bun.env.PATH}`,
+        COCKPIT_DATA_DIR: dataDir,
+        COCKPIT_PORT: "4895",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [output, error, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect(exitCode).toBe(0);
+    expect(error).toBe("");
+    expect(output).toBe("proxied\n");
+    expect(readFileSync(ready, "utf8")).toBe("");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("proxy backend starts a local replica server", async () => {
   const home = mkdtempSync(join(tmpdir(), "pr-cockpit-proxy-launcher-"));
   const bin = join(home, "bin");
   const dataDir = join(home, "data");
-  const argsFile = join(home, "ssh-args");
+  const argsFile = join(home, "replica-env");
   mkdirSync(bin);
-  const ssh = join(bin, "ssh");
-  writeFileSync(ssh, '#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "$PROXY_ARGS"\n');
-  chmodSync(ssh, 0o755);
+  const bun = join(bin, "bun");
+  writeFileSync(bun, '#!/usr/bin/env bash\nprintf \"%s\\n\" \"$COCKPIT_REPLICA_SSH_HOST\" \"$COCKPIT_PROXY_PORT\" \"$COCKPIT_PORT\" > \"$PROXY_ARGS\"\n');
+  chmodSync(bun, 0o755);
 
   try {
     const child = Bun.spawn(
@@ -654,20 +740,10 @@ test("proxy backend binds a local port to the Cockpit port over SSH", async () =
     );
     expect(await child.exited).toBe(0);
     expect(readFileSync(argsFile, "utf8").trim().split("\n")).toEqual([
-      "-o",
-      "BatchMode=yes",
-      "-o",
-      "ExitOnForwardFailure=yes",
-      "-o",
-      "ServerAliveInterval=15",
-      "-o",
-      "ServerAliveCountMax=3",
-      "-N",
-      "-L",
-      "127.0.0.1:4891:127.0.0.1:4820",
       "root@dev-vm",
+      "4820",
+      "4891",
     ]);
-    expect(readFileSync(join(dataDir, "proxy.pid"), "utf8")).toMatch(/^[0-9]+\n$/);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

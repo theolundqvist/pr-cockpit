@@ -105,11 +105,11 @@ if [[ -n "$proxy" && ! "$proxy" =~ ^([A-Za-z0-9._-]+@)?[A-Za-z0-9._-]+$ ]]; then
   exit 2
 fi
 if [[ -n "$proxy" ]]; then
-  export COCKPIT_PROXY="$proxy"
+  export COCKPIT_REPLICA_SSH_HOST="$proxy"
+  [[ -z "$proxy_arg" ]] || export COCKPIT_REPLICA_OVERRIDE=1
   export COCKPIT_PROXY_PORT="$proxy_port"
 fi
 backend_label="server"
-[[ -z "$proxy" ]] || backend_label="SSH proxy"
 
 # A managed shell must ask launchd to restart its server, never race it with an unmanaged process.
 if [[ "$managed_server" -eq 0 && -n "${COCKPIT_LAUNCHER:-}" ]]; then
@@ -149,19 +149,6 @@ if [[ -n "$pr_arg" ]]; then
 fi
 
 if [[ "$server_only" -eq 1 ]]; then
-  if [[ -n "$proxy" ]]; then
-    mkdir -p "$data_dir"
-    proxy_pid_tmp="$data_dir/proxy.pid.$$"
-    printf '%s\n' "$$" > "$proxy_pid_tmp"
-    mv "$proxy_pid_tmp" "$data_dir/proxy.pid"
-    exec ssh \
-      -o BatchMode=yes \
-      -o ExitOnForwardFailure=yes \
-      -o ServerAliveInterval=15 \
-      -o ServerAliveCountMax=3 \
-      -N -L "127.0.0.1:$port:127.0.0.1:$proxy_port" \
-      "$proxy"
-  fi
   cd "$root"
   exec env COCKPIT_PORT="$port" "$bun" server/main.ts
 fi
@@ -169,7 +156,7 @@ fi
 snapshot_dir="$data_dir/static-last-good"
 
 needs_build=0
-if [[ -z "$proxy" && "${COCKPIT_NO_BUILD:-0}" != "1" ]]; then
+if [[ "${COCKPIT_NO_BUILD:-0}" != "1" ]]; then
   if [[ ! -f "$root/static/index.html" ]]; then
     needs_build=1
   elif [[ -n "$(find "$root/ui/src" -newer "$root/static/index.html" -type f)" ]]; then
@@ -215,10 +202,6 @@ managed_server_owns_port() {
 server_is_ours() {
   local health
   health="$(curl --max-time 2 -fsS "$url/healthz" 2>/dev/null)" || return 1
-  if [[ -n "$proxy" ]]; then
-    [[ "$health" == *'"root":'* && "$health" != *"\"root\":\"$root\""* ]]
-    return
-  fi
   [[ "$health" == *"\"root\":\"$root\""* ]] && return 0
   [[ "$health" != *'"root":'* ]] && managed_server_owns_port
 }

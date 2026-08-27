@@ -142,13 +142,14 @@ test("a registration for this root keeps the running window", async () => {
   expect(result.calls).toContain("app.pr-cockpit.server.plist");
 });
 
-test("proxy installation restarts only the SSH tunnel", async () => {
+test("replica installation restarts the local server", async () => {
   const result = await install("__ROOT__", {
     proxy: "root@dev-vm",
-    healthRoot: "/root/pr-cockpit",
   });
   expect(result.exitCode).toBe(0);
-  expect(result.curlCalls).not.toContain("-X POST http://127.0.0.1:4820/api/shutdown");
+  expect(result.curlCalls).toContain("-X POST http://127.0.0.1:4820/api/shutdown");
   expect(result.serverPlist).toContain("<key>KeepAlive</key>");
   expect(result.serverPlist).toContain("<string>--server-only</string>");
+  expect(result.serverPlist).toContain("<string>COCKPIT_REPLICA_SSH_HOST=root@dev-vm</string>");
+  expect(result.serverPlist).toMatch(/<string>COCKPIT_LAUNCHER=.*\/Library\/Application Support\/PR Cockpit\/launch<\/string>/);
 });
