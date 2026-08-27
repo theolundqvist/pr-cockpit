@@ -1437,15 +1437,20 @@ describe("contextual editor target", () => {
   });
 });
 describe("Actions viewer API", () => {
-  test("serves current-head workflow jobs and an on-demand log", async () => {
+  test("serves current and selected-commit workflow jobs with on-demand logs", async () => {
     const repo = "http-actions/viewer";
     const number = 96133;
     const head = "f".repeat(40);
+    const previous = "e".repeat(40);
     const row = trackedPrRow({ repo, number, fetchedAt: "2026-08-25T08:00:00Z" });
+    const detail = { ...JSON.parse(row.detail_json), headRefOid: head };
+    detail.commitList.nodes.push({
+      commit: { oid: previous, messageHeadline: "Previous commit", committedDate: "2026-08-25T07:00:00Z" },
+    });
     upsertPr({
       ...row,
       head_sha: head,
-      detail_json: JSON.stringify({ ...JSON.parse(row.detail_json), headRefOid: head }),
+      detail_json: JSON.stringify(detail),
     });
     upsertWorkflowRun({
       repo,
@@ -1479,6 +1484,39 @@ describe("Actions viewer API", () => {
       runner_group_name: "hosted",
       labels_json: "[\"arm64\"]",
       failed_step: "Compile",
+    });
+    upsertWorkflowRun({
+      repo,
+      run_id: 43,
+      run_attempt: 1,
+      pr_number: number,
+      head_sha: previous,
+      head_branch: "actions-viewer",
+      workflow_name: "CI",
+      workflow_path: ".github/workflows/ci.yml",
+      status: "completed",
+      conclusion: "success",
+      event_at: "2026-08-25T07:02:00Z",
+      html_url: "https://github.com/http-actions/viewer/actions/runs/43",
+    });
+    upsertRunJob({
+      repo,
+      job_id: 4301,
+      run_id: 43,
+      run_attempt: 1,
+      head_sha: previous,
+      head_branch: "actions-viewer",
+      workflow_name: "CI",
+      name: "build previous",
+      status: "completed",
+      conclusion: "success",
+      started_at: "2026-08-25T07:00:00Z",
+      completed_at: "2026-08-25T07:02:00Z",
+      html_url: "https://github.com/http-actions/viewer/actions/runs/43/job/4301",
+      runner_name: "runner-2",
+      runner_group_name: "hosted",
+      labels_json: "[\"arm64\"]",
+      failed_step: null,
     });
     let activations = 0;
     const fetchHandler = buildFetchHandler(4820, {
@@ -1537,6 +1575,39 @@ describe("Actions viewer API", () => {
       const logResponse = await fetchHandler(new Request(`http://127.0.0.1:4820/api/pr/http-actions/viewer/${number}/actions/jobs/4401/log`));
       expect(logResponse.status).toBe(200);
       expect(await logResponse.json()).toMatchObject({ body: "complete log", state: "ready", job: { id: 4401, name: "build" } });
+      const historicalLoads: string[] = [];
+      let logHead = "";
+      const historicalHandler = buildFetchHandler(4820, {
+        cacheGithubActionsForCommit: async (_repo, _number, sha) => {
+          historicalLoads.push(sha);
+        },
+        actionJobLog: async (_repo, sha, jobId) => {
+          logHead = sha;
+          return {
+            job: listRunJobs(repo, previous).find((job) => job.job_id === jobId)!,
+            body: "previous log",
+            state: "ready",
+          };
+        },
+      });
+      const historicalResponse = await historicalHandler(new Request(
+        `http://127.0.0.1:4820/api/pr/http-actions/viewer/${number}/actions?sha=${previous}`,
+      ));
+      expect(historicalResponse.status).toBe(200);
+      expect(await historicalResponse.json()).toMatchObject({
+        headSha: previous,
+        runs: [{ id: 43, conclusion: "success" }],
+        jobs: [{ id: 4301, name: "build previous", conclusion: "success" }],
+      });
+      expect(historicalLoads).toEqual([previous]);
+
+      const historicalLog = await historicalHandler(new Request(
+        `http://127.0.0.1:4820/api/pr/http-actions/viewer/${number}/actions/jobs/4301/log?sha=${previous}`,
+      ));
+      expect(historicalLog.status).toBe(200);
+      expect(await historicalLog.json()).toMatchObject({ body: "previous log", job: { id: 4301 } });
+      expect(logHead).toBe(previous);
+
 
       let finishActivation = () => {};
       const activation = new Promise<void>((resolve) => {

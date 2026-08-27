@@ -37,22 +37,33 @@ export async function fetchPrDetail(repo, number) {
   if (!res.ok) throw new Error(`detail ${res.status}`);
   return res.json();
 }
-export async function fetchActions(repo, number) {
-  const res = await fetch(`/api/pr/${repo}/${number}/actions`);
+function actionCommitQuery(sha) {
+  return sha ? `?sha=${encodeURIComponent(sha)}` : "";
+}
+
+export async function fetchActions(repo, number, sha = null) {
+  const res = await fetch(`/api/pr/${repo}/${number}/actions${actionCommitQuery(sha)}`);
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new Error(body?.error || `actions ${res.status}`);
   return body;
 }
-export async function fetchActionGraph(repo, number) {
-  const res = await fetch(`/api/pr/${repo}/${number}/actions/graph`);
+export async function fetchActionGraph(repo, number, sha = null) {
+  const res = await fetch(`/api/pr/${repo}/${number}/actions/graph${actionCommitQuery(sha)}`);
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new Error(body?.error || `action graph ${res.status}`);
   return body;
 }
 
+export async function fetchActionCommits(repo, number) {
+  const res = await fetch(`/api/pr/${repo}/${number}/actions/commits`);
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.error || `action commits ${res.status}`);
+  return body;
+}
 
-export async function fetchActionLog(repo, number, jobId) {
-  const res = await fetch(`/api/pr/${repo}/${number}/actions/jobs/${jobId}/log`);
+
+export async function fetchActionLog(repo, number, jobId, sha = null) {
+  const res = await fetch(`/api/pr/${repo}/${number}/actions/jobs/${jobId}/log${actionCommitQuery(sha)}`);
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new Error(body?.error || `action log ${res.status}`);
   return body;

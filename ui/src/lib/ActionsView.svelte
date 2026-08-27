@@ -1,10 +1,10 @@
 <script>
   import ActionsGraph from "./ActionsGraph.svelte";
   import ActionLog from "./ActionLog.svelte";
-  import { fetchActionGraph, fetchActionLog, fetchActions } from "./api.js";
+  import { fetchActionCommits, fetchActionGraph, fetchActionLog, fetchActions } from "./api.js";
   import { durationText, relativeTime } from "./time.js";
 
-  let { repo, number, headSha, runUrl = $bindable(null) } = $props();
+  let { repo, number, headSha, selectedSha = null, active = false, runUrl = $bindable(null) } = $props();
 
   let snapshot = $state(null);
   let loading = $state(true);
@@ -17,6 +17,19 @@
   let logs = $state({});
   let logErrors = $state({});
   let logLoadingId = $state(null);
+  let commits = $state([]);
+  let commitError = $state("");
+  let commitLoading = $state(true);
+  let commitNonce = $state(0);
+
+  let activeSha = $derived(selectedSha ?? headSha);
+  let commitOptions = $derived.by(() => {
+    const options = [...commits].reverse();
+    if (!options.some((commit) => commit.sha === activeSha)) {
+      options.unshift({ sha: activeSha, headline: activeSha === headSha ? "Current head" : "Selected commit" });
+    }
+    return options;
+  });
 
   const terminalFailures = new Set(["failure", "timed_out", "action_required", "startup_failure", "stale"]);
 
@@ -99,14 +112,49 @@
   }
 
   $effect(() => {
-    const key = `${repo}#${number}:${headSha}:${refreshNonce}`;
+    if (!active) {
+      commitLoading = false;
+      return;
+    }
+    const key = `${repo}#${number}:${headSha}:${commitNonce}`;
+    let stopped = false;
+    commitLoading = true;
+    fetchActionCommits(repo, number).then(
+      (next) => {
+        if (stopped || key !== `${repo}#${number}:${headSha}:${commitNonce}`) return;
+        commits = next.commits;
+        commitError = "";
+      },
+      (error) => {
+        if (!stopped) commitError = error instanceof Error ? error.message : String(error);
+      },
+    ).finally(() => {
+      if (!stopped) commitLoading = false;
+    });
+    return () => {
+      stopped = true;
+    };
+  });
+
+  $effect(() => {
+    activeSha;
+    snapshot = null;
+    graphSnapshot = null;
+    selectedJobId = null;
+    logs = {};
+    logErrors = {};
+    loading = true;
+  });
+
+  $effect(() => {
+    const key = `${repo}#${number}:${activeSha}:${refreshNonce}`;
     let stopped = false;
 
     async function refresh(initial) {
       if (initial) loading = true;
       try {
-        const next = await fetchActions(repo, number);
-        if (stopped || key !== `${repo}#${number}:${headSha}:${refreshNonce}`) return;
+        const next = await fetchActions(repo, number, activeSha);
+        if (stopped || key !== `${repo}#${number}:${activeSha}:${refreshNonce}`) return;
         snapshot = next;
         loadError = "";
         if (!next.jobs.some((job) => job.id === selectedJobId)) {
@@ -129,11 +177,11 @@
     };
   });
   $effect(() => {
-    const key = `${repo}#${number}:${headSha}:${refreshNonce}`;
+    const key = `${repo}#${number}:${activeSha}:${refreshNonce}`;
     let stopped = false;
-    fetchActionGraph(repo, number).then(
+    fetchActionGraph(repo, number, activeSha).then(
       (next) => {
-        if (stopped || key !== `${repo}#${number}:${headSha}:${refreshNonce}`) return;
+        if (stopped || key !== `${repo}#${number}:${activeSha}:${refreshNonce}`) return;
         graphSnapshot = next;
         graphError = "";
       },
@@ -151,7 +199,7 @@
     const id = job.id;
     logLoadingId = id;
     try {
-      const result = await fetchActionLog(repo, number, id);
+      const result = await fetchActionLog(repo, number, id, activeSha);
       if (selectedJobId !== id) return;
       logs = { ...logs, [id]: result };
       const nextErrors = { ...logErrors };
@@ -174,6 +222,11 @@
     selectedJobId = job.id;
     overviewMode = false;
   }
+  function selectCommit(event) {
+    const sha = event.currentTarget.value;
+    location.hash = `#/pr/${repo}/${number}/actions?sha=${sha}`;
+  }
+
 
   function retryLog() {
     if (!selectedJob) return;
@@ -204,9 +257,27 @@
     <button class:active={overviewMode} onclick={() => overviewMode = true}>Overview</button>
     <button class:active={!overviewMode} disabled={!selectedJob} onclick={() => overviewMode = false}>Job log</button>
   </div>
-  {#if loadError || graphError}
-    <button class="link refresh-link" onclick={() => refreshNonce++}>Retry data load</button>
-  {/if}
+  <div class="actions-view-controls">
+    <label class="commit-picker">
+      <span>Commit</span>
+      <select
+        aria-label="Workflow commit"
+        value={activeSha}
+        disabled={commitLoading && commits.length === 0}
+        onchange={selectCommit}
+      >
+        {#each commitOptions as commit (commit.sha)}
+          <option value={commit.sha}>{commit.sha.slice(0, 7)} · {commit.headline}</option>
+        {/each}
+      </select>
+    </label>
+    {#if commitError}
+      <button class="link refresh-link" onclick={() => commitNonce++}>Retry commits</button>
+    {/if}
+    {#if loadError || graphError}
+      <button class="link refresh-link" onclick={() => refreshNonce++}>Retry data load</button>
+    {/if}
+  </div>
 </div>
 
 <div class="overview-panel" class:hidden={!overviewMode}>
@@ -344,6 +415,35 @@
   .view-picker button:disabled {
     opacity: 0.45;
     cursor: default;
+  }
+  .actions-view-controls,
+  .commit-picker {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .actions-view-controls {
+    min-width: 0;
+    justify-content: flex-end;
+  }
+  .commit-picker {
+    min-width: 0;
+    color: var(--text-faint);
+    font-size: 11px;
+  }
+  .commit-picker select {
+    width: min(420px, 42vw);
+    height: 29px;
+    min-width: 0;
+    padding: 0 8px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    color: var(--text);
+    background: var(--panel);
+    font: 11px var(--mono);
+  }
+  .commit-picker select:disabled {
+    color: var(--text-faint);
   }
   .refresh-link {
     color: var(--fail);

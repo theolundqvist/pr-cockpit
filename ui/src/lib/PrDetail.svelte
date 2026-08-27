@@ -71,7 +71,7 @@
     { value: "REQUEST_CHANGES", label: "Request changes", tone: "red" },
   ];
 
-  let { repo, number, tab, historyPath = null, historySymbol = null, refreshRevision = 0 } = $props();
+  let { repo, number, tab, actionSha = null, historyPath = null, historySymbol = null, refreshRevision = 0 } = $props();
   let handledRefreshRevision = refreshRevision;
 
   loadPrIndex();
@@ -2507,7 +2507,7 @@
       </nav>
 
       <div style:display={tab === "actions" ? "contents" : "none"}>
-        <ActionsView {repo} {number} headSha={pr.headRefOid} bind:runUrl={actionsRunUrl} />
+        <ActionsView {repo} {number} headSha={pr.headRefOid} selectedSha={actionSha} active={tab === "actions"} bind:runUrl={actionsRunUrl} />
       </div>
 
       {#if tab === "files"}
@@ -2734,9 +2734,7 @@
                     class:fail={FAILED_CI_STATES.has(event.ciState)}
                     class:running={RUNNING_CI_STATES.has(event.ciState)}
                     class:neutral={!event.ciState}
-                    href="https://github.com/{repo}/commit/{event.oid}/checks"
-                    target="_blank"
-                    rel="noreferrer"
+                    href="#/pr/{repo}/{number}/actions?sha={event.oid}"
                     aria-label="{commitCiLabel(event.ciState)} for {event.oid.slice(0, 7)}. View workflow runs"
                     title="{commitCiLabel(event.ciState)} · View workflow runs for {event.oid.slice(0, 7)}"
                   >

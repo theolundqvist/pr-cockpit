@@ -289,6 +289,40 @@ test("an explicit activation for a new head queues behind a startup repair for t
   expect(result.lease).toEqual({ head_sha: "b".repeat(40), bootstrapped: 1 });
 });
 
+test("historical commit loading preserves the live head lease and skips eager logs", async () => {
+  const result = await runScenario("pr-cockpit-actions-historical-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    const historical = "b".repeat(40);
+    dbm.db.query("INSERT INTO actions_leases(repo,number,head_sha,expires_at,bootstrapped_at) VALUES(?,?,?,?,datetime('now'))")
+      .run("acme/app", 7, head, "2099-08-24T10:00:00Z");
+    let logCalls = 0;
+    const fetchers = {
+      fetchWorkflowRuns: async (_repo, sha) => [{
+        id: 21, run_attempt: 1, head_sha: sha, head_branch: "feature", name: "CI", path: ".github/workflows/ci.yml",
+        status: "completed", conclusion: "failure", updated_at: "2026-08-24T09:00:00Z", html_url: null,
+      }],
+      fetchRunJobs: async () => [{
+        id: 210, run_id: 21, run_attempt: 1, head_sha: historical, head_branch: "feature",
+        workflow_name: "CI", name: "historical build", status: "completed", conclusion: "failure",
+        started_at: null, completed_at: null, html_url: null, labels: [], steps: [],
+      }],
+      fetchJobLog: async () => { logCalls++; return "not requested"; },
+      restRemaining: async () => 5000,
+    };
+    await actions.cacheGithubActionsForCommit("acme/app", 7, historical, fetchers);
+    console.log(JSON.stringify({
+      lease: dbm.db.query("SELECT head_sha FROM actions_leases WHERE repo=? AND number=?").get("acme/app", 7),
+      jobs: dbm.listRunJobs("acme/app", historical).map((job) => job.name),
+      logCalls,
+    }));
+  `);
+  expect(result.lease).toEqual({ head_sha: "a".repeat(40) });
+  expect(result.jobs).toEqual(["historical build"]);
+  expect(result.logCalls).toBe(0);
+});
+
 test("reserve defers background spend, explicit activation repairs, and a newer attempt discards stale logs", async () => {
   const result = await runScenario("pr-cockpit-actions-repair-", `
     const actions = await import(${JSON.stringify(runLogsUrl)});

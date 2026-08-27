@@ -23,13 +23,13 @@
   const isShell = navigator.userAgent.includes("Electron");
 
   function parseRoute(hash) {
-    const match = hash.match(/^#\/pr\/([^/]+)\/([^/]+)\/(\d+)(?:\/(files|agents|actions)|\/history\/([^/?]+)(?:\?symbol=([^&]+))?)?$/);
+    const match = hash.match(/^#\/pr\/([^/]+)\/([^/]+)\/(\d+)(?:\/(files|agents)|\/(actions)(?:\?sha=([0-9a-f]{40}))?|\/history\/([^/?]+)(?:\?symbol=([^&]+))?)?$/i);
     if (match) {
       let historyPath = null;
       let historySymbol = null;
       try {
-        historyPath = match[5] ? decodeURIComponent(match[5]) : null;
-        historySymbol = match[6] ? decodeURIComponent(match[6]) : null;
+        historyPath = match[7] ? decodeURIComponent(match[7]) : null;
+        historySymbol = match[8] ? decodeURIComponent(match[8]) : null;
       } catch {
         return { name: "inbox" };
       }
@@ -37,7 +37,8 @@
         name: "detail",
         repo: `${match[1]}/${match[2]}`,
         number: Number(match[3]),
-        tab: historyPath ? "files" : match[4] ?? "conversation",
+        tab: historyPath ? "files" : match[5] ?? match[4] ?? "conversation",
+        actionSha: match[6] ?? null,
         historyPath,
         historySymbol,
       };
@@ -261,7 +262,7 @@
       {#if setupOpen}
         <Onboarding onDone={finishSetup} onCancel={() => (setupOpen = false)} />
       {:else if route.name === "detail"}
-        <PrDetail repo={route.repo} number={route.number} tab={route.tab} historyPath={route.historyPath} historySymbol={route.historySymbol} refreshRevision={detailRevision} />
+        <PrDetail repo={route.repo} number={route.number} tab={route.tab} actionSha={route.actionSha} historyPath={route.historyPath} historySymbol={route.historySymbol} refreshRevision={detailRevision} />
       {:else if route.name === "settings"}
         <Settings section={route.section} onRunSetup={() => (setupOpen = true)} />
       {:else if reposConfigured === false}

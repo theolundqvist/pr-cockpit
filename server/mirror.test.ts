@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { commitStatsFromGitDir, conflictFilesFromGitDir, diffFromGitDir, fileFromGitDir } from "./mirror.ts";
+import { commitsFromGitDir, commitStatsFromGitDir, conflictFilesFromGitDir, diffFromGitDir, fileFromGitDir } from "./mirror.ts";
 
 const cleanup: string[] = [];
 afterEach(() => {
@@ -80,6 +80,47 @@ describe("fileFromGitDir", () => {
     expect(await fileFromGitDir(join(root, ".git"), "HEAD", "missing.ts")).toEqual({
       status: "not-found",
     });
+  });
+});
+
+describe("commitsFromGitDir", () => {
+  test("lists every pull request commit beyond GitHub's 250-commit API limit", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pr-cockpit-commits-"));
+    cleanup.push(root);
+    git(root, "init", "-b", "main");
+    git(root, "config", "user.name", "PR Cockpit Test");
+    git(root, "config", "user.email", "pr-cockpit@example.test");
+    git(root, "commit", "--allow-empty", "-m", "base");
+    const base = Bun.spawnSync(["git", "-C", root, "rev-parse", "HEAD"]).stdout.toString().trim();
+    const commands: string[] = [];
+    for (let index = 1; index <= 251; index++) {
+      const message = `change ${index}`;
+      commands.push(
+        "commit refs/heads/topic",
+        `mark :${index}`,
+        `committer PR Cockpit Test <pr-cockpit@example.test> ${1_700_000_000 + index} +0000`,
+        `data ${message.length}`,
+        message,
+        `from ${index === 1 ? base : `:${index - 1}`}`,
+        "",
+      );
+    }
+    commands.push("done", "");
+    const imported = Bun.spawnSync(["git", "-C", root, "fast-import", "--quiet"], {
+      stdin: Buffer.from(commands.join("\n")),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    if (!imported.success) throw new Error(imported.stderr.toString());
+
+    const result = await commitsFromGitDir(join(root, ".git"), base, "topic");
+
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      expect(result.commits).toHaveLength(251);
+      expect(result.commits[0]?.headline).toBe("change 1");
+      expect(result.commits.at(-1)?.headline).toBe("change 251");
+    }
   });
 });
 

@@ -450,6 +450,22 @@ function queueActionsLease(
   return entry.promise;
 }
 
+export async function cacheGithubActionsForCommit(
+  repo: string,
+  number: number,
+  headSha: string,
+  fetchers: ActionsFetchers = liveFetchers,
+): Promise<void> {
+  const runs = (await fetchers.fetchWorkflowRuns(repo, headSha)).map(compactRun);
+  for (const run of runs) storeRun(repo, number, run);
+  for (const run of runs) {
+    const jobs = (await fetchers.fetchRunJobs(repo, run.id, run.status === "completed" ? run.attempt : undefined))
+      .map((job) => compactJob(job, run));
+    for (const job of jobs) storeJob(repo, job);
+    markWorkflowRunJobsFetched(repo, run.id, run.attempt);
+  }
+}
+
 export function activateActionsLease(
   repo: string,
   number: number,

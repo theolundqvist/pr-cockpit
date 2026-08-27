@@ -63,7 +63,7 @@ import {
 } from "./github.ts";
 import type { GithubUsageSource } from "./githubUsage.ts";
 import type { GithubAuthStatus } from "./githubAuth.ts";
-import { type CommitFileStat, commitStatsFromMirror, conflictFilesFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError } from "./mirror.ts";
+import { type CommitFileStat, commitsFromMirror, commitStatsFromMirror, conflictFilesFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError, type PullRequestCommit } from "./mirror.ts";
 import { checkState, type CheckState } from "./checkState.ts";
 import { currentBaseRef, discardMutation, enqueueMutation, mutationsForPr, retryMutation, type MutationPayload } from "./mutations.ts";
 import { isMergeMethod, mergeMethodFor, mergeMethodSourceFor, setMergeMethodPreference } from "./mergeMethod.ts";
@@ -102,7 +102,7 @@ import { createTmuxFocusHandler } from "./tmuxFocus.ts";
 import type { TmuxFocusHandler } from "./tmuxFocus.ts";
 import { needsMeRank } from "./rank.ts";
 import { invalidateInbox, invalidatePr } from "./rendererInvalidation.ts";
-import { actionJobLog, actionWorkflowGraphs, activateActionsLease, cacheActionsRun, cachedJobLogs, formatJobLogs, formatRunJobs } from "./runLogs.ts";
+import { actionJobLog, actionWorkflowGraphs, activateActionsLease, cacheActionsRun, cacheGithubActionsForCommit, cachedJobLogs, formatJobLogs, formatRunJobs } from "./runLogs.ts";
 const cockpitRoot = process.cwd();
 
 function json(data: unknown, status = 200): Response {
@@ -365,6 +365,7 @@ type HttpDependencies = {
   handleTmuxFocus: TmuxFocusHandler;
   activateActionsLease: typeof activateActionsLease;
   cacheActionsRun: typeof cacheActionsRun;
+  cacheGithubActionsForCommit: typeof cacheGithubActionsForCommit;
   actionWorkflowGraphs: typeof actionWorkflowGraphs;
   actionJobLog: typeof actionJobLog;
 };
@@ -388,6 +389,7 @@ const defaultHttpDependencies: HttpDependencies = {
   handleTmuxFocus: createTmuxFocusHandler(),
   activateActionsLease,
   cacheActionsRun,
+  cacheGithubActionsForCommit,
   actionWorkflowGraphs,
   actionJobLog,
 };
@@ -1344,18 +1346,78 @@ async function handleAgentPrDiff(owner: string, repo: string, number: string, ur
   return handlePrDiff(owner, repo, number, url);
 }
 
-function cachedActionsContext(owner: string, repo: string, number: string): {
+type CachedActionsContext = {
   repoName: string;
   num: number;
   headSha: string;
-} | Response {
+  currentHeadSha: string;
+  baseSha: string | null;
+  commits: PullRequestCommit[];
+};
+
+function cachedActionsContext(owner: string, repo: string, number: string): CachedActionsContext | Response {
   if (!validPrReference(owner, repo, number)) return json({ error: "invalid PR reference" }, 400);
   const repoName = `${owner}/${repo}`;
   const num = Number(number);
   const cached = getPr(repoName, num) ?? getCachedPrDetail(repoName, num);
   if (!cached) return json({ error: "PR is not cached yet" }, 404);
   const detail = JSON.parse(cached.detail_json) as PrDetail;
-  return { repoName, num, headSha: detail.headRefOid };
+  const commits = (detail.commitList?.nodes ?? []).map(({ commit }) => ({
+    sha: commit.oid,
+    headline: commit.messageHeadline,
+    committedAt: commit.committedDate,
+  }));
+  return {
+    repoName,
+    num,
+    headSha: detail.headRefOid,
+    currentHeadSha: detail.headRefOid,
+    baseSha: detail.baseRefOid ?? null,
+    commits,
+  };
+}
+
+async function mirroredActionCommits(context: CachedActionsContext) {
+  if (!context.baseSha) return null;
+  let result = await commitsFromMirror(context.repoName, context.baseSha, context.currentHeadSha);
+  if (result.status === "no-mirror" || result.status === "missing-commit") {
+    try {
+      await fetchMirror(context.repoName, INCREMENTAL_FETCH_TIMEOUT_MS);
+      result = await commitsFromMirror(context.repoName, context.baseSha, context.currentHeadSha);
+    } catch (error) {
+      console.error(`Actions commit fetch failed for ${context.repoName}#${context.num}:`, error);
+      return null;
+    }
+  }
+  return result.status === "ok" ? result.commits : null;
+}
+
+async function selectedActionsContext(
+  owner: string,
+  repo: string,
+  number: string,
+  url: URL,
+): Promise<CachedActionsContext | Response> {
+  const context = cachedActionsContext(owner, repo, number);
+  if (context instanceof Response) return context;
+  const requested = url.searchParams.get("sha");
+  if (requested === null || requested === context.currentHeadSha) return context;
+  if (!FULL_SHA_RE.test(requested)) return json({ error: "invalid commit SHA" }, 400);
+  if (context.commits.some((commit) => commit.sha === requested)) return { ...context, headSha: requested };
+  if (!isMockGithub) {
+    const commits = await mirroredActionCommits(context);
+    if (commits?.some((commit) => commit.sha === requested)) return { ...context, headSha: requested };
+  }
+  return json({ error: "commit is not part of this pull request" }, 400);
+}
+
+async function handleActionCommits(owner: string, repo: string, number: string): Promise<Response> {
+  const context = cachedActionsContext(owner, repo, number);
+  if (context instanceof Response) return context;
+  if (isMockGithub) return json({ headSha: context.currentHeadSha, commits: context.commits });
+  const commits = await mirroredActionCommits(context);
+  if (!commits) return json({ error: "Pull request commits are still loading" }, 503);
+  return json({ headSha: context.currentHeadSha, commits });
 }
 
 async function handleActionsLease(owner: string, repo: string, number: string, runtime: HttpRuntime): Promise<Response> {
@@ -1400,13 +1462,20 @@ function serializeActionJob(job: RunJobRow) {
   };
 }
 
-async function handleActions(owner: string, repo: string, number: string, runtime: HttpRuntime): Promise<Response> {
-  const context = cachedActionsContext(owner, repo, number);
-  if (context instanceof Response) return context;
+async function refreshActionsContext(context: CachedActionsContext, runtime: HttpRuntime): Promise<void> {
+  if (context.headSha !== context.currentHeadSha) {
+    await runtime.cacheGithubActionsForCommit(context.repoName, context.num, context.headSha);
+    return;
+  }
   void runtime.activateActionsLease(context.repoName, context.num, context.headSha).catch((error) => {
     console.error(`Actions cache refresh failed for ${context.repoName}#${context.num}:`, error);
   });
+}
+async function handleActions(owner: string, repo: string, number: string, url: URL, runtime: HttpRuntime): Promise<Response> {
+  const context = await selectedActionsContext(owner, repo, number, url);
+  if (context instanceof Response) return context;
   try {
+    await refreshActionsContext(context, runtime);
     const runs = workflowRunsForLease(context.repoName, context.num, context.headSha)
       .sort((left, right) => Date.parse(right.event_at) - Date.parse(left.event_at))
       .map(serializeActionRun);
@@ -1416,13 +1485,11 @@ async function handleActions(owner: string, repo: string, number: string, runtim
     return json({ error: error instanceof Error ? error.message : String(error) }, 502);
   }
 }
-async function handleActionGraphs(owner: string, repo: string, number: string, runtime: HttpRuntime): Promise<Response> {
-  const context = cachedActionsContext(owner, repo, number);
+async function handleActionGraphs(owner: string, repo: string, number: string, url: URL, runtime: HttpRuntime): Promise<Response> {
+  const context = await selectedActionsContext(owner, repo, number, url);
   if (context instanceof Response) return context;
-  void runtime.activateActionsLease(context.repoName, context.num, context.headSha).catch((error) => {
-    console.error(`Actions cache refresh failed for ${context.repoName}#${context.num}:`, error);
-  });
   try {
+    await refreshActionsContext(context, runtime);
     const workflows = await runtime.actionWorkflowGraphs(context.repoName, context.num, context.headSha);
     return json({ headSha: context.headSha, workflows });
   } catch (error) {
@@ -1436,15 +1503,16 @@ async function handleActionLog(
   repo: string,
   number: string,
   jobId: string,
+  url: URL,
   runtime: HttpRuntime,
 ): Promise<Response> {
-  const context = cachedActionsContext(owner, repo, number);
+  const context = await selectedActionsContext(owner, repo, number, url);
   if (context instanceof Response) return context;
   const id = Number(jobId);
   if (!Number.isSafeInteger(id) || id <= 0) return json({ error: "invalid job id" }, 400);
   try {
     const result = await runtime.actionJobLog(context.repoName, context.headSha, id);
-    if (!result) return json({ error: "job is not cached for this PR head" }, 404);
+    if (!result) return json({ error: "job is not cached for this PR commit" }, 404);
     return json({
       job: serializeActionJob(result.job),
       body: result.body,
@@ -2514,7 +2582,17 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       parts[1] === "pr" &&
       parts[5] === "actions"
     ) {
-      return handleActions(parts[2]!, parts[3]!, parts[4]!, runtime);
+      return handleActions(parts[2]!, parts[3]!, parts[4]!, url, runtime);
+    }
+    if (
+      req.method === "GET" &&
+      parts.length === 7 &&
+      parts[0] === "api" &&
+      parts[1] === "pr" &&
+      parts[5] === "actions" &&
+      parts[6] === "commits"
+    ) {
+      return handleActionCommits(parts[2]!, parts[3]!, parts[4]!);
     }
     if (
       req.method === "GET" &&
@@ -2524,7 +2602,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       parts[5] === "actions" &&
       parts[6] === "graph"
     ) {
-      return handleActionGraphs(parts[2]!, parts[3]!, parts[4]!, runtime);
+      return handleActionGraphs(parts[2]!, parts[3]!, parts[4]!, url, runtime);
     }
     if (
       req.method === "GET" &&
@@ -2535,7 +2613,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       parts[6] === "jobs" &&
       parts[8] === "log"
     ) {
-      return handleActionLog(parts[2]!, parts[3]!, parts[4]!, parts[7]!, runtime);
+      return handleActionLog(parts[2]!, parts[3]!, parts[4]!, parts[7]!, url, runtime);
     }
     if (
       req.method === "GET" &&
