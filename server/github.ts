@@ -739,6 +739,25 @@ type ReviewNode = { id: string; author: Author | null; state: string; body: stri
 type CommentNode = { id: string; author: Author | null; body: string; createdAt: string };
 type ThreadCommentNode = { databaseId: number | null; diffHunk: string; author: Author | null; body: string; createdAt: string };
 
+export function reviewHunkTail(hunk: string): string {
+  return hunk
+    .split("\n")
+    .filter((line) => !line.startsWith("@@"))
+    .slice(-4)
+    .join("\n");
+}
+
+export function compactReviewHunks<T extends {
+  reviewThreads?: { nodes?: Array<{ comments?: { nodes?: Array<{ diffHunk?: unknown }> } }> };
+}>(detail: T): T {
+  for (const thread of detail.reviewThreads?.nodes ?? []) {
+    for (const comment of thread.comments?.nodes ?? []) {
+      if (typeof comment.diffHunk === "string") comment.diffHunk = reviewHunkTail(comment.diffHunk);
+    }
+  }
+  return detail;
+}
+
 export type PrState = "OPEN" | "CLOSED" | "MERGED";
 
 type PrDetailShape<Rx> = {
@@ -1124,6 +1143,7 @@ function normalizeReviewDetail(
           pageInfo: thread.comments.pageInfo,
           nodes: thread.comments.nodes.map(({ reactionGroups, ...item }) => ({
             ...item,
+            diffHunk: reviewHunkTail(item.diffHunk),
             reactions: mapReactions(reactionGroups),
           })),
         },

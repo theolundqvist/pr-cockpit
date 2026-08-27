@@ -118,8 +118,9 @@
     }
     const key = `${repo}#${number}:${headSha}:${commitNonce}`;
     let stopped = false;
+    const controller = new AbortController();
     commitLoading = true;
-    fetchActionCommits(repo, number).then(
+    fetchActionCommits(repo, number, controller.signal).then(
       (next) => {
         if (stopped || key !== `${repo}#${number}:${headSha}:${commitNonce}`) return;
         commits = next.commits;
@@ -133,6 +134,7 @@
     });
     return () => {
       stopped = true;
+      controller.abort();
     };
   });
 
@@ -147,13 +149,15 @@
   });
 
   $effect(() => {
+    if (!active) return;
     const key = `${repo}#${number}:${activeSha}:${refreshNonce}`;
     let stopped = false;
+    const controller = new AbortController();
 
     async function refresh(initial) {
       if (initial) loading = true;
       try {
-        const next = await fetchActions(repo, number, activeSha);
+        const next = await fetchActions(repo, number, activeSha, controller.signal);
         if (stopped || key !== `${repo}#${number}:${activeSha}:${refreshNonce}`) return;
         snapshot = next;
         loadError = "";
@@ -176,14 +180,17 @@
     }, 60_000);
     return () => {
       stopped = true;
+      controller.abort();
       clearInterval(activeTimer);
       clearInterval(leaseTimer);
     };
   });
   $effect(() => {
+    if (!active) return;
     const key = `${repo}#${number}:${activeSha}:${refreshNonce}`;
     let stopped = false;
-    fetchActionGraph(repo, number, activeSha).then(
+    const controller = new AbortController();
+    fetchActionGraph(repo, number, activeSha, controller.signal).then(
       (next) => {
         if (stopped || key !== `${repo}#${number}:${activeSha}:${refreshNonce}`) return;
         graphSnapshot = next;
@@ -195,28 +202,40 @@
     );
     return () => {
       stopped = true;
+      controller.abort();
     };
   });
 
 
+  let logController = null;
+
   async function loadLog(job) {
+    logController?.abort();
+    const controller = new AbortController();
+    logController = controller;
     const id = job.id;
     logLoadingId = id;
     try {
-      const result = await fetchActionLog(repo, number, id, activeSha);
+      const result = await fetchActionLog(repo, number, id, activeSha, controller.signal);
       if (selectedJobId !== id) return;
       logs = { ...logs, [id]: result };
       const nextErrors = { ...logErrors };
       delete nextErrors[id];
       logErrors = nextErrors;
     } catch (error) {
-      logErrors = { ...logErrors, [id]: error instanceof Error ? error.message : String(error) };
+      if (!controller.signal.aborted) {
+        logErrors = { ...logErrors, [id]: error instanceof Error ? error.message : String(error) };
+      }
     } finally {
+      if (logController === controller) logController = null;
       if (logLoadingId === id) logLoadingId = null;
     }
   }
 
+  $effect(() => () => logController?.abort());
+
   $effect(() => {
+    if (!active) return;
     const job = selectedJob;
     if (!job || job.status !== "completed" || logs[job.id] || logErrors[job.id]) return;
     void loadLog(job);

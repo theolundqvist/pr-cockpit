@@ -101,7 +101,7 @@
   let conflictFiles = $state([]);
   let conflictFilesState = $state("idle");
   let conflictFilesError = $state(null);
-  let commitFileStats = $state({});
+  let commitLineCounts = $state({});
   let loadedCommitStatsKey = "";
   let loadedConflictKey = "";
 
@@ -248,7 +248,7 @@
   let buildingDeadline = 0;
   const BUILD_CAP_MS = 120_000;
   $effect(() => {
-    if (!pr) return;
+    if (!pr || tab !== "files") return;
     const r = range;
     const rewrittenSince = rangeKey === "since" && anchorRewritten;
     const head = pr.headRefOid;
@@ -258,11 +258,12 @@
     loadedDiffKey = dkey;
     const token = {};
     diffFetch = token;
+    const controller = new AbortController();
     let retryTimer;
     const isSince = rangeKey === "since" && r;
     Promise.all([
-      fetchPrDiff(repo, number, r),
-      isSince ? fetchPrDiff(repo, number, null) : Promise.resolve(null),
+      fetchPrDiff(repo, number, r, controller.signal),
+      isSince ? fetchPrDiff(repo, number, null, controller.signal) : Promise.resolve(null),
     ]).then(async ([res, prRes]) => {
       if (diffFetch !== token) return;
       if (res.ok) {
@@ -318,7 +319,11 @@
       diffState = "error";
       buildingKey = "";
     });
-    return () => clearTimeout(retryTimer);
+    return () => {
+      controller.abort();
+      if (diffFetch === token) diffFetch = null;
+      clearTimeout(retryTimer);
+    };
   });
 
   function retryDiff() {
@@ -1152,22 +1157,27 @@
   });
 
   $effect(() => {
-    const key = pr ? `${repo}#${number}#${pr.headRefOid}#${pr.baseRefOid ?? ""}` : "";
-    if (!key) {
-      loadedCommitStatsKey = "";
-      commitFileStats = {};
-      return;
-    }
-    if (key === loadedCommitStatsKey) return;
+    const key = pr && tab === "conversation"
+      ? `${repo}#${number}#${pr.headRefOid}#${pr.baseRefOid ?? ""}#${testPattern.source}`
+      : "";
+    if (!key || key === loadedCommitStatsKey) return;
     loadedCommitStatsKey = key;
-    fetchPrCommitStats(repo, number).then(
+    const controller = new AbortController();
+    let finished = false;
+    fetchPrCommitStats(repo, number, testPattern, controller.signal).then(
       (res) => {
+        finished = true;
         if (key !== loadedCommitStatsKey) return;
-        commitFileStats = res.commits ?? {};
+        commitLineCounts = res.commits ?? {};
       },
-      // the timeline falls back to the per-commit totals GitHub already gave us
-      () => {},
+      () => {
+        finished = true;
+      },
     );
+    return () => {
+      controller.abort();
+      if (!finished && loadedCommitStatsKey === key) loadedCommitStatsKey = "";
+    };
   });
 
   let rollup = $derived(pr?.lastCommit.nodes[0]?.commit.statusCheckRollup ?? null);
@@ -1562,27 +1572,6 @@
   let testsHidden = $derived(testFiles.length > 0 && testFiles.every((f) => collapsedFiles.has(f.path)));
   let treeFiles = $derived(testsHidden ? files.filter((f) => !testPattern.test(f.path)) : files);
 
-  // Counts exclude test files, matching the header's headline numbers. A commit that touched nothing
-  // else would read as an empty +0 −0, so it reports its test counts muted instead.
-  let commitLineCounts = $derived.by(() => {
-    const counts = {};
-    for (const [sha, fileList] of Object.entries(commitFileStats)) {
-      const totals = { additions: 0, deletions: 0, skippedTests: false, testsOnly: false };
-      const tests = { additions: 0, deletions: 0 };
-      for (const file of fileList) {
-        const bucket = testPattern.test(file.path) ? tests : totals;
-        bucket.additions += file.additions;
-        bucket.deletions += file.deletions;
-        if (bucket === tests) totals.skippedTests = true;
-      }
-      if (totals.additions === 0 && totals.deletions === 0 && totals.skippedTests) {
-        counts[sha] = { additions: tests.additions, deletions: tests.deletions, skippedTests: false, testsOnly: true };
-        continue;
-      }
-      counts[sha] = totals;
-    }
-    return counts;
-  });
 
   $effect(() => {
     if (tab !== "files" || diffState !== "ready" || treeFiles.length === 0) return;
@@ -2506,9 +2495,9 @@
         </a>
       </nav>
 
-      <div style:display={tab === "actions" ? "contents" : "none"}>
-        <ActionsView {repo} {number} headSha={pr.headRefOid} selectedSha={actionSha} active={tab === "actions"} bind:runUrl={actionsRunUrl} />
-      </div>
+      {#if tab === "actions"}
+        <ActionsView {repo} {number} headSha={pr.headRefOid} selectedSha={actionSha} active bind:runUrl={actionsRunUrl} />
+      {/if}
 
       {#if tab === "files"}
         <div class="files-layout">

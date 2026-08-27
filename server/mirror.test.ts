@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { commitsFromGitDir, commitStatsFromGitDir, conflictFilesFromGitDir, diffFromGitDir, fileFromGitDir } from "./mirror.ts";
+import { commitsFromGitDir, commitStatsFromGitDir, conflictFilesFromGitDir, diffFromGitDir, fileFromGitDir, summarizeCommitStats } from "./mirror.ts";
 
 const cleanup: string[] = [];
 afterEach(() => {
@@ -121,6 +121,29 @@ describe("commitsFromGitDir", () => {
       expect(result.commits[0]?.headline).toBe("change 1");
       expect(result.commits.at(-1)?.headline).toBe("change 251");
     }
+  });
+});
+
+describe("summarizeCommitStats", () => {
+  test("excludes test files while preserving test-only commits", () => {
+    const counts = summarizeCommitStats([
+      {
+        sha: "mixed",
+        files: [
+          { path: "src/app.ts", additions: 5, deletions: 2 },
+          { path: "src/app.test.ts", additions: 3, deletions: 1 },
+        ],
+      },
+      {
+        sha: "tests",
+        files: [{ path: "src/__tests__/app.ts", additions: 4, deletions: 0 }],
+      },
+    ], /\.test\.ts$|\/__tests__\//);
+
+    expect(counts).toEqual({
+      mixed: { additions: 5, deletions: 2, skippedTests: true, testsOnly: false },
+      tests: { additions: 4, deletions: 0, skippedTests: false, testsOnly: true },
+    });
   });
 });
 

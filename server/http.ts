@@ -38,6 +38,7 @@ import { prKey } from "./prKey.ts";
 import { lastPollAt, pollOnce, refreshPr, trackedRepos } from "./poller.ts";
 import {
   commitPrFileEdit,
+  compactReviewHunks,
   fetchDiff,
   fetchFileContents,
   fetchFileHistory,
@@ -63,7 +64,7 @@ import {
 } from "./github.ts";
 import type { GithubUsageSource } from "./githubUsage.ts";
 import type { GithubAuthStatus } from "./githubAuth.ts";
-import { type CommitFileStat, commitsFromMirror, commitStatsFromMirror, conflictFilesFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError, type PullRequestCommit } from "./mirror.ts";
+import { commitsFromMirror, commitStatsFromMirror, conflictFilesFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError, summarizeCommitStats, type PullRequestCommit } from "./mirror.ts";
 import { checkState, type CheckState } from "./checkState.ts";
 import { currentBaseRef, discardMutation, enqueueMutation, mutationsForPr, retryMutation, type MutationPayload } from "./mutations.ts";
 import { isMergeMethod, mergeMethodFor, mergeMethodSourceFor, setMergeMethodPreference } from "./mergeMethod.ts";
@@ -483,8 +484,9 @@ export async function checkoutTargetFor(checkout: string, file: string | null): 
 function withBaseBranchPr(
   repoName: string,
   num: number,
-  detail: { baseRefName: string; headRefName?: string | null },
+  detail: PrDetail,
 ): Record<string, unknown> {
+  compactReviewHunks(detail);
   const basePr = getPrByBranch(repoName, detail.baseRefName);
   const headRef = detail.headRefName;
   return {
@@ -1208,15 +1210,23 @@ async function handlePrConflicts(owner: string, repo: string, number: string): P
   return json({ error: "Couldn't determine conflicting files" }, 503);
 }
 
-// Per-commit file counts for the timeline. The mirror is the only source of per-commit file lists;
-// when it has nothing to say the client falls back to the GraphQL per-commit totals.
-async function handlePrCommitStats(owner: string, repo: string, number: string): Promise<Response> {
+// Per-commit counts for the timeline. Aggregate mirror file lists here so large histories never
+// cross into the renderer; when the mirror has nothing to say, the client uses GraphQL totals.
+async function handlePrCommitStats(owner: string, repo: string, number: string, url: URL): Promise<Response> {
   if (!validPrReference(owner, repo, number)) return json({ error: "invalid PR reference" }, 400);
   const repoName = `${owner}/${repo}`;
   const num = Number(number);
   const ctx = resolvePrContext(repoName, num);
   if (!ctx) return json({ error: "PR is not cached yet" }, 404);
   if (isMockGithub || !ctx.baseSha) return json({ commits: {} });
+  const testPatternSource = url.searchParams.get("testPattern");
+  if (testPatternSource === null) return json({ error: "testPattern is required" }, 400);
+  let testPattern: RegExp;
+  try {
+    testPattern = new RegExp(testPatternSource);
+  } catch {
+    return json({ error: "testPattern is invalid" }, 400);
+  }
 
   let result = await commitStatsFromMirror(repoName, ctx.baseSha, ctx.headSha);
   if (result.status === "missing-commit") {
@@ -1229,9 +1239,7 @@ async function handlePrCommitStats(owner: string, repo: string, number: string):
     }
   }
   if (result.status !== "ok") return json({ commits: {} });
-  const commits: Record<string, CommitFileStat[]> = {};
-  for (const commit of result.commits) commits[commit.sha] = commit.files;
-  return json({ commits });
+  return json({ commits: summarizeCommitStats(result.commits, testPattern) });
 }
 
 async function handlePrDiff(owner: string, repo: string, number: string, url: URL): Promise<Response> {
@@ -2631,7 +2639,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       parts[1] === "pr" &&
       parts[5] === "commit-stats"
     ) {
-      return handlePrCommitStats(parts[2]!, parts[3]!, parts[4]!);
+      return handlePrCommitStats(parts[2]!, parts[3]!, parts[4]!, url);
     }
     if (
       req.method === "GET" &&

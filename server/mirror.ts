@@ -235,6 +235,34 @@ export type MirrorCommitStatsResult =
   | { status: "missing-commit" }
   | { status: "stats-failed" };
 
+export type CommitLineCount = {
+  additions: number;
+  deletions: number;
+  skippedTests: boolean;
+  testsOnly: boolean;
+};
+
+export function summarizeCommitStats(
+  commits: Array<{ sha: string; files: CommitFileStat[] }>,
+  testPattern: RegExp,
+): Record<string, CommitLineCount> {
+  const counts: Record<string, CommitLineCount> = {};
+  for (const commit of commits) {
+    const totals = { additions: 0, deletions: 0, skippedTests: false, testsOnly: false };
+    const tests = { additions: 0, deletions: 0 };
+    for (const file of commit.files) {
+      const bucket = testPattern.test(file.path) ? tests : totals;
+      bucket.additions += file.additions;
+      bucket.deletions += file.deletions;
+      if (bucket === tests) totals.skippedTests = true;
+    }
+    counts[commit.sha] = totals.additions === 0 && totals.deletions === 0 && totals.skippedTests
+      ? { additions: tests.additions, deletions: tests.deletions, skippedTests: false, testsOnly: true }
+      : totals;
+  }
+  return counts;
+}
+
 export type MirrorFileResult =
   | { status: "ok"; content: string }
   | { status: "no-mirror" }

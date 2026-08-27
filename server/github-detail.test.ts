@@ -6,6 +6,7 @@ import {
   fetchPrDetailPart,
   getViewerLogin,
   mapRestPrDetailBase,
+  compactReviewHunks,
   requestReviewers,
   searchClosedPrs,
   searchPrs,
@@ -15,6 +16,7 @@ import {
   updatePullRequestTitle,
   viewerRepos,
   type PrDetail,
+  reviewHunkTail,
 } from "./github.ts";
 
 const restPullRequest = {
@@ -49,6 +51,30 @@ const restFiles = [
   { filename: "server/github.ts", additions: 10, deletions: 4 },
   { filename: "server/github-detail.test.ts", additions: 2, deletions: 0 },
 ];
+
+describe("review hunk compaction", () => {
+  test("keeps exactly the lines rendered beside a review thread", () => {
+    const detail = {
+      reviewThreads: {
+        nodes: [{
+          comments: {
+            nodes: [{
+              diffHunk: "@@ -1,6 +1,6 @@\n-old one\n+new one\n context two\n-old three\n+new three\n context four",
+            }],
+          },
+        }],
+      },
+    };
+
+    expect(reviewHunkTail(detail.reviewThreads.nodes[0]!.comments.nodes[0]!.diffHunk)).toBe(
+      " context two\n-old three\n+new three\n context four",
+    );
+    expect(compactReviewHunks(detail)).toBe(detail);
+    expect(detail.reviewThreads.nodes[0]!.comments.nodes[0]!.diffHunk).toBe(
+      " context two\n-old three\n+new three\n context four",
+    );
+  });
+});
 
 describe("REST PR detail parity", () => {
   test("maps REST metadata and files to the GraphQL detail contract", () => {
