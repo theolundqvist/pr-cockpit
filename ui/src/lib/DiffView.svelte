@@ -37,6 +37,16 @@
     layout = "split",
   } = $props();
 
+  const compactQuery = "(max-width: 700px), (pointer: coarse) and (max-height: 500px)";
+  let compactLayout = $state(typeof window !== "undefined" && window.matchMedia(compactQuery).matches);
+  $effect(() => {
+    if (typeof window === "undefined") return;
+    const query = window.matchMedia(compactQuery);
+    const update = () => (compactLayout = query.matches);
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  });
+
   const definitionHover = createDefinitionHover(() => onLookupDefinition);
   $effect(() => () => definitionHover.destroy());
 
@@ -401,7 +411,7 @@
     return pairs;
   }
   function usesSplitLayout(file) {
-    return fileUsesSplitLayout(file, layout);
+    return !compactLayout && fileUsesSplitLayout(file, layout);
   }
   let wholeFile = $state(new Map());
   let gapRows = $state(new Map());
@@ -1759,12 +1769,98 @@
     transform: none;
     background: var(--ghost-pressed);
   }
-  @media (max-width: 660px) {
-    .viewed-label {
+  @media (max-width: 700px), (pointer: coarse) and (max-height: 500px) {
+    .file-head-row {
+      position: static;
+      flex-wrap: wrap;
+      padding: 0;
+      background: var(--panel);
+    }
+    .file-head {
+      flex: 1 0 100%;
+      min-height: 44px;
+      padding-inline: 10px;
+      border-bottom: 1px solid var(--border-soft);
+      border-radius: 7px 7px 0 0;
+    }
+    .file-head-row > .whole-btn,
+    .file-head-row > .viewed-btn {
+      flex: 1 1 0;
+      min-height: 44px;
+      margin: 0;
+      padding-inline: 8px;
+      border-radius: 0;
+    }
+    .file-head-row > .whole-btn + .whole-btn,
+    .file-head-row > .viewed-btn + .whole-btn,
+    .file-head-row > .whole-btn + .viewed-btn {
+      border-left: 1px solid var(--border-soft);
+    }
+    .file.collapsed .file-head {
+      border-bottom: 0;
+      border-radius: 7px;
+    }
+    .file.collapsed .file-head-row > :not(.file-head) {
       display: none;
     }
-    .viewed-btn {
-      padding-inline: 7px;
+    .viewed-label {
+      display: inline;
+    }
+    .file-head-row :global(.kbd) {
+      display: none;
+    }
+    .hunks {
+      font-size: var(--diff-font-size);
+      line-height: 1.55;
+      -webkit-overflow-scrolling: touch;
+    }
+    .hunk-head,
+    .line {
+      width: max-content;
+      min-width: 100%;
+    }
+    .code {
+      flex: none;
+      min-width: 0;
+      padding-right: 12px;
+      white-space: pre;
+      overflow-wrap: normal;
+      word-break: normal;
+    }
+    .ln {
+      position: sticky;
+      left: 0;
+      z-index: 3;
+      box-sizing: border-box;
+      width: 24px;
+      padding-inline: 1px;
+      background: var(--panel);
+      font-size: 0.78em;
+    }
+    .ln + .ln {
+      left: 24px;
+    }
+    .sign {
+      position: sticky;
+      left: 48px;
+      z-index: 3;
+      width: 14px;
+      background: var(--panel);
+    }
+    .line.add .ln,
+    .line.add .sign {
+      background: var(--add-bg);
+    }
+    .line.del .ln,
+    .line.del .sign {
+      background: var(--del-bg);
+    }
+    .inline-threads,
+    .inline-compose {
+      width: calc(var(--general-width) - 16px);
+      max-width: none;
+      min-width: 0;
+      padding: 8px;
     }
   }
   .hunk-head {

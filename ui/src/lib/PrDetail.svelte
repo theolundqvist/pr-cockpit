@@ -5171,14 +5171,16 @@
       padding-inline: 22px;
     }
     .pr-head-top {
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr);
     }
     .pr-metrics {
       grid-template-columns: repeat(3, minmax(0, 1fr));
       width: 100%;
     }
+    /* minmax(0, …): a wide code span or table must scroll inside its own box
+       instead of stretching the stacked column past the viewport */
     .cols {
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr);
     }
     .right {
       position: static;
@@ -5290,7 +5292,7 @@
       padding-left: 39px;
     }
     .right {
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr);
     }
   }
 
@@ -5973,7 +5975,7 @@
       padding-left: 0;
     }
     .cols {
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr);
     }
     .pr-metrics {
       width: 100%;
@@ -5996,7 +5998,41 @@
       padding-inline: 10px;
     }
     .right {
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  /* Phone: bigger tap targets, and shortcut chips drop out because there is no
+     keyboard to press. */
+  @media (max-width: 700px), (pointer: coarse) and (max-height: 500px) {
+    .tab {
+      min-height: 44px;
+    }
+    .toolbar-btn,
+    .btn,
+    .retry-btn,
+    .merge-btn,
+    .ci-copy-button,
+    .ci-agent-button,
+    .conflict-copy-button,
+    .conflict-primary {
+      min-height: 44px;
+    }
+    .tab :global(.kbd),
+    .toolbar-btn :global(.kbd) {
+      display: none;
+    }
+    .tree-pane {
+      max-height: 220px;
+    }
+    .detail-frame.files-tab .diff-pane {
+      width: auto;
+      max-width: none;
+      margin-inline: -14px;
+    }
+    .detail-frame.files-tab .diff-pane :global(.file),
+    .detail-frame.files-tab .diff-pane :global(.file-head-row),
+    .detail-frame.files-tab .diff-pane :global(.file-head) {
+      border-radius: 0;
     }
   }
 </style>

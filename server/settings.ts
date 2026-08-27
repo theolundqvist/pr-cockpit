@@ -94,7 +94,7 @@ const clampInterval = (raw: number): number =>
 export function normalizeScale(value: unknown): number {
   if (typeof value !== "number" && (typeof value !== "string" || value.trim() === "")) return 100;
   const scale = Number(value);
-  return Number.isFinite(scale) ? Math.min(200, Math.max(75, Math.round(scale))) : 100;
+  return Number.isFinite(scale) ? Math.min(200, Math.max(50, Math.round(scale))) : 100;
 }
 
 export function normalizeThemePreference(value: unknown): ThemePreference {

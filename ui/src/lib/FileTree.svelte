@@ -68,7 +68,13 @@
 
   $effect(() => {
     if (!selectedPath) return;
-    treeEl?.querySelector(".file.selected")?.scrollIntoView({ block: "nearest" });
+    const row = treeEl?.querySelector(".file.selected");
+    const pane = treeEl?.parentElement;
+    if (!row || !pane) return;
+    const rowRect = row.getBoundingClientRect();
+    const paneRect = pane.getBoundingClientRect();
+    if (rowRect.top < paneRect.top) pane.scrollTop -= paneRect.top - rowRect.top;
+    else if (rowRect.bottom > paneRect.bottom) pane.scrollTop += rowRect.bottom - paneRect.bottom;
   });
 </script>
 
@@ -241,5 +247,11 @@
   .file.selected {
     background: var(--link-bg);
     box-shadow: none;
+  }
+
+  @media (max-width: 700px), (pointer: coarse) and (max-height: 500px) {
+    .row {
+      min-height: 44px;
+    }
   }
 </style>

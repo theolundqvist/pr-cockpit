@@ -193,10 +193,16 @@
     font-size: 11px;
     flex: none;
   }
+  /* a long path must not set the row's minimum width, or it widens the whole
+     conversation column on a narrow screen */
   .summary-row .loc {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
     color: var(--text-faint);
     font-size: 11px;
-    flex: none;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .summary-text {
     flex: 1;
@@ -280,8 +286,11 @@
     overflow-x: auto;
   }
   .hunk-line {
-    white-space: pre;
+    /* the tinted row has to cover the scrolled width, not just the viewport */
+    width: max-content;
+    min-width: 100%;
     padding: 0 10px;
+    white-space: pre;
   }
   .hunk-line.add {
     background: var(--add-bg);
@@ -446,5 +455,43 @@
   .reply textarea:focus {
     border-color: var(--link);
     box-shadow: 0 0 0 3px var(--focus-ring);
+  }
+
+  @media (max-width: 700px), (pointer: coarse) and (max-height: 500px) {
+    .thread {
+      padding: 12px;
+    }
+    .thread-head {
+      flex-wrap: wrap;
+      row-gap: 8px;
+    }
+    .thread-head .loc {
+      flex: 1 1 auto;
+      min-width: 80px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .resolve-btn,
+    .btn {
+      min-height: var(--mobile-control-min-height);
+    }
+    .reply {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 8px;
+    }
+    .reply textarea {
+      width: 100%;
+      min-height: calc(var(--mobile-control-min-height) + var(--mobile-control-min-height)) !important;
+      padding: 10px 12px;
+    }
+    .reply .btn {
+      width: 100%;
+      align-self: stretch;
+    }
+    .reply :global(.kbd) {
+      display: none;
+    }
   }
 </style>

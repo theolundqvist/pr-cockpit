@@ -2380,4 +2380,117 @@
       grid-column: auto;
     }
   }
+
+  /* Phone: rows stack instead of holding desktop columns, and keyboard
+     affordances give way to touch targets. */
+  @media (max-width: 700px), (pointer: coarse) and (max-height: 500px) {
+    .page {
+      padding: 12px 16px 20px;
+    }
+    .head {
+      top: -12px;
+      margin-top: -12px;
+      padding-top: 12px;
+      min-height: 56px;
+    }
+    .queue-overview {
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .queue-copy h1 {
+      font-size: 22px;
+    }
+    /* the standing description is desktop breathing room; a phone needs the
+       list above the fold instead */
+    .queue-copy p {
+      display: none;
+    }
+    .queue-metric {
+      min-width: 0;
+      flex: 1;
+      padding-inline: 0;
+    }
+    .queue-metric + .queue-metric {
+      padding-left: 14px;
+    }
+    .queue-metric span {
+      white-space: nowrap;
+    }
+    .view-tab {
+      min-height: 44px;
+    }
+    .view-tab :global(.kbd) {
+      display: none;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: start;
+      min-height: 0;
+      column-gap: 10px;
+      row-gap: 6px;
+      padding: 12px 6px;
+    }
+    .row.stack-child {
+      margin-left: 14px;
+    }
+    .stack-glyph {
+      display: none;
+    }
+    .row-avatar {
+      grid-column: 1;
+      grid-row: 1 / span 2;
+      margin-top: 2px;
+    }
+    .row-main {
+      grid-column: 2;
+      grid-row: 1;
+    }
+    .row-age {
+      grid-column: 3;
+      grid-row: 1;
+      margin-top: 2px;
+    }
+    .row-badge-slot {
+      grid-column: 2;
+      grid-row: 2;
+      flex: none;
+      margin-top: 0;
+    }
+    .greptile {
+      grid-column: 3;
+      grid-row: 2;
+      justify-self: end;
+      margin-top: 0;
+    }
+    .row :global(.kbd) {
+      display: none;
+    }
+    .row-title {
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      white-space: normal;
+      overflow: hidden;
+    }
+    .row-meta {
+      flex-wrap: wrap;
+      white-space: normal;
+      row-gap: 2px;
+    }
+    /* line counts lose to identity and blockers when the meta line has to fit
+       a phone */
+    .row-meta .add,
+    .row-meta .del,
+    .row-meta .del + .sep,
+    .row-meta .sep:has(+ .add) {
+      display: none;
+    }
+    .quick-action {
+      min-height: 44px;
+    }
+    .quick-action-shortcut {
+      display: none;
+    }
+  }
 </style>

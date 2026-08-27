@@ -281,4 +281,14 @@
     background: var(--surface);
     box-shadow: var(--shadow-xs);
   }
+  /* no keyboard on a phone, so the shortcut chip is only clutter */
+  @media (max-width: 700px), (pointer: coarse) and (max-height: 500px) {
+    .rp-trigger,
+    .rp-row {
+      min-height: 44px;
+    }
+    .rp-trigger :global(.kbd) {
+      display: none;
+    }
+  }
 </style>
