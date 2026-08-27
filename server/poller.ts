@@ -1,4 +1,4 @@
-import { fetchGithubQuota, fetchPrDetail, lookupPr, searchClosedPrs, searchOpenPrs, searchRecentPrs, type PrDetail } from "./github.ts";
+import { fetchGithubQuota, fetchPrDetail, lookupPr, searchClosedPrs, searchOpenPrs, searchRecentPrs, type GithubQuotaResource, type PrDetail } from "./github.ts";
 import type { GithubUsageSource } from "./githubUsage.ts";
 import {
   deleteWebhookRegistrationsForPr,
@@ -27,21 +27,28 @@ import { invalidateInbox, invalidatePr, publishPollCompleted } from "./rendererI
 import { GRAPHQL_BACKGROUND_RESERVE } from "../ui/src/lib/quotaImpact.js";
 
 const INDEX_SWEEP_MS = 1_800_000;
+const GRAPHQL_WINDOW_MS = 60 * 60_000;
 
 export let lastPollAt: string | null = null;
 
 let quotaPauseResetAt: string | null = null;
 let openInboxKeys = new Set<string>();
 
+export function backgroundQuotaAvailable(quota: GithubQuotaResource, now = Date.now()): boolean {
+  const resetIn = Math.max(0, Date.parse(quota.resetAt) - now);
+  const pacedReserve = Math.ceil(quota.limit * Math.min(resetIn, GRAPHQL_WINDOW_MS) / GRAPHQL_WINDOW_MS);
+  return quota.remaining > Math.max(GRAPHQL_BACKGROUND_RESERVE, pacedReserve);
+}
+
 export async function backgroundPollAllowed(): Promise<boolean> {
   const quota = await fetchGithubQuota();
-  if (quota.graphql.remaining > GRAPHQL_BACKGROUND_RESERVE) {
+  if (backgroundQuotaAvailable(quota.graphql)) {
     quotaPauseResetAt = null;
     return true;
   }
   if (quotaPauseResetAt !== quota.graphql.resetAt) {
     quotaPauseResetAt = quota.graphql.resetAt;
-    console.warn(`background polling paused with ${quota.graphql.remaining} GraphQL points left; resets ${quota.graphql.resetAt}`);
+    console.warn(`background GitHub refreshes paused with ${quota.graphql.remaining} GraphQL points left; resets ${quota.graphql.resetAt}`);
   }
   return false;
 }

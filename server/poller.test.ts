@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
-import { createPollOnce, type PollDeps } from "./poller.ts";
+import { backgroundQuotaAvailable, createPollOnce, type PollDeps } from "./poller.ts";
 import type { SearchHit } from "./github.ts";
 import type { PrRow, WebhookRegistrationRow } from "./db.ts";
 
@@ -43,6 +43,15 @@ const deps: PollDeps = {
   invalidateInbox,
   publishPollCompleted,
 };
+
+test("paces background GraphQL work across the quota window", () => {
+  const resetAt = "2026-08-27T11:00:00.000Z";
+  const now = Date.parse("2026-08-27T10:30:00.000Z");
+
+  expect(backgroundQuotaAvailable({ limit: 5000, used: 2000, remaining: 3000, resetAt }, now)).toBe(true);
+  expect(backgroundQuotaAvailable({ limit: 5000, used: 2500, remaining: 2500, resetAt }, now)).toBe(false);
+  expect(backgroundQuotaAvailable({ limit: 5000, used: 4990, remaining: 10, resetAt }, now)).toBe(false);
+});
 
 function registration(repo: string, number: number): WebhookRegistrationRow {
   return { window_id: "@1", repo, number, last_webhook_at: null };
