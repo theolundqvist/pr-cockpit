@@ -1288,6 +1288,14 @@ export interface GithubGraphqlUsageSummary {
   windowStartedAt: string;
   sources: Array<{ source: string; points: number; requests: number; unknownCostRequests: number }>;
   operations: Array<{ operation: string; points: number; requests: number; unknownCostRequests: number }>;
+  history: Array<{
+    resetAt: string;
+    used: number | null;
+    localPoints: number;
+    localRequests: number;
+    unknownCostRequests: number;
+  }>;
+  predictedUsed: number | null;
 }
 
 function githubUsageRows(column: "source" | "operation", resetAt: string): GithubUsageRow[] {
@@ -1303,7 +1311,54 @@ function githubUsageRows(column: "source" | "operation", resetAt: string): Githu
   `).all(resetAt);
 }
 
-export function githubGraphqlUsage(globalUsed: number, resetAt: string): GithubGraphqlUsageSummary {
+interface GithubUsageHistoryRow {
+  reset_at: string;
+  used: number | null;
+  local_points: number;
+  local_requests: number;
+  unknown_cost_requests: number;
+}
+
+function githubUsageHistory(globalUsed: number, resetAt: string): GithubGraphqlUsageSummary["history"] {
+  const resetMs = Date.parse(resetAt);
+  const hourMs = 60 * 60_000;
+  const rows = db.query<GithubUsageHistoryRow, [string]>(`
+    SELECT reset_at,
+      MAX(used) AS used,
+      COALESCE(SUM(cost), 0) AS local_points,
+      COUNT(*) AS local_requests,
+      SUM(cost IS NULL) AS unknown_cost_requests
+    FROM github_graphql_usage
+    WHERE julianday(reset_at) > julianday(?)
+    GROUP BY reset_at
+  `).all(new Date(resetMs - 72 * hourMs).toISOString());
+  const byReset = new Map(rows.map((row) => [Date.parse(row.reset_at), row]));
+  return Array.from({ length: 72 }, (_, index) => {
+    const bucketResetMs = resetMs - (71 - index) * hourMs;
+    const row = byReset.get(bucketResetMs);
+    return {
+      resetAt: new Date(bucketResetMs).toISOString(),
+      used: bucketResetMs === resetMs ? globalUsed : row?.used ?? null,
+      localPoints: row?.local_points ?? 0,
+      localRequests: row?.local_requests ?? 0,
+      unknownCostRequests: row?.unknown_cost_requests ?? 0,
+    };
+  });
+}
+
+export function predictGithubHourlyUsage(
+  used: number,
+  limit: number,
+  windowStartedAt: string,
+  nowMs = Date.now(),
+): number | null {
+  const elapsedMs = nowMs - Date.parse(windowStartedAt);
+  if (used <= 0 || elapsedMs < 5 * 60_000) return null;
+  return Math.min(limit, Math.round(used * 60 * 60_000 / Math.min(elapsedMs, 60 * 60_000)));
+}
+
+
+export function githubGraphqlUsage(globalUsed: number, globalLimit: number, resetAt: string, nowMs = Date.now()): GithubGraphqlUsageSummary {
   const sources = githubUsageRows("source", resetAt);
   const operations = githubUsageRows("operation", resetAt);
   const localPoints = sources.reduce((sum, row) => sum + row.points, 0);
@@ -1336,6 +1391,8 @@ export function githubGraphqlUsage(globalUsed: number, resetAt: string): GithubG
       requests: row.requests,
       unknownCostRequests: row.unknown_cost_requests,
     })),
+    history: githubUsageHistory(globalUsed, resetAt),
+    predictedUsed: predictGithubHourlyUsage(globalUsed, globalLimit, windowStartedAt, nowMs),
   };
 }
 

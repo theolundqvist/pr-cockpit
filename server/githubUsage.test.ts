@@ -24,9 +24,11 @@ test("aggregates attributed calls for the current quota window", async () => {
     const database = await import(${JSON.stringify(dbModuleUrl)});
     const usage = await import(${JSON.stringify(usageModuleUrl)});
     const resetAt = ${JSON.stringify(resetAt)};
+    const previousResetAt = new Date(Date.parse(resetAt) - 60 * 60_000).toISOString();
+    usage.recordGithubGraphqlUsage({ occurredAt: new Date(Date.parse(previousResetAt) - 30 * 60_000).toISOString(), source: "daemon", operation: "PR checks", cost: 4, used: 120, remaining: 4880, resetAt: previousResetAt, status: "ok" });
     usage.recordGithubGraphqlUsage({ occurredAt: new Date().toISOString(), source: "background poll", operation: "open PR search", cost: 2, used: 42, remaining: 4958, resetAt, status: "ok" });
     usage.recordGithubGraphqlUsage({ occurredAt: new Date().toISOString(), source: "app detail", operation: "PR detail", cost: 8, used: 50, remaining: 4950, resetAt: resetAt.replace(".000Z", "Z"), status: "ok" });
-    console.log(JSON.stringify(database.githubGraphqlUsage(50, resetAt)));
+    console.log(JSON.stringify(database.githubGraphqlUsage(50, 5000, resetAt, Date.parse(resetAt) - 30 * 60_000)));
     database.db.close();
   `;
 
@@ -51,6 +53,10 @@ test("aggregates attributed calls for the current quota window", async () => {
       { source: "background poll", points: 2, requests: 1, unknownCostRequests: 0 },
     ]);
     expect(result.operations[0]).toEqual({ operation: "PR detail", points: 8, requests: 1, unknownCostRequests: 0 });
+    expect(result.predictedUsed).toBe(100);
+    expect(result.history).toHaveLength(72);
+    expect(result.history.at(-2)).toMatchObject({ resetAt: new Date(Date.parse(resetAt) - 60 * 60_000).toISOString(), used: 120, localPoints: 4, localRequests: 1 });
+    expect(result.history.at(-1)).toMatchObject({ resetAt, used: 50, localPoints: 10, localRequests: 2 });
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }

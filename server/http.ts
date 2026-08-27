@@ -415,7 +415,7 @@ async function handleGithubUsage(runtime: HttpRuntime): Promise<Response> {
     const resources = await runtime.fetchGithubQuota();
     return json({
       quota: resources.graphql,
-      usage: githubGraphqlUsage(resources.graphql.used, resources.graphql.resetAt),
+      usage: githubGraphqlUsage(resources.graphql.used, resources.graphql.limit, resources.graphql.resetAt),
     });
   } catch (err) {
     console.error("GitHub usage fetch failed:", err);
