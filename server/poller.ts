@@ -1,4 +1,4 @@
-import { fetchGithubQuota, fetchPrDetail, lookupPr, searchClosedPrs, searchOpenPrs, searchRecentPrs, type GithubQuotaResource, type PrDetail } from "./github.ts";
+import { fetchGithubQuota, fetchPrDetail, fetchPrDetailPart, lookupPr, searchClosedPrs, searchOpenPrs, searchRecentPrs, type GithubQuotaResource, type PrDetail, type PrDetailScope } from "./github.ts";
 import type { GithubUsageSource } from "./githubUsage.ts";
 import {
   deleteWebhookRegistrationsForPr,
@@ -106,10 +106,18 @@ function prefetchDetailImages(detail: PrDetail): void {
   prefetchImages(urls).catch((err) => console.error(`image prefetch failed for ${detail.url}:`, err));
 }
 
-async function refreshPrNow(repo: string, number: number, source: GithubUsageSource = "app detail"): Promise<void> {
+async function refreshPrNow(
+  repo: string,
+  number: number,
+  source: GithubUsageSource = "app detail",
+  scope: PrDetailScope = "all",
+): Promise<void> {
   const previous = getPr(repo, number);
   const snapshotCutoffAt = new Date().toISOString();
-  const detail = await fetchPrDetail(repo, number, source);
+  const current = previous ? JSON.parse(previous.detail_json) as PrDetail : null;
+  const detail = scope === "all" || current === null
+    ? await fetchPrDetail(repo, number, source)
+    : await fetchPrDetailPart(repo, number, current, scope, source);
   if (!previous || previous.head_sha !== detail.headRefOid) {
     fetchMirror(repo).catch((err) => console.error(`mirror fetch failed for ${repo}:`, err));
     onPrActivity(repo, number, previous !== null);

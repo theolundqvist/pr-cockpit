@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { backgroundQuotaAvailable, createPollOnce, type PollDeps } from "./poller.ts";
-import type { SearchHit } from "./github.ts";
+import type { PrDetailScope, SearchHit } from "./github.ts";
+import type { GithubUsageSource } from "./githubUsage.ts";
 import type { PrRow, WebhookRegistrationRow } from "./db.ts";
 
 let registrations: WebhookRegistrationRow[] = [];
@@ -9,7 +10,12 @@ let registrationStatuses = new Map<string, { state: string } | null>();
 let statusLookupError: Error | null = null;
 let searchedRepos: string[][] = [];
 
-const refreshPr = mock(async (_repo: string, _number: number) => {});
+const refreshPr = mock(async (
+  _repo: string,
+  _number: number,
+  _source?: GithubUsageSource,
+  _scope?: PrDetailScope,
+) => {});
 const invalidateInbox = mock(() => {});
 const publishPollCompleted = mock((_lastPollAt: string) => {});
 

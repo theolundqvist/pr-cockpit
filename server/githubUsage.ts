@@ -10,7 +10,8 @@ export type GithubUsageSource =
   | "repository setup"
   | "review inbox"
   | "search"
-  | "user action";
+  | "user action"
+  | "webhook";
 
 export interface GithubGraphqlUsageEvent {
   occurredAt: string;

@@ -246,3 +246,44 @@ test("schema updates preserve the normalized PR cache", () => {
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test("startup drops Actions leases because browser presence cannot survive the server process", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-actions-lease-reset-"));
+  const databasePath = join(dataDir, "cockpit.db");
+  const scenario = `
+    const { Database } = await import("bun:sqlite");
+    const stored = new Database(${JSON.stringify(databasePath)});
+    stored.exec(\`
+      CREATE TABLE actions_leases (
+        repo TEXT NOT NULL,
+        number INTEGER NOT NULL,
+        head_sha TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        bootstrapped_at TEXT,
+        PRIMARY KEY (repo, number)
+      );
+      INSERT INTO actions_leases VALUES ('acme/app', 7, 'head', '2099-01-01T00:00:00Z', NULL);
+    \`);
+    stored.close();
+    const { db } = await import(${JSON.stringify(dbModuleUrl)});
+    console.log(db.query("SELECT COUNT(*) AS count FROM actions_leases").get().count);
+    db.close();
+  `;
+
+  try {
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      process.exited,
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(stderr);
+    expect(stdout.trim()).toBe("0");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});

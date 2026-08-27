@@ -16,7 +16,7 @@ import { checkState, type PrCheck } from "./checkState.ts";
 import { checkName, liveCheckNames } from "../ui/src/lib/checks.js";
 import { eligibleWebhookRepos, forwarderStatuses, reconcileForwarders, wantedRepos } from "./forwarders.ts";
 import { prKeyOf } from "./prKey.ts";
-import { refreshPrFromEvent } from "./eventRefresh.ts";
+import { prDetailScopeForEvent, refreshPrFromEvent } from "./eventRefresh.ts";
 import { backgroundPollAllowed, refreshPr } from "./poller.ts";
 import { listWorktrees } from "./worktreeScan.ts";
 import { compactActionsPayload, ingestActionsState } from "./runLogs.ts";
@@ -147,8 +147,8 @@ async function handleHook(
     for (const affectedNumber of openPrNumbersForBranch(repo, ref.slice("refs/heads/".length))) {
       recordPrWebhookActivity(repo, affectedNumber, receivedAt);
       touchWebhookRegistrations(repo, affectedNumber, receivedAt);
-      void refreshPrFromEvent(repo, affectedNumber, async (targetRepo, targetNumber) => {
-        if (await refreshAllowed()) await refresh(targetRepo, targetNumber);
+      void refreshPrFromEvent(repo, affectedNumber, "all", async (targetRepo, targetNumber, scope) => {
+        if (await refreshAllowed()) await refresh(targetRepo, targetNumber, "webhook", scope);
       }).catch((e) =>
         console.error(`hook-triggered refresh failed for ${repo}#${affectedNumber}:`, e)
       );
@@ -165,8 +165,8 @@ async function handleHook(
   recordPrWebhookActivity(repo, number, receivedAt);
   touchWebhookRegistrations(repo, number, receivedAt);
 
-  void refreshPrFromEvent(repo, number, async (targetRepo, targetNumber) => {
-    if (await refreshAllowed()) await refresh(targetRepo, targetNumber);
+  void refreshPrFromEvent(repo, number, prDetailScopeForEvent(event), async (targetRepo, targetNumber, scope) => {
+    if (await refreshAllowed()) await refresh(targetRepo, targetNumber, "webhook", scope);
   }).catch((e) =>
     console.error(`hook-triggered refresh failed for ${repo}#${number}:`, e)
   );

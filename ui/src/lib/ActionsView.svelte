@@ -168,12 +168,16 @@
     }
 
     void refresh(true);
-    const timer = setInterval(() => {
+    const activeTimer = setInterval(() => {
       if (hasActiveJobs) void refresh(false);
     }, 5_000);
+    const leaseTimer = setInterval(() => {
+      if (!hasActiveJobs) void refresh(false);
+    }, 60_000);
     return () => {
       stopped = true;
-      clearInterval(timer);
+      clearInterval(activeTimer);
+      clearInterval(leaseTimer);
     };
   });
   $effect(() => {

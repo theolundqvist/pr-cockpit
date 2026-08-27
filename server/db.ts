@@ -355,7 +355,7 @@ db.exec("DELETE FROM diffs WHERE fetched_at < datetime('now', '-30 days')");
 // Job rows and their logs are re-fetchable and only useful while the PR head is current.
 db.exec("DELETE FROM run_jobs WHERE fetched_at < datetime('now', '-30 days')");
 db.exec("DELETE FROM workflow_runs WHERE fetched_at < datetime('now', '-30 days')");
-db.exec("DELETE FROM actions_leases WHERE expires_at < datetime('now')");
+db.exec("DELETE FROM actions_leases");
 
 export interface PrRow {
   repo: string;
@@ -932,7 +932,7 @@ export function actionsLease(repo: string, number: number): ActionsLeaseRow | nu
 export function renewActionsLease(repo: string, number: number, headSha: string): ActionsLeaseRow {
   db.prepare(`
     INSERT INTO actions_leases (repo, number, head_sha, expires_at, bootstrapped_at)
-    VALUES (?, ?, ?, datetime('now', '+72 hours'), NULL)
+    VALUES (?, ?, ?, datetime('now', '+2 minutes'), NULL)
     ON CONFLICT (repo, number) DO UPDATE SET
       head_sha = excluded.head_sha, expires_at = excluded.expires_at,
       bootstrapped_at = CASE
@@ -949,15 +949,7 @@ export function markActionsLeaseBootstrapped(repo: string, number: number, headS
     .run(repo, number, headSha);
 }
 
-export function resetActiveActionsLeaseBootstraps(): void {
-  db.prepare("UPDATE actions_leases SET bootstrapped_at = NULL WHERE expires_at > datetime('now')").run();
-}
 
-export function activeActionsLeases(): ActionsLeaseRow[] {
-  return db.prepare<ActionsLeaseRow, []>(
-    "SELECT * FROM actions_leases WHERE expires_at > datetime('now') ORDER BY repo, number",
-  ).all();
-}
 
 export interface MutationRow {
   id: number;

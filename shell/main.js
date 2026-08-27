@@ -43,6 +43,7 @@ function modeFromUrl(urlStr) {
 const startHidden = process.argv.includes("--cockpit-hidden");
 const initialUrl = cockpitUrlFromArgv(process.argv) || process.env.COCKPIT_URL || "http://127.0.0.1:4820";
 const serverOrigin = new URL(initialUrl).origin;
+const proxyMode = Boolean(process.env.COCKPIT_PROXY);
 const paletteUrl = `${serverOrigin}/#/palette`;
 const DEFAULT_OPEN_APP = "Command+Control+G";
 const DEFAULT_OPEN_PALETTE = "Command+Option+K";
@@ -440,10 +441,12 @@ if (!app.requestSingleInstanceLock()) {
   }
 
   async function killServerAndQuit() {
-    try {
-      await fetch(`${serverOrigin}/api/shutdown`, { method: "POST", signal: AbortSignal.timeout(2000) });
-    } catch {
-      // server may already be dead
+    if (!proxyMode) {
+      try {
+        await fetch(`${serverOrigin}/api/shutdown`, { method: "POST", signal: AbortSignal.timeout(2000) });
+      } catch {
+        // server may already be dead
+      }
     }
     quitPrCockpit();
   }
@@ -620,7 +623,7 @@ if (!app.requestSingleInstanceLock()) {
     });
     ipcMain.handle("cockpit:open-setup", async (_event, action) => {
       if (!win || win.isDestroyed()) return { error: "setup launch failed: no cockpit window" };
-      return launchSetupTerminal(action, win.getBounds());
+      return launchSetupTerminal(action, win.getBounds(), process.env, process.platform, process.env.COCKPIT_PROXY || "");
     });
     ipcMain.handle("cockpit:native-palette", () => currentNativePalette());
     ipcMain.handle("cockpit:open-window", (_event, hash) => {
@@ -656,7 +659,7 @@ if (!app.requestSingleInstanceLock()) {
         },
         { type: "separator" },
         { label: "Update & Restart", click: updateAndRestart },
-        { label: "Kill Server & Quit", click: killServerAndQuit },
+        ...(proxyMode ? [] : [{ label: "Kill Server & Quit", click: killServerAndQuit }]),
         { type: "separator" },
         { label: "Quit PR Cockpit", click: quitPrCockpit },
       ]),

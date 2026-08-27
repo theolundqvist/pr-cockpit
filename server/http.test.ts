@@ -1169,7 +1169,7 @@ describe("PR file edits", () => {
     };
     const fetchHandler = buildFetchHandler(4820, {
       startGithubSetup: async (scopes) => {
-        requestedScopes = scopes;
+        requestedScopes = scopes ?? [];
         return auth;
       },
     });

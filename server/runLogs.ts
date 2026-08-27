@@ -2,7 +2,6 @@ import { gzip, gunzip } from "node:zlib";
 import { promisify } from "node:util";
 import {
   RUN_JOB_LOG_FORMAT_VERSION,
-  activeActionsLeases,
   actionsLease,
   getFileContents,
   getRunJobLog,
@@ -476,17 +475,6 @@ export function activateActionsLease(
   return queueActionsLease(repo, number, headSha, fetchers);
 }
 
-export async function resumeActionsLeases(fetchers: ActionsFetchers = liveFetchers): Promise<void> {
-  const failures: unknown[] = [];
-  for (const lease of activeActionsLeases()) {
-    try {
-      await queueActionsLease(lease.repo, lease.number, lease.head_sha, fetchers);
-    } catch (error) {
-      failures.push(error);
-    }
-  }
-  if (failures.length > 0) throw new AggregateError(failures, "failed to resume Actions leases");
-}
 
 export async function ingestActionsState(
   repo: string,

@@ -167,10 +167,8 @@ test("concurrent activation bootstraps once and terminal attempts reconcile once
       fetchJobLog: async (_repo, id) => { calls.logs.push(id); return huge; },
       restRemaining: async () => 5000,
     };
-    dbm.db.query("INSERT INTO actions_leases(repo,number,head_sha,expires_at,bootstrapped_at) VALUES(?,?,?,?,NULL)")
-      .run("acme/app", 7, head, "2099-08-24T10:00:00Z");
     await Promise.all([
-      actions.resumeActionsLeases(fetchers),
+      actions.activateActionsLease("acme/app", 7, head, fetchers),
       actions.activateActionsLease("acme/app", 7, head, fetchers),
     ]);
     const first = JSON.parse(JSON.stringify(calls));
@@ -185,6 +183,7 @@ test("concurrent activation bootstraps once and terminal attempts reconcile once
       cleaned: !body.includes("2026-08-24T10:00:00.000Z"),
       ansiPreserved: body.includes("\\u001b[31mred\\u001b[0m"),
       reconciled: dbm.db.query("SELECT reconciled_at IS NOT NULL AS done FROM workflow_runs WHERE run_id=11").get().done,
+      leaseSeconds: dbm.db.query("SELECT CAST((julianday(expires_at) - julianday('now')) * 86400 AS INTEGER) AS seconds FROM actions_leases").get().seconds,
     }));
   `);
   expect(result.first).toEqual({ runs: 1, jobs: [[10, null], [11, 1]], logs: [110, 111, 113, 114] });
@@ -197,6 +196,8 @@ test("concurrent activation bootstraps once and terminal attempts reconcile once
   expect(result.cleaned).toBe(true);
   expect(result.ansiPreserved).toBe(true);
   expect(result.reconciled).toBe(1);
+  expect(result.leaseSeconds).toBeGreaterThan(60);
+  expect(result.leaseSeconds).toBeLessThanOrEqual(120);
 });
 
 test("an explicit run request caches one current-head run once and rejects another head", async () => {
@@ -261,7 +262,7 @@ test("an explicit run request caches one current-head run once and rejects anoth
   });
 });
 
-test("an explicit activation for a new head queues behind a startup repair for the old head", async () => {
+test("an explicit activation for a new head queues behind an in-flight activation for the old head", async () => {
   const result = await runScenario("pr-cockpit-actions-head-change-", `
     const actions = await import(${JSON.stringify(runLogsUrl)});
     const dbm = await import(${JSON.stringify(dbUrl)});
@@ -270,16 +271,28 @@ test("an explicit activation for a new head queues behind a startup repair for t
     dbm.db.query("INSERT INTO actions_leases(repo,number,head_sha,expires_at,bootstrapped_at) VALUES(?,?,?,?,NULL)")
       .run("acme/app", 7, head, "2099-08-24T10:00:00Z");
     const heads = [];
+    let releaseOld;
+    let markOldStarted;
+    const oldStarted = new Promise((resolve) => { markOldStarted = resolve; });
+    const oldReleased = new Promise((resolve) => { releaseOld = resolve; });
     const fetchers = {
-      fetchWorkflowRuns: async (_repo, sha) => { heads.push(sha); await Bun.sleep(5); return []; },
+      fetchWorkflowRuns: async (_repo, sha) => {
+        heads.push(sha);
+        if (sha === head) {
+          markOldStarted();
+          await oldReleased;
+        }
+        return [];
+      },
       fetchRunJobs: async () => [],
       fetchJobLog: async () => "",
       restRemaining: async () => 5000,
     };
-    const resume = actions.resumeActionsLeases(fetchers);
-    await Bun.sleep(1);
+    const first = actions.activateActionsLease("acme/app", 7, head, fetchers);
+    await oldStarted;
     const explicit = actions.activateActionsLease("acme/app", 7, nextHead, fetchers);
-    await Promise.all([resume, explicit]);
+    releaseOld();
+    await Promise.all([first, explicit]);
     console.log(JSON.stringify({
       heads,
       lease: dbm.db.query("SELECT head_sha,bootstrapped_at IS NOT NULL AS bootstrapped FROM actions_leases").get(),
@@ -366,14 +379,11 @@ test("reserve defers background spend, explicit activation repairs, and a newer 
   expect(result.visible).toBe(1);
 });
 
-test("startup resumes every active lease without extending expiry and retries transient log failures", async () => {
-  const result = await runScenario("pr-cockpit-actions-resume-", `
+test("explicit activation retries transient log failures", async () => {
+  const result = await runScenario("pr-cockpit-actions-retry-", `
     const actions = await import(${JSON.stringify(runLogsUrl)});
     const dbm = await import(${JSON.stringify(dbUrl)});
     ${seed}
-    const expiry = "2099-08-24T10:00:00Z";
-    dbm.db.query("INSERT INTO actions_leases(repo,number,head_sha,expires_at,bootstrapped_at) VALUES(?,?,?,?,NULL)")
-      .run("acme/app", 7, head, expiry);
     let logCalls = 0;
     const fetchers = {
       fetchWorkflowRuns: async () => [{ id: 80, run_attempt: 1, head_sha: head, head_branch: "feature",
@@ -389,15 +399,15 @@ test("startup resumes every active lease without extending expiry and retries tr
       },
       restRemaining: async () => 5000,
     };
-    await actions.resumeActionsLeases(fetchers);
-    const afterResume = dbm.db.query("SELECT expires_at FROM actions_leases").get().expires_at;
+    try {
+      await actions.activateActionsLease("acme/app", 7, head, fetchers);
+    } catch {}
     const beforeRetry = dbm.db.query("SELECT reconciled_at FROM workflow_runs").get().reconciled_at;
     await actions.activateActionsLease("acme/app", 7, head, fetchers);
     const afterRetry = dbm.db.query("SELECT reconciled_at IS NOT NULL AS done,log_gz IS NOT NULL AS logged FROM workflow_runs JOIN run_jobs USING(repo,run_id,run_attempt)").get();
     const jobsOutput = actions.formatRunJobs(head, dbm.listRunJobs("acme/app", head));
-    console.log(JSON.stringify({ expiry, afterResume, beforeRetry, afterRetry, logCalls, jobsOutput }));
+    console.log(JSON.stringify({ beforeRetry, afterRetry, logCalls, jobsOutput }));
   `);
-  expect(result.afterResume).toBe(result.expiry);
   expect(result.beforeRetry).toBeNull();
   expect(result.afterRetry).toEqual({ done: 1, logged: 1 });
   expect(result.logCalls).toBe(2);

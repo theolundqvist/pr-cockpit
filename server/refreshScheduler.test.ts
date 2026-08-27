@@ -37,3 +37,20 @@ test("attributes a trailing refresh to the latest trigger", async () => {
 
   expect(sources).toEqual(["background poll", "relay"]);
 });
+
+test("combines different trailing scopes into one full refresh", async () => {
+  const gate = Promise.withResolvers<void>();
+  const scopes: string[] = [];
+  const refresh = createPrRefreshScheduler(async (_repo, _number, _source, scope) => {
+    scopes.push(scope ?? "");
+    if (scopes.length === 1) await gate.promise;
+  });
+
+  const first = refresh("org/repo", 42, "background poll", "checks");
+  refresh("org/repo", 42, "relay", "review");
+  refresh("org/repo", 42, "webhook", "checks");
+  gate.resolve();
+  await first;
+
+  expect(scopes).toEqual(["checks", "all"]);
+});

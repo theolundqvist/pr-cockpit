@@ -633,7 +633,7 @@ type PrSummaryCheck = { name: string; state: CheckState; required: boolean; url:
 type PrSummaryComment = { author: string; body: string; createdAt: string };
 type PrSummaryThread = { handle: string; path: string; line: number | null; outdated: boolean; comments: PrSummaryComment[] };
 type PrSummaryNewComment = PrSummaryComment & {
-  kind: "comment" | "review" | "thread";
+  kind: PrCommentSince["kind"];
   path: string | null;
   line: number | null;
   state: string | null;
@@ -1772,7 +1772,7 @@ async function handleCommitMessage(req: Request, runtime: HttpRuntime): Promise<
   const stored = getPr(repo, number) ?? getCachedPrDetail(repo, number);
   if (!stored) return json({ error: "PR is not cached yet" }, 404);
   const detail = JSON.parse(stored.detail_json) as { title?: string };
-  const title = detail.title ?? ("title" in stored ? stored.title : "");
+  const title = detail.title ?? ("title" in stored && typeof stored.title === "string" ? stored.title : "");
   try {
     const message = await runtime.generateCommitMessage({
       title,

@@ -42,16 +42,20 @@ Server environment:
 COCKPIT_PORT=4820                                  # HTTP port
 COCKPIT_DATA_DIR="$HOME/.local/share/pr-cockpit"   # SQLite cache, images, queued actions
 COCKPIT_REPOS="owner/repo,owner/other-repo"        # seeds tracked repos on first launch
+COCKPIT_PROXY="scape-agent"                       # optional authoritative server reached over SSH
+COCKPIT_PROXY_PORT=4820                            # Cockpit port on that SSH host
 ```
 
 `COCKPIT_MANAGED=1` is exported by `scripts/cockpit` and read by the Electron shell, not the server. It marks the installed instance so a dev launch stays isolated from it.
 
+Proxy mode runs no local Bun server or cache: `scripts/cockpit --use-as-proxy HOST` and `pr-cockpit --use-as-proxy HOST ...` tunnel the authoritative server over SSH. A proxy outage must surface as an outage, never fall back to local polling, and local install or quit paths must never shut down the remote server.
+
 Runbook:
 
-The installed server usually runs from the `app.pr-cockpit.server` launch agent, whose plist carries `COCKPIT_ROOT`, the port, and the data directory. Check with `launchctl list | grep cockpit`; the separate `app.pr-cockpit` entry is the renderer and must be left alone.
+The installed backend runs from the `app.pr-cockpit.server` launch agent as either the local Bun server or the configured SSH proxy. Check with `launchctl list | grep cockpit`; the separate `app.pr-cockpit` entry is the renderer and must be left alone.
 
 1. Launch-agent managed: `launchctl kickstart -k gui/$(id -u)/app.pr-cockpit.server`. This restarts it under launchd with the plist's own environment, which a hand-rolled `bun server/main.ts` will not reproduce. The kickstart call can take a minute, so run it in the background rather than assuming it hung.
-2. Not managed (no `launchctl` entry): identify the listener with `lsof -nP -iTCP:<port> -sTCP:LISTEN`, because some agent sandboxes make `pgrep` fail even when the process exists. Stop only that PID with `kill -TERM <pid>`, then start `bun server/main.ts` with the environment above. In an agent terminal, keep the server's exec session alive; a detached `nohup` child from a one-shot tool shell may be cleaned up when that shell exits. The plist sets no `KeepAlive`, so nothing revives the old process for you.
+2. Not managed (no `launchctl` entry): identify the listener with `lsof -nP -iTCP:<port> -sTCP:LISTEN`, because some agent sandboxes make `pgrep` fail even when the process exists. Stop only that PID with `kill -TERM <pid>`, then start `bun server/main.ts` with the environment above. In an agent terminal, keep the server's exec session alive; a detached `nohup` child from a one-shot tool shell may be cleaned up when that shell exits. The managed backend restarts after failures but not after a deliberate clean shutdown.
 3. Verify with `curl -fsS -i http://127.0.0.1:<port>/healthz`. A healthy response is `200` with `root`, `lastPollAt`, and `prCount`. Note that `lastPollAt` is `null` immediately after a restart until the first poll completes.
 
 A restricted sandbox can reject loopback `curl` even while the server is listening, so confirm with a less restricted local check before concluding the server is down. A listening port alone is also not evidence of healthy GitHub ingestion: for an update outage, force `POST /api/refresh`, verify that `lastPollAt` advances, and use `prCount` to confirm the cache is populated as expected.

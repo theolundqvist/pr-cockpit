@@ -65,8 +65,8 @@ async function tick(): Promise<void> {
 
   for (const { repo, number } of changedSignals(collectSignals(status))) {
     const key = prKeyOf(repo, number);
-    void refreshPrFromEvent(repo, number, async (targetRepo, targetNumber) => {
-      if (await backgroundPollAllowed()) await refreshPr(targetRepo, targetNumber, "daemon");
+    void refreshPrFromEvent(repo, number, "all", async (targetRepo, targetNumber, scope) => {
+      if (await backgroundPollAllowed()) await refreshPr(targetRepo, targetNumber, "daemon", scope);
     }).catch((err) => console.error(`daemon-triggered refresh failed for ${key}:`, err));
   }
 }

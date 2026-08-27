@@ -138,7 +138,7 @@ describe("webhook registrations", () => {
     const response = await checkEvent("acme/widget", 41);
 
     expect(await response?.text()).toBe("ok");
-    expect(refreshPr).toHaveBeenCalledWith("acme/widget", 41);
+    expect(refreshPr).toHaveBeenCalledWith("acme/widget", 41, "webhook", "checks");
     expect(listWebhookRegistrations()).toContainEqual(expect.objectContaining({
       repo: "acme/widget",
       number: 41,

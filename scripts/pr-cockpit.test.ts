@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -332,6 +332,7 @@ test("resolve rejects PR resource query options", async () => {
   ], {
     stdout: "pipe",
     stderr: "pipe",
+    env: { ...Bun.env, COCKPIT_PORT: "1" },
   });
   const [, exitCode] = await Promise.all([
     new Response(process.stderr).text(),
@@ -580,5 +581,94 @@ test("mutation commands report queued GitHub failures", async () => {
     expect(error).toBe("pr-cockpit: branch protection rejected merge\n");
   } finally {
     server.stop(true);
+  }
+});
+
+test("--use-as-proxy reads the authoritative server through an existing SSH forward", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pr-cockpit-proxy-cli-"));
+  const dataDir = join(home, "data");
+  mkdirSync(dataDir);
+  writeFileSync(join(dataDir, "proxy.pid"), `${process.pid}\n`);
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      if (new URL(request.url).pathname === "/healthz") return Response.json({ root: "/remote/pr-cockpit" });
+      return new Response("proxied\n");
+    },
+  });
+
+  try {
+    const child = Bun.spawn(
+      [join(import.meta.dir, "pr-cockpit"), "--use-as-proxy", "ssh://scape-agent", "owner/repo#1"],
+      {
+        env: {
+          ...Bun.env,
+          HOME: home,
+          COCKPIT_DATA_DIR: dataDir,
+          COCKPIT_PORT: String(server.port),
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const [output, error, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect(exitCode).toBe(0);
+    expect(error).toBe("");
+    expect(output).toBe("proxied\n");
+  } finally {
+    server.stop(true);
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("proxy backend binds a local port to the Cockpit port over SSH", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pr-cockpit-proxy-launcher-"));
+  const bin = join(home, "bin");
+  const dataDir = join(home, "data");
+  const argsFile = join(home, "ssh-args");
+  mkdirSync(bin);
+  const ssh = join(bin, "ssh");
+  writeFileSync(ssh, '#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "$PROXY_ARGS"\n');
+  chmodSync(ssh, 0o755);
+
+  try {
+    const child = Bun.spawn(
+      [join(import.meta.dir, "cockpit"), "--server-only", "--use-as-proxy", "ssh://root@dev-vm"],
+      {
+        env: {
+          ...Bun.env,
+          HOME: home,
+          PATH: `${bin}:${Bun.env.PATH}`,
+          COCKPIT_DATA_DIR: dataDir,
+          COCKPIT_PORT: "4891",
+          COCKPIT_PROXY_PORT: "4820",
+          PROXY_ARGS: argsFile,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    expect(await child.exited).toBe(0);
+    expect(readFileSync(argsFile, "utf8").trim().split("\n")).toEqual([
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "ExitOnForwardFailure=yes",
+      "-o",
+      "ServerAliveInterval=15",
+      "-o",
+      "ServerAliveCountMax=3",
+      "-N",
+      "-L",
+      "127.0.0.1:4891:127.0.0.1:4820",
+      "root@dev-vm",
+    ]);
+    expect(readFileSync(join(dataDir, "proxy.pid"), "utf8")).toMatch(/^[0-9]+\n$/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
   }
 });

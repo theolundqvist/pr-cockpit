@@ -38,6 +38,19 @@ Other commands:
   cache-run REF RUN_ID fetch one Actions run and retain its unsuccessful logs
   update               update and reconcile the installed app
 
+Options:
+  --jobs              cached Actions jobs, including queued and running state
+  --json              machine-readable Cockpit status
+  --diff              cached unified diff
+  --file PATH         file contents at the PR head
+  --logs [CHECK]      cached Actions job logs for failed and cancelled checks
+  --new-since DATE    only comments at or after DATE
+  --ci-only           with listen REF, wake only for CI changes or current failure
+  --comments-only     with listen REF, wake only for comment changes or current open comments
+  --use-as-proxy HOST
+                      reach the authoritative Cockpit server through SSH
+  -h, --help          show this help
+
 Read options:
   --jobs               cached Actions jobs, including queued and running state
   --json               machine-readable Cockpit status
@@ -154,6 +167,7 @@ comment_side=""
 start_line=""
 start_side=""
 positionals=()
+proxy_arg=""
 while (($#)); do
   case "$1" in
     --json)
@@ -233,6 +247,11 @@ while (($#)); do
       shift
       start_side="$1"
       ;;
+    --use-as-proxy)
+      [[ $# -gt 1 ]] || usage
+      shift
+      proxy_arg="$1"
+      ;;
     -h|--help) usage 0 ;;
     -*) usage ;;
     *)
@@ -258,9 +277,65 @@ else
   [[ "${#positionals[@]}" -eq 0 && -z "$body_file" && -z "$mutation_method" && "$force" = "0" && -z "$comment_path" && -z "$comment_line" && -z "$comment_side" && -z "$start_line" && -z "$start_side" ]] || usage
 fi
 
-port=$(cockpit_port)
+config_file="$HOME/.config/pr-cockpit/config"
+env_port="${COCKPIT_PORT:-}"
+env_data_dir="${COCKPIT_DATA_DIR:-}"
+env_proxy="${COCKPIT_PROXY:-}"
+env_proxy_port="${COCKPIT_PROXY_PORT:-}"
+if [[ -f "$config_file" ]]; then
+  # shellcheck disable=SC1090
+  source "$config_file"
+fi
+port="${env_port:-${COCKPIT_PORT:-4820}}"
+data_dir="${env_data_dir:-${COCKPIT_DATA_DIR:-$HOME/.local/share/pr-cockpit}}"
+if [[ -n "$proxy_arg" ]]; then
+  proxy="$proxy_arg"
+elif [[ -n "$env_proxy" ]]; then
+  proxy="$env_proxy"
+elif [[ -n "$env_port" ]]; then
+  proxy=""
+else
+  proxy="${COCKPIT_PROXY:-}"
+fi
+proxy="${proxy#ssh://}"
+proxy="${proxy%/}"
+proxy_port="${env_proxy_port:-${COCKPIT_PROXY_PORT:-4820}}"
+if [[ -n "$proxy" && ! "$proxy" =~ ^([A-Za-z0-9._-]+@)?[A-Za-z0-9._-]+$ ]]; then
+  echo "pr-cockpit: proxy must be an SSH host such as scape-agent or root@host" >&2
+  exit 2
+fi
 bun_bin=$(command -v bun || true)
 [[ -n "$bun_bin" ]] || { echo "pr-cockpit: bun is required" >&2; exit 1; }
+
+proxy_ready() {
+  local pid listener
+  pid="$(cat "$data_dir/proxy.pid" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  listener="$(lsof -nP -a -p "$pid" -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true)"
+  [[ "$listener" == "$pid" ]] || return 1
+  curl --noproxy '*' --max-time 2 -fsS "http://127.0.0.1:$port/healthz" >/dev/null 2>&1
+}
+
+if [[ -n "$proxy" ]] && ! proxy_ready; then
+  if curl --noproxy '*' --max-time 2 -fsS "http://127.0.0.1:$port/healthz" >/dev/null 2>&1; then
+    echo "pr-cockpit: port $port is occupied by a local server; stop it or choose another COCKPIT_PORT" >&2
+    exit 1
+  fi
+  launcher="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/cockpit"
+  mkdir -p "$data_dir"
+  COCKPIT_PORT="$port" COCKPIT_DATA_DIR="$data_dir" COCKPIT_PROXY_PORT="$proxy_port" \
+    nohup "$launcher" --server-only --use-as-proxy "$proxy" < /dev/null > "$data_dir/proxy.log" 2>&1 &
+  disown
+  for _ in $(seq 1 100); do
+    proxy_ready && break
+    sleep 0.1
+  done
+  if ! proxy_ready; then
+    echo "pr-cockpit: SSH proxy to $proxy failed — see $data_dir/proxy.log" >&2
+    exit 1
+  fi
+fi
 json_transform() {
   local operation=$1 argument=${2:-}
   "$bun_bin" -e '
