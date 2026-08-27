@@ -26,6 +26,11 @@ export const SETTINGS_SECTIONS = [
     label: "Diff & Tests",
     iconPaths: ["m8 7-4 5 4 5m8-10 4 5-4 5M13.5 5l-3 14"],
   },
+  {
+    id: "advanced",
+    label: "Advanced",
+    iconPaths: ["M4 6c0 1.7 3.6 3 8 3s8-1.3 8-3-3.6-3-8-3-8 1.3-8 3Zm0 0v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"],
+  },
 ];
 
 export function normalizeSettingsSection(value) {

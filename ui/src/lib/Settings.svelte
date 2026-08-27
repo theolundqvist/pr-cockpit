@@ -347,11 +347,6 @@
             <input class="input narrow" type="number" min="60" step="10" bind:value={pollInterval} />
           </label>
 
-          <label class="field field-wide">
-            <span class="label">Remote PR Cockpit server</span>
-            <span class="hint">Optional. Leave empty to use GitHub on this Mac. If your team gave you a shared PR Cockpit server, enter its SSH address.</span>
-            <input class="input mono" bind:value={replicaSshHost} placeholder="user@host" spellcheck="false" autocomplete="off" />
-          </label>
 
           <section class="field field-wide usage-card" aria-label="GitHub GraphQL usage">
             <div class="usage-head">
@@ -717,6 +712,14 @@
             <span class="check-label">Show newest comments first</span>
             <span class="hint">Keeps the PR description at the top, then shows the composer and newest comments first</span>
           </span>
+        </label>
+      {/if}
+
+      {#if activeTab === "advanced"}
+        <label class="field">
+          <span class="label">Connect to primary Cockpit database over SSH</span>
+          <span class="hint">For example, if you have multiple machines and want to save API quota, PR Cockpit can act as a replica of another machine's database.</span>
+          <input class="input mono" bind:value={replicaSshHost} placeholder="user@host" spellcheck="false" autocomplete="off" />
         </label>
       {/if}
 
