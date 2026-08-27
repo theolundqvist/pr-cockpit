@@ -348,9 +348,9 @@
           </label>
 
           <label class="field field-wide">
-            <span class="label">PR data source</span>
-            <span class="hint">Empty polls GitHub on this Mac. Set an SSH host to use that machine's PR Cockpit database and GitHub connection.</span>
-            <input class="input mono" bind:value={replicaSshHost} placeholder="scape-agent or user@host" spellcheck="false" autocomplete="off" />
+            <span class="label">Remote PR Cockpit server</span>
+            <span class="hint">Optional. Leave empty to use GitHub on this Mac. If your team gave you a shared PR Cockpit server, enter its SSH address.</span>
+            <input class="input mono" bind:value={replicaSshHost} placeholder="user@host" spellcheck="false" autocomplete="off" />
           </label>
 
           <section class="field field-wide usage-card" aria-label="GitHub GraphQL usage">
