@@ -3327,6 +3327,9 @@
   .page {
     height: var(--general-height);
     overflow-y: auto;
+    /* Native scrollbars stay composited instead of repainting on every scroll. */
+    scrollbar-width: thin;
+    scrollbar-color: var(--scroll) transparent;
     display: flex;
     justify-content: center;
     align-items: flex-start;
