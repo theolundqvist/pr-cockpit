@@ -6,6 +6,12 @@ import {
   startGithubSetup as startLiveGithubSetup,
   type GithubAuthStatus,
 } from "./githubAuth.ts";
+import {
+  instrumentGithubGraphql,
+  RATE_LIMIT_ALIAS,
+  recordGithubGraphqlUsage,
+  type GithubUsageSource,
+} from "./githubUsage.ts";
 const strictUtf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 type GithubGraphqlError = { type?: string; message?: string };
@@ -52,26 +58,90 @@ let cachedViewerLogin: string | null = null;
 export async function getViewerLogin(): Promise<string> {
   if (mockGithub) return mockGithub.viewerLogin;
   if (cachedViewerLogin) return cachedViewerLogin;
-  const data = await graphql<{ viewer: { login: string } }>("query { viewer { login } }", {});
+  const data = await graphql<{ viewer: { login: string } }>("query { viewer { login } }", {}, "repository setup", "viewer");
   cachedViewerLogin = data.viewer.login;
   return cachedViewerLogin;
 }
 
-async function graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+async function graphql<T>(
+  query: string,
+  variables: Record<string, unknown>,
+  source: GithubUsageSource,
+  operation: string,
+): Promise<T> {
   const token = await ghToken();
-  const res = await fetch("https://api.github.com/graphql", {
-    method: "POST",
-    headers: {
-      Authorization: `bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ query, variables }),
-  });
+  const instrumented = instrumentGithubGraphql(query);
+  let res: Response;
+  try {
+    res = await fetch("https://api.github.com/graphql", {
+      method: "POST",
+      headers: {
+        Authorization: `bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ query: instrumented.document, variables }),
+    });
+  } catch (error) {
+    recordGithubGraphqlUsage({
+      occurredAt: new Date().toISOString(),
+      source,
+      operation,
+      cost: instrumented.fixedCost,
+      used: null,
+      remaining: null,
+      resetAt: null,
+      status: "error",
+    });
+    throw error;
+  }
+  const headerNumber = (name: string): number | null => {
+    const raw = res.headers.get(name);
+    if (raw === null) return null;
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : null;
+  };
+  const headerReset = headerNumber("x-ratelimit-reset");
+  const record = (
+    rateLimit: { cost: number; used: number; remaining: number; resetAt: string } | null,
+    status: "ok" | "error",
+  ) => {
+    const used = rateLimit?.used ?? headerNumber("x-ratelimit-used");
+    const remaining = rateLimit?.remaining ?? headerNumber("x-ratelimit-remaining");
+    const resetAt = rateLimit?.resetAt ?? (headerReset === null ? null : new Date(headerReset * 1_000).toISOString());
+    updateCachedGraphqlQuota(
+      headerNumber("x-ratelimit-limit"),
+      used,
+      remaining,
+      resetAt,
+    );
+    recordGithubGraphqlUsage({
+      occurredAt: new Date().toISOString(),
+      source,
+      operation,
+      cost: rateLimit?.cost ?? instrumented.fixedCost,
+      used,
+      remaining,
+      resetAt,
+      status,
+    });
+  };
   if (!res.ok) {
+    record(null, "error");
     const status = res.status === 404 ? 404 : 502;
     throw new GithubRequestError(`GraphQL request failed: ${res.status} ${await res.text()}`, status);
   }
-  const body = (await res.json()) as { data?: T; errors?: GithubGraphqlError[] };
+  const body = (await res.json()) as {
+    data?: T & Record<string, unknown>;
+    errors?: GithubGraphqlError[];
+  };
+  const rateLimit = body.data?.[RATE_LIMIT_ALIAS] as {
+    cost: number;
+    used: number;
+    remaining: number;
+    resetAt: string;
+  } | undefined;
+  if (body.data) delete body.data[RATE_LIMIT_ALIAS];
+  record(rateLimit ?? null, body.errors?.length ? "error" : "ok");
   if (body.errors?.length) {
     const status = body.errors.every((error) => error.type === "NOT_FOUND") ? 404 : 502;
     throw new GithubRequestError(`GraphQL errors: ${JSON.stringify(body.errors)}`, status, body.errors);
@@ -96,6 +166,20 @@ export interface GithubQuota {
 let cachedQuota: GithubQuota | null = null;
 const QUOTA_TTL_MS = 60_000;
 
+
+function updateCachedGraphqlQuota(
+  limit: number | null,
+  used: number | null,
+  remaining: number | null,
+  resetAt: string | null,
+): void {
+  if (!cachedQuota || limit === null || used === null || remaining === null || resetAt === null) return;
+  cachedQuota = {
+    ...cachedQuota,
+    graphql: { limit, used, remaining, resetAt },
+    fetchedAt: new Date().toISOString(),
+  };
+}
 export async function fetchGithubQuota(): Promise<GithubQuota> {
   if (cachedQuota && Date.now() - Date.parse(cachedQuota.fetchedAt) < QUOTA_TTL_MS) return cachedQuota;
   if (mockGithub) {
@@ -159,7 +243,7 @@ export async function searchOpenPrs(repos: string[]): Promise<SearchHit[]> {
         commits: { nodes: Array<{ commit: { statusCheckRollup: { state: string } | null } }> };
       }>;
     };
-  }>(SEARCH_QUERY, { searchQuery });
+  }>(SEARCH_QUERY, { searchQuery }, "background poll", "open PR search");
   if (data.search.nodes.length === 50) {
     console.warn(`search hit the 50-result cap, PRs may be missing: ${searchQuery}`);
   }
@@ -207,7 +291,7 @@ export async function searchPrs(repos: string[], q: string): Promise<PaletteHit[
         repository: { nameWithOwner: string };
       }>;
     };
-  }>(PALETTE_SEARCH_QUERY, { searchQuery });
+  }>(PALETTE_SEARCH_QUERY, { searchQuery }, "search", "PR search");
   return data.search.nodes.map((n) => ({
     repo: n.repository.nameWithOwner,
     number: n.number,
@@ -252,7 +336,7 @@ export async function lookupPrIndexes(repo: string, numbers: number[]): Promise<
     repository(owner: $owner, name: $name) {
       ${selections}
     }
-  }`, { owner, name });
+  }`, { owner, name }, "search", "PR lookup");
 
   return unique.flatMap((number, index) => {
     const entry = data.repository?.[`pr${index}`];
@@ -322,7 +406,7 @@ export async function searchRecentPrs(repo: string): Promise<PrIndexEntry[]> {
         repository: { nameWithOwner: string };
       }>;
     };
-  }>(RECENT_PRS_QUERY, { searchQuery });
+  }>(RECENT_PRS_QUERY, { searchQuery }, "index sync", "recent PR index");
   return data.search.nodes.map((n) => ({
     repo: n.repository.nameWithOwner,
     number: n.number,
@@ -362,7 +446,7 @@ export async function searchClosedPrs(repos: string[]): Promise<PrIndexEntry[]> 
         repository: { nameWithOwner: string };
       }>;
     };
-  }>(RECENT_PRS_QUERY, { searchQuery });
+  }>(RECENT_PRS_QUERY, { searchQuery }, "index sync", "closed PR index");
   if (data.search.nodes.length === 100) {
     console.warn(`search hit the 100-result cap, PRs may be missing: ${searchQuery}`);
   }
@@ -397,7 +481,7 @@ query {
 
 export async function viewerRepos(): Promise<ViewerRepo[]> {
   if (mockGithub) return mockGithub.viewerRepos();
-  const data = await graphql<{ viewer: { repositories: { nodes: ViewerRepo[] } } }>(VIEWER_REPOS_QUERY, {});
+  const data = await graphql<{ viewer: { repositories: { nodes: ViewerRepo[] } } }>(VIEWER_REPOS_QUERY, {}, "repository setup", "viewer repositories");
   return data.viewer.repositories.nodes;
 }
 
@@ -479,7 +563,7 @@ query {
     reviewRequested: { nodes: ReviewSearchNode[] };
     assigned: { nodes: ReviewSearchNode[] };
     mentioned: { nodes: ReviewSearchNode[] };
-  }>(query, {});
+  }>(query, {}, "review inbox", "review inbox");
 
   const merged = new Map<string, ReviewItem>();
   const addBucket = (nodes: ReviewSearchNode[], bucket: ReviewItem["bucket"]) => {
@@ -525,6 +609,8 @@ export async function fetchAssignableUsers(repo: string): Promise<AssignableUser
   const data = await graphql<{ repository: { assignableUsers: { nodes: AssignableUser[] } } | null }>(
     ASSIGNABLE_USERS_QUERY,
     { owner, name },
+    "repository setup",
+    "assignable users",
   );
   return data.repository?.assignableUsers.nodes ?? [];
 }
@@ -536,7 +622,7 @@ mutation($assignableId: ID!, $assigneeIds: [ID!]!) {
 
 export async function addAssigneesToAssignable(assignableId: string, assigneeIds: string[]): Promise<void> {
   if (mockGithub) return;
-  await graphql(ADD_ASSIGNEES_MUTATION, { assignableId, assigneeIds });
+  await graphql(ADD_ASSIGNEES_MUTATION, { assignableId, assigneeIds }, "user action", "add assignees");
 }
 
 const REQUEST_REVIEWS_MUTATION = `
@@ -546,7 +632,7 @@ mutation($pullRequestId: ID!, $userIds: [ID!]!) {
 
 export async function requestReviewsFromUsers(pullRequestId: string, userIds: string[]): Promise<void> {
   if (mockGithub) return;
-  await graphql(REQUEST_REVIEWS_MUTATION, { pullRequestId, userIds });
+  await graphql(REQUEST_REVIEWS_MUTATION, { pullRequestId, userIds }, "user action", "request reviews");
 }
 
 const RESOLVE_REVIEW_THREAD_MUTATION = `
@@ -558,7 +644,7 @@ mutation($threadId: ID!) {
 
 export async function resolveReviewThread(threadId: string): Promise<void> {
   if (mockGithub) return;
-  await graphql(RESOLVE_REVIEW_THREAD_MUTATION, { threadId });
+  await graphql(RESOLVE_REVIEW_THREAD_MUTATION, { threadId }, "user action", "resolve review thread");
 }
 
 export async function removeAssignees(repo: string, number: number, logins: string[]): Promise<void> {
@@ -918,6 +1004,7 @@ async function completeCheckContexts(
   name: string,
   number: number,
   connection: RawCheckConnection,
+  source: GithubUsageSource,
 ): Promise<void> {
   const cursors = new Set<string>();
   while (connection.pageInfo?.hasNextPage) {
@@ -932,7 +1019,7 @@ async function completeCheckContexts(
           };
         } | null;
       } | null;
-    }>(CHECK_CONTEXTS_PAGE_QUERY, { owner, name, number, after });
+    }>(CHECK_CONTEXTS_PAGE_QUERY, { owner, name, number, after }, source, "PR check pagination");
     const next = data.repository?.pullRequest?.lastCommit.nodes[0]?.commit.statusCheckRollup?.contexts;
     if (!next?.pageInfo) throw new GithubRequestError("Check pagination returned no page", 502);
     connection.nodes.push(...next.nodes);
@@ -941,7 +1028,7 @@ async function completeCheckContexts(
 }
 
 
-async function completeThreadComments(thread: RawThread): Promise<void> {
+async function completeThreadComments(thread: RawThread, source: GithubUsageSource): Promise<void> {
   const cursors = new Set<string>();
   while (thread.comments.pageInfo?.hasNextPage) {
     const after = thread.comments.pageInfo.endCursor;
@@ -950,6 +1037,8 @@ async function completeThreadComments(thread: RawThread): Promise<void> {
     const data = await graphql<{ node: { comments: RawThreadCommentConnection } | null }>(
       THREAD_COMMENTS_PAGE_QUERY,
       { threadId: thread.id, after },
+      source,
+      "PR review comment pagination",
     );
     if (!data.node?.comments.pageInfo) throw new GithubRequestError("Review comment pagination returned no page", 502);
     thread.comments.nodes.push(...data.node.comments.nodes);
@@ -962,6 +1051,7 @@ async function completeReviewThreads(
   name: string,
   number: number,
   connection: RawThreadConnection,
+  source: GithubUsageSource,
 ): Promise<void> {
   const cursors = new Set<string>();
   while (connection.pageInfo?.hasNextPage) {
@@ -970,18 +1060,22 @@ async function completeReviewThreads(
     cursors.add(after);
     const data = await graphql<{
       repository: { pullRequest: { reviewThreads: RawThreadConnection } | null } | null;
-    }>(REVIEW_THREADS_PAGE_QUERY, { owner, name, number, after });
+    }>(REVIEW_THREADS_PAGE_QUERY, { owner, name, number, after }, source, "PR review thread pagination");
     const next = data.repository?.pullRequest?.reviewThreads;
     if (!next?.pageInfo) throw new GithubRequestError("Review thread pagination returned no page", 502);
     connection.nodes.push(...next.nodes);
     connection.pageInfo = next.pageInfo;
   }
   for (const thread of connection.nodes) {
-    if (!thread.isResolved) await completeThreadComments(thread);
+    if (!thread.isResolved) await completeThreadComments(thread, source);
   }
 }
 
-export async function fetchPrDetail(repo: string, number: number): Promise<PrDetail> {
+export async function fetchPrDetail(
+  repo: string,
+  number: number,
+  source: GithubUsageSource = "app detail",
+): Promise<PrDetail> {
   if (mockGithub) return mockGithub.detail(repo, number);
   const [owner, name] = repo.split("/");
   if (!owner || !name) throw new GithubRequestError(`Invalid repository: ${repo}`, 404);
@@ -992,12 +1086,12 @@ export async function fetchPrDetail(repo: string, number: number): Promise<PrDet
     owner,
     name,
     number,
-  });
+  }, source, "PR detail");
   const pullRequest = data.repository?.pullRequest;
   if (!pullRequest) throw new GithubRequestError(`${repo}#${number} was not found`, 404);
   const rollup = pullRequest.lastCommit.nodes[0]?.commit.statusCheckRollup;
-  if (rollup) await completeCheckContexts(owner, name, number, rollup.contexts);
-  await completeReviewThreads(owner, name, number, pullRequest.reviewThreads);
+  if (rollup) await completeCheckContexts(owner, name, number, rollup.contexts, source);
+  await completeReviewThreads(owner, name, number, pullRequest.reviewThreads, source);
   const { reactionGroups, ...raw } = pullRequest;
   const viewerLogin = data.viewer.login;
   const viewerReviews = raw.reviews.nodes
@@ -1586,8 +1680,8 @@ mutation($pullRequestId: ID!) {
 // method null disables GitHub's native auto-merge; the enum is the REST method upper-cased
 export async function setGithubAutoMerge(pullRequestId: string, method: MergeMethod | null): Promise<void> {
   if (mockGithub) return mockGithub.setAutoMerge(pullRequestId, method);
-  if (method) await graphql(ENABLE_AUTO_MERGE_MUTATION, { pullRequestId, mergeMethod: method.toUpperCase() });
-  else await graphql(DISABLE_AUTO_MERGE_MUTATION, { pullRequestId });
+  if (method) await graphql(ENABLE_AUTO_MERGE_MUTATION, { pullRequestId, mergeMethod: method.toUpperCase() }, "user action", "enable auto-merge");
+  else await graphql(DISABLE_AUTO_MERGE_MUTATION, { pullRequestId }, "user action", "disable auto-merge");
 }
 
 const RESOLVE_THREAD_MUTATION = `
@@ -1602,7 +1696,7 @@ mutation($threadId: ID!) {
 
 export async function setThreadResolved(threadId: string, resolved: boolean): Promise<void> {
   if (mockGithub) return;
-  await graphql(resolved ? RESOLVE_THREAD_MUTATION : UNRESOLVE_THREAD_MUTATION, { threadId });
+  await graphql(resolved ? RESOLVE_THREAD_MUTATION : UNRESOLVE_THREAD_MUTATION, { threadId }, "user action", resolved ? "resolve review thread" : "unresolve review thread");
 }
 
 const UPDATE_BRANCH_MUTATION = `
@@ -1612,7 +1706,7 @@ mutation($pullRequestId: ID!) {
 
 export async function updatePullRequestBranch(pullRequestId: string): Promise<void> {
   if (mockGithub) return;
-  await graphql(UPDATE_BRANCH_MUTATION, { pullRequestId });
+  await graphql(UPDATE_BRANCH_MUTATION, { pullRequestId }, "user action", "update PR branch");
 }
 
 const MARK_READY_MUTATION = `
@@ -1622,7 +1716,7 @@ mutation($pullRequestId: ID!) {
 
 export async function markPullRequestReadyForReview(pullRequestId: string): Promise<void> {
   if (mockGithub) return;
-  await graphql(MARK_READY_MUTATION, { pullRequestId });
+  await graphql(MARK_READY_MUTATION, { pullRequestId }, "user action", "mark PR ready");
 }
 
 const CLOSE_PR_MUTATION = `
@@ -1632,7 +1726,7 @@ mutation($pullRequestId: ID!) {
 
 export async function closePullRequest(pullRequestId: string): Promise<void> {
   if (mockGithub) return;
-  await graphql(CLOSE_PR_MUTATION, { pullRequestId });
+  await graphql(CLOSE_PR_MUTATION, { pullRequestId }, "user action", "close PR");
 }
 
 const UPDATE_PR_BODY_MUTATION = `
@@ -1642,7 +1736,7 @@ mutation($pullRequestId: ID!, $body: String!) {
 
 export async function updatePullRequestBody(pullRequestId: string, body: string): Promise<void> {
   if (mockGithub) return;
-  await graphql(UPDATE_PR_BODY_MUTATION, { pullRequestId, body });
+  await graphql(UPDATE_PR_BODY_MUTATION, { pullRequestId, body }, "user action", "update PR body");
 }
 
 const UPDATE_PR_TITLE_MUTATION = `
@@ -1652,5 +1746,5 @@ mutation($pullRequestId: ID!, $title: String!) {
 
 export async function updatePullRequestTitle(pullRequestId: string, title: string): Promise<void> {
   if (mockGithub) return;
-  await graphql(UPDATE_PR_TITLE_MUTATION, { pullRequestId, title });
+  await graphql(UPDATE_PR_TITLE_MUTATION, { pullRequestId, title }, "user action", "update PR title");
 }

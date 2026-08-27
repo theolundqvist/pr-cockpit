@@ -6,6 +6,7 @@ import {
   getCachedPrDetail,
   getDiff,
   getFileContents,
+  githubGraphqlUsage,
   getPr,
   getPrByBranch,
   getRanks,
@@ -60,6 +61,7 @@ import {
   type PrCommentSince,
   type PrDetail,
 } from "./github.ts";
+import type { GithubUsageSource } from "./githubUsage.ts";
 import type { GithubAuthStatus } from "./githubAuth.ts";
 import { type CommitFileStat, commitStatsFromMirror, conflictFilesFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError } from "./mirror.ts";
 import { checkState, type CheckState } from "./checkState.ts";
@@ -315,9 +317,10 @@ async function revalidateCachedPrDetail(
   repo: string,
   number: number,
   fetchDetail: typeof fetchPrDetail,
+  source: GithubUsageSource,
 ): Promise<void> {
   const snapshotCutoffAt = new Date().toISOString();
-  const detail = await fetchDetail(repo, number);
+  const detail = await fetchDetail(repo, number, source);
   upsertCachedPrDetail({
     repo,
     number,
@@ -329,14 +332,14 @@ async function revalidateCachedPrDetail(
 }
 
 function createPrDetailRevalidator(
-  refresh: (repo: string, number: number) => Promise<void>,
-): (repo: string, number: number) => Promise<void> {
+  refresh: (repo: string, number: number, source: GithubUsageSource) => Promise<void>,
+): (repo: string, number: number, source: GithubUsageSource) => Promise<void> {
   const revalidating = new Map<string, Promise<void>>();
-  return (repo, number) => {
+  return (repo, number, source) => {
     const key = `${repo}#${number}`;
     let revalidation = revalidating.get(key);
     if (!revalidation) {
-      revalidation = refresh(repo, number);
+      revalidation = refresh(repo, number, source);
       revalidating.set(key, revalidation);
       void revalidation.catch((err) => console.error(`background revalidate failed for ${repo}#${number}:`, err));
       void revalidation.then(
@@ -367,8 +370,8 @@ type HttpDependencies = {
 };
 
 type HttpRuntime = HttpDependencies & {
-  revalidateCachedPrDetail: (repo: string, number: number) => Promise<void>;
-  revalidateTrackedPr: (repo: string, number: number) => Promise<void>;
+  revalidateCachedPrDetail: (repo: string, number: number, source: GithubUsageSource) => Promise<void>;
+  revalidateTrackedPr: (repo: string, number: number, source: GithubUsageSource) => Promise<void>;
 };
 
 const defaultHttpDependencies: HttpDependencies = {
@@ -394,6 +397,19 @@ async function handleGithubQuota(runtime: HttpRuntime): Promise<Response> {
   } catch (err) {
     console.error("GitHub quota fetch failed:", err);
     return json({ error: "GitHub quota unavailable" }, 502);
+  }
+}
+
+async function handleGithubUsage(runtime: HttpRuntime): Promise<Response> {
+  try {
+    const resources = await runtime.fetchGithubQuota();
+    return json({
+      quota: resources.graphql,
+      usage: githubGraphqlUsage(resources.graphql.used, resources.graphql.resetAt),
+    });
+  } catch (err) {
+    console.error("GitHub usage fetch failed:", err);
+    return json({ error: "GitHub usage unavailable" }, 502);
   }
 }
 
@@ -527,16 +543,16 @@ async function handlePrDetail(
       agentSnapshot.freshness === "outdated" ||
       trackedDetailIsStale(tracked.fetched_at, nowMs) ||
       mergeabilityNeedsRefresh(tracked.fetched_at, trackedMergeabilityDetail(tracked), nowMs)
-    ) runtime.revalidateTrackedPr(repoName, num);
+    ) runtime.revalidateTrackedPr(repoName, num, "agent read");
     return json({ ...trackedPrDetail(repoName, num, tracked), agentSnapshot });
   }
   if (tracked) {
     const nowMs = Date.now();
     if (mergeabilityNeedsRefresh(tracked.fetched_at, trackedMergeabilityDetail(tracked), nowMs)) {
-      runtime.revalidateTrackedPr(repoName, num);
+      runtime.revalidateTrackedPr(repoName, num, "app detail");
     } else if (trackedDetailIsStale(tracked.fetched_at, nowMs)) {
       try {
-        await runtime.refreshPr(repoName, num);
+        await runtime.refreshPr(repoName, num, "app detail");
         tracked = getPr(repoName, num);
       } catch (err) {
         console.error(`stale detail refresh failed for ${repoName}#${num}:`, err);
@@ -552,7 +568,7 @@ async function handlePrDetail(
     const recent = nowMs - new Date(cached.fetched_at).getTime() <= UNTRACKED_STALE_MS;
     const agentSnapshot = snapshotStatus(cached.fetched_at, lastWebhookAtForPr(repoName, num));
     if (agentSnapshot.freshness === "outdated" || !recent || mergeabilityNeedsRefresh(cached.fetched_at, detail, nowMs)) {
-      runtime.revalidateCachedPrDetail(repoName, num);
+      runtime.revalidateCachedPrDetail(repoName, num, "agent read");
     }
     return json({
       ...withBaseBranchPr(repoName, num, detail),
@@ -564,14 +580,14 @@ async function handlePrDetail(
     const detail = JSON.parse(cached.detail_json);
     const stale = nowMs - new Date(cached.fetched_at).getTime() > UNTRACKED_STALE_MS;
     if (stale || mergeabilityNeedsRefresh(cached.fetched_at, detail, nowMs)) {
-      runtime.revalidateCachedPrDetail(repoName, num);
+      runtime.revalidateCachedPrDetail(repoName, num, "app detail");
     }
     return json(withBaseBranchPr(repoName, num, detail));
   }
 
   try {
     const snapshotCutoffAt = new Date().toISOString();
-    const detail = await runtime.fetchPrDetail(repoName, num);
+    const detail = await runtime.fetchPrDetail(repoName, num, agentRead ? "agent read" : "app detail");
     upsertCachedPrDetail({
       repo: repoName,
       number: num,
@@ -1142,9 +1158,9 @@ async function handleResolveReviewThread(
   }
   try {
     if (getPr(repoName, num)) {
-      await runtime.revalidateTrackedPr(repoName, num);
+      await runtime.revalidateTrackedPr(repoName, num, "mutation recovery");
     } else {
-      await runtime.revalidateCachedPrDetail(repoName, num);
+      await runtime.revalidateCachedPrDetail(repoName, num, "mutation recovery");
     }
   } catch (err) {
     console.error(`post-resolution refresh failed for ${repoName}#${num}:`, err);
@@ -1641,7 +1657,7 @@ async function handlePrFileEdit(req: Request, runtime: HttpRuntime): Promise<Res
       content,
       message: headline,
     });
-    void runtime.refreshPr(repo, number).catch((error) => console.error(`PR detail refresh failed after file edit for ${repo}#${number}:`, error));
+    void runtime.refreshPr(repo, number, "file edit").catch((error) => console.error(`PR detail refresh failed after file edit for ${repo}#${number}:`, error));
     return json({ ok: true, commitOid });
   } catch (error) {
     if (error instanceof StalePrHeadError) {
@@ -2240,11 +2256,11 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
   const dependencies: HttpDependencies = { ...defaultHttpDependencies, ...dependencyOverrides };
   const runtime: HttpRuntime = {
     ...dependencies,
-    revalidateCachedPrDetail: createPrDetailRevalidator((repo, number) =>
-      revalidateCachedPrDetail(repo, number, dependencies.fetchPrDetail)
+    revalidateCachedPrDetail: createPrDetailRevalidator((repo, number, source) =>
+      revalidateCachedPrDetail(repo, number, dependencies.fetchPrDetail, source)
     ),
-    revalidateTrackedPr: createPrDetailRevalidator(async (repo, number) => {
-      await dependencies.refreshPr(repo, number);
+    revalidateTrackedPr: createPrDetailRevalidator(async (repo, number, source) => {
+      await dependencies.refreshPr(repo, number, source);
     }),
   };
   const webhookRoute = buildWebhookRoutes();
@@ -2281,6 +2297,9 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
 
     if (req.method === "GET" && url.pathname === "/api/quota") {
       return handleGithubQuota(runtime);
+    }
+    if (req.method === "GET" && url.pathname === "/api/github-usage") {
+      return handleGithubUsage(runtime);
     }
     if (req.method === "GET" && url.pathname === "/api/inbox") {
       return handleInbox(url);

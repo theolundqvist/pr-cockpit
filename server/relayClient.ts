@@ -77,7 +77,7 @@ export async function pollRelayOnce(
       if (!refreshed.has(key)) {
         refreshed.add(key);
         if (getPr(marker.repo, marker.number) !== null) {
-          refreshPr(marker.repo, marker.number).catch((error) =>
+          refreshPr(marker.repo, marker.number, "relay").catch((error) =>
             console.error(`relay-triggered refresh failed for ${key}:`, error)
           );
         }

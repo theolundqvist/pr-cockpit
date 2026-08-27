@@ -188,7 +188,7 @@ async function executeMutation(row: MutationRow): Promise<boolean> {
     }
     case "merge": {
       // Force skips Cockpit's own merge gate; GitHub still decides whether the merge is allowed.
-      await refreshPr(row.repo, row.number);
+      await refreshPr(row.repo, row.number, "mutation recovery");
       const currentBase = currentBaseRef(row.repo, row.number);
       if (currentBase !== payload.baseRef) {
         throw new Error(`PR retargeted from ${payload.baseRef} to ${currentBase}; confirm the merge method again`);
@@ -281,7 +281,7 @@ export async function finalizeMutation(
 ): Promise<void> {
   dependencies.setMutationState(row.id, "refreshing", null);
   try {
-    await dependencies.refreshPr(row.repo, row.number);
+    await dependencies.refreshPr(row.repo, row.number, "mutation recovery");
     if (merged) await dependencies.pollOnce();
   } catch (err) {
     console.error("post-mutation refresh failed:", err);

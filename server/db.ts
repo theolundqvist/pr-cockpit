@@ -1,5 +1,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
+import { hostname } from "node:os";
+import { setGithubGraphqlUsageRecorder, type GithubGraphqlUsageEvent } from "./githubUsage.ts";
 import { SCHEMA_EPOCH, type PrIndexEntry } from "./github.ts";
 import { prKey } from "./prKey.ts";
 
@@ -75,6 +77,22 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS github_graphql_usage (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  occurred_at TEXT NOT NULL,
+  machine TEXT NOT NULL,
+  source TEXT NOT NULL,
+  operation TEXT NOT NULL,
+  cost INTEGER,
+  used INTEGER,
+  remaining INTEGER,
+  reset_at TEXT,
+  status TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS github_graphql_usage_window_idx
+ON github_graphql_usage (reset_at, source, operation);
 
 CREATE TABLE IF NOT EXISTS pr_index (
   repo TEXT NOT NULL,
@@ -1227,4 +1245,104 @@ const getCachedPrDetailStmt = db.prepare<CachedPrDetailRow, [string, number]>(
 
 export function getCachedPrDetail(repo: string, number: number): CachedPrDetailRow | null {
   return getCachedPrDetailStmt.get(repo, number) ?? null;
+}
+
+const insertGithubGraphqlUsageStmt = db.prepare(`
+INSERT INTO github_graphql_usage (
+  occurred_at, machine, source, operation, cost, used, remaining, reset_at, status
+) VALUES (
+  $occurred_at, $machine, $source, $operation, $cost, $used, $remaining, $reset_at, $status
+)`);
+const pruneGithubGraphqlUsageStmt = db.prepare(
+  "DELETE FROM github_graphql_usage WHERE julianday(occurred_at) < julianday('now', '-7 days')",
+);
+let lastGithubUsagePruneAt = 0;
+const githubUsageTrackingStartedAt = new Date().toISOString();
+
+setGithubGraphqlUsageRecorder((event: GithubGraphqlUsageEvent) => {
+  const now = Date.now();
+  if (now - lastGithubUsagePruneAt >= 60 * 60_000) {
+    pruneGithubGraphqlUsageStmt.run();
+    lastGithubUsagePruneAt = now;
+  }
+  insertGithubGraphqlUsageStmt.run({
+    $occurred_at: event.occurredAt,
+    $machine: hostname(),
+    $source: event.source,
+    $operation: event.operation,
+    $cost: event.cost,
+    $used: event.used,
+    $remaining: event.remaining,
+    $reset_at: event.resetAt,
+    $status: event.status,
+  });
+});
+
+interface GithubUsageRow {
+  label: string;
+  points: number;
+  requests: number;
+  unknown_cost_requests: number;
+}
+
+export interface GithubGraphqlUsageSummary {
+  machine: string;
+  recordedSince: string | null;
+  localPoints: number;
+  localRequests: number;
+  unknownCostRequests: number;
+  otherPoints: number | null;
+  windowComplete: boolean;
+  windowStartedAt: string;
+  sources: Array<{ source: string; points: number; requests: number; unknownCostRequests: number }>;
+  operations: Array<{ operation: string; points: number; requests: number; unknownCostRequests: number }>;
+}
+
+function githubUsageRows(column: "source" | "operation", resetAt: string): GithubUsageRow[] {
+  return db.query<GithubUsageRow, [string]>(`
+    SELECT ${column} AS label,
+      COALESCE(SUM(cost), 0) AS points,
+      COUNT(*) AS requests,
+      SUM(cost IS NULL) AS unknown_cost_requests
+    FROM github_graphql_usage
+    WHERE reset_at = ?
+    GROUP BY ${column}
+    ORDER BY points DESC, requests DESC, label
+  `).all(resetAt);
+}
+
+export function githubGraphqlUsage(globalUsed: number, resetAt: string): GithubGraphqlUsageSummary {
+  const sources = githubUsageRows("source", resetAt);
+  const operations = githubUsageRows("operation", resetAt);
+  const localPoints = sources.reduce((sum, row) => sum + row.points, 0);
+  const localRequests = sources.reduce((sum, row) => sum + row.requests, 0);
+  const unknownCostRequests = sources.reduce((sum, row) => sum + row.unknown_cost_requests, 0);
+  const first = db.query<{ occurred_at: string | null }, [string]>(
+    "SELECT MIN(occurred_at) AS occurred_at FROM github_graphql_usage WHERE reset_at = ?",
+  ).get(resetAt);
+  const windowStartedAt = new Date(Date.parse(resetAt) - 60 * 60_000).toISOString();
+  const windowComplete = Date.parse(githubUsageTrackingStartedAt) <= Date.parse(windowStartedAt)
+    && unknownCostRequests === 0;
+  return {
+    machine: hostname(),
+    recordedSince: first?.occurred_at ?? null,
+    localPoints,
+    localRequests,
+    unknownCostRequests,
+    otherPoints: windowComplete ? Math.max(0, globalUsed - localPoints) : null,
+    windowComplete,
+    windowStartedAt,
+    sources: sources.map((row) => ({
+      source: row.label,
+      points: row.points,
+      requests: row.requests,
+      unknownCostRequests: row.unknown_cost_requests,
+    })),
+    operations: operations.map((row) => ({
+      operation: row.label,
+      points: row.points,
+      requests: row.requests,
+      unknownCostRequests: row.unknown_cost_requests,
+    })),
+  };
 }

@@ -1,5 +1,5 @@
 <script>
-  import { fetchRelayCoverage, fetchRelayStatus, fetchSettings, saveSettings } from "./api.js";
+  import { fetchGithubUsage, fetchRelayCoverage, fetchRelayStatus, fetchSettings, saveSettings } from "./api.js";
   import { setCodeTheme, setFonts, setScales, setTheme } from "./theme.svelte.js";
   import { setPrefs } from "./prefs.svelte.js";
   import { BUILTIN_TEST_PATH } from "./testPath.js";
@@ -39,6 +39,8 @@
   let relayUrl = $state("");
   let relayInfo = $state(null);
   let relayCoverage = $state(null);
+  let githubUsage = $state(null);
+  let githubUsageError = $state(false);
   let loaded = $state(false);
   let saving = $state(false);
   let saved = $state(false);
@@ -155,6 +157,15 @@
     return "Live — waiting for the first PR event.";
   });
 
+  const usageNumber = new Intl.NumberFormat();
+  function usagePercent(value, total) {
+    return total > 0 ? Math.min(100, (value / total) * 100) : 0;
+  }
+
+  function resetTime(timestamp) {
+    return new Date(timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+
   function openGithubAppSetup() {
     window.open(`${location.origin}/api/github-app/start?org=${encodeURIComponent(relayOrg)}`, "_blank", "noopener");
   }
@@ -186,6 +197,9 @@
     fetchRelayCoverage()
       .then((c) => (relayCoverage = c))
       .catch(() => {});
+    fetchGithubUsage()
+      .then((next) => (githubUsage = next))
+      .catch(() => (githubUsageError = true));
   });
 
   async function save() {
@@ -329,6 +343,75 @@
             <span class="hint">Seconds — minimum 60 (GitHub quota), 180 recommended</span>
             <input class="input narrow" type="number" min="60" step="10" bind:value={pollInterval} />
           </label>
+
+          <section class="field field-wide usage-card" aria-label="GitHub GraphQL usage">
+            <div class="usage-head">
+              <div>
+                <span class="label">GitHub GraphQL usage</span>
+                <span class="hint">Current hourly GitHub window on {githubUsage?.usage?.machine ?? "this machine"}</span>
+              </div>
+              {#if githubUsage?.quota}
+                <strong class="usage-total">{usagePercent(githubUsage.quota.used, githubUsage.quota.limit).toFixed(1)}%</strong>
+              {/if}
+            </div>
+            {#if githubUsage?.quota && githubUsage?.usage}
+              <div
+                class="quota-track"
+                role="meter"
+                aria-label="GitHub GraphQL quota consumed"
+                aria-valuemin="0"
+                aria-valuemax={githubUsage.quota.limit}
+                aria-valuenow={githubUsage.quota.used}
+              >
+                <span style={`width: ${usagePercent(githubUsage.quota.used, githubUsage.quota.limit)}%`}></span>
+              </div>
+              <div class="usage-stats">
+                <div>
+                  <strong>{usageNumber.format(githubUsage.quota.used)}</strong>
+                  <span>of {usageNumber.format(githubUsage.quota.limit)} points consumed</span>
+                </div>
+                <div>
+                  <strong>{usageNumber.format(githubUsage.usage.localPoints)}</strong>
+                  <span>points from this cockpit · {usageNumber.format(githubUsage.usage.localRequests)} calls</span>
+                </div>
+                <div>
+                  <strong>{githubUsage.usage.otherPoints === null ? "—" : usageNumber.format(githubUsage.usage.otherPoints)}</strong>
+                  <span>{githubUsage.usage.windowComplete ? "points from other clients" : "other clients after one full tracked window"}</span>
+                </div>
+              </div>
+              <div class="usage-columns">
+                <div class="usage-breakdown">
+                  <span class="usage-subhead">By feature</span>
+                  {#each githubUsage.usage.sources as item}
+                    <div class="usage-row">
+                      <span>{item.source}</span>
+                      <span class="usage-row-track"><i style={`width: ${usagePercent(item.points, githubUsage.usage.localPoints)}%`}></i></span>
+                      <strong>{usageNumber.format(item.points)}</strong>
+                      <small>{usageNumber.format(item.requests)} calls</small>
+                    </div>
+                  {:else}
+                    <span class="usage-empty">No GraphQL calls recorded in this window.</span>
+                  {/each}
+                </div>
+                <div class="usage-breakdown">
+                  <span class="usage-subhead">Top operations</span>
+                  {#each githubUsage.usage.operations.slice(0, 8) as item}
+                    <div class="usage-operation">
+                      <span>{item.operation}</span>
+                      <strong>{usageNumber.format(item.points)} pts</strong>
+                    </div>
+                  {:else}
+                    <span class="usage-empty">Usage appears here after the next GitHub request.</span>
+                  {/each}
+                </div>
+              </div>
+              <span class="hint usage-window">Resets at {resetTime(githubUsage.quota.resetAt)}. {githubUsage.usage.unknownCostRequests ? `${usageNumber.format(githubUsage.usage.unknownCostRequests)} calls have unknown cost.` : "Every recorded call has an exact cost."}</span>
+            {:else if githubUsageError}
+              <span class="hint usage-empty">GitHub usage is unavailable.</span>
+            {:else}
+              <span class="hint usage-empty">Loading usage…</span>
+            {/if}
+          </section>
 
           <div class="field field-wide">
             <span class="label">Team sync</span>
@@ -1296,6 +1379,131 @@
     box-shadow: none;
     color: var(--on-brand);
   }
+  .usage-card {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .usage-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .usage-head .hint {
+    margin-bottom: 0;
+  }
+  .usage-total {
+    font-family: var(--sans);
+    font-size: 24px;
+    font-weight: 500;
+    line-height: 1;
+    letter-spacing: -0.03em;
+    color: var(--text);
+  }
+  .quota-track {
+    height: 7px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: var(--surface);
+  }
+  .quota-track > span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--link);
+  }
+  .usage-stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
+  }
+  .usage-stats > div {
+    min-width: 0;
+  }
+  .usage-stats strong,
+  .usage-stats span {
+    display: block;
+  }
+  .usage-stats strong {
+    font-family: var(--sans);
+    font-size: 17px;
+    font-weight: 500;
+    color: var(--text);
+  }
+  .usage-stats span,
+  .usage-empty,
+  .usage-operation,
+  .usage-row {
+    font-size: 11.5px;
+    color: var(--text-faint);
+  }
+  .usage-columns {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(220px, 0.65fr);
+    gap: 24px;
+    padding-top: 2px;
+  }
+  .usage-breakdown {
+    min-width: 0;
+  }
+  .usage-subhead {
+    display: block;
+    margin-bottom: 8px;
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-dim);
+  }
+  .usage-row {
+    display: grid;
+    grid-template-columns: minmax(92px, 0.7fr) minmax(80px, 1fr) 44px 58px;
+    align-items: center;
+    gap: 8px;
+    min-height: 23px;
+  }
+  .usage-row > span:first-child,
+  .usage-operation > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-dim);
+  }
+  .usage-row strong,
+  .usage-operation strong {
+    font-size: 11.5px;
+    font-weight: 500;
+    text-align: right;
+    color: var(--text);
+  }
+  .usage-row small {
+    text-align: right;
+    color: var(--text-faint);
+  }
+  .usage-row-track {
+    height: 4px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: var(--surface);
+  }
+  .usage-row-track i {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--link);
+    opacity: 0.72;
+  }
+  .usage-operation {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 23px;
+  }
+  .usage-window {
+    margin: 0;
+    padding-top: 2px;
+    border-top: 1px solid var(--border-soft);
+  }
   @media (hover: hover) and (pointer: fine) {
     .btn:hover:not(:disabled) {
       border-color: transparent;
@@ -1314,6 +1522,10 @@
       padding: var(--settings-page-inset) 16px 84px;
     }
     .settings-grid {
+      grid-template-columns: 1fr;
+    }
+    .usage-stats,
+    .usage-columns {
       grid-template-columns: 1fr;
     }
   }

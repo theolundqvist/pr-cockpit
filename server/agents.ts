@@ -360,7 +360,7 @@ async function superviseFixer(
         try {
           // dynamic: a static poller import would close the agents -> poller -> activity -> agents cycle
           const { refreshPr } = await import("./poller.ts");
-          await refreshPr(repo, number);
+          await refreshPr(repo, number, "mutation recovery");
         } catch (err) {
           appendFileSync(logPath, `\npost-merge refresh failed for ${repo}#${number}: ${err}\n`);
         }

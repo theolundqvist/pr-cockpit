@@ -94,7 +94,7 @@ describe("poll-loop registration lifecycle", () => {
     searchHits = [hit("ext/repo", 5)];
     statusLookupError = new Error("lookupPr must not run for open hits");
     await createPollOnce(deps)();
-    expect(refreshPr.mock.calls).toContainEqual(["ext/repo", 5]);
+    expect(refreshPr.mock.calls).toContainEqual(["ext/repo", 5, "background poll"]);
     expect(registeredKeys()).toEqual(["ext/repo#5"]);
   });
 
@@ -121,7 +121,7 @@ describe("poll-loop registration lifecycle", () => {
     registrationStatuses.set("ext/repo#5", { state: "OPEN" });
     await createPollOnce(deps)();
     expect(registeredKeys()).toEqual(["ext/repo#5"]);
-    expect(refreshPr.mock.calls).toContainEqual(["ext/repo", 5]);
+    expect(refreshPr.mock.calls).toContainEqual(["ext/repo", 5, "background poll"]);
   });
 
   test("registration absent from hits and MERGED is dropped", async () => {
