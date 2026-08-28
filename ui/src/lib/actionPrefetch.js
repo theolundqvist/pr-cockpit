@@ -89,10 +89,10 @@ export async function prefetchActionLogs(jobs, keyForJob, loaderForJob, isCurren
   await Promise.all([worker(), worker(), worker()]);
 }
 
-export function loadRepoRunSnapshot(run, background = false) {
+export function loadRepoRunSnapshot(run, background = false, force = false) {
   const key = runKey(run);
   const cached = runSnapshots.get(key);
-  if (cached && Date.now() - cached.at < RUN_CACHE_MS) return Promise.resolve(cached.snapshot);
+  if (!force && cached && Date.now() - cached.at < RUN_CACHE_MS) return Promise.resolve(cached.snapshot);
   const pending = runSnapshotRequests.get(key);
   if (pending) return pending;
   rememberActionRun(run);

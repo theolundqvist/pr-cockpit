@@ -934,6 +934,40 @@ export function upsertWorkflowRun(run: WorkflowRunInput): boolean {
   return true;
 }
 
+export function latestWorkflowRunAttempt(repo: string, runId: number): WorkflowRunRow | null {
+  return db.prepare<WorkflowRunRow, [string, number]>(
+    "SELECT * FROM workflow_runs WHERE repo = ? AND run_id = ? ORDER BY run_attempt DESC LIMIT 1",
+  ).get(repo, runId) ?? null;
+}
+
+export function queueWorkflowRunRerun(repo: string, runId: number, status: "queued" | "in_progress" = "queued"): WorkflowRunRow | null {
+  const current = latestWorkflowRunAttempt(repo, runId);
+  if (!current) return null;
+  const now = new Date().toISOString();
+  upsertWorkflowRun({
+    repo,
+    run_id: runId,
+    run_attempt: current.run_attempt + 1,
+    pr_number: current.pr_number,
+    head_sha: current.head_sha,
+    head_branch: current.head_branch,
+    workflow_name: current.workflow_name,
+    workflow_path: current.workflow_path,
+    display_title: current.display_title,
+    event: current.event,
+    actor_login: current.actor_login,
+    status,
+    conclusion: null,
+    event_at: now,
+    created_at: current.created_at,
+    updated_at: now,
+    run_started_at: null,
+    run_number: current.run_number,
+    html_url: current.html_url,
+  });
+  return latestWorkflowRunAttempt(repo, runId);
+}
+
 const getRunJobStmt = db.prepare<RunJobRow, [string, number]>(
   `SELECT repo, job_id, run_id, run_attempt, head_sha, head_branch, workflow_name, name,
     status, conclusion, started_at, completed_at, html_url, runner_name, runner_group_name,

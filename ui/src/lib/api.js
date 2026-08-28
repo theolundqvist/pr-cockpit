@@ -90,6 +90,13 @@ export async function fetchRepoActions(filters = {}, signal = null) {
   return body;
 }
 
+export async function rerunFailedActionJobs(repo, runId) {
+  const res = await fetch(`/api/actions/runs/${repo}/${runId}/rerun-failed-jobs`, { method: "POST" });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.error || `re-run failed jobs ${res.status}`);
+  return body;
+}
+
 export async function fetchRepoActionGraph(repo, headSha, signal = null) {
   const params = new URLSearchParams({ repo, headSha });
   const res = await fetch(`/api/actions/graph?${params}`, { signal });

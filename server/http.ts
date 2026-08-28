@@ -18,6 +18,7 @@ import {
   listClosedPrs,
   listPrIndex,
   listActionWorkflows,
+  latestWorkflowRunAttempt,
   listPrs,
   listRunJobs,
   listRunJobsForRun,
@@ -26,6 +27,7 @@ import {
   saveDiff,
   saveFileContents,
   setArchived,
+  queueWorkflowRunRerun,
   setAutoMergeArmed,
   setRank,
   unsetRank,
@@ -53,6 +55,8 @@ import {
   fetchGithubQuota,
   fetchMergedPrAnalytics,
   GithubRequestError,
+  rerunFailedJobs,
+  RestRequestError,
   githubAuthStatus,
   startGithubSetup,
   StalePrHeadError,
@@ -385,6 +389,7 @@ type HttpDependencies = {
   cacheGithubActionsForCommit: typeof cacheGithubActionsForCommit;
   actionWorkflowGraphs: typeof actionWorkflowGraphs;
   actionJobLog: typeof actionJobLog;
+  rerunFailedJobs: typeof rerunFailedJobs;
 };
 
 type HttpRuntime = HttpDependencies & {
@@ -410,6 +415,7 @@ const defaultHttpDependencies: HttpDependencies = {
   cacheGithubActionsForCommit,
   actionWorkflowGraphs,
   actionJobLog,
+  rerunFailedJobs,
 };
 async function handleGithubQuota(runtime: HttpRuntime): Promise<Response> {
   try {
@@ -1619,6 +1625,16 @@ function actionRunMatchesStatus(run: WorkflowRunRow, filter: string): boolean {
   return true;
 }
 
+function latestActionRunAttempts(runs: WorkflowRunRow[]): WorkflowRunRow[] {
+  const latest = new Map<string, WorkflowRunRow>();
+  for (const run of runs) {
+    const key = `${run.repo}:${run.run_id}`;
+    const current = latest.get(key);
+    if (!current || run.run_attempt > current.run_attempt) latest.set(key, run);
+  }
+  return [...latest.values()].sort((left, right) => Date.parse(right.event_at) - Date.parse(left.event_at));
+}
+
 async function handleRepoActions(url: URL): Promise<Response> {
   const tracked = await trackedRepos();
   // Repeated repo/workflow params are ANDed by dimension and ORed within each dimension.
@@ -1633,6 +1649,7 @@ async function handleRepoActions(url: URL): Promise<Response> {
   if (headSha && !/^[0-9a-f]{40}$/i.test(headSha)) return json({ error: "invalid head sha" }, 400);
   const page = Math.max(1, Number.parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
   const allRuns = listWorkflowRuns(repos, 1000);
+  const latestRuns = latestActionRunAttempts(allRuns);
   const catalog = listActionWorkflows(repos);
   const catalogByRepoPath = new Map(catalog.map((workflow) => [`${workflow.repo}\n${workflow.path}`, workflow]));
   const workflowNameFor = (run: WorkflowRunRow): string =>
@@ -1656,7 +1673,7 @@ async function handleRepoActions(url: URL): Promise<Response> {
       if (workflow.name.toLocaleLowerCase() === lowered) selectedWorkflowPaths.add(workflow.path);
     }
   }
-  const commitRuns = headSha ? allRuns.filter((run) => run.head_sha === headSha) : allRuns;
+  const commitRuns = headSha ? latestRuns.filter((run) => run.head_sha === headSha) : latestRuns;
   const workflowRuns = requestedWorkflows.length > 0
     ? commitRuns.filter((run) => selectedWorkflowPaths.has(staticWorkflowPath(run.workflow_path)))
     : commitRuns;
@@ -1674,13 +1691,22 @@ async function handleRepoActions(url: URL): Promise<Response> {
     if (!selectedRun) return json({ error: "workflow run not found" }, 404);
     if (headSha) {
       for (const run of commitRuns) {
-        if (run.jobs_fetched_at === null || ACTIVE_ACTION_STATUSES[run.status] === true) {
+        if (
+          !(isMockGithub && run.run_attempt > 1)
+          && (run.jobs_fetched_at === null || ACTIVE_ACTION_STATUSES[run.status] === true)
+        ) {
           await cacheRepoActionsRunJobs(run, undefined, backgroundPrefetch);
         }
       }
-      jobs = listRunJobs(selectedRun.repo, headSha).map(serializeActionJob);
+      const latestAttempts = new Map(commitRuns.map((run) => [run.run_id, run.run_attempt]));
+      jobs = listRunJobs(selectedRun.repo, headSha)
+        .filter((job) => latestAttempts.get(job.run_id) === job.run_attempt)
+        .map(serializeActionJob);
     } else {
-      if (selectedRun.jobs_fetched_at === null || ACTIVE_ACTION_STATUSES[selectedRun.status] === true) {
+      if (
+        !(isMockGithub && selectedRun.run_attempt > 1)
+        && (selectedRun.jobs_fetched_at === null || ACTIVE_ACTION_STATUSES[selectedRun.status] === true)
+      ) {
         await cacheRepoActionsRunJobs(selectedRun, undefined, backgroundPrefetch);
       }
       jobs = listRunJobsForRun(selectedRun.repo, selectedRun.run_id, selectedRun.run_attempt).map(serializeActionJob);
@@ -1696,6 +1722,30 @@ async function handleRepoActions(url: URL): Promise<Response> {
     page,
     hasMore: start + pageSize < filtered.length,
   });
+}
+
+async function handleRerunFailedJobs(repo: string, runId: number, runtime: HttpRuntime): Promise<Response> {
+  if (!(await trackedRepos()).includes(repo)) return json({ error: "repo is not tracked" }, 404);
+  const run = latestWorkflowRunAttempt(repo, runId);
+  if (!run) return json({ error: "workflow run not found" }, 404);
+  if (run.status !== "completed") return json({ error: "Only completed workflow runs can be re-run" }, 409);
+  const hasFailedJobs = listRunJobsForRun(repo, runId, run.run_attempt)
+    .some((job) => job.conclusion !== null && FAILED_ACTION_CONCLUSIONS[job.conclusion] === true);
+  if (!hasFailedJobs) return json({ error: "This workflow run has no failed jobs to re-run" }, 409);
+  try {
+    await runtime.rerunFailedJobs(repo, runId);
+    const queued = queueWorkflowRunRerun(repo, runId, isMockGithub ? "in_progress" : "queued");
+    if (!queued) return json({ error: "workflow run disappeared before it could be queued" }, 409);
+    const workflow = listActionWorkflows([repo])
+      .find((candidate) => candidate.path === staticWorkflowPath(queued.workflow_path));
+    return json({
+      ok: true,
+      run: serializeActionRun(queued, workflow?.name ?? workflowPathLabel(queued.workflow_path)),
+    });
+  } catch (error) {
+    if (error instanceof RestRequestError) return json({ error: error.message }, error.status);
+    return json({ error: error instanceof Error ? error.message : String(error) }, 502);
+  }
 }
 
 async function handleRepoActionGraph(url: URL): Promise<Response> {
@@ -1744,10 +1794,18 @@ async function handleActions(owner: string, repo: string, number: string, url: U
   if (context instanceof Response) return context;
   try {
     await refreshActionsContext(context, runtime);
-    const runs = workflowRunsForLease(context.repoName, context.num, context.headSha)
-      .sort((left, right) => Date.parse(right.event_at) - Date.parse(left.event_at))
-      .map(serializeActionRun);
-    const jobs = listRunJobs(context.repoName, context.headSha).map(serializeActionJob);
+    const currentRuns = latestActionRunAttempts(
+      workflowRunsForLease(context.repoName, context.num, context.headSha),
+    );
+    const catalog = listActionWorkflows([context.repoName]);
+    const workflowNameFor = (run: WorkflowRunRow): string =>
+      catalog.find((workflow) => workflow.path === staticWorkflowPath(run.workflow_path))?.name
+        ?? workflowPathLabel(run.workflow_path);
+    const attempts = new Map(currentRuns.map((run) => [run.run_id, run.run_attempt]));
+    const runs = currentRuns.map((run) => serializeActionRun(run, workflowNameFor(run)));
+    const jobs = listRunJobs(context.repoName, context.headSha)
+      .filter((job) => attempts.get(job.run_id) === job.run_attempt)
+      .map(serializeActionJob);
     return json({ headSha: context.headSha, runs, jobs });
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : String(error) }, 502);
@@ -2631,7 +2689,12 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
         || (req.method === "POST" && url.pathname === "/api/commit-message")
         || (req.method === "POST" && url.pathname === "/api/auth/setup")
         || (req.method === "PUT" && url.pathname === "/api/settings")
-        || (req.method === "POST" && parts.length === 6 && parts[0] === "api" && parts[1] === "pr" && parts[5] === "merge-method");
+        || (req.method === "POST" && parts.length === 6 && parts[0] === "api" && parts[1] === "pr" && parts[5] === "merge-method")
+        || (
+          req.method === "POST" && parts.length === 7 &&
+          parts[0] === "api" && parts[1] === "actions" && parts[2] === "runs" &&
+          parts[6] === "rerun-failed-jobs"
+        );
       if (!allowed && req.method === "POST" && url.pathname === "/api/mutations") {
         const body: unknown = await req.clone().json().catch(() => null);
         allowed = Boolean(
@@ -2674,6 +2737,18 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     }
     if (req.method === "GET" && url.pathname === "/api/actions/graph") {
       return handleRepoActionGraph(url);
+    }
+    if (
+      req.method === "POST" &&
+      parts.length === 7 &&
+      parts[0] === "api" &&
+      parts[1] === "actions" &&
+      parts[2] === "runs" &&
+      parts[6] === "rerun-failed-jobs"
+    ) {
+      const runId = Number(parts[5]);
+      if (!Number.isSafeInteger(runId) || runId <= 0) return json({ error: "invalid workflow run id" }, 400);
+      return handleRerunFailedJobs(`${parts[3]}/${parts[4]}`, runId, runtime);
     }
     if (
       req.method === "GET" &&

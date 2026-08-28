@@ -2,16 +2,38 @@
   import ActionStatusIcon from "./ActionStatusIcon.svelte";
   import ActionsView from "./ActionsView.svelte";
   import { prefetchRepoRun, rememberedActionRun, rememberActionRun } from "./actionPrefetch.js";
-  import { fetchRepoActions } from "./api.js";
+  import { fetchRepoActions, rerunFailedActionJobs } from "./api.js";
 
   let { repo, runId } = $props();
 
   let run = $state(null);
   let loading = $state(true);
   let error = $state("");
+  let canRerunFailed = $state(false);
+  let rerunPending = $state(false);
+  let rerunError = $state("");
+  let refreshRevision = $state(0);
 
   function runHref(nextRun) {
     return `#/actions/run/${nextRun.repo}/${nextRun.id}`;
+  }
+
+  async function rerunFailed(runToRerun) {
+    if (rerunPending) return null;
+    rerunPending = true;
+    rerunError = "";
+    try {
+      const result = await rerunFailedActionJobs(runToRerun.repo, runToRerun.id);
+      run = result.run;
+      rememberActionRun(run);
+      refreshRevision++;
+      return result;
+    } catch (nextError) {
+      rerunError = nextError instanceof Error ? nextError.message : String(nextError);
+      throw nextError;
+    } finally {
+      rerunPending = false;
+    }
   }
 
   $effect(() => {
@@ -55,7 +77,9 @@
     <header class="run-header">
       <ActionStatusIcon status={run.status} conclusion={run.conclusion} />
       <div class="run-heading">
-        <span class="ui-eyebrow">{run.workflowName}{run.runNumber ? ` · #${run.runNumber}` : ""}</span>
+        <span class="ui-eyebrow">
+          {run.workflowName}{run.runNumber ? ` · #${run.runNumber}` : ""}{run.attempt > 1 ? ` · attempt ${run.attempt}` : ""}
+        </span>
         <h1>{run.displayTitle}</h1>
         <div class="run-meta">
           {#if run.event}<span>{run.event.replaceAll("_", " ")}</span>{/if}
@@ -67,6 +91,12 @@
       <div class="run-links">
         {#if run.prNumber}<a href={`#/pr/${run.repo}/${run.prNumber}`}>Open PR #{run.prNumber}</a>{/if}
         {#if run.htmlUrl}<a href={run.htmlUrl}>Open run on GitHub</a>{/if}
+        {#if canRerunFailed && run.status === "completed"}
+          <button class="rerun-button" type="button" disabled={rerunPending} onclick={() => rerunFailed(run)}>
+            {rerunPending ? "Re-running…" : "Re-run failed jobs"}
+          </button>
+        {/if}
+        {#if rerunError}<span class="rerun-error" role="alert">{rerunError}</span>{/if}
       </div>
     </header>
 
@@ -74,9 +104,15 @@
       repo={run.repo}
       headSha={run.headSha}
       preferredRunId={run.id}
+      preferredRunAttempt={run.attempt}
       active={true}
       startInOverview={false}
       fullHeight={true}
+      {refreshRevision}
+      {rerunPending}
+      {rerunError}
+      bind:canRerunFailed
+      onRerunFailed={rerunFailed}
       onSelectRun={(nextRun) => {
         if (nextRun.id !== run.id) location.hash = runHref(nextRun);
       }}
@@ -99,6 +135,10 @@
   .branch { color: var(--accent); }
   .run-links { justify-content: flex-end; }
   .run-links a { color: var(--accent); font-size: 12px; text-decoration: none; }
+  .rerun-button { min-height: 28px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 6px; color: var(--text-muted); background: var(--panel); font: 600 11px var(--sans); cursor: pointer; }
+  .rerun-button:hover:not(:disabled) { color: var(--text); background: var(--panel-raised); }
+  .rerun-button:disabled { opacity: .6; cursor: default; }
+  .rerun-error { max-width: 300px; color: var(--fail); text-align: right; }
   .state { display: grid; min-height: 320px; place-items: center; color: var(--text-faint); font-size: 12px; }
   .state.error { color: var(--fail); }
   @media (max-width: 800px) {

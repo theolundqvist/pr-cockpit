@@ -1561,6 +1561,30 @@ export async function fetchActionWorkflows(repo: string): Promise<ActionWorkflow
   }
 }
 
+export async function rerunFailedJobs(repo: string, runId: number): Promise<void> {
+  if (mockGithub) return mockGithub.rerunFailedJobs(repo, runId);
+  if (!/^[^/]+\/[^/]+$/.test(repo) || !Number.isSafeInteger(runId) || runId <= 0) {
+    throw new RestRequestError("Invalid repository or workflow run", 400);
+  }
+  const response = await githubRestResponse(
+    "POST",
+    `/repos/${encodedRepo(repo)}/actions/runs/${runId}/rerun-failed-jobs`,
+  );
+  if (response.ok) return;
+  const body = await response.text();
+  let detail = body;
+  try {
+    const parsed = JSON.parse(body);
+    if (typeof parsed?.message === "string") detail = parsed.message;
+  } catch {
+    // GitHub occasionally returns a plain-text proxy response.
+  }
+  throw new RestRequestError(
+    `Could not re-run failed jobs${detail ? `: ${detail}` : ` (GitHub ${response.status})`}`,
+    response.status,
+  );
+}
+
 export interface WorkflowRun {
   id: number;
   run_attempt: number;

@@ -205,3 +205,128 @@ test("repo-wide Actions accepts repeated repository and workflow filters", async
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test("failed-job reruns call GitHub's run endpoint and preserve a readable 403", async () => {
+  const fakeGhDir = mkdtempSync(join(tmpdir(), "pr-cockpit-actions-rerun-client-"));
+  const fakeGh = join(fakeGhDir, "gh");
+  writeFileSync(fakeGh, "#!/bin/sh\nprintf 'fixture-token\\n'\n");
+  chmodSync(fakeGh, 0o755);
+  try {
+    const script = `
+      const { rerunFailedJobs } = await import(${JSON.stringify(githubModuleUrl)});
+      const calls = [];
+      globalThis.fetch = async (input, init) => {
+        calls.push({ url: String(input), method: init?.method });
+        if (calls.length === 1) return new Response(null, { status: 204 });
+        return Response.json({ message: "You do not have permission to re-run this workflow" }, { status: 403 });
+      };
+      await rerunFailedJobs("acme/app", 77);
+      let forbidden = null;
+      try {
+        await rerunFailedJobs("acme/app", 77);
+      } catch (error) {
+        forbidden = { status: error.status, message: error.message };
+      }
+      console.log(JSON.stringify({ calls, forbidden }));
+    `;
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: { ...Bun.env, COCKPIT_GH_BIN: fakeGh, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      process.exited,
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(stderr);
+    const result = JSON.parse(stdout);
+    expect(result.calls).toEqual([
+      { url: "https://api.github.com/repos/acme/app/actions/runs/77/rerun-failed-jobs", method: "POST" },
+      { url: "https://api.github.com/repos/acme/app/actions/runs/77/rerun-failed-jobs", method: "POST" },
+    ]);
+    expect(result.forbidden).toEqual({
+      status: 403,
+      message: "Could not re-run failed jobs: You do not have permission to re-run this workflow",
+    });
+  } finally {
+    rmSync(fakeGhDir, { recursive: true, force: true });
+  }
+});
+
+test("failed-job rerun endpoint propagates 403 and records an optimistic mock attempt", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-actions-rerun-endpoint-"));
+  try {
+    const script = `
+      const { ingestActionsState } = await import(${JSON.stringify(new URL("./runLogs.ts", import.meta.url).href)});
+      const { buildFetchHandler } = await import(${JSON.stringify(new URL("./http.ts", import.meta.url).href)});
+      const { RestRequestError } = await import(${JSON.stringify(new URL("./github.ts", import.meta.url).href)});
+      const { mockGithub } = await import(${JSON.stringify(new URL("./mockGithub.ts", import.meta.url).href)});
+      const { latestWorkflowRunAttempt } = await import(${JSON.stringify(new URL("./db.ts", import.meta.url).href)});
+      const headSha = "a".repeat(40);
+      await ingestActionsState("acme/app", { run: {
+        id: 77, attempt: 1, headSha, headBranch: "main", workflowName: "CI",
+        workflowPath: ".github/workflows/ci.yml", displayTitle: "CI", event: "push",
+        actorLogin: "ci", prNumber: null, status: "completed", conclusion: "failure",
+        eventAt: "2026-08-28T12:00:00Z", createdAt: "2026-08-28T11:55:00Z",
+        updatedAt: "2026-08-28T12:00:00Z", runStartedAt: "2026-08-28T11:55:00Z",
+        runNumber: 7, htmlUrl: "https://github.com/acme/app/actions/runs/77",
+      } });
+      await ingestActionsState("acme/app", { job: {
+        id: 771, runId: 77, attempt: 1, headSha, headBranch: "main", workflowName: "CI",
+        name: "test", status: "completed", conclusion: "failure", startedAt: "2026-08-28T11:55:00Z",
+        completedAt: "2026-08-28T12:00:00Z", htmlUrl: null, runnerName: null,
+        runnerGroupName: null, labels: [], failedStep: "Run tests",
+      } });
+      let forbidden = true;
+      const calls = [];
+      const handler = buildFetchHandler(4899, {
+        rerunFailedJobs: async (repo, runId) => {
+          calls.push({ repo, runId });
+          if (forbidden) throw new RestRequestError("Cannot re-run this workflow", 403);
+          await mockGithub.rerunFailedJobs(repo, runId);
+        },
+      });
+      const request = () => handler(new Request(
+        "http://127.0.0.1:4899/api/actions/runs/acme/app/77/rerun-failed-jobs",
+        { method: "POST" },
+      ));
+      const denied = await request();
+      forbidden = false;
+      const accepted = await request();
+      console.log(JSON.stringify({
+        denied: { status: denied.status, body: await denied.json() },
+        accepted: { status: accepted.status, body: await accepted.json() },
+        calls,
+        mockCalls: mockGithub.failedJobRerunCalls(),
+        latest: latestWorkflowRunAttempt("acme/app", 77),
+      }));
+      process.exit(0);
+    `;
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: {
+        ...Bun.env,
+        COCKPIT_DATA_DIR: dataDir,
+        COCKPIT_REPOS: "acme/app",
+        COCKPIT_MOCK: "1",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      process.exited,
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(stderr);
+    const result = JSON.parse(stdout);
+    expect(result.denied).toEqual({ status: 403, body: { error: "Cannot re-run this workflow" } });
+    expect(result.calls).toEqual([{ repo: "acme/app", runId: 77 }, { repo: "acme/app", runId: 77 }]);
+    expect(result.mockCalls).toEqual([{ repo: "acme/app", runId: 77 }]);
+    expect(result.accepted.status).toBe(200);
+    expect(result.accepted.body.run).toMatchObject({ id: 77, attempt: 2, status: "in_progress", conclusion: null });
+    expect(result.latest).toMatchObject({ run_id: 77, run_attempt: 2, status: "in_progress", conclusion: null });
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
