@@ -3,16 +3,14 @@ import { SETTINGS_SECTIONS, normalizeSettingsSection, settingsSectionHref } from
 
 describe("settings sections", () => {
   test("keeps the sidebar destinations stable and ordered", () => {
-8:     expect(SETTINGS_SECTIONS.map((section) => section.id)).toEqual(["general", "appearance", "keybinds", "automerge", "tests", "advanced", "analytics"]);
-9:     expect(normalizeSettingsSection("advanced")).toBe("advanced");
-    expect(normalizeSettingsSection("analytics")).toBe("analytics");
+    expect(SETTINGS_SECTIONS.map((section) => section.id)).toEqual(["general", "appearance", "keybinds", "automerge", "tests", "usage", "advanced", "analytics"]);
   });
 
   test("normalizes stale sections to General", () => {
     expect(normalizeSettingsSection("tests")).toBe("tests");
     expect(normalizeSettingsSection("appearance")).toBe("appearance");
-8:     expect(SETTINGS_SECTIONS.map((section) => section.id)).toEqual(["general", "appearance", "keybinds", "automerge", "tests", "advanced", "analytics"]);
-9:     expect(normalizeSettingsSection("advanced")).toBe("advanced");
+    expect(normalizeSettingsSection("usage")).toBe("usage");
+    expect(normalizeSettingsSection("advanced")).toBe("advanced");
     expect(normalizeSettingsSection("analytics")).toBe("analytics");
     expect(normalizeSettingsSection("missing")).toBe("general");
     expect(normalizeSettingsSection(null)).toBe("general");

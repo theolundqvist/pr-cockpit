@@ -80,7 +80,7 @@ describe("aggregation", () => {
   const rollup = {
     contexts: {
       nodes: [
-        { __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "FAILURE", isRequired: true, detailsUrl: "u1" },
+        { __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "FAILURE", isRequired: true, detailsUrl: "https://github.com/example/web/actions/runs/12/job/34" },
         { __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "SUCCESS" },
         { context: "vercel", state: "SUCCESS", targetUrl: "u2" },
         { context: "codecov", state: "PENDING" },
@@ -91,7 +91,7 @@ describe("aggregation", () => {
   test("buildChecks maps name, url, required, bucket, dot", () => {
     const checks = buildChecks(rollup);
     expect(checks).toHaveLength(4);
-    expect(checks[0]).toMatchObject({ name: "build", url: "u1", required: true, bucket: "failing", dot: "bad" });
+    expect(checks[0]).toMatchObject({ name: "build", url: "https://github.com/example/web/actions/runs/12/job/34", jobId: 34, required: true, bucket: "failing", dot: "bad" });
     expect(checks[2]).toMatchObject({ name: "vercel", url: "u2", required: false, bucket: "success", dot: "ok" });
   });
 

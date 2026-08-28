@@ -82,6 +82,9 @@ export function buildChecks(rollup) {
       return {
         name: checkName(c),
         url: c.detailsUrl ?? c.targetUrl ?? null,
+        jobId: c.__typename === "CheckRun"
+          ? Number(c.detailsUrl?.match(/\/job\/(\d+)/)?.[1]) || null
+          : null,
         required: c.isRequired ?? false,
         bucket,
         dot: CHECK_BUCKETS[bucket].dot,
