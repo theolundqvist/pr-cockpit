@@ -3076,7 +3076,12 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
 
     const staticFile = Bun.file(`static${url.pathname === "/" ? "/index.html" : url.pathname}`);
     if (await staticFile.exists()) {
-      return new Response(staticFile);
+      // Hashed assets are immutable; everything else (index.html) must revalidate so
+      // Electron's heuristic disk cache never pins a stale bundle after an update.
+      const cacheControl = /^\/assets\/.+-[\w-]{8,}\./.test(url.pathname)
+        ? "public, max-age=31536000, immutable"
+        : "no-cache";
+      return new Response(staticFile, { headers: { "Cache-Control": cacheControl } });
     }
 
     return new Response("not found", { status: 404 });
