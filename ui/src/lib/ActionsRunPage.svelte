@@ -85,7 +85,7 @@
 </div>
 
 <style>
-  .page { min-width: 0; padding: 18px 32px 44px; }
+  .page { min-width: 0; height: 100%; overflow-y: auto; padding: 18px 32px 44px; }
   .back-link { display: inline-flex; height: 32px; align-items: center; gap: 5px; color: var(--text-faint); font-size: 11px; text-decoration: none; }
   .back-link:hover { color: var(--text); }
   .back-link svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.5; }

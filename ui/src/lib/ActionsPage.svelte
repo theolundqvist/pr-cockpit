@@ -222,8 +222,7 @@
           · {relativeTime(success.eventAt)}
         </span>
       </div>
-      <a class="summary-link" href={runHref(success)}>View run</a>
-      {#if success.htmlUrl}<a class="external-link" href={success.htmlUrl}>Open on GitHub</a>{/if}
+      <a class="summary-link" href={runHref(success)}>Open</a>
     </section>
   {:else if selectedWorkflowName && !loading}
     <section class="release-summary empty-summary">No successful {selectedWorkflowName} run is cached in the last 30 days.</section>
@@ -266,7 +265,7 @@
 </div>
 
 <style>
-  .page { padding: 18px 32px 96px; min-width: 0; }
+  .page { height: 100%; min-width: 0; overflow-y: auto; padding: 18px 32px 96px; }
   .page-head { display: flex; min-height: 58px; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--border); }
   .page-head > div:first-child { display: flex; flex-direction: column; gap: 2px; }
   .ui-eyebrow { color: var(--text-faint); font-size: 11px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; }
@@ -291,7 +290,7 @@
   .summary-copy strong { overflow: hidden; color: var(--text); font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
   .summary-copy span { color: var(--text-faint); font-size: 11px; }
   .summary-label { color: var(--ready) !important; font-weight: 650; text-transform: uppercase; letter-spacing: .03em; }
-  .external-link, .summary-link { color: var(--accent); font-size: 12px; text-decoration: none; }
+  .summary-link { color: var(--accent); font-size: 12px; text-decoration: none; }
   .empty-summary { color: var(--text-faint); font-size: 12px; }
   .runs-panel { overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
   .state { padding: 28px; color: var(--text-faint); font-size: 12px; text-align: center; }
