@@ -152,7 +152,8 @@ export function renderMarkdown(source) {
 
 export function summarize(source) {
   if (!source) return "";
-  const doc = new DOMParser().parseFromString(renderMarkdown(source), "text/html");
+  const doc = new DOMParser().parseFromString(marked.parse(source), "text/html");
+  for (const node of doc.querySelectorAll("script, style, template")) node.remove();
   const text = doc.body.textContent.replace(/\s+/g, " ").trim();
   if (text) return text;
   const alt = doc.body.querySelector("img")?.getAttribute("alt")?.trim();

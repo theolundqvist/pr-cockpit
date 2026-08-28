@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
-import { createPollOnce, type PollDeps } from "./poller.ts";
-import type { SearchHit } from "./github.ts";
+import { backgroundQuotaAvailable, createPollOnce, type PollDeps } from "./poller.ts";
+import type { PrDetailScope, SearchHit } from "./github.ts";
+import type { GithubUsageSource } from "./githubUsage.ts";
 import type { PrRow, WebhookRegistrationRow } from "./db.ts";
 
 let registrations: WebhookRegistrationRow[] = [];
@@ -9,7 +10,12 @@ let registrationStatuses = new Map<string, { state: string } | null>();
 let statusLookupError: Error | null = null;
 let searchedRepos: string[][] = [];
 
-const refreshPr = mock(async (_repo: string, _number: number) => {});
+const refreshPr = mock(async (
+  _repo: string,
+  _number: number,
+  _source?: GithubUsageSource,
+  _scope?: PrDetailScope,
+) => {});
 const invalidateInbox = mock(() => {});
 const publishPollCompleted = mock((_lastPollAt: string) => {});
 
@@ -43,6 +49,15 @@ const deps: PollDeps = {
   invalidateInbox,
   publishPollCompleted,
 };
+
+test("paces background GraphQL work across the quota window", () => {
+  const resetAt = "2026-08-27T11:00:00.000Z";
+  const now = Date.parse("2026-08-27T10:30:00.000Z");
+
+  expect(backgroundQuotaAvailable({ limit: 5000, used: 2000, remaining: 3000, resetAt }, now)).toBe(true);
+  expect(backgroundQuotaAvailable({ limit: 5000, used: 2500, remaining: 2500, resetAt }, now)).toBe(false);
+  expect(backgroundQuotaAvailable({ limit: 5000, used: 4990, remaining: 10, resetAt }, now)).toBe(false);
+});
 
 function registration(repo: string, number: number): WebhookRegistrationRow {
   return { window_id: "@1", repo, number, last_webhook_at: null };
@@ -94,7 +109,7 @@ describe("poll-loop registration lifecycle", () => {
     searchHits = [hit("ext/repo", 5)];
     statusLookupError = new Error("lookupPr must not run for open hits");
     await createPollOnce(deps)();
-    expect(refreshPr.mock.calls).toContainEqual(["ext/repo", 5]);
+    expect(refreshPr.mock.calls).toContainEqual(["ext/repo", 5, "background poll"]);
     expect(registeredKeys()).toEqual(["ext/repo#5"]);
   });
 
@@ -121,7 +136,7 @@ describe("poll-loop registration lifecycle", () => {
     registrationStatuses.set("ext/repo#5", { state: "OPEN" });
     await createPollOnce(deps)();
     expect(registeredKeys()).toEqual(["ext/repo#5"]);
-    expect(refreshPr.mock.calls).toContainEqual(["ext/repo", 5]);
+    expect(refreshPr.mock.calls).toContainEqual(["ext/repo", 5, "background poll"]);
   });
 
   test("registration absent from hits and MERGED is dropped", async () => {

@@ -6,11 +6,41 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
 data_dir="${COCKPIT_DATA_DIR:-$root/data}"
+platform="$(uname -s)"
+systemd_unit=""
+systemd_scope=()
+if [[ "$platform" == "Linux" ]]; then
+  systemd_unit="${COCKPIT_SYSTEMD_UNIT:-}"
+  if [[ -z "$systemd_unit" && -r "/proc/$PPID/cgroup" ]]; then
+    while IFS=: read -r _ _ cgroup_path; do
+      case "$cgroup_path" in
+        */*.service)
+          systemd_unit="${cgroup_path##*/}"
+          if [[ "$cgroup_path" == /user.slice/* ]]; then
+            systemd_scope=(--user)
+          fi
+          break
+          ;;
+      esac
+    done < "/proc/$PPID/cgroup"
+  fi
+  if [[ -z "$systemd_unit" ]]; then
+    echo "UPDATE_FAILED headless Linux updates require the server to run as a systemd service" >&2
+    exit 1
+  fi
+elif [[ "$platform" != "Darwin" ]]; then
+  echo "UPDATE_FAILED unsupported platform: $platform" >&2
+  exit 1
+fi
 
 fail_and_relaunch() {
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) update failed at: $BASH_COMMAND" >> "$data_dir/update-failures.log" 2>/dev/null || true
-  echo "pr-cockpit: restart step failed after pull, relaunching (last-good build if the rebuild broke)..."
-  exec env COCKPIT_SKIP_RECONCILE=1 "$root/scripts/cockpit" --managed-server --show
+  if [[ "$platform" == "Darwin" ]]; then
+    echo "pr-cockpit: restart step failed after pull, relaunching (last-good build if the rebuild broke)..."
+    exec env COCKPIT_SKIP_RECONCILE=1 "$root/scripts/cockpit" --managed-server --show
+  fi
+  echo "pr-cockpit: systemd restart failed after pull; restart $systemd_unit manually"
+  exit 1
 }
 
 mkdir -p "$data_dir"
@@ -42,4 +72,7 @@ echo "pr-cockpit: reconciling install..."
 
 echo "pr-cockpit: $old_rev -> $new_rev"
 echo "pr-cockpit: restarting..."
+if [[ "$platform" == "Linux" ]]; then
+  exec systemctl "${systemd_scope[@]}" restart "$systemd_unit"
+fi
 exec "$root/scripts/cockpit" --managed-server --show

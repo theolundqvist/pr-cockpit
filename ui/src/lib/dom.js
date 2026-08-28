@@ -28,6 +28,17 @@ export function prKeyOwner(event) {
   return "typing";
 }
 
+export function shouldToggleHoveredViewed(event, tab, hoveredPath) {
+  return tab === "files"
+    && Boolean(hoveredPath)
+    && event.key === "v"
+    && !event.metaKey
+    && !event.ctrlKey
+    && !event.altKey
+    && !event.shiftKey
+    && !isTypingTarget(event.target);
+}
+
 export function imageFallback(node) {
   const replace = (img) => {
     const chip = document.createElement("a");

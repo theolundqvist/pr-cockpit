@@ -40,6 +40,18 @@ async function waitForServer(server, baseURL) {
   throw new Error("server did not become ready within 15s");
 }
 
+async function waitForURL(server, url) {
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    if (server?.exitCode !== null) throw new Error(`server exited with code ${server.exitCode}`);
+    try {
+      if ((await fetch(url)).ok) return;
+    } catch {}
+    await delay(75);
+  }
+  throw new Error(`server did not become ready at ${url}`);
+}
+
 function percentile(samples, fraction) {
   const sorted = [...samples].sort((a, b) => a - b);
   return sorted[Math.ceil(sorted.length * fraction) - 1];
@@ -71,6 +83,8 @@ const SEARCH_REPO = "scape-app/scape";
 const SEARCH_RESULT_PR = 8133;
 const SEARCH_RESULTS_URL = `https://github.com/${SEARCH_REPO}/pulls?q=${encodeURIComponent(`is:pr is:open ${SEARCH_WORDS}`)}`;
 const SEARCH_COCKPIT_URL = process.env.COCKPIT_URL ?? "http://127.0.0.1:4825";
+const LARGE_DIFF_URL = process.env.COCKPIT_LARGE_DIFF_URL ?? null;
+const LARGE_DIFF_FRAMES = 120;
 
 async function benchmarkPrOpen(page, repo, prs) {
   const samples = [];
@@ -181,6 +195,109 @@ async function benchmarkDiffOpen(page, repo, prs) {
     if (iteration >= WARMUPS) samples.push(duration);
   }
   return samples;
+}
+
+async function mainLargeDiff() {
+  let server = null;
+  let targetURL = LARGE_DIFF_URL;
+  if (!targetURL) {
+    const build = Bun.spawn([process.execPath, "run", "build"], {
+      cwd: join(ROOT, "ui"),
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+    const exitCode = await build.exited;
+    if (exitCode !== 0) throw new Error(`UI build exited with code ${exitCode}`);
+  }
+  if (!targetURL) {
+    const port = await availablePort();
+    const baseURL = `http://127.0.0.1:${port}`;
+    server = Bun.spawn([process.execPath, join(ROOT, "ui/node_modules/vite/bin/vite.js"), "preview", "--host", "127.0.0.1", "--port", String(port)], {
+      cwd: join(ROOT, "ui"),
+      stdout: "ignore",
+      stderr: "inherit",
+    });
+    await waitForURL(server, baseURL);
+    targetURL = `${baseURL}/#/pr/scape-app/scape/7448/files`;
+  }
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const context = await browser.newContext({ viewport: { width: 1600, height: 1200 }, deviceScaleFactor: 1.25, reducedMotion: "reduce" });
+    if (new URL(targetURL).origin !== new URL(SEARCH_COCKPIT_URL).origin) {
+      await context.route(`${new URL(targetURL).origin}/api/**`, async (route) => {
+        const requestURL = new URL(route.request().url());
+        const response = await route.fetch({ url: new URL(`${requestURL.pathname}${requestURL.search}`, SEARCH_COCKPIT_URL).href });
+        await route.fulfill({ response });
+      });
+    }
+    const page = await context.newPage();
+    const startedAt = performance.now();
+    await page.goto(targetURL, { waitUntil: "domcontentloaded" });
+    await page.locator("section.file").first().waitFor({ timeout: 80_000 });
+    const readyMs = performance.now() - startedAt;
+    await page.waitForTimeout(1_500);
+    const metrics = await page.evaluate(async (frames) => {
+      const scroller = document.querySelector(".page");
+      const delays = [];
+      let blankFrames = 0;
+      const blankSamples = [];
+      const intersects = (node, viewport) => {
+        const rect = node.getBoundingClientRect();
+        return rect.bottom > viewport.top && rect.top < viewport.bottom;
+      };
+      const viewportColdState = () => {
+        const viewport = scroller.getBoundingClientRect();
+        const files = [...document.querySelectorAll("section.file:not(.collapsed)")]
+          .filter((file) => intersects(file, viewport)
+            && !file.querySelector(".hunks, .binary, .file-editor, .rename-message"))
+          .map((file) => file.dataset.path);
+        const rowChunks = [...document.querySelectorAll(".row-chunk.cold")]
+          .filter((chunk) => intersects(chunk, viewport)).length;
+        return { files, rowChunks };
+      };
+      const maxScroll = scroller.scrollHeight - scroller.clientHeight;
+      const half = Math.floor(frames / 2);
+      for (let frame = 0; frame < frames; frame++) {
+        const started = performance.now();
+        const progress = (frame % half) / (half - 1);
+        scroller.scrollTop = frame < half ? maxScroll * progress : maxScroll * (1 - progress);
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        const cold = viewportColdState();
+        if (cold.files.length > 0 || cold.rowChunks > 0) {
+          blankFrames++;
+          if (blankSamples.length < 5) blankSamples.push({ frame, scrollTop: scroller.scrollTop, ...cold });
+        }
+        delays.push(performance.now() - started);
+      }
+      return {
+        blankFrames,
+        frameDelay: delays,
+        blankSamples,
+        scrollDistancePx: maxScroll * 2,
+        mountedHeaders: document.querySelectorAll(".file-head-row").length,
+        renderedRows: document.querySelectorAll(".line, .split-row").length,
+        elements: document.getElementsByTagName("*").length,
+        heapBytes: performance.memory?.usedJSHeapSize ?? null,
+      };
+    }, LARGE_DIFF_FRAMES);
+    const { frameDelay, ...resources } = metrics;
+    const result = {
+      url: targetURL,
+      viewport: "1600×1200 @1.25x",
+      filesReadyMs: Math.round(readyMs * 10) / 10,
+      frameDelay: summarizeSamples(frameDelay),
+      ...resources,
+    };
+    console.log(JSON.stringify(result, null, 2));
+    if (metrics.blankFrames > 0) throw new Error(`large diff exposed blank content in ${metrics.blankFrames} frames`);
+  } finally {
+    await browser.close();
+    if (server?.exitCode === null) {
+      server.kill("SIGTERM");
+      await Promise.race([server.exited, delay(2_000)]);
+      if (server.exitCode === null) server.kill("SIGKILL");
+    }
+  }
 }
 async function afterPaint(page, startedAt) {
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -887,13 +1004,15 @@ async function main() {
   }
 }
 
-const mode = process.argv.includes("--cursor-origin")
-  ? mainCursorOrigin()
-  : process.argv.includes("--private-search")
-    ? mainPrivateSearch()
-    : process.argv.includes("--render-p99")
-      ? mainRenderP99()
-      : main();
+const mode = process.argv.includes("--large-diff")
+  ? mainLargeDiff()
+  : process.argv.includes("--cursor-origin")
+    ? mainCursorOrigin()
+    : process.argv.includes("--private-search")
+      ? mainPrivateSearch()
+      : process.argv.includes("--render-p99")
+        ? mainRenderP99()
+        : main();
 
 mode.catch((error) => {
   console.error(error.stack ?? error);

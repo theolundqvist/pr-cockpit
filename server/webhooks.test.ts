@@ -25,7 +25,7 @@ const refreshPr = mock(async (_repo: string, _number: number) => {});
 // Modules load after the legacy database is in place so the migration sees it.
 const { db, listWebhookRegistrations } = await import("./db.ts");
 const { buildWebhookRoutes } = await import("./webhooks.ts");
-const route = buildWebhookRoutes(refreshPr);
+const route = buildWebhookRoutes(refreshPr, async () => true);
 const migratedRows = listWebhookRegistrations().sort((a, b) => a.number - b.number);
 
 async function request(path: string, body?: unknown): Promise<Response> {
@@ -41,17 +41,17 @@ async function request(path: string, body?: unknown): Promise<Response> {
   return response;
 }
 
-async function workflowEvent(repo: string, number: number): Promise<Response | null> {
+async function checkEvent(repo: string, number: number): Promise<Response | null> {
   return route(
     new Request("http://127.0.0.1/hook", {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-github-event": "workflow_run",
+        "x-github-event": "check_run",
       },
       body: JSON.stringify({
         repository: { full_name: repo },
-        workflow_run: { pull_requests: [{ number }] },
+        check_run: { pull_requests: [{ number }] },
       }),
     }),
     new URL("http://127.0.0.1/hook"),
@@ -130,15 +130,15 @@ describe("webhook registrations", () => {
     expect(registrations()).toEqual([]);
   });
 
-  test("refreshes a registered PR from workflow events through the injected callback", async () => {
+  test("refreshes a registered PR from check events through the injected callback", async () => {
     clearRegistrations();
     await request("/register", { repo: "acme/widget", number: 41 });
     refreshPr.mockClear();
 
-    const response = await workflowEvent("acme/widget", 41);
+    const response = await checkEvent("acme/widget", 41);
 
     expect(await response?.text()).toBe("ok");
-    expect(refreshPr).toHaveBeenCalledWith("acme/widget", 41);
+    expect(refreshPr).toHaveBeenCalledWith("acme/widget", 41, "webhook", "checks");
     expect(listWebhookRegistrations()).toContainEqual(expect.objectContaining({
       repo: "acme/widget",
       number: 41,
@@ -146,10 +146,25 @@ describe("webhook registrations", () => {
     }));
   });
 
-  test("ignores workflow events for unconfigured and unregistered repositories", async () => {
+  test("ingests Actions markers without refreshing the PR snapshot", async () => {
     clearRegistrations();
+    await request("/register", { repo: "acme/widget", number: 41 });
+    refreshPr.mockClear();
+    const response = await route(new Request("http://127.0.0.1/hook", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-github-event": "workflow_run" },
+      body: JSON.stringify({ repository: { full_name: "acme/widget" }, workflow_run: {
+        id: 9, run_attempt: 1, head_sha: "a".repeat(40), head_branch: "feature",
+        name: "CI", status: "queued", conclusion: null, updated_at: "2026-08-24T10:00:00Z",
+      } }),
+    }), new URL("http://127.0.0.1/hook"));
+    expect(await response?.text()).toBe("ok");
+    expect(refreshPr).not.toHaveBeenCalled();
+  });
 
-    expect(await (await workflowEvent("other/widget", 42))?.text()).toBe("ignored");
+  test("ignores check events for unconfigured and unregistered repositories", async () => {
+    clearRegistrations();
+    expect(await (await checkEvent("other/widget", 42))?.text()).toBe("ignored");
     expect(refreshPr).not.toHaveBeenCalled();
   });
 });

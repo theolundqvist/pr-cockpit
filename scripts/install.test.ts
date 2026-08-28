@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,10 +7,18 @@ const uid = process.getuid?.() ?? 0;
 
 // The installer only reaches its LaunchAgent logic through the real script, so the
 // harness fakes a checkout plus the binaries it shells out to.
-function fakeInstall(home: string, loadedRoot: string | null) {
+function fakeInstall(
+  home: string,
+  loadedRoot: string | null,
+  platform: "Darwin" | "Linux",
+  healthRoot?: string,
+) {
   const root = join(home, "checkout");
   const bin = join(home, "bin");
   const calls = join(home, "launchctl-calls");
+  writeFileSync(calls, "");
+  const curlCalls = join(home, "curl-calls");
+  writeFileSync(curlCalls, "");
   mkdirSync(join(root, "scripts"), { recursive: true });
   mkdirSync(join(root, "ui"), { recursive: true });
   mkdirSync(join(root, "shell"), { recursive: true });
@@ -29,10 +37,11 @@ function fakeInstall(home: string, loadedRoot: string | null) {
     : `printf 'gui/${uid}/app.pr-cockpit = {\\n\\tstate = running\\n\\targuments = {\\n\\t\\tCOCKPIT_ROOT=${resolved}\\n\\t}\\n}\\n'`;
   for (const [name, body] of [
     ["bun", "exit 0"],
+    ["uname", `printf '${platform}\\n'`],
     ["gh", "exit 0"],
     // the readiness probe needs the server agent to own the listening port
     ["lsof", 'printf "4242\\n"'],
-    ["curl", `printf '{"root":"${realpathSync(root)}"}'`],
+    ["curl", `printf '%s\\n' "$*" >> ${JSON.stringify(curlCalls)}; printf '{"root":"${healthRoot ?? realpathSync(root)}"}'`],
     [
       "launchctl",
       `printf '%s\\n' "$*" >> ${JSON.stringify(calls)}
@@ -50,15 +59,24 @@ exit 0`,
     writeFileSync(path, `#!/usr/bin/env bash\n${body}\n`);
     chmodSync(path, 0o755);
   }
-  return { root, calls, path: `${bin}:/usr/bin:/bin:/usr/sbin` };
+  return { root, calls, curlCalls, path: `${bin}:/usr/bin:/bin:/usr/sbin` };
 }
 
-async function install(loadedRoot: string | null) {
+async function install(
+  loadedRoot: string | null,
+  options: { platform?: "Darwin" | "Linux"; proxy?: string; healthRoot?: string } = {},
+) {
   const home = mkdtempSync(join(tmpdir(), "cockpit-install-"));
   try {
-    const fake = fakeInstall(home, loadedRoot);
+    const fake = fakeInstall(home, loadedRoot, options.platform ?? "Darwin", options.healthRoot);
+    const installHome = join(home, "home");
     const proc = Bun.spawn([join(fake.root, "scripts/install")], {
-      env: { PATH: fake.path, HOME: join(home, "home"), COCKPIT_PORT: "4820" },
+      env: {
+        PATH: fake.path,
+        HOME: installHome,
+        COCKPIT_PORT: "4820",
+        ...(options.proxy ? { COCKPIT_PROXY: options.proxy } : {}),
+      },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -68,11 +86,32 @@ async function install(loadedRoot: string | null) {
       proc.exited,
     ]);
     const calls = readFileSync(fake.calls, "utf8");
-    return { stdout, stderr, exitCode, calls, root: fake.root };
+    const curlCalls = readFileSync(fake.curlCalls, "utf8");
+    const serverPlistPath = join(installHome, "Library/LaunchAgents/app.pr-cockpit.server.plist");
+    const serverPlist = existsSync(serverPlistPath) ? readFileSync(serverPlistPath, "utf8") : "";
+    return {
+      stdout,
+      stderr,
+      exitCode,
+      calls,
+      curlCalls,
+      root: fake.root,
+      serverPlist,
+      localBin: join(installHome, ".local/bin"),
+    };
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
 }
+
+test("headless Linux install builds server assets without macOS registration", async () => {
+  const result = await install(null, { platform: "Linux" });
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout).toContain("[3/3] Build UI");
+  expect(result.stdout).toContain("headless server build is ready");
+  expect(result.calls).toBe("");
+  expect(result.serverPlist).toBe("");
+});
 
 test("an app registration left behind by another root is replaced", async () => {
   const result = await install("/tmp/some-other-checkout");
@@ -82,6 +121,7 @@ test("an app registration left behind by another root is replaced", async () => 
   expect(result.calls).toContain(`bootout gui/${uid}/app.pr-cockpit\n`);
   expect(result.calls).toContain(`bootstrap gui/${uid} `);
   expect(result.calls).toContain("Library/LaunchAgents/app.pr-cockpit.plist");
+  expect(result.serverPlist).toContain(`<string>PATH=${result.localBin}:`);
 });
 
 test("no loaded registration bootstraps the app", async () => {
@@ -100,4 +140,16 @@ test("a registration for this root keeps the running window", async () => {
   expect(result.calls).not.toContain(`bootout gui/${uid}/app.pr-cockpit\n`);
   expect(result.calls).not.toContain("LaunchAgents/app.pr-cockpit.plist");
   expect(result.calls).toContain("app.pr-cockpit.server.plist");
+});
+
+test("replica installation restarts the local server", async () => {
+  const result = await install("__ROOT__", {
+    proxy: "root@dev-vm",
+  });
+  expect(result.exitCode).toBe(0);
+  expect(result.curlCalls).toContain("-X POST http://127.0.0.1:4820/api/shutdown");
+  expect(result.serverPlist).toContain("<key>KeepAlive</key>");
+  expect(result.serverPlist).toContain("<string>--server-only</string>");
+  expect(result.serverPlist).toContain("<string>COCKPIT_REPLICA_SSH_HOST=root@dev-vm</string>");
+  expect(result.serverPlist).toMatch(/<string>COCKPIT_LAUNCHER=.*\/Library\/Application Support\/PR Cockpit\/launch<\/string>/);
 });

@@ -5,7 +5,7 @@
 
 <script>
   import { untrack } from "svelte";
-  import { fetchInbox, fetchRecentClosed, fetchPrDetails, setArchived, focusTmux, tmuxFocusErrorMessage, saveSettings, reorderPr, fetchSettings, fetchRelayStatus, fetchRelayCoverage, autofixAgent, customAgent, rescoreAgent } from "./api.js";
+  import { fetchInbox, fetchRecentClosed, fetchPrDetails, setArchived, saveSettings, reorderPr, fetchSettings, fetchRelayStatus, fetchRelayCoverage, autofixAgent, customAgent, rescoreAgent } from "./api.js";
   import { cacheDetail, cachedHeadSha } from "./detailCache.js";
   import { filterPrs, countMatches, wantsHistory } from "./prFilter.js";
   import { relativeTime } from "./time.js";
@@ -22,6 +22,7 @@
   import { showFlash } from "./flash.svelte.js";
   import CurrentBranchBadge from "./CurrentBranchBadge.svelte";
   import Kbd from "./Kbd.svelte";
+  import ConfirmDialog from "./ConfirmDialog.svelte";
 
   let { refreshRevision = 0, pollCompletedAt = null, onFindPr = () => {} } = $props();
   let handledRefreshRevision = refreshRevision;
@@ -34,9 +35,14 @@
   let selected = $state(0);
   let multiAnchor = $state(null);
   const bulkAutofixFlash = timedFlag(3000);
-  let autofixConfirm = $state(false);
-  let autofixConfirmCount = $state(0);
-  let customConfirm = $state(null);
+  // one modal serves every plain yes/no confirmation, each entry carrying its own copy and action
+  let confirmAction = $state(null);
+
+  function runConfirmAction() {
+    const action = confirmAction;
+    confirmAction = null;
+    action.run();
+  }
 
   let keybindAgents = $derived(prefs.agents.filter((a) => a.trigger === "keybind" && a.enabled && a.keybind));
   let lastG = 0;
@@ -281,17 +287,6 @@
     if (next === "closed") loadClosed();
   }
 
-  let closedSummary = $derived.by(() => {
-    let merged = 0;
-    let closed = 0;
-    const repos = new Set();
-    for (const pr of closedPrs) {
-      if (pr.state === "MERGED") merged++;
-      else closed++;
-      repos.add(pr.repo);
-    }
-    return { merged, closed, repos: repos.size };
-  });
 
   // state:closed / state:merged queries reach pr_index history, which only the server can merge — fetch (debounced) instead of filtering the open inbox locally
   let historyPrs = $state([]);
@@ -332,22 +327,6 @@
     return countMatches(prs, v.query, showArchived);
   }
 
-  let headCount = $derived.by(() => {
-    if (!filterQuery.trim()) return `${prs.length} open`;
-    if (wantsHistory(filterQuery)) return historyActive ? `${filteredPrs.length} found` : "searching…";
-    return `${filteredPrs.length}/${prs.length} open`;
-  });
-
-  let queueSummary = $derived.by(() => {
-    const counts = { ready: 0, yours: 0, waiting: 0 };
-    const repos = new Set();
-    for (const pr of filteredPrs) {
-      const group = classify(pr, viewerLogin).group;
-      if (group in counts) counts[group]++;
-      repos.add(pr.repo);
-    }
-    return { ...counts, repos: repos.size };
-  });
 
   const TRUNK_MIN_BASE_COUNT = 3;
 
@@ -557,7 +536,6 @@
     }
     keys.push({ key: "⇧J / ⇧K", label: "select range" });
     keys.push({ key: "o", label: "github" });
-    if (pr) keys.push({ key: "⇧T", label: "focus terminal" });
     return keys;
   });
 
@@ -569,14 +547,6 @@
 
   function openGithub(pr) {
     window.open(`https://github.com/${pr.repo}/pull/${pr.number}`, "_blank", "noopener");
-  }
-
-  async function focusTerminal(pr) {
-    try {
-      await focusTmux(pr.repo, pr.number);
-    } catch (err) {
-      showFlash(tmuxFocusErrorMessage(err));
-    }
   }
 
   let multiRange = $derived(multiAnchor === null ? null : { lo: Math.min(multiAnchor, selected), hi: Math.max(multiAnchor, selected) });
@@ -597,8 +567,11 @@
       bulkAutofixFlash.show(targets.length === 1 ? "already green or running — nothing to autofix" : `all ${targets.length} selected already green or running — nothing to autofix`);
       return;
     }
-    autofixConfirmCount = eligible.length;
-    autofixConfirm = true;
+    confirmAction = {
+      title: `Arm auto-fix on ${eligible.length} PR${eligible.length > 1 ? "s" : ""}?`,
+      confirmLabel: "Arm agent",
+      run: submitBulkAutofix,
+    };
   }
 
   async function submitBulkAutofix() {
@@ -615,6 +588,14 @@
     await Promise.allSettled(eligible.map((pr) => autofixAgent(pr.repo, pr.number)));
     bulkAutofixFlash.show(eligible.length === 1 && skipped === 0 ? "autofix armed" : `autofix armed on ${eligible.length}${skipped ? ` · ${skipped} skipped` : ""}`);
     loadInbox();
+  }
+
+  function requestCustomAgent(def) {
+    confirmAction = {
+      title: def.id === "rescorer" ? "Re-score this PR?" : `Arm the "${def.name || "custom"}" agent on this PR?`,
+      confirmLabel: def.id === "rescorer" ? "Re-score" : "Arm agent",
+      run: () => submitCustom(def),
+    };
   }
 
   async function submitCustom(def) {
@@ -676,18 +657,7 @@
         e.preventDefault();
         return;
       }
-      if (autofixConfirm) {
-        if (e.key === "Enter") submitBulkAutofix();
-        autofixConfirm = false;
-        e.preventDefault();
-        return;
-      }
-      if (customConfirm) {
-        if (e.key === "Enter") submitCustom(customConfirm);
-        customConfirm = null;
-        e.preventDefault();
-        return;
-      }
+      if (confirmAction) return;
       const pr = ordered[selected];
       if (e.key === "g" && !e.shiftKey) {
         const now = Date.now();
@@ -728,14 +698,12 @@
         }
       } else if (e.key === "o") {
         if (pr) openGithub(pr);
-      } else if (view === "open" && e.key === "T") {
-        if (pr) focusTerminal(pr);
       } else if (view === "open" && keybindAgents.some((a) => a.id !== "fixer" && a.keybind === e.key)) {
         const def = keybindAgents.find((a) => a.id !== "fixer" && a.keybind === e.key);
         if (def.id === "autofix") openAutofixConfirm();
         else if (def.id === "rescorer") {
-          if (pr) customConfirm = def;
-        } else if (pr && pr.fixerAgentState !== "running") customConfirm = def;
+          if (pr) requestCustomAgent(def);
+        } else if (pr && pr.fixerAgentState !== "running") requestCustomAgent(def);
       } else if (view === "open" && e.key === "e") {
         if (pr && isArchived(pr)) {
           archive(pr, false);
@@ -752,7 +720,7 @@
         }
       } else if (view === "open" && e.key === "A") {
         toggleArchived();
-      } else if (e.key === "C") {
+      } else if (e.key === "Tab") {
         showView(view === "closed" ? "open" : "closed");
       } else {
         return;
@@ -780,10 +748,7 @@
 <div class="page">
   <div class="inbox" onmousemove={trackMouse}>
     <header class="head">
-      <div class="head-copy">
-        <span class="ui-eyebrow">Workspace</span>
-        <span class="head-title">Review queue</span>
-      </div>
+      <span class="head-title">Review queue</span>
       <span class="head-right">
         <UpdateButton />
         <span
@@ -798,66 +763,15 @@
       </span>
     </header>
 
-    <section class="queue-overview" aria-label="Review queue summary">
-      {#if view === "closed"}
-        <div class="queue-copy">
-          <span class="ui-eyebrow">Recently finished</span>
-          <h1>{closedLoaded ? `${closedPrs.length} done` : "loading…"}</h1>
-          <p>
-            {#if closedSummary.repos}
-              Newest merge or close first, across {closedSummary.repos} repositor{closedSummary.repos === 1 ? "y" : "ies"}.
-            {:else}
-              Pull requests you were part of land here once they merge or close.
-            {/if}
-          </p>
-        </div>
-        <div class="queue-metrics two" aria-label="Finished counts">
-          <div class="queue-metric merged">
-            <span>Merged</span>
-            <strong>{closedSummary.merged}</strong>
-          </div>
-          <div class="queue-metric closed">
-            <span>Closed</span>
-            <strong>{closedSummary.closed}</strong>
-          </div>
-        </div>
-      {:else}
-        <div class="queue-copy">
-          <span class="ui-eyebrow">Pull requests</span>
-          <h1>{headCount}</h1>
-          <p>
-            {#if queueSummary.repos}
-              Sorted around the next decision across {queueSummary.repos} repositor{queueSummary.repos === 1 ? "y" : "ies"}.
-            {:else}
-              Your pull-request workspace will appear here.
-            {/if}
-          </p>
-        </div>
-        <div class="queue-metrics" aria-label="Queue counts">
-          <div class="queue-metric ready">
-            <span>Ready</span>
-            <strong>{queueSummary.ready}</strong>
-          </div>
-          <div class="queue-metric review">
-            <span>Your move</span>
-            <strong>{queueSummary.yours}</strong>
-          </div>
-          <div class="queue-metric wait">
-            <span>Waiting</span>
-            <strong>{queueSummary.waiting}</strong>
-          </div>
-        </div>
-      {/if}
-    </section>
 
     <div class="view-tabs" role="tablist" aria-label="List view">
       <button class="view-tab" role="tab" aria-selected={view === "open"} class:active={view === "open"} onclick={() => showView("open")}>
         Open
         <span class="view-tab-count">{prs.length}</span>
-        {#if view === "closed"}<Kbd keys="c" />{/if}
+        {#if view === "closed"}<Kbd keys="tab" />{/if}
       </button>
       <button class="view-tab" role="tab" aria-selected={view === "closed"} class:active={view === "closed"} onclick={() => showView("closed")}>
-        Recently merged {#if view === "open"}<Kbd keys="c" />{/if}
+        Recently merged {#if view === "open"}<Kbd keys="tab" />{/if}
       </button>
     </div>
 
@@ -1132,11 +1046,16 @@
   </div>
 </div>
 
-{#if autofixConfirm}
-  <div class="copied-flash">Arm auto-fix on {autofixConfirmCount} PR{autofixConfirmCount > 1 ? "s" : ""}? <kbd>enter</kbd> confirm · <kbd>esc</kbd> cancel</div>
-{:else if customConfirm}
-  <div class="copied-flash">{customConfirm.id === "rescorer" ? "Re-score this PR?" : `Arm "${customConfirm.name || "custom"}" agent on this PR?`} <kbd>enter</kbd> confirm · <kbd>esc</kbd> cancel</div>
-{:else if copied.value}
+{#if confirmAction}
+  <ConfirmDialog
+    title={confirmAction.title}
+    confirmLabel={confirmAction.confirmLabel}
+    onConfirm={runConfirmAction}
+    onCancel={() => (confirmAction = null)}
+  />
+{/if}
+
+{#if copied.value}
   <div class="copied-flash">{copied.value}</div>
 {:else if archiveFlash.value}
   <div class="copied-flash">Archived — <kbd>z</kbd> to undo</div>
@@ -1603,14 +1522,6 @@
     border-bottom: 1px solid var(--border-soft);
     backdrop-filter: blur(18px) saturate(160%);
   }
-  .head-copy {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-  .head .ui-eyebrow {
-    font-size: 10px;
-  }
   .head-title {
     font-family: var(--sans);
     font-size: 19px;
@@ -1621,70 +1532,6 @@
   }
   .head-right {
     gap: 8px;
-  }
-  .queue-overview {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 24px;
-    margin-bottom: 16px;
-    padding: 20px 22px;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-xs);
-  }
-  .queue-copy {
-    min-width: 0;
-  }
-  .queue-copy h1 {
-    margin: 3px 0 4px;
-    color: var(--text);
-    font-size: 28px;
-    font-weight: 650;
-    line-height: 1.08;
-    letter-spacing: -0.038em;
-  }
-  .queue-copy p {
-    margin: 0;
-    color: var(--text-dim);
-    font-size: 12px;
-    line-height: 1.45;
-  }
-  .queue-metrics {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(68px, 1fr));
-    gap: 8px;
-  }
-  .queue-metric {
-    min-width: 72px;
-    padding: 8px 10px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    background: color-mix(in srgb, var(--panel) 82%, transparent);
-  }
-  .queue-metric span {
-    display: block;
-    margin-bottom: 3px;
-    color: var(--text-faint);
-    font-size: 10.5px;
-    line-height: 1;
-  }
-  .queue-metric strong {
-    display: block;
-    color: var(--text);
-    font-size: 18px;
-    font-weight: 650;
-    letter-spacing: -0.025em;
-    line-height: 1;
-  }
-  .queue-metric.ready strong { color: var(--ready); }
-  .queue-metric.review strong { color: var(--review); }
-  .queue-metric.merged strong { color: var(--merged); }
-  .queue-metric.closed strong { color: var(--closed); }
-  .queue-metric.wait strong { color: var(--text-dim); }
-  .queue-metrics.two {
-    grid-template-columns: repeat(2, minmax(68px, 1fr));
   }
   .view-tabs {
     display: flex;
@@ -2032,14 +1879,6 @@
       padding-top: 16px;
       margin-top: -16px;
     }
-    .queue-overview {
-      grid-template-columns: 1fr;
-      gap: 16px;
-      padding: 18px;
-    }
-    .queue-metrics {
-      width: 100%;
-    }
     .queue-sidecar {
       grid-template-columns: 1fr;
     }
@@ -2071,62 +1910,11 @@
     background: linear-gradient(to bottom, var(--bg) 74%, color-mix(in srgb, var(--bg) 84%, transparent));
     backdrop-filter: blur(14px);
   }
-  .head-copy {
-    gap: 0;
-  }
-  .head .ui-eyebrow {
-    font-size: 12px;
-  }
   .head-title {
     font-size: 24px;
     font-weight: 500;
     line-height: 30px;
     letter-spacing: -0.025em;
-  }
-  .queue-overview {
-    gap: 32px;
-    margin: 0 0 18px;
-    padding: 18px 20px;
-    border: 0;
-    border-radius: var(--radius-lg);
-    background: var(--panel);
-    box-shadow: var(--shadow-surface);
-  }
-  .queue-copy h1 {
-    margin: 2px 0 3px;
-    font-size: 24px;
-    font-weight: 500;
-    line-height: 30px;
-    letter-spacing: -0.025em;
-  }
-  .queue-copy p {
-    color: var(--text-dim);
-    font-size: 14px;
-    line-height: 20px;
-  }
-  .queue-metrics,
-  .queue-metrics.two {
-    display: flex;
-    gap: 0;
-  }
-  .queue-metric {
-    min-width: 82px;
-    padding: 2px 16px;
-    border: 0;
-    border-left: 1px solid var(--border-soft);
-    border-radius: 0;
-    background: transparent;
-  }
-  .queue-metric span {
-    margin-bottom: 4px;
-    font-size: 12px;
-    line-height: 16px;
-  }
-  .queue-metric strong {
-    font-size: 16px;
-    font-weight: 600;
-    line-height: 20px;
-    letter-spacing: 0;
   }
   .view-tabs {
     display: inline-flex;
@@ -2353,6 +2141,11 @@
       grid-template-columns: repeat(2, minmax(0, 1fr));
       align-items: start;
     }
+    .quick-actions-panel {
+      grid-column: 1 / -1;
+      justify-self: center;
+      width: min(100%, 480px);
+    }
     .saved-views {
       grid-column: 1 / -1;
     }
@@ -2365,13 +2158,6 @@
       top: -14px;
       margin-top: -14px;
       padding-top: 14px;
-    }
-    .queue-overview {
-      gap: 16px;
-      padding-inline: 0;
-    }
-    .queue-metric {
-      padding-inline: 12px;
     }
     .queue-sidecar {
       grid-template-columns: 1fr;

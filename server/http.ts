@@ -6,6 +6,7 @@ import {
   getCachedPrDetail,
   getDiff,
   getFileContents,
+  githubGraphqlUsage,
   getPr,
   getPrByBranch,
   getRanks,
@@ -18,6 +19,7 @@ import {
   listPrIndex,
   listPrs,
   listRunJobs,
+  workflowRunsForLease,
   saveDiff,
   saveFileContents,
   setArchived,
@@ -30,12 +32,15 @@ import {
   type MutationRow,
   type PrIndexRow,
   type PrRow,
+  type RunJobRow,
+  type WorkflowRunRow,
 } from "./db.ts";
 import { localCheckoutBranchFor, localCheckoutPathFor, setLocalCheckoutBranch, worktreePathFor, worktreeWindowIdFor } from "./worktreeScan.ts";
 import { prKey } from "./prKey.ts";
 import { lastPollAt, pollOnce, refreshPr, trackedRepos } from "./poller.ts";
 import {
   commitPrFileEdit,
+  compactReviewHunks,
   fetchDiff,
   fetchFileContents,
   fetchFileHistory,
@@ -46,6 +51,7 @@ import {
   fetchMergedPrAnalytics,
   GithubRequestError,
   githubAuthStatus,
+  startGithubSetup,
   StalePrHeadError,
   getViewerLogin,
   MAX_MERGED_PR_ANALYTICS_DAYS,
@@ -61,12 +67,22 @@ import {
   type PrCommentSince,
   type PrDetail,
 } from "./github.ts";
-import { type CommitFileStat, commitStatsFromMirror, conflictFilesFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError } from "./mirror.ts";
+import {
+  proxyReplicaRequest,
+  replicaEnabled,
+  replicaSnapshotResponse,
+  replicaStatus,
+  replicaViewerLogin,
+} from "./replica.ts";
+import type { GithubUsageSource } from "./githubUsage.ts";
+import type { GithubAuthStatus } from "./githubAuth.ts";
+import { commitsFromMirror, commitStatsFromMirror, conflictFilesFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError, summarizeCommitStats, type PullRequestCommit } from "./mirror.ts";
 import { checkState, type CheckState } from "./checkState.ts";
 import { currentBaseRef, discardMutation, enqueueMutation, mutationsForPr, retryMutation, type MutationPayload } from "./mutations.ts";
 import { isMergeMethod, mergeMethodFor, mergeMethodSourceFor, setMergeMethodPreference } from "./mergeMethod.ts";
 import { AGENT_DEFAULTS, readSettings, relayConfig, RELAY_APP_INSTALL_URL, RELAY_APP_SLUG, settingsRepos, writeSettings, type AgentSetting, type Settings } from "./settings.ts";
 import { claudeBinPath, ompBinPath } from "./harness.ts";
+import { CommitMessageError, generateCommitMessage } from "./commitMessage.ts";
 import { relayStatus } from "./relayClient.ts";
 import { relayCoverage } from "./relayCoverage.ts";
 import { testMatcher } from "../ui/src/lib/testPath.js";
@@ -99,7 +115,7 @@ import { createTmuxFocusHandler } from "./tmuxFocus.ts";
 import type { TmuxFocusHandler } from "./tmuxFocus.ts";
 import { needsMeRank } from "./rank.ts";
 import { invalidateInbox, invalidatePr } from "./rendererInvalidation.ts";
-import { cachedJobLogs, formatJobLogs, syncRunJobs } from "./runLogs.ts";
+import { actionJobLog, actionWorkflowGraphs, activateActionsLease, cacheActionsRun, cacheGithubActionsForCommit, cachedJobLogs, formatJobLogs, formatRunJobs } from "./runLogs.ts";
 const cockpitRoot = process.cwd();
 
 function json(data: unknown, status = 200): Response {
@@ -304,7 +320,7 @@ async function handleInbox(url: URL): Promise<Response> {
     };
   });
 
-  const viewerLogin = await getViewerLogin().catch(() => null);
+  const viewerLogin = replicaEnabled() ? replicaViewerLogin() : await getViewerLogin().catch(() => null);
   return json({ prs: rows, lastPollAt: isMockGithub ? MOCK_FIXTURE_CLOCK : lastPollAt, viewerLogin });
 }
 
@@ -314,9 +330,10 @@ async function revalidateCachedPrDetail(
   repo: string,
   number: number,
   fetchDetail: typeof fetchPrDetail,
+  source: GithubUsageSource,
 ): Promise<void> {
   const snapshotCutoffAt = new Date().toISOString();
-  const detail = await fetchDetail(repo, number);
+  const detail = await fetchDetail(repo, number, source);
   upsertCachedPrDetail({
     repo,
     number,
@@ -328,14 +345,14 @@ async function revalidateCachedPrDetail(
 }
 
 function createPrDetailRevalidator(
-  refresh: (repo: string, number: number) => Promise<void>,
-): (repo: string, number: number) => Promise<void> {
+  refresh: (repo: string, number: number, source: GithubUsageSource) => Promise<void>,
+): (repo: string, number: number, source: GithubUsageSource) => Promise<void> {
   const revalidating = new Map<string, Promise<void>>();
-  return (repo, number) => {
+  return (repo, number, source) => {
     const key = `${repo}#${number}`;
     let revalidation = revalidating.get(key);
     if (!revalidation) {
-      revalidation = refresh(repo, number);
+      revalidation = refresh(repo, number, source);
       revalidating.set(key, revalidation);
       void revalidation.catch((err) => console.error(`background revalidate failed for ${repo}#${number}:`, err));
       void revalidation.then(
@@ -354,14 +371,22 @@ type HttpDependencies = {
   fetchPrCommentsSince: typeof fetchPrCommentsSince;
   lookupPrIndexes: typeof lookupPrIndexes;
   commitPrFileEdit: typeof commitPrFileEdit;
+  githubAuthStatus: typeof githubAuthStatus;
+  startGithubSetup: typeof startGithubSetup;
+  generateCommitMessage: typeof generateCommitMessage;
   resolveReviewThread: typeof resolveReviewThread;
   refreshPr: typeof refreshPr;
   handleTmuxFocus: TmuxFocusHandler;
+  activateActionsLease: typeof activateActionsLease;
+  cacheActionsRun: typeof cacheActionsRun;
+  cacheGithubActionsForCommit: typeof cacheGithubActionsForCommit;
+  actionWorkflowGraphs: typeof actionWorkflowGraphs;
+  actionJobLog: typeof actionJobLog;
 };
 
 type HttpRuntime = HttpDependencies & {
-  revalidateCachedPrDetail: (repo: string, number: number) => Promise<void>;
-  revalidateTrackedPr: (repo: string, number: number) => Promise<void>;
+  revalidateCachedPrDetail: (repo: string, number: number, source: GithubUsageSource) => Promise<void>;
+  revalidateTrackedPr: (repo: string, number: number, source: GithubUsageSource) => Promise<void>;
 };
 
 const defaultHttpDependencies: HttpDependencies = {
@@ -371,9 +396,17 @@ const defaultHttpDependencies: HttpDependencies = {
   fetchPrCommentsSince,
   lookupPrIndexes,
   commitPrFileEdit,
+  githubAuthStatus,
+  startGithubSetup,
+  generateCommitMessage,
   resolveReviewThread,
   refreshPr,
   handleTmuxFocus: createTmuxFocusHandler(),
+  activateActionsLease,
+  cacheActionsRun,
+  cacheGithubActionsForCommit,
+  actionWorkflowGraphs,
+  actionJobLog,
 };
 async function handleGithubQuota(runtime: HttpRuntime): Promise<Response> {
   try {
@@ -453,6 +486,19 @@ async function handleMergedPrAnalytics(url: URL, runtime: HttpRuntime): Promise<
   }
 }
 
+async function handleGithubUsage(runtime: HttpRuntime): Promise<Response> {
+  try {
+    const resources = await runtime.fetchGithubQuota();
+    return json({
+      quota: resources.graphql,
+      usage: githubGraphqlUsage(resources.graphql.used, resources.graphql.limit, resources.graphql.resetAt),
+    });
+  } catch (err) {
+    console.error("GitHub usage fetch failed:", err);
+    return json({ error: "GitHub usage unavailable" }, 502);
+  }
+}
+
 
 // Resolved threads bump neither updatedAt nor head SHA, so the poller's change gate misses them.
 const TRACKED_STALE_MS = 60_000;
@@ -521,8 +567,9 @@ export async function checkoutTargetFor(checkout: string, file: string | null): 
 function withBaseBranchPr(
   repoName: string,
   num: number,
-  detail: { baseRefName: string; headRefName?: string | null },
+  detail: PrDetail,
 ): Record<string, unknown> {
+  compactReviewHunks(detail);
   const basePr = getPrByBranch(repoName, detail.baseRefName);
   const headRef = detail.headRefName;
   return {
@@ -583,16 +630,16 @@ async function handlePrDetail(
       agentSnapshot.freshness === "outdated" ||
       trackedDetailIsStale(tracked.fetched_at, nowMs) ||
       mergeabilityNeedsRefresh(tracked.fetched_at, trackedMergeabilityDetail(tracked), nowMs)
-    ) runtime.revalidateTrackedPr(repoName, num);
+    ) runtime.revalidateTrackedPr(repoName, num, "agent read");
     return json({ ...trackedPrDetail(repoName, num, tracked), agentSnapshot });
   }
   if (tracked) {
     const nowMs = Date.now();
     if (mergeabilityNeedsRefresh(tracked.fetched_at, trackedMergeabilityDetail(tracked), nowMs)) {
-      runtime.revalidateTrackedPr(repoName, num);
+      runtime.revalidateTrackedPr(repoName, num, "app detail");
     } else if (trackedDetailIsStale(tracked.fetched_at, nowMs)) {
       try {
-        await runtime.refreshPr(repoName, num);
+        await runtime.refreshPr(repoName, num, "app detail");
         tracked = getPr(repoName, num);
       } catch (err) {
         console.error(`stale detail refresh failed for ${repoName}#${num}:`, err);
@@ -608,7 +655,7 @@ async function handlePrDetail(
     const recent = nowMs - new Date(cached.fetched_at).getTime() <= UNTRACKED_STALE_MS;
     const agentSnapshot = snapshotStatus(cached.fetched_at, lastWebhookAtForPr(repoName, num));
     if (agentSnapshot.freshness === "outdated" || !recent || mergeabilityNeedsRefresh(cached.fetched_at, detail, nowMs)) {
-      runtime.revalidateCachedPrDetail(repoName, num);
+      runtime.revalidateCachedPrDetail(repoName, num, "agent read");
     }
     return json({
       ...withBaseBranchPr(repoName, num, detail),
@@ -620,14 +667,14 @@ async function handlePrDetail(
     const detail = JSON.parse(cached.detail_json);
     const stale = nowMs - new Date(cached.fetched_at).getTime() > UNTRACKED_STALE_MS;
     if (stale || mergeabilityNeedsRefresh(cached.fetched_at, detail, nowMs)) {
-      runtime.revalidateCachedPrDetail(repoName, num);
+      runtime.revalidateCachedPrDetail(repoName, num, "app detail");
     }
     return json(withBaseBranchPr(repoName, num, detail));
   }
 
   try {
     const snapshotCutoffAt = new Date().toISOString();
-    const detail = await runtime.fetchPrDetail(repoName, num);
+    const detail = await runtime.fetchPrDetail(repoName, num, agentRead ? "agent read" : "app detail");
     upsertCachedPrDetail({
       repo: repoName,
       number: num,
@@ -671,7 +718,7 @@ type PrSummaryCheck = { name: string; state: CheckState; required: boolean; url:
 type PrSummaryComment = { author: string; body: string; createdAt: string };
 type PrSummaryThread = { handle: string; path: string; line: number | null; outdated: boolean; comments: PrSummaryComment[] };
 type PrSummaryNewComment = PrSummaryComment & {
-  kind: "comment" | "review" | "thread";
+  kind: PrCommentSince["kind"];
   path: string | null;
   line: number | null;
   state: string | null;
@@ -846,6 +893,9 @@ function formatPrAgentDigest(summary: PrAgentSummary, includeComments: boolean, 
       lines.push(`Read a cached log with \`pr-cockpit ${summary.ref} --logs [check name]\`.`);
     }
   }
+  if (summary.ci.running > 0) {
+    lines.push(`Inspect queued and running Actions state with \`pr-cockpit ${summary.ref} --jobs\`.`);
+  }
   if (includeComments) {
     const commentLines = summary.newComments.length > 0
       ? summary.newComments.map(newCommentLine)
@@ -902,6 +952,9 @@ export function formatPrAgentSummary(summary: PrAgentSummary, options: AgentSumm
   }
   if (summary.ci.checks.some((check) => check.logBytes !== null)) {
     lines.push("", `Read a cached log with \`pr-cockpit ${summary.ref} --logs [check name]\` instead of polling GitHub Actions.`);
+  }
+  if (summary.ci.running > 0) {
+    lines.push("", `Inspect queued and running Actions state with \`pr-cockpit ${summary.ref} --jobs\` instead of polling GitHub Actions.`);
   }
 
   if (includeComments && summary.newCommentsSince) {
@@ -1017,6 +1070,150 @@ function markReviewThreadResolved(repo: string, number: number, threadId: string
   invalidatePr(repo, number);
 }
 
+function fieldValue(payload: object, field: string): unknown {
+  return Reflect.get(payload, field);
+}
+
+function requiredString(payload: object, field: string): string {
+  const value = fieldValue(payload, field);
+  if (typeof value !== "string") throw new Error(`${field} must be a string`);
+  return value;
+}
+
+function requiredBoolean(payload: object, field: string): boolean {
+  const value = fieldValue(payload, field);
+  if (typeof value !== "boolean") throw new Error(`${field} must be a boolean`);
+  return value;
+}
+
+function requiredLogins(payload: object): string[] {
+  const logins = fieldValue(payload, "logins");
+  if (!Array.isArray(logins) || logins.length === 0 || !logins.every((login): login is string => typeof login === "string")) {
+    throw new Error("logins must be a non-empty string array");
+  }
+  return logins;
+}
+
+function reviewThreadByHandle(detail: PrDetail, handle: unknown) {
+  if (typeof handle !== "string" || !/^[0-9a-f]{10}$/.test(handle)) throw new Error("valid thread handle required");
+  const matches = detail.reviewThreads.nodes.filter((thread) => reviewThreadHandle(thread.id) === handle);
+  if (matches.length === 0) throw new Error("review thread handle not found");
+  if (matches.length > 1) throw new Error("review thread handle is ambiguous");
+  return matches[0]!;
+}
+
+export function normalizeAgentMutation(repo: string, number: number, detail: PrDetail, input: unknown): MutationPayload {
+  if (!input || typeof input !== "object" || Array.isArray(input) || !("kind" in input) || typeof input.kind !== "string") {
+    throw new Error("mutation kind required");
+  }
+  switch (input.kind) {
+    case "merge": {
+      const force = fieldValue(input, "force");
+      const method = fieldValue(input, "method");
+      if ("force" in input && typeof force !== "boolean") throw new Error("force must be a boolean");
+      if ("method" in input && !isMergeMethod(method)) throw new Error("invalid merge method");
+      const baseRef = currentBaseRef(repo, number);
+      return {
+        kind: "merge",
+        force: force === true,
+        baseRef,
+        method: isMergeMethod(method) ? method : mergeMethodFor(repo, baseRef),
+        source: isMergeMethod(method) ? "explicit" : mergeMethodSourceFor(repo, baseRef),
+      };
+    }
+    case "reply-to-thread": {
+      const thread = reviewThreadByHandle(detail, fieldValue(input, "threadHandle"));
+      const rootCommentId = thread.comments.nodes[0]?.databaseId;
+      if (!Number.isInteger(rootCommentId)) throw new Error("review thread has no replyable root comment");
+      return { kind: "reply-to-thread", rootCommentId: rootCommentId!, body: requiredString(input, "body") };
+    }
+    case "resolve-thread": {
+      const resolved = fieldValue(input, "resolved");
+      if ("resolved" in input && typeof resolved !== "boolean") throw new Error("resolved must be a boolean");
+      const thread = reviewThreadByHandle(detail, fieldValue(input, "threadHandle"));
+      return { kind: "resolve-thread", threadId: thread.id, resolved: resolved !== false };
+    }
+    case "comment":
+      return { kind: "comment", body: requiredString(input, "body") };
+    case "review-verdict": {
+      const event = fieldValue(input, "event");
+      if (event !== "APPROVE" && event !== "REQUEST_CHANGES" && event !== "COMMENT") throw new Error("invalid review event");
+      return { kind: "review-verdict", event, body: requiredString(input, "body") };
+    }
+    case "update-branch":
+    case "ready-for-review":
+    case "close":
+      return { kind: input.kind };
+    case "auto-merge":
+      return { kind: "auto-merge", enable: requiredBoolean(input, "enable") };
+    case "github-auto-merge": {
+      const enable = requiredBoolean(input, "enable");
+      if (!enable) return { kind: "github-auto-merge", enable: false };
+      const method = fieldValue(input, "method");
+      if (!isMergeMethod(method)) throw new Error("invalid merge method");
+      return { kind: "github-auto-merge", enable: true, method };
+    }
+    case "inline-comment": {
+      const line = fieldValue(input, "line");
+      const side = fieldValue(input, "side");
+      if (!Number.isInteger(line) || Number(line) < 1) throw new Error("line must be a positive integer");
+      if (side !== "LEFT" && side !== "RIGHT") throw new Error("side must be LEFT or RIGHT");
+      const startLine = fieldValue(input, "startLine");
+      const startSide = fieldValue(input, "startSide");
+      if (startLine === undefined && startSide === undefined) {
+        return {
+          kind: "inline-comment",
+          path: requiredString(input, "path"),
+          line: Number(line),
+          side,
+          body: requiredString(input, "body"),
+        };
+      }
+      if (!Number.isInteger(startLine) || Number(startLine) < 1) throw new Error("startLine must be a positive integer");
+      if (startSide !== "LEFT" && startSide !== "RIGHT") throw new Error("startSide must be LEFT or RIGHT");
+      return {
+        kind: "inline-comment",
+        path: requiredString(input, "path"),
+        line: Number(line),
+        side,
+        startLine: Number(startLine),
+        startSide,
+        body: requiredString(input, "body"),
+      };
+    }
+    case "assign":
+    case "unassign":
+    case "request-reviewers":
+    case "unrequest-reviewers":
+      return { kind: input.kind, logins: requiredLogins(input) };
+    case "edit-body":
+      return { kind: "edit-body", body: requiredString(input, "body") };
+    case "edit-title":
+      return { kind: "edit-title", title: requiredString(input, "title") };
+    default:
+      throw new Error(`unsupported mutation kind: ${input.kind}`);
+  }
+}
+
+async function handleAgentMutation(owner: string, repo: string, number: string, req: Request): Promise<Response> {
+  if (!validPrReference(owner, repo, number)) return json({ error: "invalid PR reference" }, 400);
+  const repoName = `${owner}/${repo}`;
+  const num = Number(number);
+  const stored = getPr(repoName, num) ?? getCachedPrDetail(repoName, num);
+  if (!stored) return json({ error: "PR is not cached yet" }, 404);
+  const detail = JSON.parse(stored.detail_json) as PrDetail;
+  const requestBody: unknown = await req.json().catch(() => null);
+  try {
+    if (!requestBody || typeof requestBody !== "object" || Array.isArray(requestBody) || !("payload" in requestBody)) {
+      throw new Error("mutation payload required");
+    }
+    const payload = normalizeAgentMutation(repoName, num, detail, requestBody.payload);
+    return json({ id: enqueueMutation({ repo: repoName, number: num, payload }) }, 201);
+  } catch (err) {
+    return json({ error: err instanceof Error ? err.message : String(err) }, 400);
+  }
+}
+
 async function handleResolveReviewThread(
   owner: string,
   repo: string,
@@ -1032,10 +1229,13 @@ async function handleResolveReviewThread(
   const stored = getPr(repoName, num) ?? getCachedPrDetail(repoName, num);
   if (!stored) return json({ error: "PR is not cached yet" }, 404);
   const detail = JSON.parse(stored.detail_json) as PrDetail;
-  const matches = detail.reviewThreads.nodes.filter((thread) => reviewThreadHandle(thread.id) === handle);
-  if (matches.length === 0) return json({ error: "review thread handle not found" }, 404);
-  if (matches.length > 1) return json({ error: "review thread handle is ambiguous" }, 409);
-  const thread = matches[0]!;
+  let thread;
+  try {
+    thread = reviewThreadByHandle(detail, handle);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return json({ error: message }, message.endsWith("not found") ? 404 : message.endsWith("ambiguous") ? 409 : 400);
+  }
   const alreadyResolved = thread.isResolved;
   try {
     await runtime.resolveReviewThread(thread.id);
@@ -1045,9 +1245,9 @@ async function handleResolveReviewThread(
   }
   try {
     if (getPr(repoName, num)) {
-      await runtime.revalidateTrackedPr(repoName, num);
+      await runtime.revalidateTrackedPr(repoName, num, "mutation recovery");
     } else {
-      await runtime.revalidateCachedPrDetail(repoName, num);
+      await runtime.revalidateCachedPrDetail(repoName, num, "mutation recovery");
     }
   } catch (err) {
     console.error(`post-resolution refresh failed for ${repoName}#${num}:`, err);
@@ -1077,32 +1277,39 @@ async function handlePrConflicts(owner: string, repo: string, number: string): P
   if (!ctx) return json({ error: "PR is not cached yet" }, 404);
   if (isMockGithub) return json({ files: mockGithub!.conflictFiles(repoName, num) });
 
-  let result = await conflictFilesFromMirror(repoName, ctx.baseSha ?? `refs/heads/${ctx.baseRef}`, ctx.headSha);
-  if (result.status === "no-mirror" || result.status === "missing-commit" || !ctx.baseSha) {
-    try {
-      await fetchMirror(repoName, INCREMENTAL_FETCH_TIMEOUT_MS);
-      result = await conflictFilesFromMirror(repoName, ctx.baseSha ?? `refs/heads/${ctx.baseRef}`, ctx.headSha);
-    } catch (err) {
-      console.error(`conflict file fetch failed for ${repoName}#${num}:`, err);
-      return json({ error: "conflict files are still loading" }, 503);
-    }
+  try {
+    await fetchMirror(repoName, INCREMENTAL_FETCH_TIMEOUT_MS);
+  } catch (err) {
+    console.error(`conflict file fetch failed for ${repoName}#${num}:`, err);
+    return json({ error: "Conflict files are still loading" }, 503);
   }
-  if (result.status === "conflicts" || result.status === "clean") return json({ files: result.files });
+
+  const result = await conflictFilesFromMirror(repoName, `refs/heads/${ctx.baseRef}`, ctx.headSha);
+  if (result.status === "conflicts") return json({ files: result.files });
+  if (result.status === "clean") return json({ error: "No conflicts found against the latest base branch" }, 409);
   if (result.status === "merge-failed") {
     console.error(`conflict merge-tree failed for ${repoName}#${num}: ${result.error}`);
   }
-  return json({ error: "couldn't determine conflict files" }, 503);
+  return json({ error: "Couldn't determine conflicting files" }, 503);
 }
 
-// Per-commit file counts for the timeline. The mirror is the only source of per-commit file lists;
-// when it has nothing to say the client falls back to the GraphQL per-commit totals.
-async function handlePrCommitStats(owner: string, repo: string, number: string): Promise<Response> {
+// Per-commit counts for the timeline. Aggregate mirror file lists here so large histories never
+// cross into the renderer; when the mirror has nothing to say, the client uses GraphQL totals.
+async function handlePrCommitStats(owner: string, repo: string, number: string, url: URL): Promise<Response> {
   if (!validPrReference(owner, repo, number)) return json({ error: "invalid PR reference" }, 400);
   const repoName = `${owner}/${repo}`;
   const num = Number(number);
   const ctx = resolvePrContext(repoName, num);
   if (!ctx) return json({ error: "PR is not cached yet" }, 404);
   if (isMockGithub || !ctx.baseSha) return json({ commits: {} });
+  const testPatternSource = url.searchParams.get("testPattern");
+  if (testPatternSource === null) return json({ error: "testPattern is required" }, 400);
+  let testPattern: RegExp;
+  try {
+    testPattern = new RegExp(testPatternSource);
+  } catch {
+    return json({ error: "testPattern is invalid" }, 400);
+  }
 
   let result = await commitStatsFromMirror(repoName, ctx.baseSha, ctx.headSha);
   if (result.status === "missing-commit") {
@@ -1115,9 +1322,7 @@ async function handlePrCommitStats(owner: string, repo: string, number: string):
     }
   }
   if (result.status !== "ok") return json({ commits: {} });
-  const commits: Record<string, CommitFileStat[]> = {};
-  for (const commit of result.commits) commits[commit.sha] = commit.files;
-  return json({ commits });
+  return json({ commits: summarizeCommitStats(result.commits, testPattern) });
 }
 
 async function handlePrDiff(owner: string, repo: string, number: string, url: URL): Promise<Response> {
@@ -1232,26 +1437,223 @@ async function handleAgentPrDiff(owner: string, repo: string, number: string, ur
   return handlePrDiff(owner, repo, number, url);
 }
 
-async function handleAgentPrLogs(owner: string, repo: string, number: string, url: URL): Promise<Response> {
+type CachedActionsContext = {
+  repoName: string;
+  num: number;
+  headSha: string;
+  currentHeadSha: string;
+  baseSha: string | null;
+  commits: PullRequestCommit[];
+};
+
+function cachedActionsContext(owner: string, repo: string, number: string): CachedActionsContext | Response {
   if (!validPrReference(owner, repo, number)) return json({ error: "invalid PR reference" }, 400);
   const repoName = `${owner}/${repo}`;
   const num = Number(number);
   const cached = getPr(repoName, num) ?? getCachedPrDetail(repoName, num);
   if (!cached) return json({ error: "PR is not cached yet" }, 404);
   const detail = JSON.parse(cached.detail_json) as PrDetail;
-  const check = url.searchParams.get("check") ?? undefined;
+  const commits = (detail.commitList?.nodes ?? []).map(({ commit }) => ({
+    sha: commit.oid,
+    headline: commit.messageHeadline,
+    committedAt: commit.committedDate,
+  }));
+  return {
+    repoName,
+    num,
+    headSha: detail.headRefOid,
+    currentHeadSha: detail.headRefOid,
+    baseSha: detail.baseRefOid ?? null,
+    commits,
+  };
+}
 
-  let entries = cachedJobLogs(repoName, detail.headRefOid, check);
-  if (entries.every((entry) => entry.body === null)) {
-    // an agent asking for a log outright is worth the REST reserve the background sync protects
+async function mirroredActionCommits(context: CachedActionsContext) {
+  if (!context.baseSha) return null;
+  let result = await commitsFromMirror(context.repoName, context.baseSha, context.currentHeadSha);
+  if (result.status === "no-mirror" || result.status === "missing-commit") {
     try {
-      await syncRunJobs(repoName, detail, { background: false });
-    } catch (err) {
-      console.error(`run job sync failed for ${repoName}#${num}:`, err);
+      await fetchMirror(context.repoName, INCREMENTAL_FETCH_TIMEOUT_MS);
+      result = await commitsFromMirror(context.repoName, context.baseSha, context.currentHeadSha);
+    } catch (error) {
+      console.error(`Actions commit fetch failed for ${context.repoName}#${context.num}:`, error);
+      return null;
     }
-    entries = cachedJobLogs(repoName, detail.headRefOid, check);
   }
-  return new Response(formatJobLogs(detail.headRefOid, entries), {
+  return result.status === "ok" ? result.commits : null;
+}
+
+async function selectedActionsContext(
+  owner: string,
+  repo: string,
+  number: string,
+  url: URL,
+): Promise<CachedActionsContext | Response> {
+  const context = cachedActionsContext(owner, repo, number);
+  if (context instanceof Response) return context;
+  const requested = url.searchParams.get("sha");
+  if (requested === null || requested === context.currentHeadSha) return context;
+  if (!FULL_SHA_RE.test(requested)) return json({ error: "invalid commit SHA" }, 400);
+  if (context.commits.some((commit) => commit.sha === requested)) return { ...context, headSha: requested };
+  if (!isMockGithub) {
+    const commits = await mirroredActionCommits(context);
+    if (commits?.some((commit) => commit.sha === requested)) return { ...context, headSha: requested };
+  }
+  return json({ error: "commit is not part of this pull request" }, 400);
+}
+
+async function handleActionCommits(owner: string, repo: string, number: string): Promise<Response> {
+  const context = cachedActionsContext(owner, repo, number);
+  if (context instanceof Response) return context;
+  if (isMockGithub) return json({ headSha: context.currentHeadSha, commits: context.commits });
+  const commits = await mirroredActionCommits(context);
+  if (!commits) return json({ error: "Pull request commits are still loading" }, 503);
+  return json({ headSha: context.currentHeadSha, commits });
+}
+
+async function handleActionsLease(owner: string, repo: string, number: string, runtime: HttpRuntime): Promise<Response> {
+  const context = cachedActionsContext(owner, repo, number);
+  if (context instanceof Response) return context;
+  await runtime.activateActionsLease(context.repoName, context.num, context.headSha);
+  return json({ ok: true });
+}
+
+function serializeActionRun(run: WorkflowRunRow) {
+  return {
+    id: run.run_id,
+    attempt: run.run_attempt,
+    workflowName: run.workflow_name,
+    workflowPath: run.workflow_path,
+    status: run.status,
+    conclusion: run.conclusion,
+    eventAt: run.event_at,
+    htmlUrl: run.html_url,
+  };
+}
+
+function serializeActionJob(job: RunJobRow) {
+  const labels = JSON.parse(job.labels_json) as string[];
+  return {
+    id: job.job_id,
+    runId: job.run_id,
+    attempt: job.run_attempt,
+    workflowName: job.workflow_name,
+    name: job.name,
+    status: job.status,
+    conclusion: job.conclusion,
+    startedAt: job.started_at,
+    completedAt: job.completed_at,
+    htmlUrl: job.html_url,
+    runnerName: job.runner_name,
+    runnerGroupName: job.runner_group_name,
+    labels,
+    failedStep: job.failed_step,
+    logBytes: job.log_bytes,
+    logError: job.log_error,
+  };
+}
+
+async function refreshActionsContext(context: CachedActionsContext, runtime: HttpRuntime): Promise<void> {
+  if (context.headSha !== context.currentHeadSha) {
+    await runtime.cacheGithubActionsForCommit(context.repoName, context.num, context.headSha);
+    return;
+  }
+  void runtime.activateActionsLease(context.repoName, context.num, context.headSha).catch((error) => {
+    console.error(`Actions cache refresh failed for ${context.repoName}#${context.num}:`, error);
+  });
+}
+async function handleActions(owner: string, repo: string, number: string, url: URL, runtime: HttpRuntime): Promise<Response> {
+  const context = await selectedActionsContext(owner, repo, number, url);
+  if (context instanceof Response) return context;
+  try {
+    await refreshActionsContext(context, runtime);
+    const runs = workflowRunsForLease(context.repoName, context.num, context.headSha)
+      .sort((left, right) => Date.parse(right.event_at) - Date.parse(left.event_at))
+      .map(serializeActionRun);
+    const jobs = listRunJobs(context.repoName, context.headSha).map(serializeActionJob);
+    return json({ headSha: context.headSha, runs, jobs });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 502);
+  }
+}
+async function handleActionGraphs(owner: string, repo: string, number: string, url: URL, runtime: HttpRuntime): Promise<Response> {
+  const context = await selectedActionsContext(owner, repo, number, url);
+  if (context instanceof Response) return context;
+  try {
+    await refreshActionsContext(context, runtime);
+    const workflows = await runtime.actionWorkflowGraphs(context.repoName, context.num, context.headSha);
+    return json({ headSha: context.headSha, workflows });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 502);
+  }
+}
+
+
+async function handleActionLog(
+  owner: string,
+  repo: string,
+  number: string,
+  jobId: string,
+  url: URL,
+  runtime: HttpRuntime,
+): Promise<Response> {
+  const context = await selectedActionsContext(owner, repo, number, url);
+  if (context instanceof Response) return context;
+  const id = Number(jobId);
+  if (!Number.isSafeInteger(id) || id <= 0) return json({ error: "invalid job id" }, 400);
+  try {
+    const result = await runtime.actionJobLog(context.repoName, context.headSha, id);
+    if (!result) return json({ error: "job is not cached for this PR commit" }, 404);
+    return json({
+      job: serializeActionJob(result.job),
+      body: result.body,
+      state: result.state,
+    });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 502);
+  }
+}
+
+function handleAgentPrJobs(owner: string, repo: string, number: string): Response {
+  const context = cachedActionsContext(owner, repo, number);
+  if (context instanceof Response) return context;
+  return new Response(formatRunJobs(context.headSha, listRunJobs(context.repoName, context.headSha)), {
+    headers: { "content-type": "text/plain; charset=utf-8" },
+  });
+}
+
+async function handleAgentCacheRun(
+  owner: string,
+  repo: string,
+  number: string,
+  runId: string,
+  runtime: HttpRuntime,
+): Promise<Response> {
+  const context = cachedActionsContext(owner, repo, number);
+  if (context instanceof Response) return context;
+  const id = Number(runId);
+  if (!Number.isSafeInteger(id) || id <= 0) return json({ error: "valid Actions run ID required" }, 400);
+
+  try {
+    const result = await runtime.cacheActionsRun(context.repoName, context.num, context.headSha, id);
+    if (result === "head-mismatch") {
+      return json({ error: "Actions run does not belong to the current PR head" }, 409);
+    }
+    const jobs = listRunJobs(context.repoName, context.headSha).filter((job) => job.run_id === id);
+    return new Response(`Actions run ${id}: ${result}\n\n${formatRunJobs(context.headSha, jobs)}`, {
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 502);
+  }
+}
+
+async function handleAgentPrLogs(owner: string, repo: string, number: string, url: URL): Promise<Response> {
+  const context = cachedActionsContext(owner, repo, number);
+  if (context instanceof Response) return context;
+  const check = url.searchParams.get("check") ?? undefined;
+  const entries = await cachedJobLogs(context.repoName, context.headSha, check);
+  return new Response(formatJobLogs(context.headSha, entries), {
     headers: { "content-type": "text/plain; charset=utf-8" },
   });
 }
@@ -1339,6 +1741,37 @@ async function handleFile(url: URL): Promise<Response> {
 
 const CANONICAL_REPO_RE = /^(?!\.{1,2}\/)[A-Za-z0-9_.-]+\/(?!\.{1,2}$)[A-Za-z0-9_.-]+$/;
 const MAX_COMMIT_HEADLINE_LENGTH = 200;
+function isRepoFilePath(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length > 0
+    && !value.startsWith("/")
+    && !value.includes("\0")
+    && value.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+
+function isWorkflowScopeError(path: string, error: unknown): boolean {
+  return path.startsWith(".github/workflows/")
+    && error instanceof GithubRequestError
+    && (
+      error.graphqlErrors.some(({ type, message }) =>
+        type === "FORBIDDEN" && /personal access token/i.test(message ?? ""))
+      || /REST request failed: 403.*(?:personal access token|resource not accessible)/is.test(error.message)
+    );
+}
+const AUTH_SCOPE_ALLOWED: Record<string, true> = { repo: true, workflow: true };
+
+function requestedAuthScopes(value: unknown): string[] | null {
+  if (value === undefined) return ["repo", "workflow"];
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const scopes = [...new Set(value)];
+  return scopes.every((scope) => typeof scope === "string" && AUTH_SCOPE_ALLOWED[scope]) ? scopes.sort() as string[] : null;
+}
+
+function githubSetupResponse(auth: GithubAuthStatus, status = 401): Response {
+  return json({ error: auth.error ?? "GitHub setup required.", code: "github-setup", auth }, status);
+}
+
+
 
 
 async function handlePrFileEdit(req: Request, runtime: HttpRuntime): Promise<Response> {
@@ -1359,11 +1792,7 @@ async function handlePrFileEdit(req: Request, runtime: HttpRuntime): Promise<Res
     || typeof number !== "number"
     || !Number.isSafeInteger(number)
     || number <= 0
-    || typeof path !== "string"
-    || !(path.length > 0
-      && !path.startsWith("/")
-      && !path.includes("\0")
-      && path.split("/").every((segment) => segment !== "" && segment !== "." && segment !== ".."))
+    || !isRepoFilePath(path)
     || typeof expectedHeadOid !== "string"
     || !FULL_SHA_RE.test(expectedHeadOid)
     || typeof content !== "string"
@@ -1387,14 +1816,67 @@ async function handlePrFileEdit(req: Request, runtime: HttpRuntime): Promise<Res
       content,
       message: headline,
     });
-    void runtime.refreshPr(repo, number).catch((error) => console.error(`PR detail refresh failed after file edit for ${repo}#${number}:`, error));
+    void runtime.refreshPr(repo, number, "file edit").catch((error) => console.error(`PR detail refresh failed after file edit for ${repo}#${number}:`, error));
     return json({ ok: true, commitOid });
   } catch (error) {
     if (error instanceof StalePrHeadError) {
       return json({ error: error.message, code: "stale-head" }, 409);
     }
+    const workflowScopeMissing = isWorkflowScopeError(path, error);
+    const requiredScopes = workflowScopeMissing ? ["repo", "workflow"] : ["repo"];
+    let auth = await runtime.githubAuthStatus(requiredScopes);
+    if (workflowScopeMissing && auth.ok) {
+      auth = { ...auth, ok: false, state: "missing-scopes", error: "Allow workflow access.", missingScopes: ["workflow"] };
+    }
+    if (!auth.ok) return githubSetupResponse(auth, 403);
     console.error(`PR file edit failed for ${repo}#${number}:`, error);
     return json({ error: "GitHub commit failed" }, 502);
+  }
+}
+
+async function handleCommitMessage(req: Request, runtime: HttpRuntime): Promise<Response> {
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: "invalid JSON body" }, 400);
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return json({ error: "invalid commit message request" }, 400);
+  }
+  const { repo, number, path, hunk } = body as Record<string, unknown>;
+  if (
+    typeof repo !== "string"
+    || !CANONICAL_REPO_RE.test(repo)
+    || typeof number !== "number"
+    || !Number.isSafeInteger(number)
+    || number <= 0
+    || !isRepoFilePath(path)
+    || typeof hunk !== "string"
+    || hunk.length === 0
+    || hunk.length > 30_000
+    || !hunk.isWellFormed()
+  ) {
+    return json({ error: "invalid commit message request" }, 400);
+  }
+
+  const stored = getPr(repo, number) ?? getCachedPrDetail(repo, number);
+  if (!stored) return json({ error: "PR is not cached yet" }, 404);
+  const detail = JSON.parse(stored.detail_json) as { title?: string };
+  const title = detail.title ?? ("title" in stored && typeof stored.title === "string" ? stored.title : "");
+  try {
+    const message = await runtime.generateCommitMessage({
+      title,
+      path,
+      hunk,
+    });
+    return json({ message });
+  } catch (error) {
+    if (error instanceof CommitMessageError) {
+      return json({ error: error.message, code: error.code }, error.code === "omp-auth" ? 409 : 503);
+    }
+    console.error(`Commit message generation failed for ${repo}#${number}:`, error);
+    return json({ error: "Commit message generation failed" }, 502);
   }
 }
 
@@ -1611,6 +2093,7 @@ async function handlePutSettings(req: Request): Promise<Response> {
     repos: string;
     default_repo: string;
     poll_interval_s: number;
+    replica_ssh_host: string;
     per_view_window_size: boolean;
     per_view_window_position: boolean;
     theme: string;
@@ -1638,7 +2121,17 @@ async function handlePutSettings(req: Request): Promise<Response> {
   } catch {
     return json({ error: "invalid JSON body" }, 400);
   }
-  return json(withAgentPromptDefaults(writeSettings(body)));
+  const previousReplica = readSettings().replica_ssh_host;
+  let settings: Settings;
+  try {
+    settings = writeSettings(body);
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 400);
+  }
+  if (settings.replica_ssh_host !== previousReplica && Bun.env.COCKPIT_LAUNCHER) {
+    setTimeout(() => process.exit(1), 250);
+  }
+  return json(withAgentPromptDefaults(settings));
 }
 
 const AGENT_PROMPT_DEFAULTS: Record<string, () => string> = {
@@ -1716,6 +2209,7 @@ const GITHUB_APP_EVENTS = [
   "status",
   "push",
   "workflow_run",
+  "workflow_job",
 ];
 
 function handleGithubAppStart(url: URL, port: number): Response {
@@ -1770,7 +2264,7 @@ async function handleGithubAppCallback(url: URL): Promise<Response> {
 }
 
 function handleHealthz(): Response {
-  return json({ root: cockpitRoot, lastPollAt, prCount: countPrs() });
+  return json({ root: cockpitRoot, lastPollAt, prCount: countPrs(), replica: replicaEnabled() ? replicaStatus() : null });
 }
 
 function handleShutdown(): Response {
@@ -1935,11 +2429,11 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
   const dependencies: HttpDependencies = { ...defaultHttpDependencies, ...dependencyOverrides };
   const runtime: HttpRuntime = {
     ...dependencies,
-    revalidateCachedPrDetail: createPrDetailRevalidator((repo, number) =>
-      revalidateCachedPrDetail(repo, number, dependencies.fetchPrDetail)
+    revalidateCachedPrDetail: createPrDetailRevalidator((repo, number, source) =>
+      revalidateCachedPrDetail(repo, number, dependencies.fetchPrDetail, source)
     ),
-    revalidateTrackedPr: createPrDetailRevalidator(async (repo, number) => {
-      await dependencies.refreshPr(repo, number);
+    revalidateTrackedPr: createPrDetailRevalidator(async (repo, number, source) => {
+      await dependencies.refreshPr(repo, number, source);
     }),
   };
   const webhookRoute = buildWebhookRoutes();
@@ -1951,6 +2445,8 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     }
     if (isMockGithub && req.method !== "GET") {
       let allowed = (req.method === "POST" && url.pathname === "/api/archive")
+        || (req.method === "POST" && url.pathname === "/api/commit-message")
+        || (req.method === "POST" && url.pathname === "/api/auth/setup")
         || (req.method === "PUT" && url.pathname === "/api/settings")
         || (req.method === "POST" && parts.length === 6 && parts[0] === "api" && parts[1] === "pr" && parts[5] === "merge-method");
       if (!allowed && req.method === "POST" && url.pathname === "/api/mutations") {
@@ -1963,6 +2459,15 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       }
       if (!allowed) return json({ error: "screenshot fixture mode is read-only" }, 405);
     }
+
+    if (req.method === "GET" && url.pathname === "/api/replica/inbox") {
+      return replicaSnapshotResponse(req);
+    }
+    if (req.method === "GET" && url.pathname === "/api/replica/status") {
+      return json(replicaStatus());
+    }
+    const replicaResponse = await proxyReplicaRequest(req, url);
+    if (replicaResponse) return replicaResponse;
 
     if (req.method === "GET") {
       const openPrResponse = handleOpenPr(parts);
@@ -1978,6 +2483,9 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     if (req.method === "GET" && url.pathname === "/api/merged-pr-analytics") {
       return handleMergedPrAnalytics(url, runtime);
     }
+    if (req.method === "GET" && url.pathname === "/api/github-usage") {
+      return handleGithubUsage(runtime);
+    }
     if (req.method === "GET" && url.pathname === "/api/inbox") {
       return handleInbox(url);
     }
@@ -1985,7 +2493,13 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       return handleClosed(url);
     }
     if (req.method === "GET" && url.pathname === "/api/auth/status") {
-      return json(await githubAuthStatus());
+      const scopes = requestedAuthScopes(url.searchParams.get("scopes")?.split(","));
+      return scopes ? json(await runtime.githubAuthStatus(scopes)) : json({ error: "invalid auth scopes" }, 400);
+    }
+    if (req.method === "POST" && url.pathname === "/api/auth/setup") {
+      const body = await req.json().catch(() => null) as { scopes?: unknown } | null;
+      const scopes = requestedAuthScopes(body?.scopes);
+      return scopes ? json(await runtime.startGithubSetup(scopes)) : json({ error: "invalid auth scopes" }, 400);
     }
     if (req.method === "GET" && url.pathname === "/api/onboarding/repos") {
       return handleOnboardingRepos();
@@ -2013,6 +2527,9 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     }
     if (req.method === "POST" && url.pathname === "/api/pr-file-edit") {
       return handlePrFileEdit(req, runtime);
+    }
+    if (req.method === "POST" && url.pathname === "/api/commit-message") {
+      return handleCommitMessage(req, runtime);
     }
     if (req.method === "GET" && url.pathname === "/api/file-history") {
       return handleFileHistory(req, url);
@@ -2180,6 +2697,46 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       parts.length === 6 &&
       parts[0] === "api" &&
       parts[1] === "pr" &&
+      parts[5] === "actions"
+    ) {
+      return handleActions(parts[2]!, parts[3]!, parts[4]!, url, runtime);
+    }
+    if (
+      req.method === "GET" &&
+      parts.length === 7 &&
+      parts[0] === "api" &&
+      parts[1] === "pr" &&
+      parts[5] === "actions" &&
+      parts[6] === "commits"
+    ) {
+      return handleActionCommits(parts[2]!, parts[3]!, parts[4]!);
+    }
+    if (
+      req.method === "GET" &&
+      parts.length === 7 &&
+      parts[0] === "api" &&
+      parts[1] === "pr" &&
+      parts[5] === "actions" &&
+      parts[6] === "graph"
+    ) {
+      return handleActionGraphs(parts[2]!, parts[3]!, parts[4]!, url, runtime);
+    }
+    if (
+      req.method === "GET" &&
+      parts.length === 9 &&
+      parts[0] === "api" &&
+      parts[1] === "pr" &&
+      parts[5] === "actions" &&
+      parts[6] === "jobs" &&
+      parts[8] === "log"
+    ) {
+      return handleActionLog(parts[2]!, parts[3]!, parts[4]!, parts[7]!, url, runtime);
+    }
+    if (
+      req.method === "GET" &&
+      parts.length === 6 &&
+      parts[0] === "api" &&
+      parts[1] === "pr" &&
       parts[5] === "conflicts"
     ) {
       return handlePrConflicts(parts[2]!, parts[3]!, parts[4]!);
@@ -2191,7 +2748,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       parts[1] === "pr" &&
       parts[5] === "commit-stats"
     ) {
-      return handlePrCommitStats(parts[2]!, parts[3]!, parts[4]!);
+      return handlePrCommitStats(parts[2]!, parts[3]!, parts[4]!, url);
     }
     if (
       req.method === "GET" &&
@@ -2210,10 +2767,52 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       parts[2] === "pr"
     ) {
       if (parts[6] === "diff") return handleAgentPrDiff(parts[3]!, parts[4]!, parts[5]!, url);
+      if (parts[6] === "jobs") return handleAgentPrJobs(parts[3]!, parts[4]!, parts[5]!);
       if (parts[6] === "logs") return handleAgentPrLogs(parts[3]!, parts[4]!, parts[5]!, url);
       if (parts[6] === "file") return handleAgentPrFile(parts[3]!, parts[4]!, parts[5]!, url);
     }
+    if (
+      req.method === "POST" &&
+      parts.length === 9 &&
+      parts[0] === "api" &&
+      parts[1] === "agent" &&
+      parts[2] === "pr" &&
+      parts[6] === "runs" &&
+      parts[8] === "cache"
+    ) {
+      const trustedCliHost = /^(?:127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(req.headers.get("host") ?? url.host);
+      if (!trustedCliHost || req.headers.get("x-pr-cockpit-cli") !== "1") {
+        return json({ error: "trusted CLI request required" }, 403);
+      }
+      return handleAgentCacheRun(parts[3]!, parts[4]!, parts[5]!, parts[7]!, runtime);
+    }
     const trustedCliHost = /^(?:127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(req.headers.get("host") ?? url.host);
+    if (
+      req.method === "POST" &&
+      parts.length === 7 &&
+      parts[0] === "api" &&
+      parts[1] === "agent" &&
+      parts[2] === "pr" &&
+      parts[6] === "actions-lease"
+    ) {
+      if (!trustedCliHost || req.headers.get("x-pr-cockpit-cli") !== "1") {
+        return json({ error: "trusted CLI request required" }, 403);
+      }
+      return handleActionsLease(parts[3]!, parts[4]!, parts[5]!, runtime);
+    }
+    if (
+      req.method === "POST" &&
+      parts.length === 7 &&
+      parts[0] === "api" &&
+      parts[1] === "agent" &&
+      parts[2] === "pr" &&
+      parts[6] === "mutations"
+    ) {
+      if (!trustedCliHost || req.headers.get("x-pr-cockpit-cli") !== "1") {
+        return json({ error: "trusted CLI request required" }, 403);
+      }
+      return handleAgentMutation(parts[3]!, parts[4]!, parts[5]!, req);
+    }
     if (
       req.method === "POST" &&
       parts.length === 8 &&

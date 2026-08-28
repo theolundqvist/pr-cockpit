@@ -33,6 +33,8 @@ env_default_repo="${COCKPIT_DEFAULT_REPO:-}"
 env_tmux_hosts="${COCKPIT_TMUX_HOSTS:-}"
 env_relay_url="${COCKPIT_RELAY_URL:-}"
 env_review_bots="${COCKPIT_REVIEW_BOTS:-}"
+env_proxy="${COCKPIT_PROXY:-}"
+env_proxy_port="${COCKPIT_PROXY_PORT:-}"
 
 config_file="$HOME/.config/pr-cockpit/config"
 if [[ -f "$config_file" ]]; then
@@ -42,6 +44,7 @@ fi
 
 port="${env_port:-${COCKPIT_PORT:-4820}}"
 url="http://127.0.0.1:$port"
+proxy_port="${env_proxy_port:-${COCKPIT_PROXY_PORT:-4820}}"
 data_dir="${env_data_dir:-${COCKPIT_DATA_DIR:-$HOME/.local/share/pr-cockpit}}"
 export COCKPIT_DATA_DIR="$data_dir"
 export COCKPIT_MANAGED=1
@@ -65,7 +68,11 @@ server_only=0
 managed_server=0
 pr_arg=""
 reconcile_failed=0
-for arg in "$@"; do
+proxy_arg=""
+args=("$@")
+arg_index=0
+while (( arg_index < ${#args[@]} )); do
+  arg="${args[$arg_index]}"
   if [[ "$arg" == "--hidden" || "$arg" == "--cockpit-hidden" ]]; then
     # Preserve the old launcher input without passing Chromium's --hidden flag.
     hidden_flag="--cockpit-hidden"
@@ -77,10 +84,32 @@ for arg in "$@"; do
     server_only=1
   elif [[ "$arg" == "--managed-server" ]]; then
     managed_server=1
+  elif [[ "$arg" == "--use-as-proxy" ]]; then
+    arg_index=$((arg_index + 1))
+    if (( arg_index >= ${#args[@]} )); then
+      echo "pr-cockpit: --use-as-proxy requires an SSH host" >&2
+      exit 2
+    fi
+    proxy_arg="${args[$arg_index]}"
   else
     pr_arg="$arg"
   fi
+  arg_index=$((arg_index + 1))
 done
+
+proxy="${proxy_arg:-${env_proxy:-${COCKPIT_PROXY:-}}}"
+proxy="${proxy#ssh://}"
+proxy="${proxy%/}"
+if [[ -n "$proxy" && ! "$proxy" =~ ^([A-Za-z0-9._-]+@)?[A-Za-z0-9._-]+$ ]]; then
+  echo "pr-cockpit: proxy must be an SSH host such as scape-agent or root@host" >&2
+  exit 2
+fi
+if [[ -n "$proxy" ]]; then
+  export COCKPIT_REPLICA_SSH_HOST="$proxy"
+  [[ -z "$proxy_arg" ]] || export COCKPIT_REPLICA_OVERRIDE=1
+  export COCKPIT_PROXY_PORT="$proxy_port"
+fi
+backend_label="server"
 
 # A managed shell must ask launchd to restart its server, never race it with an unmanaged process.
 if [[ "$managed_server" -eq 0 && -n "${COCKPIT_LAUNCHER:-}" ]]; then
@@ -210,23 +239,22 @@ if ! server_is_ours; then
     exit 1
   fi
   if [[ "$managed_server" -eq 1 ]]; then
-    echo "pr-cockpit: starting managed server on port $port..."
+    echo "pr-cockpit: starting managed $backend_label on port $port..."
     if ! ensure_managed_server; then
       if [[ "$reconcile_failed" -eq 1 ]]; then
-        echo "pr-cockpit: managed server unavailable; falling back to the existing launcher" >&2
+        echo "pr-cockpit: managed backend unavailable; falling back to the existing launcher" >&2
         exec env -u COCKPIT_LAUNCHER COCKPIT_SKIP_RECONCILE=1 COCKPIT_ALLOW_UNMANAGED=1 "$source_launcher" --show
       fi
-      echo "pr-cockpit: managed server failed to start — see $HOME/Library/Logs/PR Cockpit/server.err.log" >&2
+      echo "pr-cockpit: managed backend failed to start — see $HOME/Library/Logs/PR Cockpit/server.err.log" >&2
       exit 1
     fi
   else
-    echo "pr-cockpit: starting server on port $port..."
+    echo "pr-cockpit: starting $backend_label on port $port..."
     mkdir -p "$data_dir"
-    cd "$root"
-    COCKPIT_PORT="$port" nohup "$bun" server/main.ts < /dev/null > "$data_dir/server.log" 2>&1 &
+    nohup "$script_path" --server-only < /dev/null > "$data_dir/server.log" 2>&1 &
     disown
     if ! wait_for_server; then
-      echo "pr-cockpit: server failed to start — see $data_dir/server.log" >&2
+      echo "pr-cockpit: backend failed to start — see $data_dir/server.log" >&2
       exit 1
     fi
   fi

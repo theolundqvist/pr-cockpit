@@ -1,6 +1,7 @@
 <script>
   import { relativeTime } from "./time.js";
   import Chevron from "./Chevron.svelte";
+  import { moveRangeCursor } from "./rangePicker.js";
   import Kbd from "./Kbd.svelte";
 
   let { commits, rangeKey, showSince, sinceLabel, onSelect, open = $bindable(false) } = $props();
@@ -63,12 +64,10 @@
     if (!open) return;
     const total = fixedRows.length + ordered.length;
     if (e.key === "ArrowDown" || e.key === "j") {
-      activeIdx = Math.min(total - 1, activeIdx + 1);
-      if (dragStart !== null) dragEnd = Math.max(0, activeIdx - fixedRows.length);
+      ({ activeIdx, dragStart, dragEnd } = moveRangeCursor(activeIdx, 1, fixedRows.length, total, dragStart, e.shiftKey));
       e.preventDefault();
     } else if (e.key === "ArrowUp" || e.key === "k") {
-      activeIdx = Math.max(0, activeIdx - 1);
-      if (dragStart !== null) dragEnd = Math.max(0, activeIdx - fixedRows.length);
+      ({ activeIdx, dragStart, dragEnd } = moveRangeCursor(activeIdx, -1, fixedRows.length, total, dragStart, e.shiftKey));
       e.preventDefault();
     } else if (e.key === " ") {
       if (activeIdx >= fixedRows.length) {
@@ -152,7 +151,7 @@
             {#if activeIdx === fixedRows.length + i}<Kbd keys="enter" />{/if}
           </button>
         {/each}
-        <div class="rp-hint">Drag, or press Space + J/K, to select a range</div>
+        <div class="rp-hint">Drag, Shift + ↑/↓, or Space + J/K to select a range</div>
       {/if}
     </div>
   {/if}

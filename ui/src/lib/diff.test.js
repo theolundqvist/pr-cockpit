@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { buildGapRows, buildWholeFile, fileDiffFingerprint, fileUsesSplitLayout, hunkOldOffset, parseDiff, revertHunk, splitDiffRows } from "./diff.js";
+import { anchorThreads, buildGapPage, buildGapRows, buildWholeFile, fileDiffFingerprint, fileUsesSplitLayout, hunkOldOffset, indexDiff, parseDiff, revertChange, revertFile, revertHunk, splitDiffRows } from "./diff.js";
+import { createDiffDocument } from "./diffDocument.js";
 
 function makeDiff(hunkBody) {
   return `diff --git a/foo.ts b/foo.ts\nindex abc..def 100644\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1,3 +1,3 @@\n${hunkBody}\n`;
@@ -63,6 +64,29 @@ describe("parseDiff whitespace-tolerant alignment", () => {
     const files = parseDiff(makeDiff(" const before = 1;\n-  const x = 1;\n+    const x = 1;\n const after = 1;"));
     const rows = files[0].hunks[0].rows;
     expect(rows.map((r) => r.type)).toEqual(["context", "context", "context"]);
+  });
+});
+
+describe("parseDiff renames", () => {
+  test("identifies a file renamed without content changes", () => {
+    const [file] = parseDiff(
+      "diff --git a/docs/old.md b/docs/new.md\nsimilarity index 100%\nrename from docs/old.md\nrename to docs/new.md\n",
+    );
+
+    expect(file.previousPath).toBe("docs/old.md");
+    expect(file.path).toBe("docs/new.md");
+    expect(file.similarity).toBe(100);
+    expect(file.isUnchangedRename).toBe(true);
+    expect(file.hunks).toEqual([]);
+  });
+
+  test("does not hide a renamed binary file with content changes", () => {
+    const [file] = parseDiff(
+      "diff --git a/assets/old.bin b/assets/new.bin\nsimilarity index 90%\nrename from assets/old.bin\nrename to assets/new.bin\nBinary files a/assets/old.bin and b/assets/new.bin differ\n",
+    );
+
+    expect(file.isUnchangedRename).toBe(false);
+    expect(file.isBinary).toBe(true);
   });
 });
 
@@ -169,6 +193,56 @@ describe("revertHunk", () => {
   });
 });
 
+describe("revertChange", () => {
+  test("reverts only the selected change block inside a larger diff hunk", () => {
+    const [file] = parseDiff(
+      "diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1,5 +1,5 @@\n before\n-old one\n+new one\n middle\n-old two\n+new two\n after\n",
+    );
+    const selected = file.hunks[0].rows.find((row) => row.text === "new one");
+
+    expect(revertChange("before\nnew one\nmiddle\nnew two\nafter\n", file.hunks[0], selected)).toBe(
+      "before\nold one\nmiddle\nnew two\nafter\n",
+    );
+  });
+
+  test("restores a selected deletion without reverting a later change", () => {
+    const [file] = parseDiff(
+      "diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1,5 +1,4 @@\n before\n-removed\n middle\n-old two\n+new two\n after\n",
+    );
+    const selected = file.hunks[0].rows.find((row) => row.text === "removed");
+
+    expect(revertChange("before\nmiddle\nnew two\nafter\n", file.hunks[0], selected)).toBe(
+      "before\nremoved\nmiddle\nnew two\nafter\n",
+    );
+  });
+
+  test("restores a selected whitespace-only change", () => {
+    const [file] = parseDiff(makeDiff("-  const x = 1;\n+    const x = 1;"));
+
+    expect(revertChange("    const x = 1;\n", file.hunks[0], file.hunks[0].rows[0])).toBe("  const x = 1;\n");
+  });
+
+  test("rejects a selected change that no longer matches the head file", () => {
+    const [file] = parseDiff(makeDiff("-const x = 1;\n+const x = 2;"));
+
+    expect(() => revertChange("const x = 3;\n", file.hunks[0], file.hunks[0].rows[1])).toThrow(
+      "file no longer matches this hunk",
+    );
+  });
+});
+
+describe("revertFile", () => {
+  test("reverts every hunk without shifting earlier ranges", () => {
+    const [file] = parseDiff(
+      "diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1,2 @@\n-old top\n+new top\n+extra top\n@@ -4 +5 @@\n-old bottom\n+new bottom\n",
+    );
+
+    expect(revertFile("new top\nextra top\nkeep one\nkeep two\nnew bottom\n", file)).toBe(
+      "old top\nkeep one\nkeep two\nold bottom\n",
+    );
+  });
+});
+
 describe("buildGapRows", () => {
   test("maps expanded new-file context to the matching old-file lines", () => {
     const content = Array.from({ length: 520 }, (_, index) => `line ${index + 1}`).join("\n");
@@ -181,6 +255,22 @@ describe("buildGapRows", () => {
       { type: "context", oldNum: 498, newNum: 519, text: "line 519" },
     ]);
     expect(splitDiffRows(rows)).toEqual(rows.map((row) => ({ left: row, right: row })));
+  });
+});
+
+describe("buildGapPage", () => {
+  test("reveals at most seventy lines from either visible edge", () => {
+    const content = Array.from({ length: 250 }, (_, index) => `line ${index + 1}`).join("\n");
+
+    const above = buildGapPage(content, 0, 201, -2, "up", 70);
+    expect(above).toHaveLength(70);
+    expect(above[0]).toEqual({ type: "context", oldNum: 129, newNum: 131, text: "line 131" });
+    expect(above.at(-1)).toEqual({ type: "context", oldNum: 198, newNum: 200, text: "line 200" });
+
+    const below = buildGapPage(content, 50, 251, 3, "down", 70);
+    expect(below).toHaveLength(70);
+    expect(below[0]).toEqual({ type: "context", oldNum: 54, newNum: 51, text: "line 51" });
+    expect(below.at(-1)).toEqual({ type: "context", oldNum: 123, newNum: 120, text: "line 120" });
   });
 });
 
@@ -200,5 +290,76 @@ describe("buildWholeFile", () => {
       [4, 5],
     ]);
     expect(splitDiffRows(rows)[4]).toEqual({ left: rows[4], right: rows[4] });
+  });
+});
+
+describe("lazy diff document", () => {
+  const text = [
+    makeDiff(" context\n-old\n+new"),
+    "diff --git a/bar.ts b/bar.ts\nnew file mode 100644\n--- /dev/null\n+++ b/bar.ts\n@@ -0,0 +1,2 @@\n+one\n+two\n",
+  ].join("");
+
+  test("indexes compact file metadata without retaining rows", () => {
+    const indexed = indexDiff(text);
+
+    expect(indexed.map((file) => file.path)).toEqual(["foo.ts", "bar.ts"]);
+    expect(indexed[0].hunks[0]).toMatchObject({
+      rowCount: 3,
+      splitRowCount: 2,
+      newLineRanges: [[1, 2]],
+      rows: null,
+    });
+    expect(fileDiffFingerprint(indexed[0])).toBe(indexed[0].fingerprint);
+  });
+
+  test("hydrates one file without changing its indexed identity", () => {
+    const indexed = indexDiff(text);
+    const document = createDiffDocument(text, indexed);
+    const hydrated = document.hydrate("bar.ts");
+
+    expect(hydrated.hydrated).toBe(true);
+    expect(hydrated.hunks[0].rows.map((row) => row.text)).toEqual(["one", "two"]);
+    expect(hydrated.fingerprint).toBe(indexed[1].fingerprint);
+    expect(document.hydrate("bar.ts")).toBe(hydrated);
+    expect(indexed[0].hunks[0].rows).toBeNull();
+  });
+
+  test("releases hydrated rows back to compact metadata", async () => {
+    const indexed = indexDiff(text);
+    const document = createDiffDocument(text, indexed);
+    const hydrated = await document.prefetch("bar.ts");
+
+    expect(hydrated.hydrated).toBe(true);
+    expect(document.release("bar.ts")).toBe(indexed[1]);
+    expect(document.hydrate("bar.ts")).not.toBe(hydrated);
+  });
+
+  test("discards obsolete worker results and accepts the next request", async () => {
+    const indexed = indexDiff(text);
+    const messages = [];
+    const worker = { postMessage: (message) => messages.push(message), terminate() {} };
+    const document = createDiffDocument(text, indexed, worker);
+
+    const obsolete = document.prefetch("bar.ts");
+    document.release("bar.ts");
+    const current = document.prefetch("bar.ts");
+    expect(messages).toHaveLength(2);
+
+    worker.onmessage({ data: { type: "file", id: messages[0].id, file: parseDiff(text)[1] } });
+    expect(await obsolete).toBeNull();
+    expect(document.prefetch("bar.ts")).toBe(current);
+    expect(messages).toHaveLength(2);
+    worker.onmessage({ data: { type: "file", id: messages[1].id, file: parseDiff(text)[1] } });
+    expect((await current).hunks[0].rows.map((row) => row.text)).toEqual(["one", "two"]);
+  });
+
+  test("anchors threads identically before and after hydration", () => {
+    const indexed = indexDiff(text);
+    const document = createDiffDocument(text, indexed);
+    const thread = { path: "bar.ts", line: 2, diffSide: "RIGHT" };
+
+    expect(anchorThreads(indexed, [thread]).anchored.get("bar.ts:2")).toEqual([thread]);
+    const hydrated = indexed.map((file) => (file.path === "bar.ts" ? document.hydrate(file.path) : file));
+    expect(anchorThreads(hydrated, [thread]).anchored.get("bar.ts:2")).toEqual([thread]);
   });
 });

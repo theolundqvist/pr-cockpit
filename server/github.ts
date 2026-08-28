@@ -1,8 +1,18 @@
 import type { MergeMethod } from "./mergeMethod.ts";
 import { mockGithub, MOCK_FIXTURE_CLOCK } from "./mockGithub.ts";
-
-let cachedToken: string | null = null;
-const ghExecutable = process.env.COCKPIT_GH_BIN || "gh";
+import {
+  githubAuthStatus as liveGithubAuthStatus,
+  liveGithubToken,
+  startGithubSetup as startLiveGithubSetup,
+  type GithubAuthStatus,
+} from "./githubAuth.ts";
+import {
+  instrumentGithubGraphql,
+  RATE_LIMIT_ALIAS,
+  recordGithubGraphqlUsage,
+  type GithubUsageSource,
+} from "./githubUsage.ts";
+import { readSettings } from "./settings.ts";
 const strictUtf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 type GithubGraphqlError = { type?: string; message?: string };
@@ -20,59 +30,29 @@ export class StalePrHeadError extends Error {
     this.name = "StalePrHeadError";
   }
 }
-export interface GithubAuthStatus {
-  ok: boolean;
-  login: string | null;
-  error: string | null;
+
+
+export async function githubAuthStatus(scopes: readonly string[] = ["repo", "workflow"]): Promise<GithubAuthStatus> {
+  if (!mockGithub) return liveGithubAuthStatus(scopes);
+  return {
+    ok: true,
+    state: "ready",
+    login: mockGithub.viewerLogin,
+    error: null,
+    requiredScopes: [...scopes],
+    missingScopes: [],
+  };
 }
 
-export async function githubAuthStatus(): Promise<GithubAuthStatus> {
-  if (mockGithub) return { ok: true, login: mockGithub.viewerLogin, error: null };
-
-  const notSignedIn = { ok: false, login: null, error: "GitHub CLI is not signed in. Sign in with: gh auth login" };
-
-  // The token is what every other call actually uses, so it decides the verdict.
-  let token: string;
-  try {
-    token = await runGh(["auth", "token"]);
-  } catch {
-    return { ok: false, login: null, error: "GitHub CLI is not installed. Install it with: brew install gh" };
-  }
-  if (!token) return notSignedIn;
-
-  return { ok: true, login: await ghLogin(), error: null };
+export async function startGithubSetup(scopes: readonly string[] = ["repo", "workflow"]): Promise<GithubAuthStatus> {
+  if (!mockGithub) return startLiveGithubSetup(scopes);
+  return githubAuthStatus(scopes);
 }
-
-// `gh auth status --json` needs gh 2.66+, so fall back rather than call an older gh signed out.
-async function ghLogin(): Promise<string | null> {
-  const statusText = await runGh(["auth", "status", "--json", "hosts"]).catch(() => "");
-  if (statusText) {
-    try {
-      const status = JSON.parse(statusText) as { hosts?: Record<string, Array<{ active?: boolean; login?: string; state?: string }>> };
-      const account = status.hosts?.["github.com"]?.find((candidate) => candidate.active && candidate.state === "success");
-      if (account?.login) return account.login;
-    } catch {}
-  }
-  return (await runGh(["api", "user", "--jq", ".login"]).catch(() => "")) || null;
-}
-
-// Resolves to trimmed stdout, empty on a non-zero exit; rejects only when gh cannot be spawned.
-async function runGh(args: string[]): Promise<string> {
-  const proc = Bun.spawn([ghExecutable, ...args], { stdout: "pipe", stderr: "ignore" });
-  const out = await new Response(proc.stdout).text();
-  return (await proc.exited) === 0 ? out.trim() : "";
-}
-
 
 export async function ghToken(): Promise<string> {
   if (mockGithub) return "fixture-token";
-  if (cachedToken) return cachedToken;
-  const proc = Bun.spawn([ghExecutable, "auth", "token"], { stdout: "pipe" });
-  const token = (await new Response(proc.stdout).text()).trim();
-  await proc.exited;
-  if (!token) throw new Error("gh auth token returned empty output");
-  cachedToken = token;
-  return token;
+  if (readSettings().replica_ssh_host) throw new Error("GitHub access is disabled while PR Cockpit uses an SSH replica");
+  return liveGithubToken();
 }
 
 let cachedViewerLogin: string | null = null;
@@ -80,26 +60,90 @@ let cachedViewerLogin: string | null = null;
 export async function getViewerLogin(): Promise<string> {
   if (mockGithub) return mockGithub.viewerLogin;
   if (cachedViewerLogin) return cachedViewerLogin;
-  const data = await graphql<{ viewer: { login: string } }>("query { viewer { login } }", {});
-  cachedViewerLogin = data.viewer.login;
+  const viewer = await restJson<{ login: string }>("/user");
+  cachedViewerLogin = viewer.login;
   return cachedViewerLogin;
 }
 
-async function graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+async function graphql<T>(
+  query: string,
+  variables: Record<string, unknown>,
+  source: GithubUsageSource,
+  operation: string,
+): Promise<T> {
   const token = await ghToken();
-  const res = await fetch("https://api.github.com/graphql", {
-    method: "POST",
-    headers: {
-      Authorization: `bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ query, variables }),
-  });
+  const instrumented = instrumentGithubGraphql(query);
+  let res: Response;
+  try {
+    res = await fetch("https://api.github.com/graphql", {
+      method: "POST",
+      headers: {
+        Authorization: `bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ query: instrumented.document, variables }),
+    });
+  } catch (error) {
+    recordGithubGraphqlUsage({
+      occurredAt: new Date().toISOString(),
+      source,
+      operation,
+      cost: instrumented.fixedCost,
+      used: null,
+      remaining: null,
+      resetAt: null,
+      status: "error",
+    });
+    throw error;
+  }
+  const headerNumber = (name: string): number | null => {
+    const raw = res.headers.get(name);
+    if (raw === null) return null;
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : null;
+  };
+  const headerReset = headerNumber("x-ratelimit-reset");
+  const record = (
+    rateLimit: { cost: number; used: number; remaining: number; resetAt: string } | null,
+    status: "ok" | "error",
+  ) => {
+    const used = rateLimit?.used ?? headerNumber("x-ratelimit-used");
+    const remaining = rateLimit?.remaining ?? headerNumber("x-ratelimit-remaining");
+    const resetAt = rateLimit?.resetAt ?? (headerReset === null ? null : new Date(headerReset * 1_000).toISOString());
+    updateCachedGraphqlQuota(
+      headerNumber("x-ratelimit-limit"),
+      used,
+      remaining,
+      resetAt,
+    );
+    recordGithubGraphqlUsage({
+      occurredAt: new Date().toISOString(),
+      source,
+      operation,
+      cost: rateLimit?.cost ?? instrumented.fixedCost,
+      used,
+      remaining,
+      resetAt,
+      status,
+    });
+  };
   if (!res.ok) {
+    record(null, "error");
     const status = res.status === 404 ? 404 : 502;
     throw new GithubRequestError(`GraphQL request failed: ${res.status} ${await res.text()}`, status);
   }
-  const body = (await res.json()) as { data?: T; errors?: GithubGraphqlError[] };
+  const body = (await res.json()) as {
+    data?: T & Record<string, unknown>;
+    errors?: GithubGraphqlError[];
+  };
+  const rateLimit = body.data?.[RATE_LIMIT_ALIAS] as {
+    cost: number;
+    used: number;
+    remaining: number;
+    resetAt: string;
+  } | undefined;
+  if (body.data) delete body.data[RATE_LIMIT_ALIAS];
+  record(rateLimit ?? null, body.errors?.length ? "error" : "ok");
   if (body.errors?.length) {
     const status = body.errors.every((error) => error.type === "NOT_FOUND") ? 404 : 502;
     throw new GithubRequestError(`GraphQL errors: ${JSON.stringify(body.errors)}`, status, body.errors);
@@ -193,7 +237,7 @@ export async function fetchMergedPrAnalytics(repo: string, base: string): Promis
             pageInfo: { hasNextPage: boolean; endCursor: string | null };
           };
         } | null;
-      }>(MERGED_PRS_QUERY, { owner, name, base, cursor });
+      }>(MERGED_PRS_QUERY, { owner, name, base, cursor }, "user action", "merged-pr-analytics");
       if (!data.repository) throw new GithubRequestError(`Repository not found: ${repo}`, 404);
 
       const nodes = data.repository.pullRequests.nodes;
@@ -237,6 +281,20 @@ export interface GithubQuota {
 let cachedQuota: GithubQuota | null = null;
 const QUOTA_TTL_MS = 60_000;
 
+
+function updateCachedGraphqlQuota(
+  limit: number | null,
+  used: number | null,
+  remaining: number | null,
+  resetAt: string | null,
+): void {
+  if (!cachedQuota || limit === null || used === null || remaining === null || resetAt === null) return;
+  cachedQuota = {
+    ...cachedQuota,
+    graphql: { limit, used, remaining, resetAt },
+    fetchedAt: new Date().toISOString(),
+  };
+}
 export async function fetchGithubQuota(): Promise<GithubQuota> {
   if (cachedQuota && Date.now() - Date.parse(cachedQuota.fetchedAt) < QUOTA_TTL_MS) return cachedQuota;
   if (mockGithub) {
@@ -300,7 +358,7 @@ export async function searchOpenPrs(repos: string[]): Promise<SearchHit[]> {
         commits: { nodes: Array<{ commit: { statusCheckRollup: { state: string } | null } }> };
       }>;
     };
-  }>(SEARCH_QUERY, { searchQuery });
+  }>(SEARCH_QUERY, { searchQuery }, "background poll", "open PR search");
   if (data.search.nodes.length === 50) {
     console.warn(`search hit the 50-result cap, PRs may be missing: ${searchQuery}`);
   }
@@ -321,39 +379,17 @@ export interface PaletteHit {
   state: string;
 }
 
-const PALETTE_SEARCH_QUERY = `
-query($searchQuery: String!) {
-  search(query: $searchQuery, type: ISSUE, first: 15) {
-    nodes {
-      ... on PullRequest {
-        number
-        title
-        state
-        repository { nameWithOwner }
-      }
-    }
-  }
-}`;
 
 export async function searchPrs(repos: string[], q: string): Promise<PaletteHit[]> {
   if (mockGithub) return mockGithub.searchPrs(repos, q);
-  const repoFilter = repos.map((r) => `repo:${r}`).join(" ");
+  const repoFilter = repos.map((repo) => `repo:${repo}`).join(" ");
   const searchQuery = `is:pr ${repoFilter} in:title ${q}`;
-  const data = await graphql<{
-    search: {
-      nodes: Array<{
-        number: number;
-        title: string;
-        state: string;
-        repository: { nameWithOwner: string };
-      }>;
-    };
-  }>(PALETTE_SEARCH_QUERY, { searchQuery });
-  return data.search.nodes.map((n) => ({
-    repo: n.repository.nameWithOwner,
-    number: n.number,
-    title: n.title,
-    state: n.state,
+  const items = await restSearchPrs(searchQuery, 15);
+  return items.map((item) => ({
+    repo: restSearchRepo(item),
+    number: item.number,
+    title: item.title,
+    state: restSearchState(item),
   }));
 }
 
@@ -367,6 +403,33 @@ type RawPrIndexEntry = {
   mergedAt?: string | null;
   closedAt?: string | null;
 };
+
+type RestPrSearchItem = {
+  number: number;
+  title: string;
+  state: "open" | "closed";
+  draft: boolean;
+  updated_at: string;
+  closed_at: string | null;
+  user: { login: string } | null;
+  repository_url: string;
+  pull_request: { merged_at: string | null };
+};
+
+async function restSearchPrs(query: string, perPage: number): Promise<RestPrSearchItem[]> {
+  const result = await restJson<{ items: RestPrSearchItem[] }>(
+    `/search/issues?q=${encodeURIComponent(query)}&per_page=${perPage}`,
+  );
+  return result.items;
+}
+
+function restSearchRepo(item: RestPrSearchItem): string {
+  return item.repository_url.split("/").slice(-2).join("/");
+}
+
+function restSearchState(item: RestPrSearchItem): PrState {
+  return item.pull_request.merged_at ? "MERGED" : item.state.toUpperCase() as PrState;
+}
 
 const PR_INDEX_LOOKUP_CAP = 100;
 
@@ -393,7 +456,7 @@ export async function lookupPrIndexes(repo: string, numbers: number[]): Promise<
     repository(owner: $owner, name: $name) {
       ${selections}
     }
-  }`, { owner, name });
+  }`, { owner, name }, "search", "PR lookup");
 
   return unique.flatMap((number, index) => {
     const entry = data.repository?.[`pr${index}`];
@@ -427,53 +490,21 @@ export interface PrIndexEntry {
   involvesMe?: boolean;
 }
 
-const RECENT_PRS_QUERY = `
-query($searchQuery: String!) {
-  search(query: $searchQuery, type: ISSUE, first: 100) {
-    nodes {
-      ... on PullRequest {
-        number
-        title
-        state
-        isDraft
-        updatedAt
-        mergedAt
-        closedAt
-        author { login }
-        repository { nameWithOwner }
-      }
-    }
-  }
-}`;
 
 export async function searchRecentPrs(repo: string): Promise<PrIndexEntry[]> {
   if (mockGithub) return mockGithub.searchRecentPrs(repo);
   const searchQuery = `repo:${repo} is:pr sort:updated-desc`;
-  const data = await graphql<{
-    search: {
-      nodes: Array<{
-        number: number;
-        title: string;
-        state: string;
-        isDraft: boolean;
-        updatedAt: string;
-        mergedAt: string | null;
-        closedAt: string | null;
-        author: { login: string } | null;
-        repository: { nameWithOwner: string };
-      }>;
-    };
-  }>(RECENT_PRS_QUERY, { searchQuery });
-  return data.search.nodes.map((n) => ({
-    repo: n.repository.nameWithOwner,
-    number: n.number,
-    title: n.title,
-    state: n.state,
-    isDraft: n.isDraft,
-    author: n.author?.login ?? "unknown",
-    updatedAt: n.updatedAt,
-    mergedAt: n.mergedAt,
-    closedAt: n.closedAt,
+  const items = await restSearchPrs(searchQuery, 100);
+  return items.map((item) => ({
+    repo: restSearchRepo(item),
+    number: item.number,
+    title: item.title,
+    state: restSearchState(item),
+    isDraft: item.draft,
+    author: item.user?.login ?? "unknown",
+    updatedAt: item.updated_at,
+    mergedAt: item.pull_request.merged_at,
+    closedAt: item.closed_at,
   }));
 }
 
@@ -487,36 +518,22 @@ export async function searchClosedPrs(repos: string[]): Promise<PrIndexEntry[]> 
         .map((entry) => ({ ...entry, involvesMe: true }))
     );
   }
-  const repoFilter = repos.map((r) => `repo:${r}`).join(" ");
+  const repoFilter = repos.map((repo) => `repo:${repo}`).join(" ");
   const searchQuery = `is:pr is:closed involves:@me archived:false ${repoFilter} sort:updated-desc`;
-  const data = await graphql<{
-    search: {
-      nodes: Array<{
-        number: number;
-        title: string;
-        state: string;
-        isDraft: boolean;
-        updatedAt: string;
-        mergedAt: string | null;
-        closedAt: string | null;
-        author: { login: string } | null;
-        repository: { nameWithOwner: string };
-      }>;
-    };
-  }>(RECENT_PRS_QUERY, { searchQuery });
-  if (data.search.nodes.length === 100) {
+  const items = await restSearchPrs(searchQuery, 100);
+  if (items.length === 100) {
     console.warn(`search hit the 100-result cap, PRs may be missing: ${searchQuery}`);
   }
-  return data.search.nodes.map((n) => ({
-    repo: n.repository.nameWithOwner,
-    number: n.number,
-    title: n.title,
-    state: n.state,
-    isDraft: n.isDraft,
-    author: n.author?.login ?? "unknown",
-    updatedAt: n.updatedAt,
-    mergedAt: n.mergedAt,
-    closedAt: n.closedAt,
+  return items.map((item) => ({
+    repo: restSearchRepo(item),
+    number: item.number,
+    title: item.title,
+    state: restSearchState(item),
+    isDraft: item.draft,
+    author: item.user?.login ?? "unknown",
+    updatedAt: item.updated_at,
+    mergedAt: item.pull_request.merged_at,
+    closedAt: item.closed_at,
     involvesMe: true,
   }));
 }
@@ -527,19 +544,17 @@ export interface ViewerRepo {
   isPrivate: boolean;
 }
 
-const VIEWER_REPOS_QUERY = `
-query {
-  viewer {
-    repositories(first: 30, orderBy: { field: PUSHED_AT, direction: DESC }, affiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER]) {
-      nodes { nameWithOwner pushedAt isPrivate }
-    }
-  }
-}`;
 
 export async function viewerRepos(): Promise<ViewerRepo[]> {
   if (mockGithub) return mockGithub.viewerRepos();
-  const data = await graphql<{ viewer: { repositories: { nodes: ViewerRepo[] } } }>(VIEWER_REPOS_QUERY, {});
-  return data.viewer.repositories.nodes;
+  const repos = await restJson<Array<{ full_name: string; pushed_at: string | null; private: boolean }>>(
+    "/user/repos?affiliation=owner,collaborator,organization_member&sort=pushed&direction=desc&per_page=30",
+  );
+  return repos.map((repo) => ({
+    nameWithOwner: repo.full_name,
+    pushedAt: repo.pushed_at,
+    isPrivate: repo.private,
+  }));
 }
 
 export interface ReviewItem {
@@ -620,7 +635,7 @@ query {
     reviewRequested: { nodes: ReviewSearchNode[] };
     assigned: { nodes: ReviewSearchNode[] };
     mentioned: { nodes: ReviewSearchNode[] };
-  }>(query, {});
+  }>(query, {}, "review inbox", "review inbox");
 
   const merged = new Map<string, ReviewItem>();
   const addBucket = (nodes: ReviewSearchNode[], bucket: ReviewItem["bucket"]) => {
@@ -651,43 +666,29 @@ export interface AssignableUser {
   avatarUrl: string;
 }
 
-const ASSIGNABLE_USERS_QUERY = `
-query($owner: String!, $name: String!) {
-  repository(owner: $owner, name: $name) {
-    assignableUsers(first: 100) {
-      nodes { id login avatarUrl }
-    }
-  }
-}`;
 
 export async function fetchAssignableUsers(repo: string): Promise<AssignableUser[]> {
   if (mockGithub) return mockGithub.assignableUsers(repo);
-  const [owner, name] = repo.split("/");
-  const data = await graphql<{ repository: { assignableUsers: { nodes: AssignableUser[] } } | null }>(
-    ASSIGNABLE_USERS_QUERY,
-    { owner, name },
+  const users = await restJson<Array<{ node_id: string; login: string; avatar_url: string }>>(
+    `/repos/${repo}/assignees?per_page=100`,
   );
-  return data.repository?.assignableUsers.nodes ?? [];
+  return users.map((user) => ({
+    id: user.node_id,
+    login: user.login,
+    avatarUrl: user.avatar_url,
+  }));
 }
 
-const ADD_ASSIGNEES_MUTATION = `
-mutation($assignableId: ID!, $assigneeIds: [ID!]!) {
-  addAssigneesToAssignable(input: { assignableId: $assignableId, assigneeIds: $assigneeIds }) { clientMutationId }
-}`;
 
-export async function addAssigneesToAssignable(assignableId: string, assigneeIds: string[]): Promise<void> {
+export async function addAssignees(repo: string, number: number, logins: string[]): Promise<void> {
   if (mockGithub) return;
-  await graphql(ADD_ASSIGNEES_MUTATION, { assignableId, assigneeIds });
+  await restRequest("POST", `/repos/${repo}/issues/${number}/assignees`, { assignees: logins });
 }
 
-const REQUEST_REVIEWS_MUTATION = `
-mutation($pullRequestId: ID!, $userIds: [ID!]!) {
-  requestReviews(input: { pullRequestId: $pullRequestId, userIds: $userIds, union: true }) { clientMutationId }
-}`;
 
-export async function requestReviewsFromUsers(pullRequestId: string, userIds: string[]): Promise<void> {
+export async function requestReviewers(repo: string, number: number, logins: string[]): Promise<void> {
   if (mockGithub) return;
-  await graphql(REQUEST_REVIEWS_MUTATION, { pullRequestId, userIds });
+  await restRequest("POST", `/repos/${repo}/pulls/${number}/requested_reviewers`, { reviewers: logins });
 }
 
 const RESOLVE_REVIEW_THREAD_MUTATION = `
@@ -699,7 +700,7 @@ mutation($threadId: ID!) {
 
 export async function resolveReviewThread(threadId: string): Promise<void> {
   if (mockGithub) return;
-  await graphql(RESOLVE_REVIEW_THREAD_MUTATION, { threadId });
+  await graphql(RESOLVE_REVIEW_THREAD_MUTATION, { threadId }, "user action", "resolve review thread");
 }
 
 export async function removeAssignees(repo: string, number: number, logins: string[]): Promise<void> {
@@ -746,41 +747,10 @@ const THREAD_COMMENT_FIELDS = `
   ${REACTION_GROUPS_FIELD}
 `;
 
-const DETAIL_QUERY = `
+const DETAIL_CHECKS_QUERY = `
 query($owner: String!, $name: String!, $number: Int!) {
-  viewer { login }
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      id
-      title
-      number
-      state
-      isDraft
-      mergedAt
-      closedAt
-      author { login avatarUrl }
-      baseRefName
-      baseRefOid
-      headRefName
-      headRefOid
-      body
-      ${REACTION_GROUPS_FIELD}
-      additions
-      deletions
-      changedFiles
-      files(first: 100) {
-        totalCount
-        nodes { path additions deletions }
-      }
-      mergeable
-      mergeStateStatus
-      viewerCanMergeAsAdmin
-      autoMergeRequest { mergeMethod enabledBy { login } }
-      reviewDecision
-      createdAt
-      updatedAt
-      url
-      commitCount: commits { totalCount }
       lastCommit: commits(last: 1) {
         nodes {
           commit {
@@ -788,9 +758,7 @@ query($owner: String!, $name: String!, $number: Int!) {
               state
               contexts(first: 100) {
                 pageInfo { hasNextPage endCursor }
-                nodes {
-                  ${CHECK_CONTEXT_FIELDS}
-                }
+                nodes { ${CHECK_CONTEXT_FIELDS} }
               }
             }
           }
@@ -811,17 +779,17 @@ query($owner: String!, $name: String!, $number: Int!) {
           }
         }
       }
-      labels(first: 20) { nodes { name } }
-      assignees(first: 10) { nodes { login } }
-      reviewRequests(first: 20) {
-        nodes {
-          requestedReviewer {
-            __typename
-            ... on User { login avatarUrl }
-            ... on Team { name }
-          }
-        }
-      }
+    }
+  }
+}`;
+
+const DETAIL_REVIEW_QUERY = `
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      ${REACTION_GROUPS_FIELD}
+      viewerCanMergeAsAdmin
+      reviewDecision
       reviews(first: 50) {
         pageInfo { hasNextPage endCursor }
         nodes {
@@ -854,12 +822,11 @@ query($owner: String!, $name: String!, $number: Int!) {
           diffSide
           comments(first: 50) {
             pageInfo { hasNextPage endCursor }
-            nodes {
-              ${THREAD_COMMENT_FIELDS}
-            }
+            nodes { ${THREAD_COMMENT_FIELDS} }
           }
         }
       }
+      author { login avatarUrl }
     }
   }
 }`;
@@ -886,6 +853,25 @@ type Author = { login: string; avatarUrl: string };
 type ReviewNode = { id: string; author: Author | null; state: string; body: string; submittedAt: string };
 type CommentNode = { id: string; author: Author | null; body: string; createdAt: string };
 type ThreadCommentNode = { databaseId: number | null; diffHunk: string; author: Author | null; body: string; createdAt: string };
+
+export function reviewHunkTail(hunk: string): string {
+  return hunk
+    .split("\n")
+    .filter((line) => !line.startsWith("@@"))
+    .slice(-4)
+    .join("\n");
+}
+
+export function compactReviewHunks<T extends {
+  reviewThreads?: { nodes?: Array<{ comments?: { nodes?: Array<{ diffHunk?: unknown }> } }> };
+}>(detail: T): T {
+  for (const thread of detail.reviewThreads?.nodes ?? []) {
+    for (const comment of thread.comments?.nodes ?? []) {
+      if (typeof comment.diffHunk === "string") comment.diffHunk = reviewHunkTail(comment.diffHunk);
+    }
+  }
+  return detail;
+}
 
 export type PrState = "OPEN" | "CLOSED" | "MERGED";
 
@@ -986,6 +972,114 @@ type PrDetailShape<Rx> = {
 } & Rx;
 
 type RawPrDetail = PrDetailShape<{ reactionGroups: RawReactionGroup[] }>;
+
+type RawPrDetailChecks = Pick<RawPrDetail, "lastCommit" | "commitList">;
+type RawPrDetailReview = Pick<
+  RawPrDetail,
+  "author" | "reactionGroups" | "viewerCanMergeAsAdmin" | "reviewDecision" | "reviews" | "comments" | "reviewThreads"
+>;
+type RawPrDetailResidual = RawPrDetailChecks & RawPrDetailReview;
+type RestPrDetailBase = Omit<RawPrDetail, keyof RawPrDetailResidual> & Pick<RawPrDetail, "author">;
+
+type RestUser = { node_id: string; login: string; avatar_url: string };
+type RestPullRequest = {
+  node_id: string;
+  title: string;
+  number: number;
+  state: "open" | "closed";
+  merged_at: string | null;
+  closed_at: string | null;
+  draft: boolean;
+  user: RestUser | null;
+  base: { ref: string; sha: string };
+  head: { ref: string; sha: string };
+  body: string | null;
+  additions: number;
+  deletions: number;
+  changed_files: number;
+  mergeable: boolean | null;
+  mergeable_state: string;
+  auto_merge: { merge_method: string; enabled_by: Pick<RestUser, "login"> | null } | null;
+  created_at: string;
+  updated_at: string;
+  html_url: string;
+  commits: number;
+  labels: Array<{ name: string }>;
+  assignees: Array<Pick<RestUser, "login">>;
+  requested_reviewers: RestUser[];
+  requested_teams: Array<{ name: string }>;
+};
+
+type RestPullRequestFile = { filename: string; additions: number; deletions: number };
+
+export function mapRestPrDetailBase(pullRequest: RestPullRequest, files: RestPullRequestFile[]): RestPrDetailBase {
+  return {
+    id: pullRequest.node_id,
+    title: pullRequest.title,
+    number: pullRequest.number,
+    state: pullRequest.merged_at ? "MERGED" : pullRequest.state.toUpperCase() as PrState,
+    mergedAt: pullRequest.merged_at,
+    closedAt: pullRequest.closed_at,
+    isDraft: pullRequest.draft,
+    author: pullRequest.user ? { login: pullRequest.user.login, avatarUrl: pullRequest.user.avatar_url } : null,
+    baseRefName: pullRequest.base.ref,
+    baseRefOid: pullRequest.base.sha,
+    headRefName: pullRequest.head.ref,
+    headRefOid: pullRequest.head.sha,
+    body: pullRequest.body ?? "",
+    additions: pullRequest.additions,
+    deletions: pullRequest.deletions,
+    changedFiles: pullRequest.changed_files,
+    files: {
+      totalCount: pullRequest.changed_files,
+      nodes: files.map((file) => ({
+        path: file.filename,
+        additions: file.additions,
+        deletions: file.deletions,
+      })),
+    },
+    mergeable: pullRequest.mergeable === null ? "UNKNOWN" : pullRequest.mergeable ? "MERGEABLE" : "CONFLICTING",
+    mergeStateStatus: pullRequest.mergeable_state.toUpperCase(),
+    autoMergeRequest: pullRequest.auto_merge
+      ? {
+          mergeMethod: pullRequest.auto_merge.merge_method.toUpperCase(),
+          enabledBy: pullRequest.auto_merge.enabled_by,
+        }
+      : null,
+    createdAt: pullRequest.created_at,
+    updatedAt: pullRequest.updated_at,
+    url: pullRequest.html_url,
+    commitCount: { totalCount: pullRequest.commits },
+    labels: { nodes: pullRequest.labels.map(({ name }) => ({ name })) },
+    assignees: { nodes: pullRequest.assignees.map(({ login }) => ({ login })) },
+    reviewRequests: {
+      nodes: [
+        ...pullRequest.requested_reviewers.map((reviewer) => ({
+          requestedReviewer: {
+            __typename: "User",
+            login: reviewer.login,
+            avatarUrl: reviewer.avatar_url,
+          },
+        })),
+        ...pullRequest.requested_teams.map((team) => ({
+          requestedReviewer: {
+            __typename: "Team",
+            name: team.name,
+          },
+        })),
+      ],
+    },
+  };
+}
+
+async function fetchRestPrDetailBase(repo: string, number: number): Promise<RestPrDetailBase> {
+  const [pullRequest, files] = await Promise.all([
+    restJson<RestPullRequest>(`/repos/${repo}/pulls/${number}`),
+    restJson<RestPullRequestFile[]>(`/repos/${repo}/pulls/${number}/files?per_page=100`),
+  ]);
+  return mapRestPrDetailBase(pullRequest, files);
+}
+
 export type PrDetail = PrDetailShape<{ reactions: Reaction[] }> & {
   viewerLogin: string;
   viewerIsAuthor: boolean;
@@ -1059,6 +1153,7 @@ async function completeCheckContexts(
   name: string,
   number: number,
   connection: RawCheckConnection,
+  source: GithubUsageSource,
 ): Promise<void> {
   const cursors = new Set<string>();
   while (connection.pageInfo?.hasNextPage) {
@@ -1073,7 +1168,7 @@ async function completeCheckContexts(
           };
         } | null;
       } | null;
-    }>(CHECK_CONTEXTS_PAGE_QUERY, { owner, name, number, after });
+    }>(CHECK_CONTEXTS_PAGE_QUERY, { owner, name, number, after }, source, "PR check pagination");
     const next = data.repository?.pullRequest?.lastCommit.nodes[0]?.commit.statusCheckRollup?.contexts;
     if (!next?.pageInfo) throw new GithubRequestError("Check pagination returned no page", 502);
     connection.nodes.push(...next.nodes);
@@ -1082,7 +1177,7 @@ async function completeCheckContexts(
 }
 
 
-async function completeThreadComments(thread: RawThread): Promise<void> {
+async function completeThreadComments(thread: RawThread, source: GithubUsageSource): Promise<void> {
   const cursors = new Set<string>();
   while (thread.comments.pageInfo?.hasNextPage) {
     const after = thread.comments.pageInfo.endCursor;
@@ -1091,6 +1186,8 @@ async function completeThreadComments(thread: RawThread): Promise<void> {
     const data = await graphql<{ node: { comments: RawThreadCommentConnection } | null }>(
       THREAD_COMMENTS_PAGE_QUERY,
       { threadId: thread.id, after },
+      source,
+      "PR review comment pagination",
     );
     if (!data.node?.comments.pageInfo) throw new GithubRequestError("Review comment pagination returned no page", 502);
     thread.comments.nodes.push(...data.node.comments.nodes);
@@ -1103,6 +1200,7 @@ async function completeReviewThreads(
   name: string,
   number: number,
   connection: RawThreadConnection,
+  source: GithubUsageSource,
 ): Promise<void> {
   const cursors = new Set<string>();
   while (connection.pageInfo?.hasNextPage) {
@@ -1111,69 +1209,148 @@ async function completeReviewThreads(
     cursors.add(after);
     const data = await graphql<{
       repository: { pullRequest: { reviewThreads: RawThreadConnection } | null } | null;
-    }>(REVIEW_THREADS_PAGE_QUERY, { owner, name, number, after });
+    }>(REVIEW_THREADS_PAGE_QUERY, { owner, name, number, after }, source, "PR review thread pagination");
     const next = data.repository?.pullRequest?.reviewThreads;
     if (!next?.pageInfo) throw new GithubRequestError("Review thread pagination returned no page", 502);
     connection.nodes.push(...next.nodes);
     connection.pageInfo = next.pageInfo;
   }
   for (const thread of connection.nodes) {
-    if (!thread.isResolved) await completeThreadComments(thread);
+    if (!thread.isResolved) await completeThreadComments(thread, source);
   }
 }
 
-export async function fetchPrDetail(repo: string, number: number): Promise<PrDetail> {
-  if (mockGithub) return mockGithub.detail(repo, number);
-  const [owner, name] = repo.split("/");
-  if (!owner || !name) throw new GithubRequestError(`Invalid repository: ${repo}`, 404);
-  const data = await graphql<{
-    viewer: { login: string };
-    repository: { pullRequest: RawPrDetail | null } | null;
-  }>(DETAIL_QUERY, {
-    owner,
-    name,
-    number,
-  });
-  const pullRequest = data.repository?.pullRequest;
-  if (!pullRequest) throw new GithubRequestError(`${repo}#${number} was not found`, 404);
-  const rollup = pullRequest.lastCommit.nodes[0]?.commit.statusCheckRollup;
-  if (rollup) await completeCheckContexts(owner, name, number, rollup.contexts);
-  await completeReviewThreads(owner, name, number, pullRequest.reviewThreads);
-  const { reactionGroups, ...raw } = pullRequest;
-  const viewerLogin = data.viewer.login;
-  const viewerReviews = raw.reviews.nodes
-    .filter((r) => r.author?.login === viewerLogin && r.submittedAt)
+function normalizeReviewDetail(
+  review: RawPrDetailReview,
+  viewerLogin: string,
+  author: Author | null,
+  reviewRequests: RestPrDetailBase["reviewRequests"],
+) {
+  const { reactionGroups, reviews, comments, reviewThreads, ...scalars } = review;
+  const viewerReviews = reviews.nodes
+    .filter((item) => item.author?.login === viewerLogin && item.submittedAt)
     .sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
   return {
-    ...raw,
+    ...scalars,
     reactions: mapReactions(reactionGroups),
-    viewerLogin,
-    viewerIsAuthor: raw.author?.login === viewerLogin,
-    viewerReviewRequested: raw.reviewRequests.nodes.some((r) => r.requestedReviewer?.login === viewerLogin),
+    viewerIsAuthor: author?.login === viewerLogin,
+    viewerReviewRequested: reviewRequests.nodes.some((request) => request.requestedReviewer?.login === viewerLogin),
     viewerReviewState: viewerReviews[0]?.state ?? null,
     reviews: {
-      pageInfo: raw.reviews.pageInfo,
-      nodes: raw.reviews.nodes.map(({ reactionGroups, ...r }) => ({ ...r, reactions: mapReactions(reactionGroups) })),
+      pageInfo: reviews.pageInfo,
+      nodes: reviews.nodes.map(({ reactionGroups, ...item }) => ({
+        ...item,
+        reactions: mapReactions(reactionGroups),
+      })),
     },
     comments: {
-      pageInfo: raw.comments.pageInfo,
-      nodes: raw.comments.nodes.map(({ reactionGroups, ...c }) => ({ ...c, reactions: mapReactions(reactionGroups) })),
+      pageInfo: comments.pageInfo,
+      nodes: comments.nodes.map(({ reactionGroups, ...item }) => ({
+        ...item,
+        reactions: mapReactions(reactionGroups),
+      })),
     },
     reviewThreads: {
-      pageInfo: raw.reviewThreads.pageInfo,
-      nodes: raw.reviewThreads.nodes.map((t) => ({
-        ...t,
+      pageInfo: reviewThreads.pageInfo,
+      nodes: reviewThreads.nodes.map((thread) => ({
+        ...thread,
         comments: {
-          pageInfo: t.comments.pageInfo,
-          nodes: t.comments.nodes.map(({ reactionGroups, ...c }) => ({ ...c, reactions: mapReactions(reactionGroups) })),
+          pageInfo: thread.comments.pageInfo,
+          nodes: thread.comments.nodes.map(({ reactionGroups, ...item }) => ({
+            ...item,
+            diffHunk: reviewHunkTail(item.diffHunk),
+            reactions: mapReactions(reactionGroups),
+          })),
         },
       })),
     },
   };
 }
 
+export async function fetchPrDetail(
+  repo: string,
+  number: number,
+  source: GithubUsageSource = "app detail",
+): Promise<PrDetail> {
+  if (mockGithub) return mockGithub.detail(repo, number);
+  const [owner, name] = repo.split("/");
+  if (!owner || !name) throw new GithubRequestError(`Invalid repository: ${repo}`, 404);
+  const variables = { owner, name, number };
+  const [checksData, reviewData, rest, viewerLogin] = await Promise.all([
+    graphql<{
+      repository: { pullRequest: RawPrDetailChecks | null } | null;
+    }>(DETAIL_CHECKS_QUERY, variables, source, "PR checks"),
+    graphql<{
+      repository: { pullRequest: RawPrDetailReview | null } | null;
+    }>(DETAIL_REVIEW_QUERY, variables, source, "PR review detail"),
+    fetchRestPrDetailBase(repo, number).catch((error) => {
+      if (error instanceof RestRequestError) {
+        throw new GithubRequestError(error.message, error.status === 404 ? 404 : 502);
+      }
+      throw error;
+    }),
+    getViewerLogin(),
+  ]);
+  const checks = checksData.repository?.pullRequest;
+  const review = reviewData.repository?.pullRequest;
+  if (!checks || !review) throw new GithubRequestError(`${repo}#${number} was not found`, 404);
+  const rollup = checks.lastCommit.nodes[0]?.commit.statusCheckRollup;
+  if (rollup) await completeCheckContexts(owner, name, number, rollup.contexts, source);
+  await completeReviewThreads(owner, name, number, review.reviewThreads, source);
+  return {
+    ...rest,
+    ...checks,
+    viewerLogin,
+    ...normalizeReviewDetail(review, viewerLogin, review.author, rest.reviewRequests),
+  };
+}
+
+export type PrDetailScope = "all" | "checks" | "review";
+
+export async function fetchPrDetailPart(
+  repo: string,
+  number: number,
+  current: PrDetail,
+  scope: Exclude<PrDetailScope, "all">,
+  source: GithubUsageSource,
+): Promise<PrDetail> {
+  if (mockGithub) return mockGithub.detail(repo, number);
+  const [owner, name] = repo.split("/");
+  if (!owner || !name) throw new GithubRequestError(`Invalid repository: ${repo}`, 404);
+  const variables = { owner, name, number };
+
+  if (scope === "checks") {
+    const data = await graphql<{
+      repository: { pullRequest: RawPrDetailChecks | null } | null;
+    }>(DETAIL_CHECKS_QUERY, variables, source, "PR checks");
+    const checks = data.repository?.pullRequest;
+    if (!checks) throw new GithubRequestError(`${repo}#${number} was not found`, 404);
+    const rollup = checks.lastCommit.nodes[0]?.commit.statusCheckRollup;
+    if (rollup) await completeCheckContexts(owner, name, number, rollup.contexts, source);
+    return {
+      ...current,
+      ...checks,
+    };
+  }
+
+  const [data, viewerLogin] = await Promise.all([
+    graphql<{
+      repository: { pullRequest: RawPrDetailReview | null } | null;
+    }>(DETAIL_REVIEW_QUERY, variables, source, "PR review detail"),
+    getViewerLogin(),
+  ]);
+  const review = data.repository?.pullRequest;
+  if (!review) throw new GithubRequestError(`${repo}#${number} was not found`, 404);
+  await completeReviewThreads(owner, name, number, review.reviewThreads, source);
+  return {
+    ...current,
+    viewerLogin,
+    ...normalizeReviewDetail(review, viewerLogin, review.author, current.reviewRequests),
+  };
+}
+
 export interface PrCommentSince {
-  kind: "comment" | "review" | "thread";
+  kind: "comment" | "review" | "review comment" | "thread";
   author: string;
   body: string;
   createdAt: string;
@@ -1290,7 +1467,7 @@ export async function fetchPrCommentsSince(repo: string, number: number, since: 
       url: comment.html_url,
     })),
     ...reviewComments.map((comment) => ({
-      kind: "thread" as const,
+      kind: "review comment" as const,
       author: comment.user?.login ?? "unknown",
       body: comment.body,
       createdAt: comment.created_at,
@@ -1348,25 +1525,75 @@ export interface RunJob {
   run_id: number;
   run_attempt: number;
   head_sha: string;
+  head_branch?: string;
+  workflow_name?: string;
   name: string;
   status: string;
   conclusion: string | null;
   started_at: string | null;
   completed_at: string | null;
   html_url: string | null;
+  runner_name?: string | null;
+  runner_group_name?: string | null;
+  labels?: string[];
   steps: RunJobStep[];
 }
 
-// filter=latest is GitHub's default and drops jobs superseded by a re-run attempt
-export async function fetchRunJobs(repo: string, runId: number): Promise<RunJob[]> {
-  if (mockGithub) return mockGithub.runJobs(repo, runId);
+export interface WorkflowRun {
+  id: number;
+  run_attempt: number;
+  head_sha: string;
+  head_branch: string;
+  name: string;
+  path: string;
+  status: string;
+  conclusion: string | null;
+  updated_at: string;
+  html_url: string | null;
+}
+export async function fetchWorkflowRun(repo: string, runId: number): Promise<WorkflowRun> {
+  if (mockGithub) return mockGithub.workflowRun(repo, runId);
   const token = await ghToken();
-  const res = await fetch(`https://api.github.com/repos/${repo}/actions/runs/${runId}/jobs?per_page=100&filter=latest`, {
+  const res = await fetch(`https://api.github.com/repos/${repo}/actions/runs/${runId}`, {
     headers: { Authorization: `bearer ${token}`, Accept: "application/vnd.github+json" },
   });
-  if (!res.ok) throw new Error(`run jobs fetch failed: ${res.status} ${await res.text()}`);
-  const payload = (await res.json()) as { jobs?: RunJob[] };
-  return payload.jobs ?? [];
+  if (!res.ok) throw new Error(`workflow run fetch failed: ${res.status} ${await res.text()}`);
+  return res.json() as Promise<WorkflowRun>;
+}
+
+
+export async function fetchWorkflowRuns(repo: string, headSha: string): Promise<WorkflowRun[]> {
+  const token = await ghToken();
+  const runs: WorkflowRun[] = [];
+  for (let page = 1;; page++) {
+    const res = await fetch(`https://api.github.com/repos/${repo}/actions/runs?head_sha=${encodeURIComponent(headSha)}&per_page=100&page=${page}`, {
+      headers: { Authorization: `bearer ${token}`, Accept: "application/vnd.github+json" },
+    });
+    if (!res.ok) throw new Error(`workflow runs fetch failed: ${res.status} ${await res.text()}`);
+    const payload = (await res.json()) as { workflow_runs?: WorkflowRun[] };
+    const batch = payload.workflow_runs ?? [];
+    runs.push(...batch);
+    if (batch.length < 100) return runs;
+  }
+}
+
+export async function fetchRunJobs(repo: string, runId: number, attempt?: number): Promise<RunJob[]> {
+  if (mockGithub) return mockGithub.runJobs(repo, runId);
+  const token = await ghToken();
+  const jobs: RunJob[] = [];
+  for (let page = 1;; page++) {
+    const endpoint = attempt === undefined
+      ? `https://api.github.com/repos/${repo}/actions/runs/${runId}/jobs?per_page=100&filter=latest&page=${page}`
+      : `https://api.github.com/repos/${repo}/actions/runs/${runId}/attempts/${attempt}/jobs?per_page=100&page=${page}`;
+    const res = await fetch(endpoint, {
+      headers: { Authorization: `bearer ${token}`, Accept: "application/vnd.github+json" },
+    });
+    if (!res.ok) throw new Error(`run jobs fetch failed: ${res.status} ${await res.text()}`);
+    const payload = (await res.json()) as { jobs?: RunJob[] };
+    const batch = payload.jobs ?? [];
+    jobs.push(...batch);
+    if (batch.length < 100) return jobs;
+  }
 }
 
 // The logs endpoint answers 302 with a Location that expires after a minute, and that storage host
@@ -1482,118 +1709,125 @@ export type PrFileEdit = {
   message: string;
 };
 
-const PR_FILE_EDIT_HEAD_QUERY = `
-query($owner: String!, $name: String!, $number: Int!, $fileExpression: String!, $parentExpression: String!) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) {
-      state
-      headRefName
-      headRefOid
-      headRepository {
-        nameWithOwner
-        file: object(expression: $fileExpression) {
-          __typename
-          ... on Blob { isBinary }
-        }
-        parent: object(expression: $parentExpression) {
-          __typename
-          ... on Tree { entries { name type mode } }
-        }
-      }
-    }
-  }
-}`;
+type RestPull = {
+  state: string;
+  head: {
+    sha: string;
+    ref: string;
+    repo: { full_name: string } | null;
+  };
+};
 
-const CREATE_PR_FILE_COMMIT_MUTATION = `
-mutation($input: CreateCommitOnBranchInput!) {
-  createCommitOnBranch(input: $input) {
-    commit { oid }
-  }
-}`;
+type RestTreeEntry = {
+  path: string;
+  mode: string;
+  type: string;
+  sha: string;
+};
 
-function isExpectedHeadRace(error: unknown): boolean {
-  if (!(error instanceof GithubRequestError)) return false;
-  const details = [
-    error.message,
-    ...error.graphqlErrors.map(({ type, message }) => `${type ?? ""} ${message ?? ""}`),
-  ].join("\n");
-  return /\bSTALE_DATA\b|expected branch to point to/i.test(details)
-    || (/expected.?head.?oid/i.test(details) && /(?:mismatch|match|current|changed|stale)/i.test(details));
+async function githubRestResponse(method: string, path: string, body?: unknown): Promise<Response> {
+  const token = await ghToken();
+  return fetch(`https://api.github.com${path}`, {
+    method,
+    headers: {
+      Authorization: `bearer ${token}`,
+      Accept: "application/vnd.github+json",
+      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
+async function githubRestJson<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const response = await githubRestResponse(method, path, body);
+  if (!response.ok) {
+    throw new GithubRequestError(
+      `GitHub REST request failed: ${response.status} ${await response.text()}`,
+      response.status === 404 ? 404 : 502,
+    );
+  }
+  return response.json() as Promise<T>;
+}
+
+function encodedRepo(repo: string): string {
+  return repo.split("/").map(encodeURIComponent).join("/");
+}
+
+function isRefUpdateRace(error: unknown): boolean {
+  return error instanceof GithubRequestError
+    && /REST request failed: (?:409|422)\b/i.test(error.message)
+    && /(?:fast.?forward|reference update|expected|stale)/i.test(error.message);
 }
 
 export async function commitPrFileEdit(input: PrFileEdit): Promise<{ commitOid: string }> {
   const [owner, name] = input.repo.split("/");
   if (!owner || !name) throw new GithubRequestError(`Invalid repository: ${input.repo}`, 404);
   const expectedHeadOid = input.expectedHeadOid.toLowerCase();
-  const fileExpression = `${expectedHeadOid}:${input.path}`;
-  const lastSlash = input.path.lastIndexOf("/");
-  const parentPath = lastSlash === -1 ? "" : input.path.slice(0, lastSlash);
-  const basename = input.path.slice(lastSlash + 1);
-  const parentExpression = `${expectedHeadOid}:${parentPath}`;
-
-  const data = await graphql<{
-    repository: {
-      pullRequest: {
-        state: string;
-        headRefName: string | null;
-        headRefOid: string | null;
-        headRepository: {
-          nameWithOwner: string;
-          file: { __typename: string; isBinary?: boolean | null } | null;
-          parent: {
-            __typename: string;
-            entries?: Array<{ name: string; type: string; mode: number }> | null;
-          } | null;
-        } | null;
-      } | null;
-    } | null;
-  }>(PR_FILE_EDIT_HEAD_QUERY, { owner, name, number: input.number, fileExpression, parentExpression });
-  const pullRequest = data.repository?.pullRequest;
-  if (!pullRequest) throw new GithubRequestError(`${input.repo}#${input.number} was not found`, 404);
-  if (pullRequest.state !== "OPEN") throw new StalePrHeadError("PR is no longer open");
-  if (!pullRequest.headRefName || !pullRequest.headRefOid || !pullRequest.headRepository?.nameWithOwner) {
+  const baseRepo = encodedRepo(input.repo);
+  const pullRequest = await githubRestJson<RestPull>("GET", `/repos/${baseRepo}/pulls/${input.number}`);
+  if (pullRequest.state !== "open") throw new StalePrHeadError("PR is no longer open");
+  if (!pullRequest.head?.ref || !pullRequest.head.repo?.full_name) {
     throw new StalePrHeadError("PR head is unavailable");
   }
-  if (pullRequest.headRefOid !== expectedHeadOid) throw new StalePrHeadError();
-  const file = pullRequest.headRepository.file;
-  const parent = pullRequest.headRepository.parent;
-  const entry = parent?.entries?.find((candidate) => candidate.name === basename);
-  if (
-    file?.__typename !== "Blob"
-    || file?.isBinary !== false
-    || parent?.__typename !== "Tree"
-    || entry?.type !== "blob"
-    || entry?.mode !== 0o100644
-  ) {
+  if (pullRequest.head.sha.toLowerCase() !== expectedHeadOid) throw new StalePrHeadError();
+
+  const headRepo = encodedRepo(pullRequest.head.repo.full_name);
+  const commit = await githubRestJson<{ tree: { sha: string } }>(
+    "GET",
+    `/repos/${headRepo}/git/commits/${expectedHeadOid}`,
+  );
+  const segments = input.path.split("/");
+  let treeSha = commit.tree.sha;
+  for (let index = 0; index < segments.length; index += 1) {
+    const tree = await githubRestJson<{ tree: RestTreeEntry[] }>(
+      "GET",
+      `/repos/${headRepo}/git/trees/${encodeURIComponent(treeSha)}`,
+    );
+    const entry = tree.tree.find((candidate) => candidate.path === segments[index]);
+    const isFile = index === segments.length - 1;
+    if (!entry || (isFile ? entry.type !== "blob" || entry.mode !== "100644" : entry.type !== "tree")) {
+      throw new StalePrHeadError("PR file is no longer editable");
+    }
+    treeSha = entry.sha;
+  }
+  const currentBlob = await githubRestJson<{ content: string; encoding: string }>(
+    "GET",
+    `/repos/${headRepo}/git/blobs/${encodeURIComponent(treeSha)}`,
+  );
+  if (currentBlob.encoding !== "base64") throw new StalePrHeadError("PR file is no longer editable");
+  try {
+    if (strictUtf8Decoder.decode(Buffer.from(currentBlob.content, "base64")).includes("\0")) {
+      throw new StalePrHeadError("PR file is no longer editable");
+    }
+  } catch (error) {
+    if (error instanceof StalePrHeadError) throw error;
     throw new StalePrHeadError("PR file is no longer editable");
   }
 
+  const blob = await githubRestJson<{ sha: string }>("POST", `/repos/${headRepo}/git/blobs`, {
+    content: Buffer.from(input.content).toString("base64"),
+    encoding: "base64",
+  });
+  const nextTree = await githubRestJson<{ sha: string }>("POST", `/repos/${headRepo}/git/trees`, {
+    base_tree: commit.tree.sha,
+    tree: [{ path: input.path, mode: "100644", type: "blob", sha: blob.sha }],
+  });
+  const nextCommit = await githubRestJson<{ sha: string }>("POST", `/repos/${headRepo}/git/commits`, {
+    message: input.message,
+    tree: nextTree.sha,
+    parents: [expectedHeadOid],
+  });
+  const encodedRef = pullRequest.head.ref.split("/").map(encodeURIComponent).join("/");
   try {
-    const result = await graphql<{
-      createCommitOnBranch: { commit: { oid: string } | null } | null;
-    }>(CREATE_PR_FILE_COMMIT_MUTATION, {
-      input: {
-        branch: {
-          repositoryNameWithOwner: pullRequest.headRepository.nameWithOwner,
-          branchName: pullRequest.headRefName,
-        },
-        message: { headline: input.message },
-        fileChanges: {
-          additions: [{
-            path: input.path,
-            contents: Buffer.from(input.content).toString("base64"),
-          }],
-        },
-        expectedHeadOid,
-      },
+    await githubRestJson("PATCH", `/repos/${headRepo}/git/refs/heads/${encodedRef}`, {
+      sha: nextCommit.sha,
+      force: false,
     });
-    const commitOid = result.createCommitOnBranch?.commit?.oid;
-    if (!commitOid) throw new GithubRequestError("GitHub did not return a commit OID", 502);
-    return { commitOid };
   } catch (error) {
-    if (isExpectedHeadRace(error)) throw new StalePrHeadError();
+    if (isRefUpdateRace(error)) throw new StalePrHeadError();
     throw error;
   }
+  return { commitOid: nextCommit.sha };
 }
 
 export class RestRequestError extends Error {
@@ -1605,19 +1839,14 @@ export class RestRequestError extends Error {
 
 async function restRequest(method: string, path: string, body: unknown): Promise<void> {
   if (mockGithub) return;
-  const token = await ghToken();
-  const res = await fetch(`https://api.github.com${path}`, {
-    method,
-    headers: {
-      Authorization: `bearer ${token}`,
-      "Content-Type": "application/json",
-      Accept: "application/vnd.github+json",
-    },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    throw new RestRequestError(`${method} ${path} failed: ${res.status} ${await res.text()}`, res.status);
+  const response = await githubRestResponse(method, path, body);
+  if (!response.ok) {
+    throw new RestRequestError(`${method} ${path} failed: ${response.status} ${await response.text()}`, response.status);
   }
+}
+
+async function restJson<T>(path: string): Promise<T> {
+  return githubRestJson<T>("GET", path);
 }
 
 export async function postIssueComment(repo: string, number: number, body: string): Promise<void> {
@@ -1679,8 +1908,8 @@ mutation($pullRequestId: ID!) {
 // method null disables GitHub's native auto-merge; the enum is the REST method upper-cased
 export async function setGithubAutoMerge(pullRequestId: string, method: MergeMethod | null): Promise<void> {
   if (mockGithub) return mockGithub.setAutoMerge(pullRequestId, method);
-  if (method) await graphql(ENABLE_AUTO_MERGE_MUTATION, { pullRequestId, mergeMethod: method.toUpperCase() });
-  else await graphql(DISABLE_AUTO_MERGE_MUTATION, { pullRequestId });
+  if (method) await graphql(ENABLE_AUTO_MERGE_MUTATION, { pullRequestId, mergeMethod: method.toUpperCase() }, "user action", "enable auto-merge");
+  else await graphql(DISABLE_AUTO_MERGE_MUTATION, { pullRequestId }, "user action", "disable auto-merge");
 }
 
 const RESOLVE_THREAD_MUTATION = `
@@ -1695,17 +1924,13 @@ mutation($threadId: ID!) {
 
 export async function setThreadResolved(threadId: string, resolved: boolean): Promise<void> {
   if (mockGithub) return;
-  await graphql(resolved ? RESOLVE_THREAD_MUTATION : UNRESOLVE_THREAD_MUTATION, { threadId });
+  await graphql(resolved ? RESOLVE_THREAD_MUTATION : UNRESOLVE_THREAD_MUTATION, { threadId }, "user action", resolved ? "resolve review thread" : "unresolve review thread");
 }
 
-const UPDATE_BRANCH_MUTATION = `
-mutation($pullRequestId: ID!) {
-  updatePullRequestBranch(input: { pullRequestId: $pullRequestId }) { pullRequest { headRefOid } }
-}`;
 
-export async function updatePullRequestBranch(pullRequestId: string): Promise<void> {
+export async function updatePullRequestBranch(repo: string, number: number): Promise<void> {
   if (mockGithub) return;
-  await graphql(UPDATE_BRANCH_MUTATION, { pullRequestId });
+  await restRequest("PUT", `/repos/${repo}/pulls/${number}/update-branch`, {});
 }
 
 const MARK_READY_MUTATION = `
@@ -1715,35 +1940,23 @@ mutation($pullRequestId: ID!) {
 
 export async function markPullRequestReadyForReview(pullRequestId: string): Promise<void> {
   if (mockGithub) return;
-  await graphql(MARK_READY_MUTATION, { pullRequestId });
+  await graphql(MARK_READY_MUTATION, { pullRequestId }, "user action", "mark PR ready");
 }
 
-const CLOSE_PR_MUTATION = `
-mutation($pullRequestId: ID!) {
-  closePullRequest(input: { pullRequestId: $pullRequestId }) { pullRequest { state } }
-}`;
 
-export async function closePullRequest(pullRequestId: string): Promise<void> {
+export async function closePullRequest(repo: string, number: number): Promise<void> {
   if (mockGithub) return;
-  await graphql(CLOSE_PR_MUTATION, { pullRequestId });
+  await restRequest("PATCH", `/repos/${repo}/pulls/${number}`, { state: "closed" });
 }
 
-const UPDATE_PR_BODY_MUTATION = `
-mutation($pullRequestId: ID!, $body: String!) {
-  updatePullRequest(input: { pullRequestId: $pullRequestId, body: $body }) { pullRequest { body } }
-}`;
 
-export async function updatePullRequestBody(pullRequestId: string, body: string): Promise<void> {
+export async function updatePullRequestBody(repo: string, number: number, body: string): Promise<void> {
   if (mockGithub) return;
-  await graphql(UPDATE_PR_BODY_MUTATION, { pullRequestId, body });
+  await restRequest("PATCH", `/repos/${repo}/pulls/${number}`, { body });
 }
 
-const UPDATE_PR_TITLE_MUTATION = `
-mutation($pullRequestId: ID!, $title: String!) {
-  updatePullRequest(input: { pullRequestId: $pullRequestId, title: $title }) { pullRequest { title } }
-}`;
 
-export async function updatePullRequestTitle(pullRequestId: string, title: string): Promise<void> {
+export async function updatePullRequestTitle(repo: string, number: number, title: string): Promise<void> {
   if (mockGithub) return;
-  await graphql(UPDATE_PR_TITLE_MUTATION, { pullRequestId, title });
+  await restRequest("PATCH", `/repos/${repo}/pulls/${number}`, { title });
 }

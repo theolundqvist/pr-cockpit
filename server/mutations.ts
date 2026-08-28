@@ -6,13 +6,12 @@ import {
   listMutationsForPr,
   listRefreshingMutations,
   nextPendingMutation,
-  repoUserId,
   setAutoMergeArmed,
   setMutationState,
   type MutationRow,
 } from "./db.ts";
 import {
-  addAssigneesToAssignable,
+  addAssignees,
   closePullRequest,
   getViewerLogin,
   markPullRequestReadyForReview,
@@ -22,7 +21,7 @@ import {
   postReviewCommentReply,
   removeAssignees,
   removeRequestedReviewers,
-  requestReviewsFromUsers,
+  requestReviewers,
   setGithubAutoMerge,
   setThreadResolved,
   updatePullRequestBody,
@@ -32,7 +31,7 @@ import {
 import { pollOnce, refreshPr } from "./poller.ts";
 import { killFixerAgent, launchFixerAgent } from "./agents.ts";
 import { refreshRepoUsers } from "./repoUsers.ts";
-import { isMergeMethod, isMergeMethodSource, MERGEABLE_NOW_STATES, mergeWithLearning, mergeWithSelection, type MergeMethod, type MergeMethodSource } from "./mergeMethod.ts";
+import { isMergeMethod, isMergeMethodSource, mergeAllowedNow, MERGEABLE_NOW_STATES, mergeWithLearning, mergeWithSelection, type MergeMethod, type MergeMethodSource } from "./mergeMethod.ts";
 
 export type MutationPayload =
   | { kind: "comment"; body: string }
@@ -95,16 +94,6 @@ function assertMutationPayload(value: unknown): asserts value is MutationPayload
   }
 }
 
-async function resolveRepoUserIds(repo: string, logins: string[]): Promise<string[]> {
-  let ids = logins.map((login) => repoUserId(repo, login));
-  if (ids.some((id) => id === null)) {
-    await refreshRepoUsers(repo);
-    ids = logins.map((login) => repoUserId(repo, login));
-  }
-  const missing = logins.filter((_, i) => ids[i] === null);
-  if (missing.length > 0) throw new Error(`unknown repo user(s): ${missing.join(", ")} - not in ${repo}'s assignable users`);
-  return ids as string[];
-}
 
 export function enqueueMutation(params: { repo: string; number: number; payload: MutationPayload }): number {
   assertMutationPayload(params.payload);
@@ -188,34 +177,35 @@ async function executeMutation(row: MutationRow): Promise<boolean> {
     }
     case "merge": {
       // Force skips Cockpit's own merge gate; GitHub still decides whether the merge is allowed.
-      await refreshPr(row.repo, row.number);
+      await refreshPr(row.repo, row.number, "mutation recovery");
       const currentBase = currentBaseRef(row.repo, row.number);
       if (currentBase !== payload.baseRef) {
         throw new Error(`PR retargeted from ${payload.baseRef} to ${currentBase}; confirm the merge method again`);
       }
+      const pr = getPr(row.repo, row.number);
+      if (!pr) throw new Error(`no cached PR for ${row.repo}#${row.number}`);
+      if (!payload.force && !mergeAllowedNow(row.repo, pr)) {
+        throw new Error(`Cockpit merge gate rejected ${pr.merge_state_status}`);
+      }
       await mergeWithSelection(row.repo, row.number, payload.baseRef, payload.method, payload.source);
       return true;
     }
-    case "update-branch": {
-      await updatePullRequestBranch(requirePrRef(row.repo, row.number).nodeId);
+    case "update-branch":
+      await updatePullRequestBranch(row.repo, row.number);
       return false;
-    }
     case "ready-for-review": {
       await markPullRequestReadyForReview(requirePrRef(row.repo, row.number).nodeId);
       return false;
     }
-    case "close": {
-      await closePullRequest(requirePrRef(row.repo, row.number).nodeId);
+    case "close":
+      await closePullRequest(row.repo, row.number);
       return true;
-    }
-    case "edit-body": {
-      await updatePullRequestBody(requirePrRef(row.repo, row.number).nodeId, payload.body);
+    case "edit-body":
+      await updatePullRequestBody(row.repo, row.number, payload.body);
       return false;
-    }
-    case "edit-title": {
-      await updatePullRequestTitle(requirePrRef(row.repo, row.number).nodeId, payload.title);
+    case "edit-title":
+      await updatePullRequestTitle(row.repo, row.number, payload.title);
       return false;
-    }
     case "inline-comment": {
       const { headSha } = requirePrRef(row.repo, row.number);
       await postInlineComment(row.repo, row.number, headSha, payload);
@@ -241,19 +231,15 @@ async function executeMutation(row: MutationRow): Promise<boolean> {
     case "github-auto-merge":
       await setGithubAutoMerge(requirePrRef(row.repo, row.number).nodeId, payload.enable ? payload.method : null);
       return false;
-    case "assign": {
-      const { nodeId } = requirePrRef(row.repo, row.number);
-      await addAssigneesToAssignable(nodeId, await resolveRepoUserIds(row.repo, payload.logins));
+    case "assign":
+      await addAssignees(row.repo, row.number, payload.logins);
       return false;
-    }
     case "unassign":
       await removeAssignees(row.repo, row.number, payload.logins);
       return false;
-    case "request-reviewers": {
-      const { nodeId } = requirePrRef(row.repo, row.number);
-      await requestReviewsFromUsers(nodeId, await resolveRepoUserIds(row.repo, payload.logins));
+    case "request-reviewers":
+      await requestReviewers(row.repo, row.number, payload.logins);
       return false;
-    }
     case "unrequest-reviewers":
       await removeRequestedReviewers(row.repo, row.number, payload.logins);
       return false;
@@ -276,7 +262,7 @@ export async function finalizeMutation(
 ): Promise<void> {
   dependencies.setMutationState(row.id, "refreshing", null);
   try {
-    await dependencies.refreshPr(row.repo, row.number);
+    await dependencies.refreshPr(row.repo, row.number, "mutation recovery");
     if (merged) await dependencies.pollOnce();
   } catch (err) {
     console.error("post-mutation refresh failed:", err);

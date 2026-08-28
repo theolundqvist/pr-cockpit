@@ -27,13 +27,13 @@ function baseClassify(pr, viewerLogin) {
     return { group: "yours", tone: "review", label: "your review" };
   }
   if (isAuthor) {
-    if (CI_FAIL.has(pr.ciStatus)) return { group: "yours", tone: "fail", label: "checks failing" };
+    if (CI_FAIL.has(pr.ciStatus)) return { group: "yours", tone: "fail", label: "failing" };
     if (pr.mergeable === "CONFLICTING") return { group: "yours", tone: "fail", label: "conflicts" };
     if (pr.reviewDecision === "CHANGES_REQUESTED") return { group: "yours", tone: "review", label: "changes requested" };
     if (pr.unresolvedCount > 0) return { group: "yours", tone: "review", label: `${pr.unresolvedCount} thread${pr.unresolvedCount > 1 ? "s" : ""}` };
   }
 
-  if (!isAuthor && CI_FAIL.has(pr.ciStatus)) return { group: "waiting", tone: "wait", label: "checks failing" };
+  if (!isAuthor && CI_FAIL.has(pr.ciStatus)) return { group: "waiting", tone: "wait", label: "failing" };
   if (pr.ciStatus === "PENDING") return { group: "waiting", tone: "wait", label: "checks running" };
   if (isAuthor && pr.reviewDecision === "REVIEW_REQUIRED") return { group: "waiting", tone: "wait", label: "waiting on review" };
   if (pr.isDraft) return { group: "waiting", tone: "wait", label: "draft" };

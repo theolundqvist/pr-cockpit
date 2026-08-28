@@ -2,6 +2,9 @@ import { expect, test } from "bun:test";
 
 // The child installs its GraphQL transport before loading the module and keeps the global fetch override isolated.
 const githubModuleUrl = new URL("./github.ts", import.meta.url).href;
+// db.ts must initialize before github.ts: github -> settings -> db -> github (SCHEMA_EPOCH) is
+// cycle-safe only when db.ts is not entered mid-way through github.ts evaluation.
+const dbModuleUrl = new URL("./db.ts", import.meta.url).href;
 
 test("queries the requested base and paginates to the 180-day cutoff", async () => {
   const script = `
@@ -34,6 +37,7 @@ test("queries the requested base and paginates to the 180-day cutoff", async () 
         },
       });
     };
+    await import(${JSON.stringify(dbModuleUrl)});
     const { fetchMergedPrAnalytics } = await import(${JSON.stringify(githubModuleUrl)});
     const first = await fetchMergedPrAnalytics("acme/widgets", "release/v2");
     console.log(JSON.stringify({ calls, first }));
@@ -76,6 +80,7 @@ test("queries the requested base and paginates to the 180-day cutoff", async () 
 
 test("returns deterministic merged pull requests without live GitHub in mock mode", async () => {
   const script = `
+    await import(${JSON.stringify(dbModuleUrl)});
     const { fetchMergedPrAnalytics } = await import(${JSON.stringify(githubModuleUrl)});
     const main = await fetchMergedPrAnalytics("fixture/cockpit", "main");
     const other = await fetchMergedPrAnalytics("fixture/cockpit", "release");

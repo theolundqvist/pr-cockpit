@@ -12,3 +12,8 @@ export function relativeTime(iso) {
   if (months < 12) return `${Math.floor(months)}mo`;
   return `${Math.floor(days / 365)}y`;
 }
+
+export function durationText(startedAt, endedAt) {
+  const minutes = Math.round((new Date(endedAt) - new Date(startedAt)) / 60000);
+  return minutes < 1 ? "<1m" : `${minutes}m`;
+}

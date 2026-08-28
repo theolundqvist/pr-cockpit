@@ -3,6 +3,7 @@
   import PrDetail from "./lib/PrDetail.svelte";
   import Palette from "./lib/Palette.svelte";
   import Settings from "./lib/Settings.svelte";
+  import Usage from "./lib/Usage.svelte";
   import Onboarding from "./lib/Onboarding.svelte";
   import FindBar from "./lib/FindBar.svelte";
   import HistoryNav from "./lib/HistoryNav.svelte";
@@ -23,13 +24,13 @@
   const isShell = navigator.userAgent.includes("Electron");
 
   function parseRoute(hash) {
-    const match = hash.match(/^#\/pr\/([^/]+)\/([^/]+)\/(\d+)(?:\/(files|agents)|\/history\/([^/?]+)(?:\?symbol=([^&]+))?)?$/);
+    const match = hash.match(/^#\/pr\/([^/]+)\/([^/]+)\/(\d+)(?:\/(files|agents)|\/(actions)(?:\?sha=([0-9a-f]{40}))?|\/history\/([^/?]+)(?:\?symbol=([^&]+))?)?$/i);
     if (match) {
       let historyPath = null;
       let historySymbol = null;
       try {
-        historyPath = match[5] ? decodeURIComponent(match[5]) : null;
-        historySymbol = match[6] ? decodeURIComponent(match[6]) : null;
+        historyPath = match[7] ? decodeURIComponent(match[7]) : null;
+        historySymbol = match[8] ? decodeURIComponent(match[8]) : null;
       } catch {
         return { name: "inbox" };
       }
@@ -37,11 +38,13 @@
         name: "detail",
         repo: `${match[1]}/${match[2]}`,
         number: Number(match[3]),
-        tab: historyPath ? "files" : match[4] ?? "conversation",
+        tab: historyPath ? "files" : match[5] ?? match[4] ?? "conversation",
+        actionSha: match[6] ?? null,
         historyPath,
         historySymbol,
       };
     }
+    if (hash === "#/usage") return { name: "usage" };
     const settingsMatch = hash.match(/^#\/settings(?:\/([^/]+))?$/);
     if (settingsMatch) {
       const requestedSection = settingsMatch[1] ?? localStorage.getItem(SETTINGS_SECTION_KEY);
@@ -217,6 +220,17 @@
         <span class="nav-label nav-label-lower">Control</span>
         <a
           class="nav-item"
+          class:active={route.name === "usage"}
+          href="#/usage"
+          aria-current={route.name === "usage" ? "page" : undefined}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 19V9m5 10V5m5 14v-7m5 7V3" />
+          </svg>
+          <span>Usage</span>
+        </a>
+        <a
+          class="nav-item"
           class:active={route.name === "settings"}
           href="#/settings"
           aria-current={route.name === "settings" ? "page" : undefined}
@@ -261,9 +275,11 @@
       {#if setupOpen}
         <Onboarding onDone={finishSetup} onCancel={() => (setupOpen = false)} />
       {:else if route.name === "detail"}
-        <PrDetail repo={route.repo} number={route.number} tab={route.tab} historyPath={route.historyPath} historySymbol={route.historySymbol} refreshRevision={detailRevision} />
+        <PrDetail repo={route.repo} number={route.number} tab={route.tab} actionSha={route.actionSha} historyPath={route.historyPath} historySymbol={route.historySymbol} refreshRevision={detailRevision} />
       {:else if route.name === "settings"}
         <Settings section={route.section} onRunSetup={() => (setupOpen = true)} />
+      {:else if route.name === "usage"}
+        <Usage />
       {:else if reposConfigured === false}
         <Onboarding onDone={finishSetup} />
       {:else if reposConfigured}
@@ -276,7 +292,7 @@
       {/if}
     </main>
 
-    {#if route.name === "detail" || route.name === "settings"}
+    {#if route.name === "detail" || route.name === "settings" || route.name === "usage"}
       <FindBar />
     {/if}
 

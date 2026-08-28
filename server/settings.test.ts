@@ -134,18 +134,27 @@ test("window and diff layout settings persist independently", async () => {
     const both = writeSettings({ per_view_window_size: true });
     const unified = writeSettings({ diff_layout: "unified" });
     const appearance = writeSettings({ font_interface: "alacritty", font_code: "alacritty", code_theme: "catppuccin", general_scale: 125, diff_scale: 150 });
+    const replica = writeSettings({ replica_ssh_host: "ssh://root@dev-vm/" });
+    let invalidReplicaError = "";
+    try {
+      writeSettings({ default_repo: "should-not-persist", replica_ssh_host: "root@dev-vm:22" });
+    } catch (error) {
+      invalidReplicaError = error.message;
+    }
+    const afterInvalidReplica = readSettings();
+    const local = writeSettings({ replica_ssh_host: "" });
     // a database seeded before the split carries its single font choice onto all three surfaces
     db.query("delete from settings where key in ('font_interface','font_ui','font_code','font_comments')").run();
     db.query("insert or replace into settings (key, value) values ('font', 'alacritty')").run();
     seedSettings();
     const migrated = readSettings();
-    console.log(JSON.stringify({ initial, positionOnly, both, unified, appearance, migrated }));
+    console.log(JSON.stringify({ initial, positionOnly, both, unified, appearance, replica, invalidReplicaError, afterInvalidReplica, local, migrated }));
     db.close();
   `;
 
   try {
     const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], {
-      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir },
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_REPLICA_SSH_HOST: "scape-agent" },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -166,6 +175,12 @@ test("window and diff layout settings persist independently", async () => {
     expect(result.initial.code_theme).toBe("github");
     expect(result.initial.general_scale).toBe(100);
     expect(result.initial.diff_scale).toBe(100);
+    expect(result.initial.replica_ssh_host).toBe("scape-agent");
+    expect(result.replica.replica_ssh_host).toBe("root@dev-vm");
+    expect(result.invalidReplicaError).toBe("invalid replica SSH host");
+    expect(result.afterInvalidReplica.replica_ssh_host).toBe("root@dev-vm");
+    expect(result.afterInvalidReplica.default_repo).not.toBe("should-not-persist");
+    expect(result.local.replica_ssh_host).toBe("");
     expect(result.positionOnly.per_view_window_size).toBe(false);
     expect(result.positionOnly.per_view_window_position).toBe(true);
     expect(result.both.per_view_window_size).toBe(true);

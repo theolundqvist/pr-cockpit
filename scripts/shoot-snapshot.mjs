@@ -152,18 +152,19 @@ async function positionFiles(page) {
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(done)));
 }
 
-async function verifyAligned(page, leftSelector, rightSelector) {
-  const [left, right, scroller] = await Promise.all([
+async function verifyAligned(page, leftSelector, rightSelector, topSelector = leftSelector) {
+  const [left, right, top, scroller] = await Promise.all([
     page.locator(leftSelector).first().boundingBox(),
     page.locator(rightSelector).first().boundingBox(),
+    page.locator(topSelector).first().boundingBox(),
     page.locator(".page").first().boundingBox(),
   ]);
-  if (!left || !right || !scroller) throw new Error(`missing aligned capture columns: ${leftSelector}, ${rightSelector}`);
+  if (!left || !right || !top || !scroller) throw new Error(`missing aligned capture columns: ${leftSelector}, ${rightSelector}, ${topSelector}`);
   if (Math.abs(left.y - right.y) > 2) {
     throw new Error(`capture columns are not top-aligned: ${leftSelector} y=${left.y}, ${rightSelector} y=${right.y}`);
   }
-  const offset = Math.min(left.y, right.y) - scroller.y;
-  if (offset > 72) throw new Error(`capture columns are not scrolled to the top of the page: offset=${offset}`);
+  const offset = top.y - scroller.y;
+  if (offset > 72) throw new Error(`capture content is not scrolled to the top of the page: offset=${offset}`);
 }
 
 async function verifyRightEdgesAligned(page, leftSelector, rightSelector) {
@@ -213,7 +214,7 @@ function scenariosFor(snapshot, roles, profile, viewport) {
       route: `#/pr/${repo}/${roles.files.number}/files`,
       ready: ".files-layout .diff",
       interact: positionFiles,
-      verify: (page) => verifyAligned(page, ".tree-pane", ".diff-pane"),
+      verify: (page) => verifyAligned(page, ".tree-pane", ".diff-pane", ".files-toolbar"),
     },
     {
       name: "editing",
@@ -241,7 +242,7 @@ function scenariosFor(snapshot, roles, profile, viewport) {
         );
         await positionFiles(page);
       },
-      verify: (page) => verifyAligned(page, ".tree-pane", ".diff-pane"),
+      verify: (page) => verifyAligned(page, ".tree-pane", ".diff-pane", ".files-toolbar"),
     },
     {
       name: "history",
@@ -273,7 +274,7 @@ function scenariosFor(snapshot, roles, profile, viewport) {
           await page.getByRole("button", { name: /show \d+ test files/ }).waitFor();
           await positionFiles(page);
         },
-        verify: (page) => verifyAligned(page, ".tree-pane", ".diff-pane"),
+        verify: (page) => verifyAligned(page, ".tree-pane", ".diff-pane", ".files-toolbar"),
         capture: () => ({
           clip: { x: 0, y: HIDE_TESTS_TOPBAR_HEIGHT, width: viewport.width, height: viewport.height },
           viewport,
@@ -293,6 +294,8 @@ function scenariosFor(snapshot, roles, profile, viewport) {
           await cleanHunk.waitFor();
           await cleanHunk.click({ button: "right" });
           await page.getByRole("menuitem", { name: "Revert hunk" }).waitFor();
+        },
+        verify: async (page) => {
           await page.locator(".edit-context-menu").evaluate((menu) => {
             const pointer = document.createElement("div");
             const rect = menu.getBoundingClientRect();
@@ -310,16 +313,16 @@ function scenariosFor(snapshot, roles, profile, viewport) {
             });
             document.body.append(pointer);
           });
-        },
-        verify: async (page) => {
           const [menu, pointer] = await Promise.all([
             page.locator(".edit-context-menu").boundingBox(),
             page.locator("[data-capture-pointer]").boundingBox(),
           ]);
           if (!menu) throw new Error("context menu not visible");
           if (!pointer) throw new Error("capture pointer not visible");
-          if (pointer.x >= menu.x || pointer.y <= menu.y + menu.height) {
-            throw new Error(`capture pointer is not below-left of the menu: menu=${JSON.stringify(menu)} pointer=${JSON.stringify(pointer)}`);
+          const expectedX = Math.max(8, menu.x - 12);
+          const expectedY = menu.y + menu.height + 4;
+          if (Math.abs(pointer.x - expectedX) > 2 || Math.abs(pointer.y - expectedY) > 2) {
+            throw new Error(`capture pointer moved away from the menu: menu=${JSON.stringify(menu)} pointer=${JSON.stringify(pointer)}`);
           }
         },
         capture: async (page) => {

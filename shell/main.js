@@ -4,7 +4,8 @@ const fs = require("fs");
 const os = require("os");
 const { spawn, execSync } = require("child_process");
 const { windowBoundsForPersistence, windowBoundsForRestore } = require("./windowBounds");
-const { launchEditorTerminal } = require("./editorLaunch");
+const { finishEditorSession, runEditorSession } = require("./editorLaunch");
+const { launchSetupTerminal } = require("./setupLaunch");
 const { getNativePalette } = require("./nativePalette");
 
 app.setName("PR Cockpit");
@@ -45,6 +46,47 @@ const serverOrigin = new URL(initialUrl).origin;
 const paletteUrl = `${serverOrigin}/#/palette`;
 const DEFAULT_OPEN_APP = "Command+Control+G";
 const DEFAULT_OPEN_PALETTE = "Command+Option+K";
+
+const editorPreparations = new Map();
+const editorCheckoutPaths = new Map();
+
+function validPrIdentity(repo, number) {
+  return typeof repo === "string" && /^[\w.-]+\/[\w.-]+$/.test(repo) && Number.isInteger(number) && number > 0;
+}
+
+function validEditorHead(headSha) {
+  return typeof headSha === "string" && /^[0-9a-f]{40}$/i.test(headSha);
+}
+
+function prepareEditorCheckout(repo, number, headSha) {
+  const key = `${repo}#${number}@${headSha}`;
+  const cached = editorCheckoutPaths.get(key);
+  if (cached) return Promise.resolve(cached);
+  const active = editorPreparations.get(key);
+  if (active) return active;
+  const preparation = (async () => {
+    const res = await fetch(`${serverOrigin}/api/pr/${repo}/${number}/checkout`);
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || `checkout materialization failed (${res.status})`);
+    if (typeof body.path !== "string" || !path.isAbsolute(body.path)) throw new Error("server returned an invalid checkout path");
+    for (const cachedKey of editorCheckoutPaths.keys()) {
+      if (cachedKey.startsWith(`${repo}#${number}@`)) editorCheckoutPaths.delete(cachedKey);
+    }
+    editorCheckoutPaths.set(key, body.path);
+    return body.path;
+  })();
+  editorPreparations.set(key, preparation);
+  void preparation.finally(() => editorPreparations.delete(key)).catch(() => {});
+  return preparation;
+}
+
+function editorTargetInCheckout(checkout, relativePath) {
+  const root = fs.realpathSync(checkout);
+  const target = fs.realpathSync(path.resolve(root, relativePath));
+  const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+  if (!target.startsWith(prefix)) throw new Error("editor target escapes the checkout");
+  return target;
+}
 
 const boundsFile = path.join(app.getPath("userData"), "window-bounds.json");
 const zoomFile = path.join(app.getPath("userData"), "zoom-level.json");
@@ -104,6 +146,11 @@ let perViewPositionEnabled = false;
 let shellThemePreference = "system";
 let win = null;
 let paletteWin = null;
+const extraWindows = new Set();
+
+function cockpitWindows() {
+  return [win, ...extraWindows].filter((window) => window && !window.isDestroyed());
+}
 
 function normalizeThemePreference(value) {
   return value === "light" || value === "dark" || value === "system" ? value : "system";
@@ -116,7 +163,7 @@ function windowBackgroundColor() {
 
 function syncWindowBackground() {
   const backgroundColor = windowBackgroundColor();
-  if (win && !win.isDestroyed()) win.setBackgroundColor(backgroundColor);
+  for (const window of cockpitWindows()) window.setBackgroundColor(backgroundColor);
   if (paletteWin && !paletteWin.isDestroyed()) paletteWin.setBackgroundColor("#00000000");
 }
 
@@ -135,7 +182,7 @@ function currentNativePalette() {
 
 function broadcastNativePalette() {
   const palette = currentNativePalette();
-  for (const window of [win, paletteWin]) {
+  for (const window of [...cockpitWindows(), paletteWin]) {
     if (palette && window && !window.isDestroyed()) window.webContents.send("cockpit:native-palette-changed", palette);
   }
 }
@@ -188,6 +235,69 @@ if (!app.requestSingleInstanceLock()) {
   // launcher, tray, or global shortcut all try to reveal the app makes the
   // tile visibly flash on macOS.
   let dockIconVisible = null;
+
+  // Zoom is one persisted preference, so every cockpit window shows the same scale.
+  function applyZoom(level) {
+    zoomLevel = Math.max(ZOOM_LEVEL_MIN, Math.min(ZOOM_LEVEL_MAX, level));
+    for (const window of cockpitWindows()) window.webContents.zoomLevel = zoomLevel;
+    saveZoomLevel(zoomLevel);
+  }
+
+  // Full page loads reset webContents.zoomLevel to 0, so callers reapply it on did-finish-load.
+  function attachZoomShortcuts(target) {
+    target.webContents.on("before-input-event", (event, input) => {
+      if (input.type !== "keyDown" || !input.meta || input.control || input.alt) return;
+      if (input.key === "=" || input.key === "+") {
+        applyZoom(zoomLevel + 1);
+        event.preventDefault();
+      } else if (input.key === "-") {
+        applyZoom(zoomLevel - 1);
+        event.preventDefault();
+      } else if (input.key === "0") {
+        applyZoom(0);
+        event.preventDefault();
+      }
+    });
+  }
+
+  // ⌘N opens another view of the same server in this process. It owns no tray,
+  // deep link, palette, or per-view bounds state, and ⌘W really closes it.
+  function openExtraWindow(hash = null) {
+    const focused = BrowserWindow.getFocusedWindow();
+    const source = focused && focused !== paletteWin ? focused : win;
+    const anchor = source && !source.isDestroyed() ? source.getBounds() : null;
+    const extra = new BrowserWindow({
+      width: anchor?.width ?? 1440,
+      height: anchor?.height ?? 900,
+      x: anchor ? anchor.x + 34 : undefined,
+      y: anchor ? anchor.y + 34 : undefined,
+      backgroundColor: windowBackgroundColor(),
+      titleBarStyle: "hiddenInset",
+      webPreferences: { sandbox: true, preload: path.join(__dirname, "preload.js") },
+      show: false,
+    });
+    extraWindows.add(extra);
+    attachZoomShortcuts(extra);
+    extra.once("ready-to-show", () => {
+      extra.show();
+      extra.focus();
+    });
+    extra.webContents.on("did-finish-load", () => {
+      extra.webContents.zoomLevel = zoomLevel;
+    });
+    extra.webContents.setWindowOpenHandler(({ url }) => {
+      shell.openExternal(url);
+      return { action: "deny" };
+    });
+    extra.on("swipe", (event, direction) => {
+      const history = extra.webContents.navigationHistory;
+      if (direction === "left" && history.canGoBack()) history.goBack();
+      else if (direction === "right" && history.canGoForward()) history.goForward();
+    });
+    extra.on("closed", () => extraWindows.delete(extra));
+    extra.loadURL(hash ? `${serverOrigin}/${hash}` : serverOrigin);
+    return extra;
+  }
 
   function deepLinkParts(url) {
     try {
@@ -248,6 +358,8 @@ if (!app.requestSingleInstanceLock()) {
 
   function hideAppFromDock() {
     hideMainWindow();
+    // extras carry no restorable state and showMainWindow() cannot bring them back, so close them
+    for (const extra of [...extraWindows]) extra.close();
     if (paletteWin && !paletteWin.isDestroyed()) paletteWin.hide();
     hideDockIcon();
   }
@@ -265,7 +377,10 @@ if (!app.requestSingleInstanceLock()) {
           { label: "Quit PR Cockpit", click: quitPrCockpit },
         ],
       },
-      { label: "File", submenu: [{ role: "close" }] },
+      {
+        label: "File",
+        submenu: [{ label: "New Window", accelerator: "CommandOrControl+N", click: () => openExtraWindow() }, { role: "close" }],
+      },
       { role: "editMenu" },
       { label: "View", submenu: [{ role: "reload" }, { role: "forceReload" }, { role: "toggleDevTools" }] },
       { role: "windowMenu" },
@@ -442,39 +557,75 @@ if (!app.requestSingleInstanceLock()) {
       const repo = payload?.repo;
       const number = payload?.number;
       const editorTarget = payload?.target;
+      const headSha = payload?.headSha;
       if (
-        typeof repo !== "string" ||
-        !/^[\w.-]+\/[\w.-]+$/.test(repo) ||
-        !Number.isInteger(number) ||
-        (editorTarget !== null &&
-          editorTarget !== undefined &&
-          (typeof editorTarget !== "object" ||
-            typeof editorTarget.path !== "string" ||
-            (editorTarget.line !== null && (!Number.isInteger(editorTarget.line) || editorTarget.line <= 0))))
+        !validPrIdentity(repo, number)
+        || !validEditorHead(headSha)
+        || !editorTarget
+        || typeof editorTarget !== "object"
+        || typeof editorTarget.path !== "string"
+        || !editorTarget.path
+        || (editorTarget.line !== null && (!Number.isInteger(editorTarget.line) || editorTarget.line <= 0))
       ) {
         return { error: "bad editor request" };
       }
-      let checkout;
+      const key = `${repo}#${number}@${headSha}`;
+      const preparation = editorPreparations.get(key);
+      if (preparation) await preparation.catch(() => {});
+      let checkout = editorCheckoutPaths.get(key);
       let target;
+      if (checkout) {
+        try {
+          target = editorTargetInCheckout(checkout, editorTarget.path);
+        } catch {
+          editorCheckoutPaths.delete(key);
+          checkout = null;
+        }
+      }
+      if (!checkout) {
+        try {
+          const query = `?file=${encodeURIComponent(editorTarget.path)}`;
+          const res = await fetch(`${serverOrigin}/api/pr/${repo}/${number}/checkout${query}`);
+          const body = await res.json();
+          if (!res.ok) return { error: body.error || `checkout materialization failed (${res.status})` };
+          if (typeof body.path !== "string" || !path.isAbsolute(body.path)) return { error: "server returned an invalid checkout path" };
+          if (typeof body.target !== "string" || !path.isAbsolute(body.target)) return { error: "server returned an invalid editor target" };
+          checkout = body.path;
+          target = body.target;
+          const checkoutPrefix = checkout.endsWith(path.sep) ? checkout : `${checkout}${path.sep}`;
+          if (!target.startsWith(checkoutPrefix)) return { error: "editor target escapes the checkout" };
+          editorCheckoutPaths.set(key, checkout);
+        } catch (err) {
+          return { error: `checkout materialization failed: ${err.message}` };
+        }
+      }
+      if (!win || win.isDestroyed()) return { error: "editor launch failed: no cockpit window" };
+      return runEditorSession(checkout, target, editorTarget.path, editorTarget.line, win.getBounds());
+    });
+    ipcMain.handle("cockpit:prepare-editor", async (_event, payload) => {
+      const repo = payload?.repo;
+      const number = payload?.number;
+      const headSha = payload?.headSha;
+      if (!validPrIdentity(repo, number) || !validEditorHead(headSha)) return { error: "bad editor request" };
       try {
-        const query = editorTarget ? `?file=${encodeURIComponent(editorTarget.path)}` : "";
-        const res = await fetch(`${serverOrigin}/api/pr/${repo}/${number}/checkout${query}`);
-        const body = await res.json();
-        if (!res.ok) return { error: body.error || `checkout materialization failed (${res.status})` };
-        if (typeof body.path !== "string" || !path.isAbsolute(body.path)) return { error: "server returned an invalid checkout path" };
-        if (typeof body.target !== "string" || !path.isAbsolute(body.target)) return { error: "server returned an invalid editor target" };
-        checkout = body.path;
-        target = body.target;
-        const checkoutPrefix = checkout.endsWith(path.sep) ? checkout : `${checkout}${path.sep}`;
-        if (target !== checkout && !target.startsWith(checkoutPrefix)) return { error: "editor target escapes the checkout" };
+        await prepareEditorCheckout(repo, number, headSha);
+        return { ok: true };
       } catch (err) {
         return { error: `checkout materialization failed: ${err.message}` };
       }
-      if (!win || win.isDestroyed()) return { error: "editor launch failed: no cockpit window" };
-      const result = await launchEditorTerminal(checkout, target, editorTarget?.line ?? null, win.getBounds());
-      return result.error ? { error: `editor launch failed: ${result.error}` } : result;
+    });
+    ipcMain.handle("cockpit:finish-editor", (_event, sessionId) => {
+      if (typeof sessionId !== "string" || sessionId.length > 64) return { error: "bad editor session" };
+      return finishEditorSession(sessionId);
+    });
+    ipcMain.handle("cockpit:open-setup", async (_event, action) => {
+      if (!win || win.isDestroyed()) return { error: "setup launch failed: no cockpit window" };
+      return launchSetupTerminal(action, win.getBounds(), process.env, process.platform, process.env.COCKPIT_REPLICA_SSH_HOST || "");
     });
     ipcMain.handle("cockpit:native-palette", () => currentNativePalette());
+    ipcMain.handle("cockpit:open-window", (_event, hash) => {
+      openExtraWindow(typeof hash === "string" && hash.startsWith("#/") ? hash : null);
+    });
 
     // Settings only tune background + per-view bounds; fetch them off the first-paint path and apply on arrival.
     fetchSettings()
@@ -512,26 +663,7 @@ if (!app.requestSingleInstanceLock()) {
     );
     tray.on("click", showMainWindow);
 
-    function applyZoom(level) {
-      zoomLevel = Math.max(ZOOM_LEVEL_MIN, Math.min(ZOOM_LEVEL_MAX, level));
-      win.webContents.zoomLevel = zoomLevel;
-      saveZoomLevel(zoomLevel);
-    }
-
-    // Full page loads reset webContents.zoomLevel to 0, so reapply it on every did-finish-load below.
-    win.webContents.on("before-input-event", (event, input) => {
-      if (input.type !== "keyDown" || !input.meta || input.control || input.alt) return;
-      if (input.key === "=" || input.key === "+") {
-        applyZoom(zoomLevel + 1);
-        event.preventDefault();
-      } else if (input.key === "-") {
-        applyZoom(zoomLevel - 1);
-        event.preventDefault();
-      } else if (input.key === "0") {
-        applyZoom(0);
-        event.preventDefault();
-      }
-    });
+    attachZoomShortcuts(win);
 
     win.webContents.on("did-finish-load", () => {
       win.webContents.zoomLevel = zoomLevel;
@@ -719,10 +851,15 @@ if (!app.requestSingleInstanceLock()) {
     });
     paletteWin.webContents.on("did-navigate-in-page", (event, url) => {
       const hash = new URL(url).hash;
-      const go = hash.match(/^#\/palette\/go\/(.+)$/);
+      const go = hash.match(/^#\/palette\/(go|window|github)\/([^/]+\/[^/]+)\/(\d+)$/);
       if (go) {
-        win.webContents.executeJavaScript(`location.hash = ${JSON.stringify(`#/pr/${go[1]}`)}`);
-        showMainWindow();
+        const [, verb, repo, number] = go;
+        if (verb === "github") shell.openExternal(`https://github.com/${repo}/pull/${number}`);
+        else if (verb === "window") openExtraWindow(`#/pr/${repo}/${number}`);
+        else {
+          win.webContents.executeJavaScript(`location.hash = ${JSON.stringify(`#/pr/${repo}/${number}`)}`);
+          showMainWindow();
+        }
       } else if (hash !== "#/palette/close") {
         return;
       }

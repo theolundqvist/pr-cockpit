@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { buildFetchHandler, buildPrAgentSummary, checkoutTargetFor, formatPrAgentSummary, mergeabilityNeedsRefresh, reviewThreadHandle, snapshotStatus, statsExcludingTests, trackedDetailIsStale } from "./http.ts";
-import { StalePrHeadError, type PrDetail } from "./github.ts";
-import { db, getCachedPrDetail, getPr, getSetting, saveDiff, saveFileContents, setSetting, upsertCachedPrDetail, upsertPr, upsertPrIndex } from "./db.ts";
+import { buildFetchHandler, buildPrAgentSummary, checkoutTargetFor, formatPrAgentSummary, mergeabilityNeedsRefresh, normalizeAgentMutation, reviewThreadHandle, snapshotStatus, statsExcludingTests, trackedDetailIsStale } from "./http.ts";
+import { GithubRequestError, StalePrHeadError, type PrDetail } from "./github.ts";
+import { db, getCachedPrDetail, getPr, getSetting, listRunJobs, saveDiff, saveFileContents, setSetting, upsertCachedPrDetail, upsertPr, upsertPrIndex, upsertRunJob, upsertWorkflowRun } from "./db.ts";
 import { testMatcher } from "../ui/src/lib/testPath.js";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -415,6 +415,7 @@ describe("agent PR summary", () => {
     expect(summary.openCommentsComplete).toBe(true);
   });
 
+
   test("drops a failed check the moment the same job is queued again, so agents never chase a stale run", () => {
     const rerun = structuredClone(detail) as PrDetail;
     const nodes = rerun.lastCommit.nodes[0]!.commit.statusCheckRollup!.contexts.nodes as unknown[];
@@ -656,6 +657,76 @@ describe("agent PR summary", () => {
     }));
     expect(await repeated.json()).toEqual({ resolved: true, alreadyResolved: true });
     expect(resolvedIds).toEqual([threadId, threadId]);
+  });
+
+  test("normalizes agent-friendly merge and thread mutations", () => {
+    const repo = "cockpit-test/agent-mutations";
+    const number = 987654327;
+    const threadId = "PRRT_agent_mutation";
+    const row = trackedPrRow({ repo, number, fetchedAt: new Date().toISOString() });
+    const detail = JSON.parse(row.detail_json) as PrDetail;
+    detail.reviewThreads.nodes = [{
+      id: threadId,
+      isResolved: false,
+      isOutdated: false,
+      path: "src/value.ts",
+      line: 7,
+      diffSide: "RIGHT",
+      comments: {
+        nodes: [{
+          databaseId: 42,
+          diffHunk: "",
+          author: null,
+          body: "root",
+          createdAt: "2026-08-27T00:00:00Z",
+          reactions: [],
+        }],
+      },
+    }];
+    upsertPr({ ...row, detail_json: JSON.stringify(detail) });
+    const threadHandle = reviewThreadHandle(threadId);
+
+    expect(normalizeAgentMutation(repo, number, detail, { kind: "merge", force: true, method: "rebase" })).toEqual({
+      kind: "merge",
+      force: true,
+      baseRef: "main",
+      method: "rebase",
+      source: "explicit",
+    });
+    expect(normalizeAgentMutation(repo, number, detail, {
+      kind: "reply-to-thread",
+      threadHandle,
+      body: "fixed",
+    })).toEqual({ kind: "reply-to-thread", rootCommentId: 42, body: "fixed" });
+    expect(normalizeAgentMutation(repo, number, detail, {
+      kind: "resolve-thread",
+      threadHandle,
+      resolved: false,
+    })).toEqual({ kind: "resolve-thread", threadId, resolved: false });
+
+    db.query("DELETE FROM prs WHERE repo = ? AND number = ?").run(repo, number);
+  });
+
+  test("accepts trusted CLI mutations through the agent route", async () => {
+    const repo = "cockpit-test/agent-mutation-route";
+    const number = 987654328;
+    upsertPr(trackedPrRow({ repo, number, fetchedAt: new Date().toISOString() }));
+    const handler = buildFetchHandler(4820);
+    const url = `http://127.0.0.1:4820/api/agent/pr/cockpit-test/agent-mutation-route/${number}/mutations`;
+    const denied = await handler(new Request(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ payload: { kind: "auto-merge", enable: true } }),
+    }));
+    expect(denied.status).toBe(403);
+
+    const accepted = await handler(new Request(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-pr-cockpit-cli": "1" },
+      body: JSON.stringify({ payload: { kind: "auto-merge", enable: true } }),
+    }));
+    expect(accepted.status).toBe(201);
+    expect(await accepted.json()).toHaveProperty("id");
   });
 
   test("recomputes tracked PR rank when resolution refresh fails", async () => {
@@ -1157,6 +1228,66 @@ describe("PR file edits", () => {
     expect(refreshCalls).toBe(0);
   });
 
+  test("returns guided setup when REST workflow access is missing", async () => {
+    const body = { ...requestBody, path: ".github/workflows/ci.yml" };
+    const auth = {
+      ok: false,
+      state: "missing-scopes" as const,
+      login: "octocat",
+      error: "Allow workflow access.",
+      requiredScopes: ["repo", "workflow"],
+      missingScopes: ["workflow"],
+    };
+    const fetchHandler = buildFetchHandler(4820, {
+      commitPrFileEdit: async () => {
+        throw new GithubRequestError(
+          'GitHub REST request failed: 403 {"message":"Resource not accessible by personal access token"}',
+          502,
+        );
+      },
+      githubAuthStatus: async (scopes) => {
+        expect(scopes).toEqual(["repo", "workflow"]);
+        return auth;
+      },
+      refreshPr: async () => {},
+    });
+
+    const response = await fetchHandler(fileEditRequest(body));
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: "Allow workflow access.",
+      code: "github-setup",
+      auth,
+    });
+  });
+
+  test("starts GitHub setup with only allowed requested scopes", async () => {
+    let requestedScopes: readonly string[] = [];
+    const auth = {
+      ok: false,
+      state: "authorizing" as const,
+      login: "octocat",
+      error: null,
+      requiredScopes: ["repo", "workflow"],
+      missingScopes: ["workflow"],
+    };
+    const fetchHandler = buildFetchHandler(4820, {
+      startGithubSetup: async (scopes) => {
+        requestedScopes = scopes ?? [];
+        return auth;
+      },
+    });
+
+    const response = await fetchHandler(new Request("http://127.0.0.1:4820/api/auth/setup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scopes: ["workflow", "repo"] }),
+    }));
+    expect(response.status).toBe(200);
+    expect(requestedScopes).toEqual(["repo", "workflow"]);
+    expect(await response.json()).toEqual(auth);
+  });
+
   const invalidRequests: [string, Record<string, unknown>][] = [
     ["a traversal path", { ...requestBody, path: "../private.ts" }],
     ["an abbreviated head SHA", { ...requestBody, expectedHeadOid: "a".repeat(39) }],
@@ -1186,6 +1317,47 @@ describe("PR file edits", () => {
       expect(refreshCalls).toBe(0);
     });
   }
+});
+
+describe("commit message generation", () => {
+  test("uses the cached PR title and edited hunk", async () => {
+    const repo = "cockpit-test/commit-message";
+    const number = 987654321;
+    const row = trackedPrRow({ repo, number, fetchedAt: new Date().toISOString() });
+    row.title = "Stop queued staging deploys";
+    row.detail_json = JSON.stringify({
+      ...JSON.parse(row.detail_json),
+      title: row.title,
+      body: "Keep only the newest pending deployment.",
+    });
+    upsertPr(row);
+    let received: unknown;
+    const fetchHandler = buildFetchHandler(4820, {
+      generateCommitMessage: async (input) => {
+        received = input;
+        return "fix(ci): remove the deployment queue";
+      },
+    });
+
+    const response = await fetchHandler(new Request("http://127.0.0.1:4820/api/commit-message", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        repo,
+        number,
+        path: ".github/workflows/eas.yml",
+        hunk: "@@ -64,1 +64,0 @@\n-      queue: max",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ message: "fix(ci): remove the deployment queue" });
+    expect(received).toEqual({
+      title: row.title,
+      path: ".github/workflows/eas.yml",
+      hunk: "@@ -64,1 +64,0 @@\n-      queue: max",
+    });
+  });
 });
 
 describe("PR diff head overrides", () => {
@@ -1365,6 +1537,248 @@ describe("contextual editor target", () => {
     } finally {
       rmSync(checkout, { recursive: true, force: true });
       rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+describe("Actions viewer API", () => {
+  test("serves current and selected-commit workflow jobs with on-demand logs", async () => {
+    const repo = "http-actions/viewer";
+    const number = 96133;
+    const head = "f".repeat(40);
+    const previous = "e".repeat(40);
+    const row = trackedPrRow({ repo, number, fetchedAt: "2026-08-25T08:00:00Z" });
+    const detail = { ...JSON.parse(row.detail_json), headRefOid: head };
+    detail.commitList.nodes.push({
+      commit: { oid: previous, messageHeadline: "Previous commit", committedDate: "2026-08-25T07:00:00Z" },
+    });
+    upsertPr({
+      ...row,
+      head_sha: head,
+      detail_json: JSON.stringify(detail),
+    });
+    upsertWorkflowRun({
+      repo,
+      run_id: 44,
+      run_attempt: 1,
+      pr_number: number,
+      head_sha: head,
+      head_branch: "actions-viewer",
+      workflow_name: "CI",
+      workflow_path: ".github/workflows/ci.yml",
+      status: "completed",
+      conclusion: "failure",
+      event_at: "2026-08-25T08:02:00Z",
+      html_url: "https://github.com/http-actions/viewer/actions/runs/44",
+    });
+    upsertRunJob({
+      repo,
+      job_id: 4401,
+      run_id: 44,
+      run_attempt: 1,
+      head_sha: head,
+      head_branch: "actions-viewer",
+      workflow_name: "CI",
+      name: "build",
+      status: "completed",
+      conclusion: "failure",
+      started_at: "2026-08-25T08:00:00Z",
+      completed_at: "2026-08-25T08:02:00Z",
+      html_url: "https://github.com/http-actions/viewer/actions/runs/44/job/4401",
+      runner_name: "runner-3",
+      runner_group_name: "hosted",
+      labels_json: "[\"arm64\"]",
+      failed_step: "Compile",
+    });
+    upsertWorkflowRun({
+      repo,
+      run_id: 43,
+      run_attempt: 1,
+      pr_number: number,
+      head_sha: previous,
+      head_branch: "actions-viewer",
+      workflow_name: "CI",
+      workflow_path: ".github/workflows/ci.yml",
+      status: "completed",
+      conclusion: "success",
+      event_at: "2026-08-25T07:02:00Z",
+      html_url: "https://github.com/http-actions/viewer/actions/runs/43",
+    });
+    upsertRunJob({
+      repo,
+      job_id: 4301,
+      run_id: 43,
+      run_attempt: 1,
+      head_sha: previous,
+      head_branch: "actions-viewer",
+      workflow_name: "CI",
+      name: "build previous",
+      status: "completed",
+      conclusion: "success",
+      started_at: "2026-08-25T07:00:00Z",
+      completed_at: "2026-08-25T07:02:00Z",
+      html_url: "https://github.com/http-actions/viewer/actions/runs/43/job/4301",
+      runner_name: "runner-2",
+      runner_group_name: "hosted",
+      labels_json: "[\"arm64\"]",
+      failed_step: null,
+    });
+    let activations = 0;
+    const fetchHandler = buildFetchHandler(4820, {
+      activateActionsLease: () => {
+        activations++;
+        return Promise.withResolvers<void>().promise;
+      },
+      actionJobLog: async (_repo, _headSha, jobId) => ({
+        job: listRunJobs(repo, head).find((job) => job.job_id === jobId)!,
+        body: "complete log",
+        state: "ready",
+      }),
+    });
+
+    try {
+      const actionsResponse = await Promise.race([
+        fetchHandler(new Request(`http://127.0.0.1:4820/api/pr/http-actions/viewer/${number}/actions`)),
+        Bun.sleep(50).then(() => {
+          throw new Error("Actions response waited for cache repair");
+        }),
+      ]);
+      expect(actionsResponse.status).toBe(200);
+      expect(await actionsResponse.json()).toEqual({
+        headSha: head,
+        runs: [{
+          id: 44,
+          attempt: 1,
+          workflowName: "CI",
+          workflowPath: ".github/workflows/ci.yml",
+          status: "completed",
+          conclusion: "failure",
+          eventAt: "2026-08-25T08:02:00Z",
+          htmlUrl: "https://github.com/http-actions/viewer/actions/runs/44",
+        }],
+        jobs: [{
+          id: 4401,
+          runId: 44,
+          attempt: 1,
+          workflowName: "CI",
+          name: "build",
+          status: "completed",
+          conclusion: "failure",
+          startedAt: "2026-08-25T08:00:00Z",
+          completedAt: "2026-08-25T08:02:00Z",
+          htmlUrl: "https://github.com/http-actions/viewer/actions/runs/44/job/4401",
+          runnerName: "runner-3",
+          runnerGroupName: "hosted",
+          labels: ["arm64"],
+          failedStep: "Compile",
+          logBytes: null,
+          logError: null,
+        }],
+      });
+      expect(activations).toBe(1);
+
+      const logResponse = await fetchHandler(new Request(`http://127.0.0.1:4820/api/pr/http-actions/viewer/${number}/actions/jobs/4401/log`));
+      expect(logResponse.status).toBe(200);
+      expect(await logResponse.json()).toMatchObject({ body: "complete log", state: "ready", job: { id: 4401, name: "build" } });
+      const historicalLoads: string[] = [];
+      let logHead = "";
+      const historicalHandler = buildFetchHandler(4820, {
+        cacheGithubActionsForCommit: async (_repo, _number, sha) => {
+          historicalLoads.push(sha);
+        },
+        actionJobLog: async (_repo, sha, jobId) => {
+          logHead = sha;
+          return {
+            job: listRunJobs(repo, previous).find((job) => job.job_id === jobId)!,
+            body: "previous log",
+            state: "ready",
+          };
+        },
+      });
+      const historicalResponse = await historicalHandler(new Request(
+        `http://127.0.0.1:4820/api/pr/http-actions/viewer/${number}/actions?sha=${previous}`,
+      ));
+      expect(historicalResponse.status).toBe(200);
+      expect(await historicalResponse.json()).toMatchObject({
+        headSha: previous,
+        runs: [{ id: 43, conclusion: "success" }],
+        jobs: [{ id: 4301, name: "build previous", conclusion: "success" }],
+      });
+      expect(historicalLoads).toEqual([previous]);
+
+      const historicalLog = await historicalHandler(new Request(
+        `http://127.0.0.1:4820/api/pr/http-actions/viewer/${number}/actions/jobs/4301/log?sha=${previous}`,
+      ));
+      expect(historicalLog.status).toBe(200);
+      expect(await historicalLog.json()).toMatchObject({ body: "previous log", job: { id: 4301 } });
+      expect(logHead).toBe(previous);
+
+
+      let finishActivation = () => {};
+      const activation = new Promise<void>((resolve) => {
+        finishActivation = resolve;
+      });
+      const graphHandler = buildFetchHandler(4820, {
+        activateActionsLease: () => activation,
+        actionWorkflowGraphs: async () => {
+          finishActivation();
+          return [{
+            path: ".github/workflows/ci.yml",
+            name: "CI",
+            jobs: [
+              { id: "build", name: "Build", needs: [], uses: null },
+              { id: "test", name: "Test", needs: ["build"], uses: null },
+            ],
+          }];
+        },
+      });
+      const graphResponse = await graphHandler(new Request(`http://127.0.0.1:4820/api/pr/http-actions/viewer/${number}/actions/graph`));
+      expect(graphResponse.status).toBe(200);
+      expect(await graphResponse.json()).toEqual({
+        headSha: head,
+        workflows: [{
+          path: ".github/workflows/ci.yml",
+          name: "CI",
+          jobs: [
+            { id: "build", name: "Build", needs: [], uses: null },
+            { id: "test", name: "Test", needs: ["build"], uses: null },
+          ],
+        }],
+      });
+    } finally {
+      db.run("DELETE FROM run_jobs WHERE repo = ?", [repo]);
+      db.run("DELETE FROM workflow_runs WHERE repo = ?", [repo]);
+      db.run("DELETE FROM prs WHERE repo = ? AND number = ?", [repo, number]);
+    }
+  });
+
+  test("trusted agent route requests one current-head Actions run", async () => {
+    const repo = "http-actions/requested";
+    const number = 96134;
+    const head = "e".repeat(40);
+    const row = trackedPrRow({ repo, number, fetchedAt: "2026-08-25T08:00:00Z" });
+    upsertPr({
+      ...row,
+      head_sha: head,
+      detail_json: JSON.stringify({ ...JSON.parse(row.detail_json), headRefOid: head }),
+    });
+    let requested: unknown = null;
+    const fetchHandler = buildFetchHandler(4820, {
+      cacheActionsRun: async (...args) => {
+        requested = args;
+        return "fetched";
+      },
+    });
+
+    try {
+      const response = await fetchHandler(new Request(
+        `http://127.0.0.1:4820/api/agent/pr/http-actions/requested/${number}/runs/987/cache`,
+        { method: "POST", headers: { "X-PR-Cockpit-CLI": "1" } },
+      ));
+      expect(response.status).toBe(200);
+      expect(requested).toEqual([repo, number, head, 987]);
+      expect(await response.text()).toContain("Actions run 987: fetched");
+    } finally {
+      db.run("DELETE FROM prs WHERE repo = ? AND number = ?", [repo, number]);
     }
   });
 });

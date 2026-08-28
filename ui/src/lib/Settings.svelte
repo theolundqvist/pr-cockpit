@@ -38,6 +38,7 @@
   let keybindOpenApp = $state("");
   let keybindOpenPalette = $state("");
   let relayUrl = $state("");
+  let replicaSshHost = $state("");
   let relayInfo = $state(null);
   let relayCoverage = $state(null);
   let loaded = $state(false);
@@ -113,6 +114,7 @@
     repos = toLines(s.repos);
     defaultRepo = s.default_repo;
     pollInterval = s.poll_interval_s;
+    replicaSshHost = s.replica_ssh_host;
     perViewWindowSize = s.per_view_window_size;
     perViewWindowPosition = s.per_view_window_position;
     themeName = s.theme;
@@ -198,6 +200,7 @@
         repos: toCsv(repos),
         default_repo: defaultRepo.trim(),
         poll_interval_s: Number(pollInterval),
+        replica_ssh_host: replicaSshHost.trim(),
         per_view_window_size: perViewWindowSize,
         per_view_window_position: perViewWindowPosition,
         theme: themeName,
@@ -330,6 +333,8 @@
             <span class="hint">Seconds — minimum 60 (GitHub quota), 180 recommended</span>
             <input class="input narrow" type="number" min="60" step="10" bind:value={pollInterval} />
           </label>
+
+
 
           <div class="field field-wide">
             <span class="label">Team sync</span>
@@ -626,6 +631,14 @@
             <span class="check-label">Show newest comments first</span>
             <span class="hint">Keeps the PR description at the top, then shows the composer and newest comments first</span>
           </span>
+        </label>
+      {/if}
+
+      {#if activeTab === "advanced"}
+        <label class="field">
+          <span class="label">Connect to primary Cockpit database over SSH</span>
+          <span class="hint">For example, if you have multiple machines and want to save API quota, PR Cockpit can act as a replica of another machine's database.</span>
+          <input class="input mono" bind:value={replicaSshHost} placeholder="user@host" spellcheck="false" autocomplete="off" />
         </label>
       {/if}
 

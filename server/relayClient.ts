@@ -1,21 +1,25 @@
-import { getPr } from "./db.ts";
+import { getPr, getSetting, setSetting } from "./db.ts";
 import { ghToken } from "./github.ts";
-import { pollOnce, refreshPr } from "./poller.ts";
+import { backgroundPollAllowed, pollOnce, refreshPr } from "./poller.ts";
+import { prDetailScopeForEvent, refreshPrFromEvent } from "./eventRefresh.ts";
 import { relayConfig } from "./settings.ts";
+import { ingestActionsState, type CompactJob, type CompactRun } from "./runLogs.ts";
 
 const POLL_MS = 5_000;
 const ERROR_BACKOFF_MS = 60_000;
 const FULL_POLL_DEBOUNCE_MS = 30_000;
 
-interface Marker {
+export interface RelayMarker {
   seq: number;
   ts: number;
   repo: string;
   number: number | null;
   event: string;
+  run?: CompactRun;
+  job?: CompactJob;
 }
 
-let cursor: number | null = null;
+const RELAY_CURSOR_KEY = "relay_cursor";
 let backoffUntil = 0;
 let lastFullPollAt = 0;
 let lastOkAt: number | null = null;
@@ -26,54 +30,88 @@ export function relayStatus(): { lastOkAt: number | null; lastEventAt: number | 
   return { lastOkAt, lastEventAt, lastError };
 }
 
+interface RelayPollDependencies {
+  fetcher?: typeof fetch;
+  ingest?: typeof ingestActionsState;
+}
+
+function persistedCursor(): number | null {
+  const raw = getSetting(RELAY_CURSOR_KEY);
+  if (raw === null) return null;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function saveCursor(value: number): void {
+  setSetting(RELAY_CURSOR_KEY, String(value));
+}
+
+export async function pollRelayOnce(
+  url: string,
+  token: string,
+  deps: RelayPollDependencies = {},
+): Promise<number> {
+  const fetcher = deps.fetcher ?? fetch;
+  const ingest = deps.ingest ?? ingestActionsState;
+  const cursor = persistedCursor();
+  const since = cursor === null ? "" : `?since=${cursor}`;
+  const res = await fetcher(`${url}/events${since}`, {
+    headers: { authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(4_000),
+  });
+  if (!res.ok) throw new Error(`relay responded ${res.status}`);
+  const { latest, events } = (await res.json()) as { latest: number; events: RelayMarker[] };
+  if (cursor === null) {
+    saveCursor(latest);
+    return 0;
+  }
+
+  let needFullPoll = false;
+  const refreshed = new Set<string>();
+  for (const marker of events) {
+    if (marker.run || marker.job) {
+      await ingest(marker.repo, { run: marker.run, job: marker.job });
+    } else if (marker.number === null) {
+      needFullPoll = true;
+    } else {
+      const key = `${marker.repo}#${marker.number}`;
+      if (!refreshed.has(key)) {
+        refreshed.add(key);
+        if (getPr(marker.repo, marker.number) !== null) {
+          void refreshPrFromEvent(marker.repo, marker.number, prDetailScopeForEvent(marker.event), async (repo, number, scope) => {
+            if (await backgroundPollAllowed()) await refreshPr(repo, number, "relay", scope);
+          }).catch((error) =>
+            console.error(`relay-triggered refresh failed for ${key}:`, error)
+          );
+        }
+      }
+    }
+    saveCursor(marker.seq);
+  }
+
+  if (needFullPoll && Date.now() - lastFullPollAt > FULL_POLL_DEBOUNCE_MS) {
+    lastFullPollAt = Date.now();
+    pollOnce().catch((error) => console.error("relay-triggered poll failed:", error));
+  }
+  saveCursor(latest);
+  return events.length;
+}
+
 async function tick(): Promise<void> {
   const { url } = relayConfig();
   if (!url) return;
   if (Date.now() < backoffUntil) return;
 
-  let latest: number;
-  let events: Marker[];
   try {
     const token = await ghToken();
-    const since = cursor === null ? "" : `?since=${cursor}`;
-    const res = await fetch(`${url}/events${since}`, {
-      headers: { authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(4_000),
-    });
-    if (!res.ok) throw new Error(`relay responded ${res.status}`);
-    ({ latest, events } = (await res.json()) as { latest: number; events: Marker[] });
-  } catch (e) {
+    const eventCount = await pollRelayOnce(url, token);
+    lastOkAt = Date.now();
+    lastError = null;
+    if (eventCount > 0) lastEventAt = Date.now();
+  } catch (error) {
     backoffUntil = Date.now() + ERROR_BACKOFF_MS;
-    lastError = e instanceof Error ? e.message : String(e);
-    console.error("relay poll failed:", e);
-    return;
-  }
-  lastOkAt = Date.now();
-  lastError = null;
-
-  const firstContact = cursor === null;
-  cursor = latest;
-  if (firstContact) return; // boot poll already covers anything older
-  if (events.length > 0) lastEventAt = Date.now();
-
-  let needFullPoll = false;
-  const refreshed = new Set<string>();
-  for (const m of events) {
-    if (m.number === null) {
-      needFullPoll = true;
-      continue;
-    }
-    const key = `${m.repo}#${m.number}`;
-    if (refreshed.has(key)) continue;
-    refreshed.add(key);
-    // only PRs already tracked: refreshPr upserts, and relay carries the whole team's events
-    if (getPr(m.repo, m.number) === null) continue;
-    refreshPr(m.repo, m.number).catch((err) => console.error(`relay-triggered refresh failed for ${key}:`, err));
-  }
-
-  if (needFullPoll && Date.now() - lastFullPollAt > FULL_POLL_DEBOUNCE_MS) {
-    lastFullPollAt = Date.now();
-    pollOnce().catch((err) => console.error("relay-triggered poll failed:", err));
+    lastError = error instanceof Error ? error.message : String(error);
+    console.error("relay poll failed:", error);
   }
 }
 
