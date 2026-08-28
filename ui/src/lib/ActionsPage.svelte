@@ -273,16 +273,19 @@
   h1 { margin: 0; color: var(--text); font-size: 18px; font-weight: 650; }
   .filters { display: flex; min-height: 58px; margin-bottom: 20px; align-items: center; justify-content: space-between; gap: 14px; border-bottom: 1px solid var(--border); }
   .filter-pickers { display: flex; align-items: center; gap: 10px; }
-  .status-tabs { display: flex; overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: var(--panel); }
-  .status-tabs button { height: 30px; padding: 0 11px; border: 0; color: var(--text-faint); background: transparent; font: 600 11px var(--sans); cursor: pointer; }
-  .status-tabs button + button { border-left: 1px solid var(--border); }
-  .status-tabs button:hover { background: var(--surface-hover); }
-  .status-tabs button.active { background: var(--panel-raised); box-shadow: inset 0 -2px currentColor; }
-  .status-tabs button.running.active { color: var(--review); }
-  .status-tabs button.succeeded.active { color: var(--ready); }
-  .status-tabs button.failed.active { color: var(--fail); }
-  .status-tabs button.cancelled.active { color: var(--text-faint); }
-  .status-tabs button.neutral.active { color: var(--text); }
+  .status-tabs { display: inline-flex; width: fit-content; padding: 3px; gap: 2px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+  .status-tabs button { display: inline-flex; min-height: 28px; padding: 0 10px; align-items: center; gap: 6px; border: 1px solid transparent; border-radius: 7px; color: var(--text-dim); background: transparent; font: 500 12px var(--sans); letter-spacing: -0.005em; cursor: pointer; }
+  .status-tabs button::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--tab-tone, var(--text-faint)); opacity: .55; }
+  .status-tabs button.neutral::before { display: none; }
+  @media (hover: hover) and (pointer: fine) {
+    .status-tabs button:hover { color: var(--text); background: var(--panel); }
+  }
+  .status-tabs button.active { color: var(--text); background: var(--panel); border-color: var(--border); box-shadow: var(--shadow-xs); }
+  .status-tabs button.active::before { opacity: 1; }
+  .status-tabs button.running { --tab-tone: var(--review); }
+  .status-tabs button.succeeded { --tab-tone: var(--ready); }
+  .status-tabs button.failed { --tab-tone: var(--fail); }
+  .status-tabs button.cancelled { --tab-tone: var(--text-faint); }
   .release-summary { display: flex; min-height: 72px; margin-bottom: 16px; padding: 14px 16px; align-items: center; gap: 12px; border: 1px solid color-mix(in srgb, var(--ready) 36%, var(--border)); border-radius: 8px; background: color-mix(in srgb, var(--ready) 7%, var(--panel)); }
   .summary-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
   .summary-copy strong { overflow: hidden; color: var(--text); font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
