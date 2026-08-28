@@ -2,6 +2,7 @@
   import Kbd from "./Kbd.svelte";
   import { isTypingTarget } from "./dom.js";
   import { prefs } from "./prefs.svelte.js";
+  import { PAGE_NAVIGATION } from "./navigationShortcuts.js";
 
   let open = $state(false);
 
@@ -21,11 +22,14 @@
       title: "Navigation",
       items: [
         { key: "⌘K", label: "jump to PR" },
+        ...PAGE_NAVIGATION.map((item) => ({
+          key: item.keyLabel,
+          label: item.title.replace("Go to ", "").toLowerCase(),
+        })),
         { key: "⌘N", label: "new window" },
         { key: "⇧⏎ / ⌘⏎", label: "jump list: new window / github" },
         { key: "/", label: "search / filter" },
         { key: "⇧H / ⇧L", label: "back / forward" },
-        { key: "⌘,", label: "settings" },
         { key: "⌘+ / ⌘- / ⌘0", label: "zoom in / out / reset" },
         { key: "j / k", label: "move" },
         { key: "⇧J / ⇧K", label: "next / previous file or PR" },

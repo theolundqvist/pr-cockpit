@@ -10,7 +10,7 @@
     loadRepoRunSnapshot,
     prefetchActionLogs,
   } from "./actionPrefetch.js";
-  import { fetchActionCommits, fetchActionGraph, fetchActionLog, fetchActions, fetchRepoActionGraph, fetchRepoActionLog, rerunFailedActionJobs } from "./api.js";
+  import { fetchActionCommits, fetchActionGraph, fetchActionLog, fetchActions, fetchRepoActionGraph, fetchRepoActionLog } from "./api.js";
   import { durationText, relativeTime } from "./time.js";
 
   let {
@@ -47,9 +47,6 @@
   let commits = $state([]);
   let commitError = $state("");
   let commitLoading = $state(true);
-  let localRerunPending = $state(false);
-  let localRerunError = $state("");
-  let localRerunRunId = $state(null);
   let commitNonce = $state(0);
 
   let activeSha = $derived(selectedSha ?? headSha);
@@ -144,15 +141,11 @@
   }
 
   function groupRerunPending(group) {
-    return onRerunFailed
-      ? rerunPending && group.run.id === preferredRunId
-      : localRerunPending && group.run.id === localRerunRunId;
+    return rerunPending && group.run.id === preferredRunId;
   }
 
   function groupRerunError(group) {
-    return onRerunFailed
-      ? group.run.id === preferredRunId ? rerunError : ""
-      : group.run.id === localRerunRunId ? localRerunError : "";
+    return group.run.id === preferredRunId ? rerunError : "";
   }
 
   function applyQueuedRun(run) {
@@ -167,28 +160,13 @@
   }
 
   async function triggerRerun(group) {
-    if (!groupCanRerun(group) || groupRerunPending(group)) return;
-    if (onRerunFailed) {
-      try {
-        const result = await onRerunFailed(group.run);
-        if (result?.run) applyQueuedRun(result.run);
-        refreshNonce++;
-      } catch {
-        // The run page owns and renders the shared error state.
-      }
-      return;
-    }
-    localRerunPending = true;
-    localRerunRunId = group.run.id;
-    localRerunError = "";
+    if (!onRerunFailed || !groupCanRerun(group) || groupRerunPending(group)) return;
     try {
-      const result = await rerunFailedActionJobs(repo, group.run.id);
-      applyQueuedRun(result.run);
+      const result = await onRerunFailed(group.run);
+      if (result?.run) applyQueuedRun(result.run);
       refreshNonce++;
-    } catch (error) {
-      localRerunError = error instanceof Error ? error.message : String(error);
-    } finally {
-      localRerunPending = false;
+    } catch {
+      // The run page owns and renders the shared error state.
     }
   }
 
@@ -488,7 +466,7 @@
               {:else}
                 {@render workflowHeading(group)}
               {/if}
-              {#if groupCanRerun(group)}
+              {#if onRerunFailed && groupCanRerun(group)}
                 <button class="rerun-button" type="button" disabled={groupRerunPending(group)} onclick={() => triggerRerun(group)}>
                   {groupRerunPending(group) ? "Re-running…" : "Re-run failed jobs"}
                 </button>

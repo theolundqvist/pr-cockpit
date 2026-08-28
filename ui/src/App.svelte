@@ -19,6 +19,8 @@
   import { prefs } from "./lib/prefs.svelte.js";
   import { quota } from "./lib/quota.svelte.js";
   import { quotaImpact } from "./lib/quotaImpact.js";
+  import { navigationForShortcut } from "./lib/navigationShortcuts.js";
+  import { isRecordingShortcut } from "./lib/shortcutCapture.js";
   import { SETTINGS_SECTION_KEY, SETTINGS_SECTIONS, normalizeSettingsSection, settingsSectionHref } from "./lib/settingsSections.js";
 
   window.cockpitFlash = showFlash;
@@ -86,6 +88,19 @@
   let setupOpen = $state(false);
   let inboxRevision = $state(0);
   let detailRevision = $state(0);
+
+  $effect(() => {
+    const navigate = (event) => {
+      if (isRecordingShortcut()) return;
+      const destination = navigationForShortcut(event);
+      if (!destination) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      location.hash = destination.href;
+    };
+    window.addEventListener("keydown", navigate, { capture: true });
+    return () => window.removeEventListener("keydown", navigate, { capture: true });
+  });
   let pollCompletedAt = $state(null);
   let bannerHeight = $state(0);
   let impact = $derived(quotaImpact(quota.resources));

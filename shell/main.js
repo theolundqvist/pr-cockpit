@@ -852,7 +852,12 @@ if (!app.requestSingleInstanceLock()) {
     paletteWin.webContents.on("did-navigate-in-page", (event, url) => {
       const hash = new URL(url).hash;
       const go = hash.match(/^#\/palette\/(go|window|github)\/([^/]+\/[^/]+)\/(\d+)$/);
-      if (go) {
+      const route = hash.match(/^#\/palette\/route\/(inbox|actions|settings)$/);
+      if (route) {
+        const destinations = { inbox: "#/", actions: "#/actions", settings: "#/settings" };
+        win.webContents.executeJavaScript(`location.hash = ${JSON.stringify(destinations[route[1]])}`);
+        showMainWindow();
+      } else if (go) {
         const [, verb, repo, number] = go;
         if (verb === "github") shell.openExternal(`https://github.com/${repo}/pull/${number}`);
         else if (verb === "window") openExtraWindow(`#/pr/${repo}/${number}`);
