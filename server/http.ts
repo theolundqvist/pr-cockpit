@@ -19,6 +19,8 @@ import {
   listPrIndex,
   listPrs,
   listRunJobs,
+  listRunJobsForRun,
+  listWorkflowRuns,
   workflowRunsForLease,
   saveDiff,
   saveFileContents,
@@ -115,7 +117,7 @@ import { createTmuxFocusHandler } from "./tmuxFocus.ts";
 import type { TmuxFocusHandler } from "./tmuxFocus.ts";
 import { needsMeRank } from "./rank.ts";
 import { invalidateInbox, invalidatePr } from "./rendererInvalidation.ts";
-import { actionJobLog, actionWorkflowGraphs, activateActionsLease, cacheActionsRun, cacheGithubActionsForCommit, cachedJobLogs, formatJobLogs, formatRunJobs } from "./runLogs.ts";
+import { actionJobLog, actionWorkflowGraphs, activateActionsLease, cacheActionsRun, cacheGithubActionsForCommit, cacheRepoActionsRunJobs, cachedJobLogs, formatJobLogs, formatRunJobs } from "./runLogs.ts";
 const cockpitRoot = process.cwd();
 
 function json(data: unknown, status = 200): Response {
@@ -1520,18 +1522,48 @@ async function handleActionsLease(owner: string, repo: string, number: string, r
 
 function serializeActionRun(run: WorkflowRunRow) {
   return {
+    repo: run.repo,
     id: run.run_id,
     attempt: run.run_attempt,
+    prNumber: run.pr_number,
+    headSha: run.head_sha,
+    headBranch: run.head_branch,
     workflowName: run.workflow_name,
     workflowPath: run.workflow_path,
+    displayTitle: run.display_title || run.workflow_name,
+    event: run.event,
+    actorLogin: run.actor_login,
     status: run.status,
     conclusion: run.conclusion,
     eventAt: run.event_at,
+    createdAt: run.created_at,
+    updatedAt: run.updated_at,
+    runStartedAt: run.run_started_at,
+    runNumber: run.run_number,
     htmlUrl: run.html_url,
   };
 }
 
-function serializeActionJob(job: RunJobRow) {
+interface SerializedActionJob {
+  id: number;
+  runId: number;
+  attempt: number;
+  workflowName: string;
+  name: string;
+  status: string;
+  conclusion: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  htmlUrl: string | null;
+  runnerName: string | null;
+  runnerGroupName: string | null;
+  labels: string[];
+  failedStep: string | null;
+  logBytes: number | null;
+  logError: string | null;
+}
+
+function serializeActionJob(job: RunJobRow): SerializedActionJob {
   const labels = JSON.parse(job.labels_json) as string[];
   return {
     id: job.job_id,
@@ -1551,6 +1583,88 @@ function serializeActionJob(job: RunJobRow) {
     logBytes: job.log_bytes,
     logError: job.log_error,
   };
+}
+const ACTIVE_ACTION_STATUSES: Record<string, true> = {
+  queued: true,
+  pending: true,
+  waiting: true,
+  in_progress: true,
+  requested: true,
+};
+const FAILED_ACTION_CONCLUSIONS: Record<string, true> = {
+  failure: true,
+  timed_out: true,
+  action_required: true,
+  startup_failure: true,
+  stale: true,
+};
+
+function actionRunMatchesStatus(run: WorkflowRunRow, filter: string): boolean {
+  if (!filter || filter === "all") return true;
+  if (filter === "running") return ACTIVE_ACTION_STATUSES[run.status] === true;
+  if (filter === "succeeded") return run.conclusion === "success";
+  if (filter === "failed") return run.conclusion !== null && FAILED_ACTION_CONCLUSIONS[run.conclusion] === true;
+  if (filter === "cancelled") return run.conclusion === "cancelled";
+  return true;
+}
+
+async function handleRepoActions(url: URL): Promise<Response> {
+  const tracked = await trackedRepos();
+  const requestedRepo = url.searchParams.get("repo");
+  if (requestedRepo && !tracked.includes(requestedRepo)) return json({ error: "repo is not tracked" }, 404);
+  const repos = requestedRepo ? [requestedRepo] : tracked;
+  const workflow = url.searchParams.get("workflow") ?? "";
+  const status = url.searchParams.get("status") ?? "all";
+  const page = Math.max(1, Number.parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
+  const allRuns = listWorkflowRuns(repos, 1000);
+  const workflows = [...new Set(allRuns.map((run) => run.workflow_name).filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right));
+  const workflowRuns = workflow ? allRuns.filter((run) => run.workflow_name === workflow) : allRuns;
+  const latestSuccessful = workflow
+    ? workflowRuns.find((run) => run.conclusion === "success") ?? null
+    : null;
+  const filtered = workflowRuns.filter((run) => actionRunMatchesStatus(run, status));
+  const pageSize = 50;
+  const start = (page - 1) * pageSize;
+  const runId = Number(url.searchParams.get("runId"));
+  let jobs: SerializedActionJob[] = [];
+  if (Number.isSafeInteger(runId) && runId > 0 && requestedRepo) {
+    const selectedRun = allRuns.find((run) => run.run_id === runId);
+    if (!selectedRun) return json({ error: "workflow run not found" }, 404);
+    if (selectedRun.jobs_fetched_at === null || ACTIVE_ACTION_STATUSES[selectedRun.status] === true) {
+      await cacheRepoActionsRunJobs(selectedRun);
+    }
+    jobs = listRunJobsForRun(selectedRun.repo, selectedRun.run_id, selectedRun.run_attempt).map(serializeActionJob);
+  }
+  return json({
+    repos: tracked,
+    workflows,
+    runs: filtered.slice(start, start + pageSize).map(serializeActionRun),
+    latestSuccessful: latestSuccessful ? serializeActionRun(latestSuccessful) : null,
+    jobs,
+    page,
+    hasMore: start + pageSize < filtered.length,
+  });
+}
+
+async function handleRepoActionLog(jobId: string, url: URL): Promise<Response> {
+  const repo = url.searchParams.get("repo") ?? "";
+  const headSha = url.searchParams.get("headSha") ?? "";
+  const id = Number(jobId);
+  if (!repo || !headSha || !Number.isSafeInteger(id) || id <= 0) {
+    return json({ error: "invalid repo, headSha, or job id" }, 400);
+  }
+  try {
+    const result = await actionJobLog(repo, headSha, id);
+    if (!result) return json({ error: "job is not cached for this workflow run" }, 404);
+    return json({
+      job: serializeActionJob(result.job),
+      body: result.body,
+      state: result.state,
+    });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 502);
+  }
 }
 
 async function refreshActionsContext(context: CachedActionsContext, runtime: HttpRuntime): Promise<void> {
@@ -2485,6 +2599,19 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     }
     if (req.method === "GET" && url.pathname === "/api/github-usage") {
       return handleGithubUsage(runtime);
+    }
+    if (req.method === "GET" && url.pathname === "/api/actions/runs") {
+      return handleRepoActions(url);
+    }
+    if (
+      req.method === "GET" &&
+      parts.length === 5 &&
+      parts[0] === "api" &&
+      parts[1] === "actions" &&
+      parts[2] === "jobs" &&
+      parts[4] === "log"
+    ) {
+      return handleRepoActionLog(parts[3]!, url);
     }
     if (req.method === "GET" && url.pathname === "/api/inbox") {
       return handleInbox(url);

@@ -1,6 +1,7 @@
 <script>
   import ActionsGraph from "./ActionsGraph.svelte";
   import ActionLog from "./ActionLog.svelte";
+  import ActionStatusIcon from "./ActionStatusIcon.svelte";
   import { fetchActionCommits, fetchActionGraph, fetchActionLog, fetchActions } from "./api.js";
   import { durationText, relativeTime } from "./time.js";
 
@@ -263,18 +264,7 @@
 </script>
 
 {#snippet statusIcon(status, conclusion)}
-  {@const tone = stateTone(status, conclusion)}
-  <span class="status-icon {tone}" aria-hidden="true">
-    {#if tone === "ready"}
-      <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="7"></circle><path d="m4.6 8.1 2.2 2.2 4.7-4.8"></path></svg>
-    {:else if tone === "fail"}
-      <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="7"></circle><path d="m5.4 5.4 5.2 5.2m0-5.2-5.2 5.2"></path></svg>
-    {:else if tone === "wait"}
-      <svg class="status-spinner" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"></circle></svg>
-    {:else}
-      <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5"></circle><path d="M5.5 8h5"></path></svg>
-    {/if}
-  </span>
+  <ActionStatusIcon {status} {conclusion} />
 {/snippet}
 
 <div class="actions-viewbar">
@@ -588,60 +578,9 @@
     color: var(--fail);
     font-size: 11px;
   }
-  :global(.status-icon) {
-    display: inline-flex;
-    width: 16px;
-    height: 16px;
-    margin-top: 1px;
-    flex: none;
-    align-items: center;
-    justify-content: center;
-    color: var(--text-faint);
-  }
   .workflow-head :global(.status-icon),
   .log-title-row :global(.status-icon) {
     margin-top: 0;
-  }
-  :global(.status-icon.ready) {
-    color: var(--ready);
-  }
-  :global(.status-icon.fail) {
-    color: var(--fail);
-  }
-  :global(.status-icon.wait) {
-    color: var(--review);
-  }
-  :global(.status-icon svg) {
-    width: 16px;
-    height: 16px;
-    fill: none;
-    stroke: currentColor;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    stroke-width: 1.5;
-  }
-  :global(.status-icon.ready circle),
-  :global(.status-icon.fail circle) {
-    fill: currentColor;
-    stroke: none;
-  }
-  :global(.status-icon.ready path),
-  :global(.status-icon.fail path) {
-    stroke: var(--native-on-accent);
-    stroke-width: 1.5;
-  }
-  :global(.status-spinner circle) {
-    stroke-dasharray: 24 14;
-    transform-origin: center;
-    animation: status-spin 0.9s linear infinite;
-  }
-  @keyframes status-spin {
-    to { transform: rotate(360deg); }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    :global(.status-spinner circle) {
-      animation: none;
-    }
   }
   .log-pane {
     min-width: 0;

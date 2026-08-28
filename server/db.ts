@@ -2,7 +2,8 @@ import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { setGithubGraphqlUsageRecorder, type GithubGraphqlUsageEvent } from "./githubUsage.ts";
-import { SCHEMA_EPOCH, type PrIndexEntry } from "./github.ts";
+import type { PrIndexEntry } from "./github.ts";
+import { SCHEMA_EPOCH } from "./schemaEpoch.ts";
 import { prKey } from "./prKey.ts";
 
 const dataDir = Bun.env.COCKPIT_DATA_DIR ?? "data";
@@ -179,14 +180,21 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   repo TEXT NOT NULL,
   run_id INTEGER NOT NULL,
   run_attempt INTEGER NOT NULL,
-  pr_number INTEGER NOT NULL,
+  pr_number INTEGER,
   head_sha TEXT NOT NULL,
   head_branch TEXT NOT NULL,
   workflow_name TEXT NOT NULL,
   workflow_path TEXT NOT NULL DEFAULT '',
+  display_title TEXT NOT NULL DEFAULT '',
+  event TEXT NOT NULL DEFAULT '',
+  actor_login TEXT,
   status TEXT NOT NULL,
   conclusion TEXT,
   event_at TEXT NOT NULL,
+  created_at TEXT,
+  updated_at TEXT,
+  run_started_at TEXT,
+  run_number INTEGER NOT NULL DEFAULT 0,
   html_url TEXT,
   jobs_fetched_at TEXT,
   reconciled_at TEXT,
@@ -195,6 +203,7 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
 );
 
 CREATE INDEX IF NOT EXISTS workflow_runs_pr_idx ON workflow_runs (repo, pr_number, head_sha);
+CREATE INDEX IF NOT EXISTS workflow_runs_repo_time_idx ON workflow_runs (repo, event_at DESC);
 
 CREATE TABLE IF NOT EXISTS actions_leases (
   repo TEXT NOT NULL,
@@ -235,10 +244,68 @@ CREATE TABLE IF NOT EXISTS run_jobs (
 CREATE INDEX IF NOT EXISTS run_jobs_sha_idx ON run_jobs (repo, head_sha, run_id, run_attempt);
 `);
 
-const workflowRunColumns = db.query("PRAGMA table_info(workflow_runs)").all() as Array<{ name: string }>;
-if (!workflowRunColumns.some((column) => column.name === "workflow_path")) {
-  db.exec("ALTER TABLE workflow_runs ADD COLUMN workflow_path TEXT NOT NULL DEFAULT ''");
+let workflowRunColumns = db.query("PRAGMA table_info(workflow_runs)").all() as Array<{ name: string; notnull: number }>;
+const workflowRunPrNumber = workflowRunColumns.find((column) => column.name === "pr_number");
+if (workflowRunPrNumber?.notnull === 1) {
+  db.exec(`
+    DROP INDEX IF EXISTS workflow_runs_pr_idx;
+    ALTER TABLE workflow_runs RENAME TO workflow_runs_legacy;
+    CREATE TABLE workflow_runs (
+      repo TEXT NOT NULL,
+      run_id INTEGER NOT NULL,
+      run_attempt INTEGER NOT NULL,
+      pr_number INTEGER,
+      head_sha TEXT NOT NULL,
+      head_branch TEXT NOT NULL,
+      workflow_name TEXT NOT NULL,
+      workflow_path TEXT NOT NULL DEFAULT '',
+      display_title TEXT NOT NULL DEFAULT '',
+      event TEXT NOT NULL DEFAULT '',
+      actor_login TEXT,
+      status TEXT NOT NULL,
+      conclusion TEXT,
+      event_at TEXT NOT NULL,
+      created_at TEXT,
+      updated_at TEXT,
+      run_started_at TEXT,
+      run_number INTEGER NOT NULL DEFAULT 0,
+      html_url TEXT,
+      jobs_fetched_at TEXT,
+      reconciled_at TEXT,
+      fetched_at TEXT NOT NULL,
+      PRIMARY KEY (repo, run_id, run_attempt)
+    );
+    INSERT INTO workflow_runs (
+      repo, run_id, run_attempt, pr_number, head_sha, head_branch, workflow_name,
+      workflow_path, status, conclusion, event_at, html_url, jobs_fetched_at,
+      reconciled_at, fetched_at
+    )
+    SELECT
+      repo, run_id, run_attempt, pr_number, head_sha, head_branch, workflow_name,
+      workflow_path, status, conclusion, event_at, html_url, jobs_fetched_at,
+      reconciled_at, fetched_at
+    FROM workflow_runs_legacy;
+    DROP TABLE workflow_runs_legacy;
+    CREATE INDEX workflow_runs_pr_idx ON workflow_runs (repo, pr_number, head_sha);
+    CREATE INDEX workflow_runs_repo_time_idx ON workflow_runs (repo, event_at DESC);
+  `);
+  workflowRunColumns = db.query("PRAGMA table_info(workflow_runs)").all() as Array<{ name: string; notnull: number }>;
 }
+for (const [name, definition] of [
+  ["workflow_path", "TEXT NOT NULL DEFAULT ''"],
+  ["display_title", "TEXT NOT NULL DEFAULT ''"],
+  ["event", "TEXT NOT NULL DEFAULT ''"],
+  ["actor_login", "TEXT"],
+  ["created_at", "TEXT"],
+  ["updated_at", "TEXT"],
+  ["run_started_at", "TEXT"],
+  ["run_number", "INTEGER NOT NULL DEFAULT 0"],
+] as const) {
+  if (!workflowRunColumns.some((column) => column.name === name)) {
+    db.exec(`ALTER TABLE workflow_runs ADD COLUMN ${name} ${definition}`);
+  }
+}
+db.exec("CREATE INDEX IF NOT EXISTS workflow_runs_repo_time_idx ON workflow_runs (repo, event_at DESC)");
 
 const runJobColumns = db.query("PRAGMA table_info(run_jobs)").all() as Array<{ name: string }>;
 for (const [name, definition] of [
@@ -735,14 +802,21 @@ export interface WorkflowRunRow {
   repo: string;
   run_id: number;
   run_attempt: number;
-  pr_number: number;
+  pr_number: number | null;
   head_sha: string;
   head_branch: string;
   workflow_name: string;
   workflow_path: string;
+  display_title: string;
+  event: string;
+  actor_login: string | null;
   status: string;
   conclusion: string | null;
   event_at: string;
+  created_at: string | null;
+  updated_at: string | null;
+  run_started_at: string | null;
+  run_number: number;
   html_url: string | null;
   jobs_fetched_at: string | null;
   reconciled_at: string | null;
@@ -785,16 +859,40 @@ const getWorkflowRunStmt = db.prepare<WorkflowRunRow, [string, number, number]>(
 const upsertWorkflowRunStmt = db.prepare(`
   INSERT INTO workflow_runs (
     repo, run_id, run_attempt, pr_number, head_sha, head_branch, workflow_name, workflow_path,
-    status, conclusion, event_at, html_url, fetched_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    display_title, event, actor_login, status, conclusion, event_at, created_at, updated_at,
+    run_started_at, run_number, html_url, fetched_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   ON CONFLICT (repo, run_id, run_attempt) DO UPDATE SET
-    pr_number = excluded.pr_number, head_sha = excluded.head_sha, head_branch = excluded.head_branch,
+    pr_number = COALESCE(excluded.pr_number, workflow_runs.pr_number),
+    head_sha = excluded.head_sha, head_branch = excluded.head_branch,
     workflow_name = excluded.workflow_name, workflow_path = excluded.workflow_path,
-    status = excluded.status, conclusion = excluded.conclusion,
-    event_at = excluded.event_at, html_url = excluded.html_url, fetched_at = datetime('now')
+    display_title = excluded.display_title, event = excluded.event, actor_login = excluded.actor_login,
+    status = excluded.status, conclusion = excluded.conclusion, event_at = excluded.event_at,
+    created_at = excluded.created_at, updated_at = excluded.updated_at,
+    run_started_at = excluded.run_started_at, run_number = excluded.run_number,
+    html_url = excluded.html_url, fetched_at = datetime('now')
 `);
 
-export function upsertWorkflowRun(run: Omit<WorkflowRunRow, "jobs_fetched_at" | "reconciled_at" | "fetched_at">): boolean {
+type WorkflowRunInput =
+  Omit<
+    WorkflowRunRow,
+    | "display_title"
+    | "event"
+    | "actor_login"
+    | "created_at"
+    | "updated_at"
+    | "run_started_at"
+    | "run_number"
+    | "jobs_fetched_at"
+    | "reconciled_at"
+    | "fetched_at"
+  >
+  & Partial<Pick<
+    WorkflowRunRow,
+    "display_title" | "event" | "actor_login" | "created_at" | "updated_at" | "run_started_at" | "run_number"
+  >>;
+
+export function upsertWorkflowRun(run: WorkflowRunInput): boolean {
   const latest = db.prepare<{ attempt: number | null }, [string, number]>(
     "SELECT MAX(run_attempt) AS attempt FROM workflow_runs WHERE repo = ? AND run_id = ?",
   ).get(run.repo, run.run_id)?.attempt;
@@ -810,7 +908,9 @@ export function upsertWorkflowRun(run: Omit<WorkflowRunRow, "jobs_fetched_at" | 
     .run(run.repo, run.run_id, run.run_attempt);
   upsertWorkflowRunStmt.run(
     run.repo, run.run_id, run.run_attempt, run.pr_number, run.head_sha, run.head_branch,
-    run.workflow_name, run.workflow_path, run.status, run.conclusion, run.event_at, run.html_url,
+    run.workflow_name, run.workflow_path, run.display_title ?? run.workflow_name, run.event ?? "",
+    run.actor_login ?? null, run.status, run.conclusion, run.event_at, run.created_at ?? null,
+    run.updated_at ?? run.event_at, run.run_started_at ?? null, run.run_number ?? 0, run.html_url,
   );
   return true;
 }
@@ -921,6 +1021,27 @@ export function workflowRunsForLease(repo: string, number: number, headSha: stri
   return db.prepare<WorkflowRunRow, [string, number, string]>(
     "SELECT * FROM workflow_runs WHERE repo = ? AND pr_number = ? AND head_sha = ? ORDER BY run_id, run_attempt",
   ).all(repo, number, headSha);
+}
+export function listWorkflowRuns(repos: string[], limit = 200, offset = 0): WorkflowRunRow[] {
+  if (repos.length === 0) return [];
+  const placeholders = repos.map(() => "?").join(", ");
+  return db.query<WorkflowRunRow, [...string[], number, number]>(
+    `SELECT * FROM workflow_runs
+     WHERE repo IN (${placeholders})
+     ORDER BY event_at DESC, run_id DESC, run_attempt DESC
+     LIMIT ? OFFSET ?`,
+  ).all(...repos, limit, offset);
+}
+
+export function listRunJobsForRun(repo: string, runId: number, runAttempt: number): RunJobRow[] {
+  return db.query<RunJobRow, [string, number, number]>(
+    `SELECT repo, job_id, run_id, run_attempt, head_sha, head_branch, workflow_name, name,
+      status, conclusion, started_at, completed_at, html_url, runner_name, runner_group_name,
+      labels_json, failed_step, log_bytes, log_truncated, log_error, log_format_version, fetched_at
+     FROM run_jobs
+     WHERE repo = ? AND run_id = ? AND run_attempt = ?
+     ORDER BY COALESCE(started_at, completed_at), job_id`,
+  ).all(repo, runId, runAttempt);
 }
 
 export interface ActionsLeaseRow {

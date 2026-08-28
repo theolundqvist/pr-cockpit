@@ -68,6 +68,26 @@ export async function fetchActionLog(repo, number, jobId, sha = null, signal = n
   if (!res.ok) throw new Error(body?.error || `action log ${res.status}`);
   return body;
 }
+export async function fetchRepoActions(filters = {}, signal = null) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== null && value !== undefined && value !== "") params.set(key, String(value));
+  }
+  const query = params.toString();
+  const res = await fetch(`/api/actions/runs${query ? `?${query}` : ""}`, { signal });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.error || `actions ${res.status}`);
+  return body;
+}
+
+export async function fetchRepoActionLog(repo, headSha, jobId, signal = null) {
+  const params = new URLSearchParams({ repo, headSha });
+  const res = await fetch(`/api/actions/jobs/${jobId}/log?${params}`, { signal });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.error || `action log ${res.status}`);
+  return body;
+}
+
 
 
 export async function fetchPrCommitStats(repo, number, testPattern, signal = null) {

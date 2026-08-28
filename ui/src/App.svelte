@@ -4,6 +4,7 @@
   import Palette from "./lib/Palette.svelte";
   import Settings from "./lib/Settings.svelte";
   import Usage from "./lib/Usage.svelte";
+  import ActionsPage from "./lib/ActionsPage.svelte";
   import Onboarding from "./lib/Onboarding.svelte";
   import FindBar from "./lib/FindBar.svelte";
   import HistoryNav from "./lib/HistoryNav.svelte";
@@ -48,6 +49,15 @@
         actionJob: actionJobText === null ? null : Number(actionJobText),
         historyPath,
         historySymbol,
+      };
+    }
+    if (hash === "#/actions" || hash.startsWith("#/actions?")) {
+      const params = new URLSearchParams(hash.split("?")[1] ?? "");
+      return {
+        name: "actions",
+        repo: params.get("repo") ?? "",
+        workflow: params.get("workflow") ?? "",
+        status: params.get("status") ?? "all",
       };
     }
     const settingsMatch = hash.match(/^#\/settings(?:\/([^/]+))?$/);
@@ -221,6 +231,19 @@
           <span>Find a PR</span>
           <span class="nav-kbd"><Kbd keys={["cmd", "k"]} /></span>
         </button>
+        <a
+          class="nav-item"
+          class:active={route.name === "actions"}
+          href="#/actions"
+          aria-current={route.name === "actions" ? "page" : undefined}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="8" />
+            <path d="m10 8.7 5 3.3-5 3.3z" />
+          </svg>
+          <span>Actions</span>
+        </a>
+
 
         <a
           class="nav-item"
@@ -275,6 +298,8 @@
         {:else}
           <Settings section={route.section} onRunSetup={() => (setupOpen = true)} />
         {/if}
+      {:else if route.name === "actions"}
+        <ActionsPage repo={route.repo} workflow={route.workflow} status={route.status} />
       {:else if reposConfigured === false}
         <Onboarding onDone={finishSetup} />
       {:else if reposConfigured}
@@ -287,7 +312,7 @@
       {/if}
     </main>
 
-    {#if route.name === "detail" || route.name === "settings"}
+    {#if route.name === "detail" || route.name === "settings" || route.name === "actions"}
       <FindBar />
     {/if}
 

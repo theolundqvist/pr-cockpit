@@ -713,7 +713,6 @@ export async function removeRequestedReviewers(repo: string, number: number, log
   await restRequest("DELETE", `/repos/${repo}/pulls/${number}/requested_reviewers`, { reviewers: logins });
 }
 
-export const SCHEMA_EPOCH = 11;
 
 const REACTION_GROUPS_FIELD = `reactionGroups { content viewerHasReacted reactors { totalCount } }`;
 
@@ -1546,9 +1545,16 @@ export interface WorkflowRun {
   head_branch: string;
   name: string;
   path: string;
+  display_title?: string;
+  event?: string;
+  actor?: { login?: string } | null;
   status: string;
   conclusion: string | null;
+  created_at?: string;
   updated_at: string;
+  run_started_at?: string;
+  run_number?: number;
+  pull_requests?: Array<{ number?: number }>;
   html_url: string | null;
 }
 export async function fetchWorkflowRun(repo: string, runId: number): Promise<WorkflowRun> {
@@ -1576,6 +1582,23 @@ export async function fetchWorkflowRuns(repo: string, headSha: string): Promise<
     if (batch.length < 100) return runs;
   }
 }
+export async function fetchRecentWorkflowRuns(repo: string, maxPages = 2): Promise<WorkflowRun[]> {
+  if (mockGithub) return [];
+  const token = await ghToken();
+  const runs: WorkflowRun[] = [];
+  for (let page = 1; page <= maxPages; page++) {
+    const res = await fetch(`https://api.github.com/repos/${repo}/actions/runs?per_page=100&page=${page}`, {
+      headers: { Authorization: `bearer ${token}`, Accept: "application/vnd.github+json" },
+    });
+    if (!res.ok) throw new Error(`recent workflow runs fetch failed: ${res.status} ${await res.text()}`);
+    const payload = (await res.json()) as { workflow_runs?: WorkflowRun[] };
+    const batch = payload.workflow_runs ?? [];
+    runs.push(...batch);
+    if (batch.length < 100) break;
+  }
+  return runs;
+}
+
 
 export async function fetchRunJobs(repo: string, runId: number, attempt?: number): Promise<RunJob[]> {
   if (mockGithub) return mockGithub.runJobs(repo, runId);

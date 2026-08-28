@@ -24,6 +24,7 @@ import { discoveredRepos, refreshWorktreeScan } from "./worktreeScan.ts";
 import { onPrActivity } from "./activity.ts";
 import { scoreReviewers } from "./reviewScore.ts";
 import { invalidateInbox, invalidatePr, publishPollCompleted } from "./rendererInvalidation.ts";
+import { refreshRecentActions } from "./runLogs.ts";
 import { GRAPHQL_BACKGROUND_RESERVE } from "../ui/src/lib/quotaImpact.js";
 
 const INDEX_SWEEP_MS = 1_800_000;
@@ -198,6 +199,7 @@ export interface PollDeps {
   refreshWorktreeScan: typeof refreshWorktreeScan;
   trackedRepos: typeof trackedRepos;
   listWebhookRegistrations: typeof listWebhookRegistrations;
+  refreshRecentActions?: typeof refreshRecentActions;
   searchOpenPrs: typeof searchOpenPrs;
   searchRecentPrs: typeof searchRecentPrs;
   searchClosedPrs: typeof searchClosedPrs;
@@ -231,6 +233,16 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
       deps.publishPollCompleted(lastPollAt);
       return { checked: 0, refreshed: 0 };
     }
+    const refreshActions = deps.refreshRecentActions;
+    if (refreshActions) {
+      const actionRefreshes = await Promise.allSettled(repos.map((repo) => refreshActions(repo)));
+      actionRefreshes.forEach((result, index) => {
+        if (result.status === "rejected") {
+          console.error(`Actions refresh failed for ${repos[index]}:`, result.reason);
+        }
+      });
+    }
+
 
     const hits = await deps.searchOpenPrs(searchRepos);
     const nextOpenInboxKeys = new Set(hits.map((hit) => prKeyOf(hit.repo, hit.number)));
@@ -323,6 +335,7 @@ export const pollOnce = createPollOnce({
   refreshWorktreeScan,
   trackedRepos,
   listWebhookRegistrations,
+  refreshRecentActions,
   searchOpenPrs,
   searchRecentPrs,
   searchClosedPrs,
