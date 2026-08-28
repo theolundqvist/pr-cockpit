@@ -17,6 +17,7 @@ import {
   listArchivedKeys,
   listClosedPrs,
   listPrIndex,
+  listActionWorkflows,
   listPrs,
   listRunJobs,
   listRunJobsForRun,
@@ -1520,7 +1521,7 @@ async function handleActionsLease(owner: string, repo: string, number: string, r
   return json({ ok: true });
 }
 
-function serializeActionRun(run: WorkflowRunRow) {
+function serializeActionRun(run: WorkflowRunRow, workflowName = run.workflow_name) {
   return {
     repo: run.repo,
     id: run.run_id,
@@ -1528,8 +1529,8 @@ function serializeActionRun(run: WorkflowRunRow) {
     prNumber: run.pr_number,
     headSha: run.head_sha,
     headBranch: run.head_branch,
-    workflowName: run.workflow_name,
-    workflowPath: run.workflow_path,
+    workflowName,
+    workflowPath: staticWorkflowPath(run.workflow_path),
     displayTitle: run.display_title || run.workflow_name,
     event: run.event,
     actorLogin: run.actor_login,
@@ -1542,6 +1543,16 @@ function serializeActionRun(run: WorkflowRunRow) {
     runNumber: run.run_number,
     htmlUrl: run.html_url,
   };
+}
+
+function staticWorkflowPath(path: string): string {
+  const refMarker = path.indexOf("@refs/");
+  return refMarker === -1 ? path : path.slice(0, refMarker);
+}
+
+function workflowPathLabel(path: string): string {
+  const basename = staticWorkflowPath(path).split("/").at(-1) ?? path;
+  return basename.replace(/\.ya?ml$/i, "");
 }
 
 interface SerializedActionJob {
@@ -1618,16 +1629,38 @@ async function handleRepoActions(url: URL): Promise<Response> {
   const requestedWorkflows = [...new Set(url.searchParams.getAll("workflow").filter(Boolean))];
   const status = url.searchParams.get("status") ?? "all";
   const headSha = url.searchParams.get("headSha") ?? "";
+  const backgroundPrefetch = url.searchParams.get("prefetch") === "1";
   if (headSha && !/^[0-9a-f]{40}$/i.test(headSha)) return json({ error: "invalid head sha" }, 400);
   const page = Math.max(1, Number.parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
   const allRuns = listWorkflowRuns(repos, 1000);
-  const workflows = [...new Set(allRuns.map((run) => run.workflow_name).filter(Boolean))]
-    .sort((left, right) => left.localeCompare(right));
+  const catalog = listActionWorkflows(repos);
+  const catalogByRepoPath = new Map(catalog.map((workflow) => [`${workflow.repo}\n${workflow.path}`, workflow]));
+  const workflowNameFor = (run: WorkflowRunRow): string =>
+    catalogByRepoPath.get(`${run.repo}\n${staticWorkflowPath(run.workflow_path)}`)?.name
+      ?? workflowPathLabel(run.workflow_path);
+  const facetByPath = new Map<string, string>();
+  for (const run of allRuns) {
+    const path = staticWorkflowPath(run.workflow_path);
+    if (path && !facetByPath.has(path)) facetByPath.set(path, workflowNameFor(run));
+  }
+  const workflows = [...facetByPath].map(([path, name]) => ({ path, name }))
+    .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
+  const selectedWorkflowPaths = new Set<string>();
+  for (const value of requestedWorkflows) {
+    if (facetByPath.has(value)) {
+      selectedWorkflowPaths.add(value);
+      continue;
+    }
+    const lowered = value.toLocaleLowerCase();
+    for (const workflow of catalog) {
+      if (workflow.name.toLocaleLowerCase() === lowered) selectedWorkflowPaths.add(workflow.path);
+    }
+  }
   const commitRuns = headSha ? allRuns.filter((run) => run.head_sha === headSha) : allRuns;
   const workflowRuns = requestedWorkflows.length > 0
-    ? commitRuns.filter((run) => requestedWorkflows.includes(run.workflow_name))
+    ? commitRuns.filter((run) => selectedWorkflowPaths.has(staticWorkflowPath(run.workflow_path)))
     : commitRuns;
-  const latestSuccessful = requestedWorkflows.length === 1
+  const latestSuccessful = selectedWorkflowPaths.size === 1
     ? workflowRuns.find((run) => run.conclusion === "success") ?? null
     : null;
   const filtered = workflowRuns.filter((run) => actionRunMatchesStatus(run, status));
@@ -1642,13 +1675,13 @@ async function handleRepoActions(url: URL): Promise<Response> {
     if (headSha) {
       for (const run of commitRuns) {
         if (run.jobs_fetched_at === null || ACTIVE_ACTION_STATUSES[run.status] === true) {
-          await cacheRepoActionsRunJobs(run);
+          await cacheRepoActionsRunJobs(run, undefined, backgroundPrefetch);
         }
       }
       jobs = listRunJobs(selectedRun.repo, headSha).map(serializeActionJob);
     } else {
       if (selectedRun.jobs_fetched_at === null || ACTIVE_ACTION_STATUSES[selectedRun.status] === true) {
-        await cacheRepoActionsRunJobs(selectedRun);
+        await cacheRepoActionsRunJobs(selectedRun, undefined, backgroundPrefetch);
       }
       jobs = listRunJobsForRun(selectedRun.repo, selectedRun.run_id, selectedRun.run_attempt).map(serializeActionJob);
     }
@@ -1656,9 +1689,9 @@ async function handleRepoActions(url: URL): Promise<Response> {
   return json({
     repos: tracked,
     workflows,
-    runs: filtered.slice(start, start + pageSize).map(serializeActionRun),
-    latestSuccessful: latestSuccessful ? serializeActionRun(latestSuccessful) : null,
-    selectedRun: selectedRun ? serializeActionRun(selectedRun) : null,
+    runs: filtered.slice(start, start + pageSize).map((run) => serializeActionRun(run, workflowNameFor(run))),
+    latestSuccessful: latestSuccessful ? serializeActionRun(latestSuccessful, workflowNameFor(latestSuccessful)) : null,
+    selectedRun: selectedRun ? serializeActionRun(selectedRun, workflowNameFor(selectedRun)) : null,
     jobs,
     page,
     hasMore: start + pageSize < filtered.length,
@@ -1685,7 +1718,7 @@ async function handleRepoActionLog(jobId: string, url: URL): Promise<Response> {
     return json({ error: "invalid repo, headSha, or job id" }, 400);
   }
   try {
-    const result = await actionJobLog(repo, headSha, id);
+    const result = await actionJobLog(repo, headSha, id, undefined, url.searchParams.get("prefetch") === "1");
     if (!result) return json({ error: "job is not cached for this workflow run" }, 404);
     return json({
       job: serializeActionJob(result.job),
@@ -1746,7 +1779,13 @@ async function handleActionLog(
   const id = Number(jobId);
   if (!Number.isSafeInteger(id) || id <= 0) return json({ error: "invalid job id" }, 400);
   try {
-    const result = await runtime.actionJobLog(context.repoName, context.headSha, id);
+    const result = await runtime.actionJobLog(
+      context.repoName,
+      context.headSha,
+      id,
+      undefined,
+      url.searchParams.get("prefetch") === "1",
+    );
     if (!result) return json({ error: "job is not cached for this PR commit" }, 404);
     return json({
       job: serializeActionJob(result.job),

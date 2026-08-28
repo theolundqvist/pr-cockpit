@@ -1538,6 +1538,29 @@ export interface RunJob {
   steps: RunJobStep[];
 }
 
+export interface ActionWorkflow {
+  id: number;
+  name: string;
+  path: string;
+  state: string;
+}
+
+export async function fetchActionWorkflows(repo: string): Promise<ActionWorkflow[]> {
+  if (mockGithub) return mockGithub.actionWorkflows(repo);
+  const token = await ghToken();
+  const workflows: ActionWorkflow[] = [];
+  for (let page = 1;; page++) {
+    const res = await fetch(`https://api.github.com/repos/${repo}/actions/workflows?per_page=100&page=${page}`, {
+      headers: { Authorization: `bearer ${token}`, Accept: "application/vnd.github+json" },
+    });
+    if (!res.ok) throw new Error(`workflow catalog fetch failed: ${res.status} ${await res.text()}`);
+    const payload = (await res.json()) as { workflows?: ActionWorkflow[] };
+    const batch = payload.workflows ?? [];
+    workflows.push(...batch);
+    if (batch.length < 100) return workflows;
+  }
+}
+
 export interface WorkflowRun {
   id: number;
   run_attempt: number;

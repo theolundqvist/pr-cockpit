@@ -1,6 +1,7 @@
 <script>
   import ActionStatusIcon from "./ActionStatusIcon.svelte";
   import MultiSelectDropdown from "./MultiSelectDropdown.svelte";
+  import { prefetchRepoRun, rememberActionRun } from "./actionPrefetch.js";
   import { fetchRepoActions, fetchSettings } from "./api.js";
   import { durationText, relativeTime } from "./time.js";
 
@@ -32,7 +33,11 @@
   let error = $state("");
 
   let routeKey = $derived(JSON.stringify({ routeRepos, routeWorkflows, routeStatus, repoProvided, workflowProvided, statusProvided }));
-  let selectedWorkflow = $derived(selectedWorkflows.length === 1 ? selectedWorkflows[0] : "");
+  let workflowOptions = $derived((snapshot?.workflows ?? []).map((workflow) => ({ value: workflow.path, label: workflow.name })));
+  let selectedWorkflowName = $derived.by(() => {
+    if (selectedWorkflows.length !== 1) return "";
+    return snapshot?.workflows?.find((workflow) => workflow.path === selectedWorkflows[0])?.name ?? selectedWorkflows[0];
+  });
 
   function persistedFilters() {
     try {
@@ -117,6 +122,15 @@
     return () => (stopped = true);
   });
 
+
+  $effect(() => {
+    if (!snapshot || selectedWorkflows.length === 0) return;
+    const migrated = selectedWorkflows.map((value) => {
+      if (snapshot.workflows.some((workflow) => workflow.path === value)) return value;
+      return snapshot.workflows.find((workflow) => workflow.name.toLocaleLowerCase() === value.toLocaleLowerCase())?.path ?? value;
+    });
+    if (migrated.some((value, index) => value !== selectedWorkflows[index])) updateFilters({ workflows: migrated });
+  });
   $effect(() => {
     if (!initialized) return;
     const filters = { repo: selectedRepos, workflow: selectedWorkflows, status: selectedStatus };
@@ -147,6 +161,23 @@
       clearInterval(timer);
     };
   });
+
+  $effect(() => {
+    if (!snapshot) return;
+    let cancel = () => {};
+    const start = () => {
+      cancel();
+      if (document.visibilityState !== "visible") return;
+      const hotRun = snapshot.runs.find((run) => run.status === "in_progress" || run.conclusion === "failure");
+      if (hotRun) cancel = prefetchRepoRun(hotRun);
+    };
+    start();
+    document.addEventListener("visibilitychange", start);
+    return () => {
+      cancel();
+      document.removeEventListener("visibilitychange", start);
+    };
+  });
 </script>
 
 <div class="page">
@@ -174,16 +205,16 @@
     </div>
     <div class="filter-pickers">
       <MultiSelectDropdown label="Repository" options={snapshot?.repos ?? []} selected={selectedRepos} plural="repositories" onchange={(repos) => updateFilters({ repos })} />
-      <MultiSelectDropdown label="Workflow" options={snapshot?.workflows ?? []} selected={selectedWorkflows} plural="workflows" onchange={(workflows) => updateFilters({ workflows })} />
+      <MultiSelectDropdown label="Workflow" options={workflowOptions} selected={selectedWorkflows} plural="workflows" onchange={(workflows) => updateFilters({ workflows })} />
     </div>
   </section>
 
-  {#if selectedWorkflow && snapshot?.latestSuccessful}
+  {#if selectedWorkflowName && snapshot?.latestSuccessful}
     {@const success = snapshot.latestSuccessful}
     <section class="release-summary" aria-label="Latest successful workflow run">
       <ActionStatusIcon status={success.status} conclusion={success.conclusion} />
       <div class="summary-copy">
-        <span class="summary-label">Latest successful {selectedWorkflow}</span>
+        <span class="summary-label">Latest successful {selectedWorkflowName}</span>
         <strong>{success.displayTitle}</strong>
         <span>
           {success.runNumber ? `Run #${success.runNumber}` : "Successful run"}
@@ -194,8 +225,8 @@
       <a class="summary-link" href={runHref(success)}>View run</a>
       {#if success.htmlUrl}<a class="external-link" href={success.htmlUrl}>Open on GitHub</a>{/if}
     </section>
-  {:else if selectedWorkflow && !loading}
-    <section class="release-summary empty-summary">No successful {selectedWorkflow} run is cached in the last 30 days.</section>
+  {:else if selectedWorkflowName && !loading}
+    <section class="release-summary empty-summary">No successful {selectedWorkflowName} run is cached in the last 30 days.</section>
   {/if}
 
   <section class="runs-panel" aria-label="Workflow runs">
@@ -207,7 +238,10 @@
       <div class="state">No workflow runs match these filters.</div>
     {:else}
       {#each snapshot.runs as run (`${run.repo}:${run.id}:${run.attempt}`)}
-        <a class="run-row" href={runHref(run)}>
+        <a class="run-row" href={runHref(run)} onclick={() => {
+          rememberActionRun(run);
+          prefetchRepoRun(run);
+        }}>
           <ActionStatusIcon status={run.status} conclusion={run.conclusion} />
           <span class="run-copy">
             <strong>{run.displayTitle}</strong>

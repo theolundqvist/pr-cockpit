@@ -2,7 +2,15 @@
   import ActionsGraph from "./ActionsGraph.svelte";
   import ActionLog from "./ActionLog.svelte";
   import ActionStatusIcon from "./ActionStatusIcon.svelte";
-  import { fetchActionCommits, fetchActionGraph, fetchActionLog, fetchActions, fetchRepoActionGraph, fetchRepoActionLog, fetchRepoActions } from "./api.js";
+  import {
+    actionLogKey,
+    cachedActionLog,
+    chooseDefaultActionJob,
+    loadActionLog,
+    loadRepoRunSnapshot,
+    prefetchActionLogs,
+  } from "./actionPrefetch.js";
+  import { fetchActionCommits, fetchActionGraph, fetchActionLog, fetchActions, fetchRepoActionGraph, fetchRepoActionLog } from "./api.js";
   import { durationText, relativeTime } from "./time.js";
 
   let {
@@ -118,10 +126,7 @@
   let hasActiveJobs = $derived((snapshot?.jobs ?? []).some((job) => job.status !== "completed"));
 
   function chooseDefaultJob(jobs) {
-    return jobs.find((job) => terminalFailures.has(job.conclusion))
-      ?? jobs.find((job) => job.status !== "completed")
-      ?? jobs[0]
-      ?? null;
+    return chooseDefaultActionJob(jobs);
   }
 
   $effect(() => {
@@ -174,17 +179,40 @@
       if (initial) loading = true;
       try {
         const next = number === null
-          ? await fetchRepoActions({ repo: [repo], headSha: activeSha, runId: preferredRunId }, controller.signal)
+          ? await loadRepoRunSnapshot({ repo, headSha: activeSha, id: preferredRunId }, false)
           : await fetchActions(repo, number, activeSha, controller.signal);
         if (stopped || key !== `${repo}#${number}:${activeSha}:${refreshNonce}`) return;
         snapshot = next;
         loadError = "";
-        if (!next.jobs.some((job) => job.id === selectedJobId)) {
-          const preferredJobs = preferredRunId === null
-            ? next.jobs
-            : next.jobs.filter((job) => job.runId === preferredRunId);
-          selectedJobId = chooseDefaultJob(preferredJobs)?.id ?? chooseDefaultJob(next.jobs)?.id ?? null;
+        const preferredJobs = preferredRunId === null
+          ? next.jobs
+          : next.jobs.filter((job) => job.runId === preferredRunId);
+        const defaultJob = chooseDefaultJob(preferredJobs) ?? chooseDefaultJob(next.jobs);
+        if (!next.jobs.some((job) => job.id === selectedJobId)) selectedJobId = defaultJob?.id ?? null;
+        const targetJob = next.jobs.find((job) => job.id === selectedJobId) ?? defaultJob;
+        const targetJobs = targetJob ? next.jobs.filter((job) => job.runId === targetJob.runId) : [];
+        const cached = {};
+        for (const job of targetJobs) {
+          const result = cachedActionLog(actionLogKey(repo, activeSha, job.id));
+          if (result) cached[job.id] = result;
         }
+        if (Object.keys(cached).length > 0) logs = { ...logs, ...cached };
+        void prefetchActionLogs(
+          targetJobs,
+          (job) => actionLogKey(repo, activeSha, job.id),
+          (job) => number === null
+            ? fetchRepoActionLog(repo, activeSha, job.id, null, true)
+            : fetchActionLog(repo, number, job.id, activeSha, null, true),
+          () => !stopped,
+        ).then(() => {
+          if (stopped) return;
+          const prefetched = {};
+          for (const job of targetJobs) {
+            const result = cachedActionLog(actionLogKey(repo, activeSha, job.id));
+            if (result) prefetched[job.id] = result;
+          }
+          if (Object.keys(prefetched).length > 0) logs = { ...logs, ...prefetched };
+        });
       } catch (error) {
         if (!stopped) loadError = error instanceof Error ? error.message : String(error);
       } finally {
@@ -231,40 +259,50 @@
   });
 
 
-  let logController = null;
-
-  async function loadLog(job) {
-    logController?.abort();
-    const controller = new AbortController();
-    logController = controller;
-    const id = job.id;
-    logLoadingId = id;
+  async function loadLogId(id, background = false) {
+    const capturedRepo = repo;
+    const capturedSha = activeSha;
+    if (!background) logLoadingId = id;
     try {
-      const result = number === null
-        ? await fetchRepoActionLog(repo, activeSha, id, controller.signal)
-        : await fetchActionLog(repo, number, id, activeSha, controller.signal);
-      if (selectedJobId !== id) return;
-      logs = { ...logs, [id]: result };
+      let result = await loadActionLog(
+        actionLogKey(capturedRepo, capturedSha, id),
+        () => number === null
+          ? fetchRepoActionLog(capturedRepo, capturedSha, id, null, background)
+          : fetchActionLog(capturedRepo, number, id, capturedSha, null, background),
+      );
+      if (!background && result?.state === "deferred") {
+        result = await loadActionLog(
+          actionLogKey(capturedRepo, capturedSha, id),
+          () => number === null
+            ? fetchRepoActionLog(capturedRepo, capturedSha, id)
+            : fetchActionLog(capturedRepo, number, id, capturedSha),
+        );
+      }
+      if (`${capturedRepo}:${capturedSha}` !== `${repo}:${activeSha}`) return;
+      if (result?.state === "ready" || result?.state === "not-produced") {
+        logs = { ...logs, [id]: result };
+      }
       const nextErrors = { ...logErrors };
       delete nextErrors[id];
       logErrors = nextErrors;
     } catch (error) {
-      if (!controller.signal.aborted) {
-        logErrors = { ...logErrors, [id]: error instanceof Error ? error.message : String(error) };
-      }
+      if (!background) logErrors = { ...logErrors, [id]: error instanceof Error ? error.message : String(error) };
     } finally {
-      if (logController === controller) logController = null;
-      if (logLoadingId === id) logLoadingId = null;
+      if (!background && logLoadingId === id) logLoadingId = null;
     }
   }
 
-  $effect(() => () => logController?.abort());
+  $effect(() => {
+    if (!active || requestedJobId === null) return;
+    activeSha;
+    void loadLogId(requestedJobId, true);
+  });
 
   $effect(() => {
     if (!active) return;
     const job = selectedJob;
     if (!job || job.status !== "completed" || logs[job.id] || logErrors[job.id]) return;
-    void loadLog(job);
+    void loadLogId(job.id);
   });
 
   function selectJob(job) {
@@ -283,7 +321,7 @@
     const nextErrors = { ...logErrors };
     delete nextErrors[selectedJob.id];
     logErrors = nextErrors;
-    void loadLog(selectedJob);
+    void loadLogId(selectedJob.id);
   }
 </script>
 

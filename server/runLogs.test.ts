@@ -41,7 +41,7 @@ const seed = `
   });
 `;
 
-test("event ingestion is monotonic, runner-complete, REST-free without a lease, and head-only", async () => {
+test("event ingestion is monotonic, runner-complete, REST-free without a lease, and head-only in PR scope", async () => {
   const result = await runScenario("pr-cockpit-actions-events-", `
     const actions = await import(${JSON.stringify(runLogsUrl)});
     const dbm = await import(${JSON.stringify(dbUrl)});
@@ -85,15 +85,23 @@ test("event ingestion is monotonic, runner-complete, REST-free without a lease, 
       restCalls,
       jobs: dbm.db.query("SELECT job_id,status,conclusion,runner_name,runner_group_name,labels_json,failed_step FROM run_jobs ORDER BY job_id").all(),
       jobsOutput: actions.formatRunJobs(head, dbm.listRunJobs("acme/app", head)),
+      scopedJobIds: dbm.listRunJobs("acme/app", head).map((job) => job.job_id),
+      scopedRuns: dbm.workflowRunsForLease("acme/app", 7, head).map((run) => ({
+        status: run.status,
+        conclusion: run.conclusion,
+      })),
       runs: dbm.db.query("SELECT status,conclusion FROM workflow_runs").all(),
     }));
   `);
   expect(result.restCalls).toBe(0);
   expect(result.jobs).toEqual([
     { job_id: 31, status: "completed", conclusion: "failure", runner_name: "runner-4", runner_group_name: "hosted", labels_json: "[\"ubuntu-latest\"]", failed_step: "bun test" },
+    { job_id: 32, status: "completed", conclusion: "failure", runner_name: null, runner_group_name: null, labels_json: "[]", failed_step: "bun test" },
     { job_id: 40, status: "in_progress", conclusion: null, runner_name: "runner-8", runner_group_name: "self-hosted", labels_json: "[\"arm64\"]", failed_step: null },
   ]);
   expect(result.runs).toEqual([{ status: "completed", conclusion: "failure" }]);
+  expect(result.scopedJobIds).toEqual([31, 40]);
+  expect(result.scopedRuns).toEqual([{ status: "completed", conclusion: "failure" }]);
   expect(result.jobsOutput).toContain("runner hosted/runner-4");
 });
 
@@ -516,6 +524,45 @@ test("a selected successful job fetches and serves its full log once", async () 
   expect(result.duplicateBody).toBe(true);
   expect(result.cleaned).toBe(true);
   expect(result.stored).toEqual({ stored: 1, log_bytes: result.firstBytes, log_error: null });
+});
+
+test("background log prefetch preserves quota and never caches an incomplete response", async () => {
+  const result = await runScenario("pr-cockpit-actions-log-prefetch-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    const row = (id, status, conclusion) => ({
+      repo: "acme/app", job_id: id, run_id: 12, run_attempt: 1, head_sha: head,
+      head_branch: "feature", workflow_name: "CI", name: "build", status, conclusion,
+      started_at: "2026-08-24T10:00:00Z", completed_at: conclusion ? "2026-08-24T10:02:00Z" : null,
+      html_url: null, runner_name: "runner-1", runner_group_name: "hosted",
+      labels_json: "[]", failed_step: null,
+    });
+    dbm.upsertRunJob(row(122, "completed", "failure"));
+    dbm.upsertRunJob(row(123, "in_progress", null));
+    let fetches = 0;
+    let remaining = actions.REST_BACKGROUND_RESERVE;
+    const fetchers = {
+      fetchWorkflowRuns: async () => [],
+      fetchRunJobs: async () => [],
+      fetchJobLog: async () => { fetches++; return "final log"; },
+      restRemaining: async () => remaining,
+    };
+    const deferred = await actions.actionJobLog("acme/app", head, 122, fetchers, true);
+    const pending = await actions.actionJobLog("acme/app", head, 123, fetchers, true);
+    remaining = 5000;
+    const explicit = await actions.actionJobLog("acme/app", head, 122, fetchers);
+    dbm.upsertRunJob(row(123, "completed", "success"));
+    const completed = await actions.actionJobLog("acme/app", head, 123, fetchers);
+    console.log(JSON.stringify({
+      states: [deferred.state, pending.state, explicit.state, completed.state],
+      fetches,
+    }));
+  `);
+  expect(result).toEqual({
+    states: ["deferred", "pending", "ready", "ready"],
+    fetches: 2,
+  });
 });
 
 test("opening a legacy cached log refetches ANSI once", async () => {

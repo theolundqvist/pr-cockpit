@@ -37,8 +37,12 @@ export async function fetchPrDetail(repo, number) {
   if (!res.ok) throw new Error(`detail ${res.status}`);
   return res.json();
 }
-function actionCommitQuery(sha) {
-  return sha ? `?sha=${encodeURIComponent(sha)}` : "";
+function actionCommitQuery(sha, prefetch = false) {
+  const params = new URLSearchParams();
+  if (sha) params.set("sha", sha);
+  if (prefetch) params.set("prefetch", "1");
+  const query = params.toString();
+  return query ? `?${query}` : "";
 }
 
 export async function fetchActions(repo, number, sha = null, signal = null) {
@@ -62,8 +66,8 @@ export async function fetchActionCommits(repo, number, signal = null) {
 }
 
 
-export async function fetchActionLog(repo, number, jobId, sha = null, signal = null) {
-  const res = await fetch(`/api/pr/${repo}/${number}/actions/jobs/${jobId}/log${actionCommitQuery(sha)}`, { signal });
+export async function fetchActionLog(repo, number, jobId, sha = null, signal = null, prefetch = false) {
+  const res = await fetch(`/api/pr/${repo}/${number}/actions/jobs/${jobId}/log${actionCommitQuery(sha, prefetch)}`, { signal });
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new Error(body?.error || `action log ${res.status}`);
   return body;
@@ -94,8 +98,9 @@ export async function fetchRepoActionGraph(repo, headSha, signal = null) {
   return body;
 }
 
-export async function fetchRepoActionLog(repo, headSha, jobId, signal = null) {
+export async function fetchRepoActionLog(repo, headSha, jobId, signal = null, prefetch = false) {
   const params = new URLSearchParams({ repo, headSha });
+  if (prefetch) params.set("prefetch", "1");
   const res = await fetch(`/api/actions/jobs/${jobId}/log?${params}`, { signal });
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new Error(body?.error || `action log ${res.status}`);

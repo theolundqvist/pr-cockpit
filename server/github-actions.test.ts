@@ -12,12 +12,15 @@ test("Actions run and attempt-specific job fetches continue until a short page",
   chmodSync(fakeGh, 0o755);
   try {
     const script = `
-      const { fetchWorkflowRuns, fetchRecentWorkflowRuns, fetchRunJobs } = await import(${JSON.stringify(githubModuleUrl)});
+      const { fetchActionWorkflows, fetchWorkflowRuns, fetchRecentWorkflowRuns, fetchRunJobs } = await import(${JSON.stringify(githubModuleUrl)});
       const calls = [];
       globalThis.fetch = async (input) => {
         const url = new URL(String(input));
         calls.push(url.pathname + url.search);
         const second = url.searchParams.get("page") === "2";
+        if (url.pathname.endsWith("/actions/workflows")) {
+          return Response.json({ workflows: Array.from({ length: second ? 1 : 100 }, (_, i) => ({ id: (second ? 100 : 0) + i })) });
+        }
         if (url.pathname.endsWith("/actions/runs")) {
           return Response.json({ workflow_runs: Array.from({ length: second ? 1 : 100 }, (_, i) => ({ id: (second ? 100 : 0) + i })) });
         }
@@ -26,7 +29,8 @@ test("Actions run and attempt-specific job fetches continue until a short page",
       const runs = await fetchWorkflowRuns("acme/app", "abc");
       const recent = await fetchRecentWorkflowRuns("acme/app");
       const jobs = await fetchRunJobs("acme/app", 44, 3);
-      console.log(JSON.stringify({ runs: runs.length, recent: recent.length, jobs: jobs.length, calls }));
+      const workflows = await fetchActionWorkflows("acme/app");
+      console.log(JSON.stringify({ runs: runs.length, recent: recent.length, jobs: jobs.length, workflows: workflows.length, calls }));
     `;
     const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
       env: { ...Bun.env, COCKPIT_GH_BIN: fakeGh, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "" },
@@ -43,6 +47,7 @@ test("Actions run and attempt-specific job fetches continue until a short page",
     expect(result.runs).toBe(101);
     expect(result.recent).toBe(101);
     expect(result.jobs).toBe(101);
+    expect(result.workflows).toBe(101);
     expect(result.calls).toEqual([
       "/repos/acme/app/actions/runs?head_sha=abc&per_page=100&page=1",
       "/repos/acme/app/actions/runs?head_sha=abc&per_page=100&page=2",
@@ -50,6 +55,8 @@ test("Actions run and attempt-specific job fetches continue until a short page",
       "/repos/acme/app/actions/runs?per_page=100&page=2",
       "/repos/acme/app/actions/runs/44/attempts/3/jobs?per_page=100&page=1",
       "/repos/acme/app/actions/runs/44/attempts/3/jobs?per_page=100&page=2",
+      "/repos/acme/app/actions/workflows?per_page=100&page=1",
+      "/repos/acme/app/actions/workflows?per_page=100&page=2",
     ]);
   } finally {
     rmSync(fakeGhDir, { recursive: true, force: true });
@@ -61,11 +68,12 @@ test("repo-wide Actions retains non-PR runs and reports latest success independe
   try {
     const script = `
       const { ingestActionsState } = await import(${JSON.stringify(new URL("./runLogs.ts", import.meta.url).href)});
+      const { replaceActionWorkflows } = await import(${JSON.stringify(new URL("./db.ts", import.meta.url).href)});
       const { buildFetchHandler } = await import(${JSON.stringify(new URL("./http.ts", import.meta.url).href)});
       const base = {
         attempt: 1,
         headBranch: "main",
-        workflowName: "Release Backend (Production)",
+        workflowName: "Deploy app staging — dynamic",
         workflowPath: ".github/workflows/release.yml",
         event: "workflow_dispatch",
         actorLogin: "release-bot",
@@ -75,13 +83,16 @@ test("repo-wide Actions retains non-PR runs and reports latest success independe
         runStartedAt: "2026-08-28T09:00:05Z",
         htmlUrl: "https://github.com/acme/app/actions/runs/1",
       };
+      replaceActionWorkflows("acme/app", [{
+        id: 77, name: "Release Backend (Production)", path: ".github/workflows/release.yml", state: "active",
+      }]);
       await ingestActionsState("acme/app", { run: {
-        ...base, id: 1, headSha: "a".repeat(40), displayTitle: "Release v42",
+        ...base, id: 1, workflowName: "Deploy app staging — " + "a".repeat(40), headSha: "a".repeat(40), displayTitle: "Release v42",
         conclusion: "success", eventAt: "2026-08-28T09:10:00Z",
         updatedAt: "2026-08-28T09:10:00Z", runNumber: 42,
       } });
       await ingestActionsState("acme/app", { run: {
-        ...base, id: 2, headSha: "b".repeat(40), displayTitle: "Release v43",
+        ...base, id: 2, workflowName: "Deploy app staging — " + "b".repeat(40), headSha: "b".repeat(40), displayTitle: "Release v43",
         conclusion: "failure", eventAt: "2026-08-28T10:10:00Z",
         updatedAt: "2026-08-28T10:10:00Z", runNumber: 43,
       } });
@@ -117,12 +128,15 @@ test("repo-wide Actions retains non-PR runs and reports latest success independe
       conclusion: "failure",
       displayTitle: "Release v43",
     });
+    expect(result.body.runs[0].workflowName).toBe("Release Backend (Production)");
     expect(result.body.latestSuccessful).toMatchObject({
       id: 1,
       runNumber: 42,
       conclusion: "success",
     });
-    expect(result.body.workflows).toContain("Release Backend (Production)");
+    expect(result.body.workflows).toEqual([
+      { path: ".github/workflows/release.yml", name: "Release Backend (Production)" },
+    ]);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }
@@ -133,22 +147,30 @@ test("repo-wide Actions accepts repeated repository and workflow filters", async
   try {
     const script = `
       const { ingestActionsState } = await import(${JSON.stringify(new URL("./runLogs.ts", import.meta.url).href)});
+      const { replaceActionWorkflows } = await import(${JSON.stringify(new URL("./db.ts", import.meta.url).href)});
       const { buildFetchHandler } = await import(${JSON.stringify(new URL("./http.ts", import.meta.url).href)});
-      const run = (id, workflowName, headSha, eventAt) => ({
+      const run = (id, workflowName, workflowPath, headSha, eventAt) => ({
         id, attempt: 1, headSha, headBranch: "main", workflowName,
-        workflowPath: ".github/workflows/test.yml", displayTitle: workflowName,
+        workflowPath, displayTitle: workflowName,
         event: "push", actorLogin: "ci", prNumber: null, status: "completed",
         conclusion: "failure", eventAt, createdAt: eventAt, updatedAt: eventAt,
         runStartedAt: eventAt, runNumber: id, htmlUrl: "https://example.test/" + id,
       });
-      await ingestActionsState("acme/app", { run: run(11, "Release Backend", "a".repeat(40), "2026-08-28T11:00:00Z") });
-      await ingestActionsState("acme/web", { run: run(12, "Deploy Frontend", "b".repeat(40), "2026-08-28T12:00:00Z") });
-      await ingestActionsState("acme/app", { run: run(13, "Unselected Workflow", "c".repeat(40), "2026-08-28T13:00:00Z") });
+      replaceActionWorkflows("acme/app", [
+        { id: 1, name: "Release Backend", path: ".github/workflows/release.yml", state: "active" },
+        { id: 2, name: "Unselected Workflow", path: ".github/workflows/unselected.yml", state: "active" },
+      ]);
+      replaceActionWorkflows("acme/web", [
+        { id: 3, name: "Deploy Frontend", path: ".github/workflows/deploy.yml", state: "active" },
+      ]);
+      await ingestActionsState("acme/app", { run: run(11, "dynamic release", ".github/workflows/release.yml", "a".repeat(40), "2026-08-28T11:00:00Z") });
+      await ingestActionsState("acme/web", { run: run(12, "dynamic deploy", ".github/workflows/deploy.yml", "b".repeat(40), "2026-08-28T12:00:00Z") });
+      await ingestActionsState("acme/app", { run: run(13, "dynamic other", ".github/workflows/unselected.yml", "c".repeat(40), "2026-08-28T13:00:00Z") });
       const params = new URLSearchParams();
       params.append("repo", "acme/app");
       params.append("repo", "acme/web");
-      params.append("workflow", "Release Backend");
-      params.append("workflow", "Deploy Frontend");
+      params.append("workflow", ".github/workflows/release.yml");
+      params.append("workflow", ".github/workflows/deploy.yml");
       params.set("status", "failed");
       const response = await buildFetchHandler(4899)(new Request("http://127.0.0.1:4899/api/actions/runs?" + params));
       console.log(JSON.stringify({ status: response.status, body: await response.json() }));
@@ -174,7 +196,11 @@ test("repo-wide Actions accepts repeated repository and workflow filters", async
     expect(result.status).toBe(200);
     expect(result.body.runs.map((run: { id: number }) => run.id)).toEqual([12, 11]);
     expect(result.body.latestSuccessful).toBeNull();
-    expect(result.body.workflows).toEqual(["Deploy Frontend", "Release Backend", "Unselected Workflow"]);
+    expect(result.body.workflows).toEqual([
+      { path: ".github/workflows/deploy.yml", name: "Deploy Frontend" },
+      { path: ".github/workflows/release.yml", name: "Release Backend" },
+      { path: ".github/workflows/unselected.yml", name: "Unselected Workflow" },
+    ]);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }

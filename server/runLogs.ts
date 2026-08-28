@@ -13,6 +13,7 @@ import {
   renewActionsLease,
   saveFileContents,
   saveRunJobLog,
+  replaceActionWorkflows,
   saveRunJobLogError,
   upsertRunJob,
   upsertWorkflowRun,
@@ -22,6 +23,7 @@ import {
   type WorkflowRunRow,
 } from "./db.ts";
 import {
+  fetchActionWorkflows,
   fetchFileContents,
   fetchGithubQuota,
   fetchJobLog,
@@ -359,9 +361,11 @@ function storeRun(repo: string, number: number | null, run: CompactRun): boolean
 }
 export async function refreshRecentActions(
   repo: string,
-  fetcher: typeof fetchRecentWorkflowRuns = fetchRecentWorkflowRuns,
+  runFetcher: typeof fetchRecentWorkflowRuns = fetchRecentWorkflowRuns,
+  workflowFetcher: typeof fetchActionWorkflows = fetchActionWorkflows,
 ): Promise<number> {
-  const runs = await fetcher(repo);
+  const [runs, workflows] = await Promise.all([runFetcher(repo), workflowFetcher(repo)]);
+  replaceActionWorkflows(repo, workflows);
   let changed = 0;
   for (const raw of runs) {
     if (storeRun(repo, null, compactRun(raw))) changed++;
@@ -547,10 +551,13 @@ export async function cacheGithubActionsForCommit(
     markWorkflowRunJobsFetched(repo, run.id, run.attempt);
   }
 }
+
 export async function cacheRepoActionsRunJobs(
   run: WorkflowRunRow,
   fetchers: ActionsFetchers = liveFetchers,
-): Promise<void> {
+  background = false,
+): Promise<boolean> {
+  if (background && await fetchers.restRemaining() <= REST_BACKGROUND_RESERVE) return false;
   const compact: CompactRun = {
     id: run.run_id,
     attempt: run.run_attempt,
@@ -578,6 +585,7 @@ export async function cacheRepoActionsRunJobs(
   );
   for (const job of jobs) storeJob(run.repo, compactJob(job, compact));
   markWorkflowRunJobsFetched(run.repo, run.run_id, run.run_attempt);
+  return true;
 }
 
 export function activateActionsLease(
@@ -627,7 +635,7 @@ export interface CachedJobLog {
 }
 
 export interface ActionJobLog extends CachedJobLog {
-  state: "pending" | "not-produced" | "ready";
+  state: "pending" | "not-produced" | "ready" | "deferred";
 }
 
 export async function actionJobLog(
@@ -635,6 +643,7 @@ export async function actionJobLog(
   headSha: string,
   jobId: number,
   fetchers: ActionsFetchers = liveFetchers,
+  background = false,
 ): Promise<ActionJobLog | null> {
   let job = listRunJobs(repo, headSha).find((candidate) => candidate.job_id === jobId);
   if (!job) return null;
@@ -644,6 +653,9 @@ export async function actionJobLog(
   const cachedBefore = getRunJobLog(repo, jobId);
   const canUseCached = cachedBefore !== null && job.log_truncated !== 1;
   if (cachedBefore === null || job.log_truncated === 1 || job.log_format_version < RUN_JOB_LOG_FORMAT_VERSION) {
+    if (background && await fetchers.restRemaining() <= REST_BACKGROUND_RESERVE) {
+      return { job, body: null, state: "deferred" };
+    }
     const key = `${repo}:${jobId}`;
     let pending = logFetches.get(key);
     if (!pending) {

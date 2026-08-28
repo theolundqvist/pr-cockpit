@@ -7,11 +7,22 @@
   let root = $state(null);
   let menu = $state(null);
 
+  function optionValue(option) {
+    return typeof option === "string" ? option : option.value;
+  }
+
+  function optionLabel(option) {
+    return typeof option === "string" ? option : option.label;
+  }
+
+  let selectedLabels = $derived(selected.map((value) =>
+    optionLabel(options.find((option) => optionValue(option) === value) ?? value)
+  ));
   let buttonLabel = $derived(
     selected.length === 0
       ? `All ${plural}`
       : selected.length === 1
-        ? selected[0]
+        ? selectedLabels[0]
         : `${selected.length} ${plural}`,
   );
 
@@ -35,11 +46,12 @@
   });
 
   function toggleOption(option) {
+    const value = optionValue(option);
     if (selected.length === 0) {
-      onchange([option]);
+      onchange([value]);
       return;
     }
-    onchange(selected.includes(option) ? selected.filter((value) => value !== option) : [...selected, option]);
+    onchange(selected.includes(value) ? selected.filter((selectedValue) => selectedValue !== value) : [...selected, value]);
   }
 
   function moveFocus(event) {
@@ -83,10 +95,11 @@
         <span>All {plural}</span>
       </button>
       <div class="separator"></div>
-      {#each options as option (option)}
-        <button type="button" class="option" role="menuitemcheckbox" aria-checked={selected.includes(option)} onclick={() => toggleOption(option)}>
-          <span class="check" aria-hidden="true">{selected.includes(option) ? "✓" : ""}</span>
-          <span>{option}</span>
+      {#each options as option (optionValue(option))}
+        {@const value = optionValue(option)}
+        <button type="button" class="option" role="menuitemcheckbox" aria-checked={selected.includes(value)} onclick={() => toggleOption(option)}>
+          <span class="check" aria-hidden="true">{selected.includes(value) ? "✓" : ""}</span>
+          <span>{optionLabel(option)}</span>
         </button>
       {:else}
         <div class="empty">No {plural}</div>

@@ -1,6 +1,7 @@
 <script>
   import ActionStatusIcon from "./ActionStatusIcon.svelte";
   import ActionsView from "./ActionsView.svelte";
+  import { prefetchRepoRun, rememberedActionRun, rememberActionRun } from "./actionPrefetch.js";
   import { fetchRepoActions } from "./api.js";
 
   let { repo, runId } = $props();
@@ -16,13 +17,19 @@
   $effect(() => {
     const key = `${repo}:${runId}`;
     const controller = new AbortController();
-    loading = true;
-    run = null;
+    const remembered = rememberedActionRun(repo, runId);
+    loading = !remembered;
+    run = remembered;
+    if (remembered) prefetchRepoRun(remembered);
     void fetchRepoActions({ repo: [repo], runId }, controller.signal).then(
       (snapshot) => {
         if (key !== `${repo}:${runId}`) return;
         run = snapshot.selectedRun;
-        error = snapshot.selectedRun ? "" : "Workflow run not found";
+        if (run) {
+          rememberActionRun(run);
+          prefetchRepoRun(run);
+        }
+        error = run ? "" : "Workflow run not found";
       },
       (nextError) => {
         if (!controller.signal.aborted) error = nextError instanceof Error ? nextError.message : String(nextError);

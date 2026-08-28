@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type {
+  ActionWorkflow,
   AssignableUser,
   FileContents,
   FileHistoryCommit,
@@ -613,6 +614,11 @@ export const mockGithub = isMockGithub ? {
   },
   runJobs: fixtureRunJobs,
   workflowRun: fixtureWorkflowRun,
+  actionWorkflows: (_repo: string): ActionWorkflow[] => [
+    { id: 1, name: "CI", path: ".github/workflows/ci.yml", state: "active" },
+    { id: 2, name: "Release Backend", path: ".github/workflows/release.yml", state: "active" },
+    { id: 3, name: "Tag Staging Release", path: ".github/workflows/tag.yml", state: "active" },
+  ],
   jobLog: fixtureJobLog,
   fileHistory: (repo: string, path: string, base: string): FileHistoryCommit[] => {
     const key = capturedHistory ?? { repo: REPO, path: "src/flight.ts", base: "main" };

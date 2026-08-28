@@ -202,6 +202,16 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   PRIMARY KEY (repo, run_id, run_attempt)
 );
 
+CREATE TABLE IF NOT EXISTS action_workflows (
+  repo TEXT NOT NULL,
+  workflow_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  path TEXT NOT NULL,
+  state TEXT NOT NULL,
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY (repo, path)
+);
+
 CREATE INDEX IF NOT EXISTS workflow_runs_pr_idx ON workflow_runs (repo, pr_number, head_sha);
 CREATE INDEX IF NOT EXISTS workflow_runs_repo_time_idx ON workflow_runs (repo, event_at DESC);
 
@@ -823,6 +833,15 @@ export interface WorkflowRunRow {
   fetched_at: string;
 }
 
+export interface ActionWorkflowRow {
+  repo: string;
+  workflow_id: number;
+  name: string;
+  path: string;
+  state: string;
+  fetched_at: string;
+}
+
 export interface RunJobRow {
   repo: string;
   job_id: number;
@@ -1036,6 +1055,36 @@ export function listWorkflowRuns(repos: string[], limit = 200, offset = 0): Work
      ORDER BY event_at DESC, run_id DESC, run_attempt DESC
      LIMIT ? OFFSET ?`,
   ).all(...repos, limit, offset);
+}
+
+const deleteActionWorkflowsStmt = db.prepare("DELETE FROM action_workflows WHERE repo = ?");
+const insertActionWorkflowStmt = db.prepare(
+  "INSERT INTO action_workflows (repo, workflow_id, name, path, state, fetched_at) VALUES (?, ?, ?, ?, ?, ?)",
+);
+const replaceActionWorkflowsTxn = db.transaction((
+  repo: string,
+  workflows: Array<{ id: number; name: string; path: string; state: string }>,
+  fetchedAt: string,
+) => {
+  deleteActionWorkflowsStmt.run(repo);
+  for (const workflow of workflows) {
+    insertActionWorkflowStmt.run(repo, workflow.id, workflow.name, workflow.path, workflow.state, fetchedAt);
+  }
+});
+
+export function replaceActionWorkflows(
+  repo: string,
+  workflows: Array<{ id: number; name: string; path: string; state: string }>,
+): void {
+  replaceActionWorkflowsTxn(repo, workflows, new Date().toISOString());
+}
+
+export function listActionWorkflows(repos: string[]): ActionWorkflowRow[] {
+  if (repos.length === 0) return [];
+  const placeholders = repos.map(() => "?").join(", ");
+  return db.query<ActionWorkflowRow, string[]>(
+    `SELECT * FROM action_workflows WHERE repo IN (${placeholders}) ORDER BY name COLLATE NOCASE, path`,
+  ).all(...repos);
 }
 
 export function listRunJobsForRun(repo: string, runId: number, runAttempt: number): RunJobRow[] {
