@@ -9,6 +9,8 @@ import {
   getPr,
   getPrByBranch,
   getRanks,
+  getMergedPrAnalyticsCache,
+  upsertMergedPrAnalyticsCache,
   lastWebhookAtForPr,
   latestRescoreForHead,
   listArchivedKeys,
@@ -47,6 +49,7 @@ import {
   StalePrHeadError,
   getViewerLogin,
   MAX_MERGED_PR_ANALYTICS_DAYS,
+  type MergedPrAnalytics,
   lookupPr,
   lookupPrIndexes,
   searchPrs,
@@ -393,6 +396,29 @@ function validBaseBranch(base: string): boolean {
     && base.split("/").every((part) => part !== "." && part !== ".." && !part.startsWith(".") && !part.endsWith(".lock"));
 }
 
+const MERGED_PR_ANALYTICS_FRESH_MS = 5 * 60_000;
+const mergedPrAnalyticsRefreshes = new Map<string, Promise<MergedPrAnalytics>>();
+
+function windowedMergedPrAnalytics(full: MergedPrAnalytics, days: number): MergedPrAnalytics {
+  if (days >= MAX_MERGED_PR_ANALYTICS_DAYS) return full;
+  const cutoff = Date.parse(full.asOf) - days * 24 * 60 * 60_000;
+  return { ...full, pullRequests: full.pullRequests.filter((pr) => Date.parse(pr.mergedAt) >= cutoff) };
+}
+
+function refreshMergedPrAnalytics(repo: string, base: string, runtime: HttpRuntime): Promise<MergedPrAnalytics> {
+  const key = `${repo}\0${base}`;
+  const inFlight = mergedPrAnalyticsRefreshes.get(key);
+  if (inFlight) return inFlight;
+  const refresh = runtime.fetchMergedPrAnalytics(repo, base)
+    .then((full) => {
+      upsertMergedPrAnalyticsCache(repo, base, JSON.stringify(full), full.asOf);
+      return full;
+    })
+    .finally(() => mergedPrAnalyticsRefreshes.delete(key));
+  mergedPrAnalyticsRefreshes.set(key, refresh);
+  return refresh;
+}
+
 async function handleMergedPrAnalytics(url: URL, runtime: HttpRuntime): Promise<Response> {
   const repo = url.searchParams.get("repo") ?? "";
   const base = url.searchParams.get("base") ?? "";
@@ -407,8 +433,20 @@ async function handleMergedPrAnalytics(url: URL, runtime: HttpRuntime): Promise<
     return json({ error: "invalid repo/base/days" }, 400);
   }
 
+  // Serve the durable copy immediately and revalidate past freshness in the
+  // background, so revisiting the screen never waits on GitHub.
+  const cappedDays = Math.min(days, MAX_MERGED_PR_ANALYTICS_DAYS);
+  const cached = getMergedPrAnalyticsCache(repo, base);
+  if (cached) {
+    if (Date.now() - Date.parse(cached.fetched_at) > MERGED_PR_ANALYTICS_FRESH_MS) {
+      refreshMergedPrAnalytics(repo, base, runtime).catch((err) => {
+        console.error(`merged-pr analytics refresh failed for ${repo}@${base}:`, err);
+      });
+    }
+    return json(windowedMergedPrAnalytics(JSON.parse(cached.payload_json) as MergedPrAnalytics, cappedDays));
+  }
   try {
-    return json(await runtime.fetchMergedPrAnalytics(repo, base, Math.min(days, MAX_MERGED_PR_ANALYTICS_DAYS)));
+    return json(windowedMergedPrAnalytics(await refreshMergedPrAnalytics(repo, base, runtime), cappedDays));
   } catch (err) {
     const status = err instanceof GithubRequestError ? err.status : 502;
     return json({ error: status === 404 ? "not found" : "GitHub fetch failed" }, status);

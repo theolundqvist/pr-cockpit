@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { buildFetchHandler, buildPrAgentSummary, checkoutTargetFor, formatPrAgentSummary, mergeabilityNeedsRefresh, reviewThreadHandle, snapshotStatus, statsExcludingTests, trackedDetailIsStale } from "./http.ts";
 import { StalePrHeadError, type PrDetail } from "./github.ts";
 import { db, getCachedPrDetail, getPr, getSetting, saveDiff, saveFileContents, setSetting, upsertCachedPrDetail, upsertPr, upsertPrIndex } from "./db.ts";
@@ -188,12 +188,14 @@ describe("health", () => {
 });
 
 describe("merged PR analytics", () => {
-  test("returns the repository/base response and caps the requested window", async () => {
-    const calls: Array<{ repo: string; base: string; days: number }> = [];
+  beforeEach(() => db.exec("DELETE FROM merged_pr_analytics_cache"));
+
+  test("returns the repository/base response, caps the window, and serves the durable cache", async () => {
+    const calls: Array<{ repo: string; base: string }> = [];
     const analytics = {
       repo: "example-org/webapp",
       base: "release/v2",
-      asOf: "2026-08-27T12:00:00.000Z",
+      asOf: new Date().toISOString(),
       pullRequests: [{
         number: 42,
         title: "Ship release analytics",
@@ -203,19 +205,43 @@ describe("merged PR analytics", () => {
       }],
     };
     const fetchHandler = buildFetchHandler(4820, {
-      fetchMergedPrAnalytics: async (repo, base, days) => {
-        calls.push({ repo, base, days });
+      fetchMergedPrAnalytics: async (repo, base) => {
+        calls.push({ repo, base });
         return analytics;
       },
     });
 
-    const response = await fetchHandler(new Request(
-      "http://127.0.0.1:4820/api/merged-pr-analytics?repo=example-org%2Fwebapp&base=release%2Fv2&days=999",
-    ));
+    const url = "http://127.0.0.1:4820/api/merged-pr-analytics?repo=example-org%2Fwebapp&base=release%2Fv2&days=999";
+    const response = await fetchHandler(new Request(url));
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual(analytics);
-    expect(calls).toEqual([{ repo: "example-org/webapp", base: "release/v2", days: 180 }]);
+    expect(calls).toEqual([{ repo: "example-org/webapp", base: "release/v2" }]);
+
+    const cachedResponse = await fetchHandler(new Request(url));
+    expect(cachedResponse.status).toBe(200);
+    expect(await cachedResponse.json()).toEqual(analytics);
+    expect(calls).toHaveLength(1);
+  });
+
+  test("windows the cached payload to the requested days", async () => {
+    const recent = {
+      number: 7,
+      title: "Fresh merge",
+      url: "https://github.com/example-org/api/pull/7",
+      author: "hubot",
+      mergedAt: new Date(Date.now() - 24 * 60 * 60_000).toISOString(),
+    };
+    const old = { ...recent, number: 6, title: "Old merge", mergedAt: new Date(Date.now() - 40 * 24 * 60 * 60_000).toISOString() };
+    const fetchHandler = buildFetchHandler(4820, {
+      fetchMergedPrAnalytics: async (repo, base) => ({ repo, base, asOf: new Date().toISOString(), pullRequests: [recent, old] }),
+    });
+
+    const response = await fetchHandler(new Request(
+      "http://127.0.0.1:4820/api/merged-pr-analytics?repo=example-org%2Fapi&base=main&days=30",
+    ));
+    const body = await response.json();
+    expect(body.pullRequests).toEqual([recent]);
   });
 
   test("rejects invalid repository, base, and days parameters before fetching", async () => {

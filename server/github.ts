@@ -109,7 +109,6 @@ async function graphql<T>(query: string, variables: Record<string, unknown>): Pr
 }
 
 export const MAX_MERGED_PR_ANALYTICS_DAYS = 180;
-const MERGED_PR_ANALYTICS_TTL_MS = 60_000;
 
 export interface MergedPrAnalyticsPullRequest {
   number: number;
@@ -126,7 +125,6 @@ export interface MergedPrAnalytics {
   pullRequests: MergedPrAnalyticsPullRequest[];
 }
 
-const mergedPrAnalyticsCache = new Map<string, { expiresAt: number; value: MergedPrAnalytics }>();
 
 const MERGED_PRS_QUERY = `
 query($owner: String!, $name: String!, $base: String!, $cursor: String) {
@@ -151,16 +149,11 @@ query($owner: String!, $name: String!, $base: String!, $cursor: String) {
   }
 }`;
 
-export async function fetchMergedPrAnalytics(repo: string, base: string, days: number): Promise<MergedPrAnalytics> {
-  const cappedDays = Math.min(days, MAX_MERGED_PR_ANALYTICS_DAYS);
-  const cacheKey = `${repo}\0${base}\0${cappedDays}`;
-  const now = Date.now();
-  const cached = mergedPrAnalyticsCache.get(cacheKey);
-  if (cached && cached.expiresAt > now) return cached.value;
-  if (cached) mergedPrAnalyticsCache.delete(cacheKey);
 
-  const asOf = mockGithub ? MOCK_FIXTURE_CLOCK : new Date(now).toISOString();
-  const cutoff = Date.parse(asOf) - cappedDays * 24 * 60 * 60_000;
+// Always fetches the full analytics window; the HTTP layer owns caching.
+export async function fetchMergedPrAnalytics(repo: string, base: string): Promise<MergedPrAnalytics> {
+  const asOf = mockGithub ? MOCK_FIXTURE_CLOCK : new Date().toISOString();
+  const cutoff = Date.parse(asOf) - MAX_MERGED_PR_ANALYTICS_DAYS * 24 * 60 * 60_000;
   let pullRequests: MergedPrAnalyticsPullRequest[];
 
   if (mockGithub) {
@@ -225,9 +218,7 @@ export async function fetchMergedPrAnalytics(repo: string, base: string, days: n
   }
 
   pullRequests.sort((left, right) => right.mergedAt.localeCompare(left.mergedAt));
-  const value = { repo, base, asOf, pullRequests };
-  mergedPrAnalyticsCache.set(cacheKey, { expiresAt: now + MERGED_PR_ANALYTICS_TTL_MS, value });
-  return value;
+  return { repo, base, asOf, pullRequests };
 }
 
 export interface GithubQuotaResource {

@@ -112,6 +112,14 @@ CREATE TABLE IF NOT EXISTS pr_detail_cache (
   PRIMARY KEY (repo, number)
 );
 
+CREATE TABLE IF NOT EXISTS merged_pr_analytics_cache (
+  repo TEXT NOT NULL,
+  base TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY (repo, base)
+);
+
 CREATE TABLE IF NOT EXISTS repo_users (
   repo TEXT NOT NULL,
   login TEXT NOT NULL,
@@ -1013,4 +1021,24 @@ const getCachedPrDetailStmt = db.prepare<CachedPrDetailRow, [string, number]>(
 
 export function getCachedPrDetail(repo: string, number: number): CachedPrDetailRow | null {
   return getCachedPrDetailStmt.get(repo, number) ?? null;
+}
+
+const upsertMergedPrAnalyticsStmt = db.prepare(`
+INSERT INTO merged_pr_analytics_cache (repo, base, payload_json, fetched_at)
+VALUES ($repo, $base, $payload_json, $fetched_at)
+ON CONFLICT (repo, base) DO UPDATE SET
+  payload_json = excluded.payload_json,
+  fetched_at = excluded.fetched_at
+`);
+
+export function upsertMergedPrAnalyticsCache(repo: string, base: string, payloadJson: string, fetchedAt: string): void {
+  upsertMergedPrAnalyticsStmt.run({ $repo: repo, $base: base, $payload_json: payloadJson, $fetched_at: fetchedAt });
+}
+
+const getMergedPrAnalyticsStmt = db.prepare<{ payload_json: string; fetched_at: string }, [string, string]>(
+  "SELECT payload_json, fetched_at FROM merged_pr_analytics_cache WHERE repo = ? AND base = ?",
+);
+
+export function getMergedPrAnalyticsCache(repo: string, base: string): { payload_json: string; fetched_at: string } | null {
+  return getMergedPrAnalyticsStmt.get(repo, base) ?? null;
 }

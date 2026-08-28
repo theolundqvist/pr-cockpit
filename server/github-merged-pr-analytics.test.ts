@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 // The child installs its GraphQL transport before loading the module and keeps the global fetch override isolated.
 const githubModuleUrl = new URL("./github.ts", import.meta.url).href;
 
-test("queries the requested base, paginates to the cutoff, caps days, and caches success", async () => {
+test("queries the requested base and paginates to the 180-day cutoff", async () => {
   const script = `
     const calls = [];
     const now = Date.now();
@@ -35,9 +35,8 @@ test("queries the requested base, paginates to the cutoff, caps days, and caches
       });
     };
     const { fetchMergedPrAnalytics } = await import(${JSON.stringify(githubModuleUrl)});
-    const first = await fetchMergedPrAnalytics("acme/widgets", "release/v2", 999);
-    const second = await fetchMergedPrAnalytics("acme/widgets", "release/v2", 999);
-    console.log(JSON.stringify({ calls, first, cacheHit: first === second }));
+    const first = await fetchMergedPrAnalytics("acme/widgets", "release/v2");
+    console.log(JSON.stringify({ calls, first }));
   `;
   const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
     env: { ...Bun.env, COCKPIT_GH_BIN: "/bin/echo", COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "" },
@@ -56,7 +55,6 @@ test("queries the requested base, paginates to the cutoff, caps days, and caches
       asOf: string;
       pullRequests: Array<{ number: number; title: string; url: string; author: string; mergedAt: string }>;
     };
-    cacheHit: boolean;
   };
   expect(result.calls).toHaveLength(3);
   expect(result.calls[0]!.query).toContain("baseRefName: $base");
@@ -74,14 +72,13 @@ test("queries the requested base, paginates to the cutoff, caps days, and caches
     ],
   });
   expect(new Date(result.first.asOf).toString()).not.toBe("Invalid Date");
-  expect(result.cacheHit).toBe(true);
 });
 
 test("returns deterministic merged pull requests without live GitHub in mock mode", async () => {
   const script = `
     const { fetchMergedPrAnalytics } = await import(${JSON.stringify(githubModuleUrl)});
-    const main = await fetchMergedPrAnalytics("fixture/cockpit", "main", 180);
-    const other = await fetchMergedPrAnalytics("fixture/cockpit", "release", 180);
+    const main = await fetchMergedPrAnalytics("fixture/cockpit", "main");
+    const other = await fetchMergedPrAnalytics("fixture/cockpit", "release");
     console.log(JSON.stringify({ main, other }));
   `;
   const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
