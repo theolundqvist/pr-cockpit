@@ -70,13 +70,27 @@
     return `${minutes}m ${seconds}s`;
   }
 </script>
-{#snippet logText(line)}
-  {#if line.segments}
-    {#each line.segments as segment}
+{#snippet styledContent(value)}
+  {#if value.segments}
+    {#each value.segments as segment}
       <span class={`${segment.color ? `ansi-${segment.color}` : ""}${segment.bold ? " ansi-bold" : ""}`}>{segment.text}</span>
     {/each}
   {:else}
-    {line.text || " "}
+    {value.text || " "}
+  {/if}
+{/snippet}
+
+{#snippet logText(line)}
+  {#if line.parts}
+    {#each line.parts as part}
+      {#if part.href}
+        <a class="log-link" href={part.href} target={part.external ? "_blank" : undefined} rel={part.external ? "noopener noreferrer" : undefined}>{@render styledContent(part)}</a>
+      {:else}
+        {@render styledContent(part)}
+      {/if}
+    {/each}
+  {:else}
+    {@render styledContent(line)}
   {/if}
 {/snippet}
 
@@ -362,6 +376,14 @@
     font: inherit;
     overflow-wrap: anywhere;
     white-space: pre-wrap;
+  }
+  .log-link {
+    color: var(--accent);
+    text-decoration: none;
+  }
+
+  .log-link:hover {
+    text-decoration: underline;
   }
 
   .line-number {
