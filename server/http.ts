@@ -41,10 +41,12 @@ import {
   fetchPrDetail,
   fetchPrCommentsSince,
   fetchGithubQuota,
+  fetchMergedPrAnalytics,
   GithubRequestError,
   githubAuthStatus,
   StalePrHeadError,
   getViewerLogin,
+  MAX_MERGED_PR_ANALYTICS_DAYS,
   lookupPr,
   lookupPrIndexes,
   searchPrs,
@@ -345,6 +347,7 @@ function createPrDetailRevalidator(
 type HttpDependencies = {
   fetchPrDetail: typeof fetchPrDetail;
   fetchGithubQuota: typeof fetchGithubQuota;
+  fetchMergedPrAnalytics: typeof fetchMergedPrAnalytics;
   fetchPrCommentsSince: typeof fetchPrCommentsSince;
   lookupPrIndexes: typeof lookupPrIndexes;
   commitPrFileEdit: typeof commitPrFileEdit;
@@ -361,6 +364,7 @@ type HttpRuntime = HttpDependencies & {
 const defaultHttpDependencies: HttpDependencies = {
   fetchPrDetail,
   fetchGithubQuota,
+  fetchMergedPrAnalytics,
   fetchPrCommentsSince,
   lookupPrIndexes,
   commitPrFileEdit,
@@ -374,6 +378,40 @@ async function handleGithubQuota(runtime: HttpRuntime): Promise<Response> {
   } catch (err) {
     console.error("GitHub quota fetch failed:", err);
     return json({ error: "GitHub quota unavailable" }, 502);
+  }
+}
+
+function validBaseBranch(base: string): boolean {
+  return base.length <= 255
+    && REF_RE.test(base)
+    && !base.startsWith(".")
+    && !base.endsWith(".")
+    && !base.endsWith("/")
+    && !base.includes("..")
+    && !base.includes("//")
+    && !base.includes("@{")
+    && base.split("/").every((part) => part !== "." && part !== ".." && !part.startsWith(".") && !part.endsWith(".lock"));
+}
+
+async function handleMergedPrAnalytics(url: URL, runtime: HttpRuntime): Promise<Response> {
+  const repo = url.searchParams.get("repo") ?? "";
+  const base = url.searchParams.get("base") ?? "";
+  const rawDays = url.searchParams.get("days");
+  const days = rawDays === null ? MAX_MERGED_PR_ANALYTICS_DAYS : Number(rawDays);
+  if (
+    !CANONICAL_REPO_RE.test(repo)
+    || !validBaseBranch(base)
+    || !Number.isSafeInteger(days)
+    || days < 1
+  ) {
+    return json({ error: "invalid repo/base/days" }, 400);
+  }
+
+  try {
+    return json(await runtime.fetchMergedPrAnalytics(repo, base, Math.min(days, MAX_MERGED_PR_ANALYTICS_DAYS)));
+  } catch (err) {
+    const status = err instanceof GithubRequestError ? err.status : 502;
+    return json({ error: status === 404 ? "not found" : "GitHub fetch failed" }, status);
   }
 }
 
@@ -1898,6 +1936,9 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
 
     if (req.method === "GET" && url.pathname === "/api/quota") {
       return handleGithubQuota(runtime);
+    }
+    if (req.method === "GET" && url.pathname === "/api/merged-pr-analytics") {
+      return handleMergedPrAnalytics(url, runtime);
     }
     if (req.method === "GET" && url.pathname === "/api/inbox") {
       return handleInbox(url);

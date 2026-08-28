@@ -195,6 +195,14 @@ export async function fetchAuthStatus() {
 }
 
 
+export async function fetchMergedPrAnalytics(repo, base = "staging", days = 180, signal) {
+  const params = new URLSearchParams({ repo, base, days: String(days) });
+  const res = await fetch(`/api/merged-pr-analytics?${params}`, { signal });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.error || `merged-pr-analytics ${res.status}`);
+  return body;
+}
+
 // startup has several independent settings readers; identical concurrent GETs
 // serialize on chromium's cache lock, so one in-flight request serves them all
 let settingsInFlight = null;

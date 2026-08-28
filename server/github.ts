@@ -1,5 +1,5 @@
 import type { MergeMethod } from "./mergeMethod.ts";
-import { mockGithub } from "./mockGithub.ts";
+import { mockGithub, MOCK_FIXTURE_CLOCK } from "./mockGithub.ts";
 
 let cachedToken: string | null = null;
 const ghExecutable = process.env.COCKPIT_GH_BIN || "gh";
@@ -106,6 +106,128 @@ async function graphql<T>(query: string, variables: Record<string, unknown>): Pr
   }
   if (!body.data) throw new GithubRequestError("GraphQL response missing data", 502);
   return body.data;
+}
+
+export const MAX_MERGED_PR_ANALYTICS_DAYS = 180;
+const MERGED_PR_ANALYTICS_TTL_MS = 60_000;
+
+export interface MergedPrAnalyticsPullRequest {
+  number: number;
+  title: string;
+  url: string;
+  author: string;
+  mergedAt: string;
+}
+
+export interface MergedPrAnalytics {
+  repo: string;
+  base: string;
+  asOf: string;
+  pullRequests: MergedPrAnalyticsPullRequest[];
+}
+
+const mergedPrAnalyticsCache = new Map<string, { expiresAt: number; value: MergedPrAnalytics }>();
+
+const MERGED_PRS_QUERY = `
+query($owner: String!, $name: String!, $base: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(
+      states: MERGED
+      baseRefName: $base
+      first: 100
+      after: $cursor
+      orderBy: { field: UPDATED_AT, direction: DESC }
+    ) {
+      nodes {
+        number
+        title
+        url
+        mergedAt
+        updatedAt
+        author { login }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}`;
+
+export async function fetchMergedPrAnalytics(repo: string, base: string, days: number): Promise<MergedPrAnalytics> {
+  const cappedDays = Math.min(days, MAX_MERGED_PR_ANALYTICS_DAYS);
+  const cacheKey = `${repo}\0${base}\0${cappedDays}`;
+  const now = Date.now();
+  const cached = mergedPrAnalyticsCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) return cached.value;
+  if (cached) mergedPrAnalyticsCache.delete(cacheKey);
+
+  const asOf = mockGithub ? MOCK_FIXTURE_CLOCK : new Date(now).toISOString();
+  const cutoff = Date.parse(asOf) - cappedDays * 24 * 60 * 60_000;
+  let pullRequests: MergedPrAnalyticsPullRequest[];
+
+  if (mockGithub) {
+    pullRequests = base === "main"
+      ? mockGithub.searchRecentPrs(repo)
+        .filter((entry) => entry.state === "MERGED")
+        .flatMap((entry) => {
+          const mergedAt = entry.mergedAt ?? entry.updatedAt;
+          return Date.parse(mergedAt) >= cutoff
+            ? [{
+                number: entry.number,
+                title: entry.title,
+                url: `https://github.com/${repo}/pull/${entry.number}`,
+                author: entry.author,
+                mergedAt,
+              }]
+            : [];
+        })
+      : [];
+  } else {
+    const [owner, name] = repo.split("/");
+    if (!owner || !name) throw new GithubRequestError(`Invalid repository: ${repo}`, 404);
+    pullRequests = [];
+    let cursor: string | null = null;
+    while (true) {
+      const data = await graphql<{
+        repository: {
+          pullRequests: {
+            nodes: Array<{
+              number: number;
+              title: string;
+              url: string;
+              mergedAt: string | null;
+              updatedAt: string;
+              author: { login: string } | null;
+            }>;
+            pageInfo: { hasNextPage: boolean; endCursor: string | null };
+          };
+        } | null;
+      }>(MERGED_PRS_QUERY, { owner, name, base, cursor });
+      if (!data.repository) throw new GithubRequestError(`Repository not found: ${repo}`, 404);
+
+      const nodes = data.repository.pullRequests.nodes;
+      const reachedCutoff = nodes.length > 0 && nodes.every((entry) => Date.parse(entry.updatedAt) < cutoff);
+      for (const entry of nodes) {
+        if (!entry.mergedAt) continue;
+        if (Date.parse(entry.mergedAt) < cutoff) continue;
+        pullRequests.push({
+          number: entry.number,
+          title: entry.title,
+          url: entry.url,
+          author: entry.author?.login ?? "unknown",
+          mergedAt: entry.mergedAt,
+        });
+      }
+
+      const { hasNextPage, endCursor } = data.repository.pullRequests.pageInfo;
+      if (reachedCutoff || !hasNextPage) break;
+      if (!endCursor) throw new GithubRequestError("GraphQL response missing pull request cursor", 502);
+      cursor = endCursor;
+    }
+  }
+
+  pullRequests.sort((left, right) => right.mergedAt.localeCompare(left.mergedAt));
+  const value = { repo, base, asOf, pullRequests };
+  mergedPrAnalyticsCache.set(cacheKey, { expiresAt: now + MERGED_PR_ANALYTICS_TTL_MS, value });
+  return value;
 }
 
 export interface GithubQuotaResource {

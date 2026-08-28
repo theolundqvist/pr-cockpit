@@ -187,6 +187,64 @@ describe("health", () => {
   });
 });
 
+describe("merged PR analytics", () => {
+  test("returns the repository/base response and caps the requested window", async () => {
+    const calls: Array<{ repo: string; base: string; days: number }> = [];
+    const analytics = {
+      repo: "example-org/webapp",
+      base: "release/v2",
+      asOf: "2026-08-27T12:00:00.000Z",
+      pullRequests: [{
+        number: 42,
+        title: "Ship release analytics",
+        url: "https://github.com/example-org/webapp/pull/42",
+        author: "octocat",
+        mergedAt: "2026-08-26T09:30:00.000Z",
+      }],
+    };
+    const fetchHandler = buildFetchHandler(4820, {
+      fetchMergedPrAnalytics: async (repo, base, days) => {
+        calls.push({ repo, base, days });
+        return analytics;
+      },
+    });
+
+    const response = await fetchHandler(new Request(
+      "http://127.0.0.1:4820/api/merged-pr-analytics?repo=example-org%2Fwebapp&base=release%2Fv2&days=999",
+    ));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(analytics);
+    expect(calls).toEqual([{ repo: "example-org/webapp", base: "release/v2", days: 180 }]);
+  });
+
+  test("rejects invalid repository, base, and days parameters before fetching", async () => {
+    let calls = 0;
+    const fetchHandler = buildFetchHandler(4820, {
+      fetchMergedPrAnalytics: async () => {
+        calls += 1;
+        throw new Error("should not fetch");
+      },
+    });
+    const invalidQueries = [
+      "base=main&days=30",
+      "repo=example-org&base=main&days=30",
+      "repo=example-org%2Fwebapp&days=30",
+      "repo=example-org%2Fwebapp&base=..%2Fmain&days=30",
+      "repo=example-org%2Fwebapp&base=main&days=0",
+      "repo=example-org%2Fwebapp&base=main&days=1.5",
+      "repo=example-org%2Fwebapp&base=main&days=recent",
+    ];
+
+    for (const query of invalidQueries) {
+      const response = await fetchHandler(new Request(`http://127.0.0.1:4820/api/merged-pr-analytics?${query}`));
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: "invalid repo/base/days" });
+    }
+    expect(calls).toBe(0);
+  });
+});
+
 describe("hosted update policy", () => {
   test("hides updates and rejects update requests when updates are disabled", async () => {
     const previous = process.env.COCKPIT_UPDATE_DISABLED;

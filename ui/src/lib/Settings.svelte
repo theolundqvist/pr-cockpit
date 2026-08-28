@@ -8,6 +8,7 @@
   import KeyBar from "./KeyBar.svelte";
   import ShortcutInput from "./ShortcutInput.svelte";
   import Kbd from "./Kbd.svelte";
+  import SettingsAnalytics from "./SettingsAnalytics.svelte";
   import { SETTINGS_SECTION_KEY, SETTINGS_SECTIONS, normalizeSettingsSection } from "./settingsSections.js";
   let { onRunSetup, section = "general" } = $props();
 
@@ -246,7 +247,7 @@
 
   $effect(() => {
     function onKey(e) {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+      if (activeTab !== "analytics" && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
         save();
         return;
@@ -628,6 +629,11 @@
         </label>
       {/if}
 
+      {#if activeTab === "analytics"}
+        <SettingsAnalytics repos={configuredRepos} />
+      {/if}
+
+      {#if activeTab !== "analytics"}
       <div class="actions">
         <button class="btn" disabled={saving || keybindClash || agentKeybindIssues.size > 0} onclick={save}>
           {saving ? "Saving…" : "Save"}
@@ -635,12 +641,15 @@
         </button>
         {#if saved}<span class="saved">Saved</span>{/if}
       </div>
+      {/if}
       </div>
     {/if}
   </div>
 </div>
 
-<KeyBar keys={[{ key: "⌘s", label: "save" }, { key: "esc", label: "back" }]} />
+{#if activeTab !== "analytics"}
+  <KeyBar keys={[{ key: "⌘s", label: "save" }, { key: "esc", label: "back" }]} />
+{/if}
 
 <style>
   .page {
