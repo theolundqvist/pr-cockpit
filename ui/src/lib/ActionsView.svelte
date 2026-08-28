@@ -4,7 +4,7 @@
   import { fetchActionCommits, fetchActionGraph, fetchActionLog, fetchActions } from "./api.js";
   import { durationText, relativeTime } from "./time.js";
 
-  let { repo, number, headSha, selectedSha = null, active = false, runUrl = $bindable(null) } = $props();
+  let { repo, number, headSha, selectedSha = null, requestedJobId = null, active = false, runUrl = $bindable(null) } = $props();
 
   let snapshot = $state(null);
   let loading = $state(true);
@@ -140,9 +140,11 @@
 
   $effect(() => {
     activeSha;
+    requestedJobId;
     snapshot = null;
     graphSnapshot = null;
-    selectedJobId = null;
+    selectedJobId = requestedJobId;
+    overviewMode = requestedJobId === null;
     logs = {};
     logErrors = {};
     loading = true;

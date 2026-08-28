@@ -71,9 +71,8 @@
     { value: "REQUEST_CHANGES", label: "Request changes", tone: "red" },
   ];
 
-  let { repo, number, tab, actionSha = null, historyPath = null, historySymbol = null, refreshRevision = 0 } = $props();
+  let { repo, number, tab, actionSha = null, actionJob = null, historyPath = null, historySymbol = null, refreshRevision = 0 } = $props();
   let handledRefreshRevision = refreshRevision;
-
   loadPrIndex();
 
   let lastG = 0;
@@ -2378,16 +2377,17 @@
             <ul class="ci-failure-list">
               {#each failingChecks as check}
                 <li>
-                  <span class="ci-failure-check">
-                    <strong title={check.name}>{check.name}</strong>
-                    {#if check.required}<span class="attention-chip ci-required">Required</span>{/if}
-                    <span>{check.status}</span>
-                  </span>
-                  {#if check.url}
-                    <a href={check.url} target="_blank" rel="noreferrer">Open logs ↗</a>
-                  {:else}
-                    <span class="ci-location">PR checks · use copied command</span>
-                  {/if}
+                  <a
+                    class="ci-failure-row"
+                    href={`#/pr/${repo}/${number}/actions?sha=${pr.headRefOid}${check.jobId === null ? "" : `&job=${check.jobId}`}`}
+                  >
+                    <span class="ci-failure-check">
+                      <strong title={check.name}>{check.name}</strong>
+                      {#if check.required}<span class="attention-chip ci-required">Required</span>{/if}
+                      <span>{check.status}</span>
+                    </span>
+                    <span class="ci-open-logs">Open logs</span>
+                  </a>
                 </li>
               {/each}
             </ul>
@@ -2479,7 +2479,6 @@
           </button>
         {/if}
       {/if}
-
       <nav class="tabs">
         <a class="tab" class:active={tab === "conversation"} href="#/pr/{repo}/{number}" onclick={(event) => guardTabNavigation(event, "conversation")}>
           Conversation {#if tab === "files"}<Kbd keys="d" />{/if}
@@ -2496,7 +2495,7 @@
       </nav>
 
       {#if tab === "actions"}
-        <ActionsView {repo} {number} headSha={pr.headRefOid} selectedSha={actionSha} active bind:runUrl={actionsRunUrl} />
+        <ActionsView {repo} {number} headSha={pr.headRefOid} selectedSha={actionSha} requestedJobId={actionJob} active bind:runUrl={actionsRunUrl} />
       {/if}
 
       {#if tab === "files"}
@@ -5126,13 +5125,28 @@
     padding: 0 12px 9px 43px;
   }
   .ci-failure-list li {
+    min-width: 0;
+    border-top: 1px solid var(--border-soft);
+    font-size: 10px;
+  }
+  .ci-failure-row {
     display: flex;
     align-items: center;
     min-width: 0;
-    gap: 10px;
     min-height: 27px;
-    border-top: 1px solid var(--border-soft);
-    font-size: 10px;
+    margin: 0 -8px;
+    padding: 0 8px;
+    gap: 10px;
+    border-radius: 4px;
+    color: inherit;
+    text-decoration: none;
+  }
+  .ci-failure-row:hover {
+    background: var(--surface-hover);
+  }
+  .ci-failure-row:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
   }
   .ci-failure-check {
     display: flex;
@@ -5155,14 +5169,13 @@
     background: var(--review-bg);
     color: var(--review);
   }
-  .ci-failure-list a,
+  .ci-open-logs,
   .ci-location {
     flex: none;
     color: var(--link);
     font-size: 10px;
-    text-decoration: none;
   }
-  .ci-failure-list a:hover {
+  .ci-failure-row:hover .ci-open-logs {
     text-decoration: underline;
   }
   .ci-failure-error {
@@ -5600,10 +5613,11 @@
     .ci-failure-error {
       padding: 0 10px 8px 39px;
     }
-    .ci-failure-list li {
+    .ci-failure-row {
       align-items: flex-start;
       flex-direction: column;
       gap: 2px;
+      margin: 0;
       padding: 6px 0;
     }
     .ci-failure-check {

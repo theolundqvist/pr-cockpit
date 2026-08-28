@@ -20,8 +20,8 @@ This repository is worked on by humans and coding agents alike. Leave it easier 
 - Verify landing-page search queries against live GitHub results; captured PR titles can disappear from the search index while the fixture remains valid.
 - Match the surrounding style. Comments are for a non-obvious constraint, not for narration.
 - Pull-request actions follow GitHub semantics: merge green, update neutral, and destructive actions red.
-- Workflow jobs use commit-check semantics: green check for success, red cross for failure, orange spinner while active, and gray minus when skipped. Logs preserve ANSI colors and open at the bottom. Commit status icons open Cockpit’s Actions tab at that exact SHA; its selector covers the full mirror range, not GraphQL’s last 100 commits.
-- Operational telemetry belongs on a top-level page, not in Settings; Usage keeps three days of hourly context and forecasts the active GitHub quota window.
+- Workflow jobs use commit-check semantics: green check for success, red cross for failure, orange spinner while active, and gray minus when skipped. Logs preserve ANSI colors and open at the bottom. Commit status icons and failing-check rows open Cockpit’s Actions tab at the exact commit and job; its selector covers the full mirror range, not GraphQL’s last 100 commits.
+- Operational telemetry belongs on a dedicated Usage page in Settings, not among general controls; it keeps three days of hourly context and forecasts the active GitHub quota window.
 - File status lives in the colored leading icon; moved files use a distinct move glyph, never a text badge beside the name.
 - Agents mutate existing PRs through `pr-cockpit`; use its `--body-file` commands for exact multiline text, never `gh` or direct GitHub APIs.
 - Do not perform Vercel or `forge.scape.app` infrastructure work from this repository.

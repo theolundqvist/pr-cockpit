@@ -28,7 +28,7 @@
 <div class="page">
   <header class="head">
     <div class="head-title-wrap">
-      <span class="ui-eyebrow">Operations</span>
+      <span class="ui-eyebrow">Control center</span>
       <span class="head-title">Usage</span>
     </div>
   </header>

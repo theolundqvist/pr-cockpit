@@ -24,10 +24,15 @@
   const isShell = navigator.userAgent.includes("Electron");
 
   function parseRoute(hash) {
-    const match = hash.match(/^#\/pr\/([^/]+)\/([^/]+)\/(\d+)(?:\/(files|agents)|\/(actions)(?:\?sha=([0-9a-f]{40}))?|\/history\/([^/?]+)(?:\?symbol=([^&]+))?)?$/i);
+    const match = hash.match(/^#\/pr\/([^/]+)\/([^/]+)\/(\d+)(?:\/(files|agents)|\/(actions)(?:\?([^#]+))?|\/history\/([^/?]+)(?:\?symbol=([^&]+))?)?$/i);
     if (match) {
       let historyPath = null;
       let historySymbol = null;
+      const actionParams = new URLSearchParams(match[6] ?? "");
+      const actionSha = actionParams.get("sha");
+      const actionJobText = actionParams.get("job");
+      if (actionSha !== null && !/^[0-9a-f]{40}$/i.test(actionSha)) return { name: "inbox" };
+      if (actionJobText !== null && !/^\d+$/.test(actionJobText)) return { name: "inbox" };
       try {
         historyPath = match[7] ? decodeURIComponent(match[7]) : null;
         historySymbol = match[8] ? decodeURIComponent(match[8]) : null;
@@ -39,12 +44,12 @@
         repo: `${match[1]}/${match[2]}`,
         number: Number(match[3]),
         tab: historyPath ? "files" : match[5] ?? match[4] ?? "conversation",
-        actionSha: match[6] ?? null,
+        actionSha,
+        actionJob: actionJobText === null ? null : Number(actionJobText),
         historyPath,
         historySymbol,
       };
     }
-    if (hash === "#/usage") return { name: "usage" };
     const settingsMatch = hash.match(/^#\/settings(?:\/([^/]+))?$/);
     if (settingsMatch) {
       const requestedSection = settingsMatch[1] ?? localStorage.getItem(SETTINGS_SECTION_KEY);
@@ -217,18 +222,6 @@
           <span class="nav-kbd"><Kbd keys={["cmd", "k"]} /></span>
         </button>
 
-        <span class="nav-label nav-label-lower">Control</span>
-        <a
-          class="nav-item"
-          class:active={route.name === "usage"}
-          href="#/usage"
-          aria-current={route.name === "usage" ? "page" : undefined}
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M4 19V9m5 10V5m5 14v-7m5 7V3" />
-          </svg>
-          <span>Usage</span>
-        </a>
         <a
           class="nav-item"
           class:active={route.name === "settings"}
@@ -275,11 +268,13 @@
       {#if setupOpen}
         <Onboarding onDone={finishSetup} onCancel={() => (setupOpen = false)} />
       {:else if route.name === "detail"}
-        <PrDetail repo={route.repo} number={route.number} tab={route.tab} actionSha={route.actionSha} historyPath={route.historyPath} historySymbol={route.historySymbol} refreshRevision={detailRevision} />
+        <PrDetail repo={route.repo} number={route.number} tab={route.tab} actionSha={route.actionSha} actionJob={route.actionJob} historyPath={route.historyPath} historySymbol={route.historySymbol} refreshRevision={detailRevision} />
       {:else if route.name === "settings"}
-        <Settings section={route.section} onRunSetup={() => (setupOpen = true)} />
-      {:else if route.name === "usage"}
-        <Usage />
+        {#if route.section === "usage"}
+          <Usage />
+        {:else}
+          <Settings section={route.section} onRunSetup={() => (setupOpen = true)} />
+        {/if}
       {:else if reposConfigured === false}
         <Onboarding onDone={finishSetup} />
       {:else if reposConfigured}
@@ -292,7 +287,7 @@
       {/if}
     </main>
 
-    {#if route.name === "detail" || route.name === "settings" || route.name === "usage"}
+    {#if route.name === "detail" || route.name === "settings"}
       <FindBar />
     {/if}
 
