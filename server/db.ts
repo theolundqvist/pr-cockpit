@@ -1022,6 +1022,11 @@ export function workflowRunsForLease(repo: string, number: number, headSha: stri
     "SELECT * FROM workflow_runs WHERE repo = ? AND pr_number = ? AND head_sha = ? ORDER BY run_id, run_attempt",
   ).all(repo, number, headSha);
 }
+export function workflowRunsForCommit(repo: string, headSha: string): WorkflowRunRow[] {
+  return db.prepare<WorkflowRunRow, [string, string]>(
+    "SELECT * FROM workflow_runs WHERE repo = ? AND head_sha = ? ORDER BY run_id, run_attempt",
+  ).all(repo, headSha);
+}
 export function listWorkflowRuns(repos: string[], limit = 200, offset = 0): WorkflowRunRow[] {
   if (repos.length === 0) return [];
   const placeholders = repos.map(() => "?").join(", ");

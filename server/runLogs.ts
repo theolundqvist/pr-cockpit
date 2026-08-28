@@ -17,6 +17,7 @@ import {
   upsertRunJob,
   upsertWorkflowRun,
   workflowRunsForLease,
+  workflowRunsForCommit,
   type RunJobRow,
   type WorkflowRunRow,
 } from "./db.ts";
@@ -233,18 +234,12 @@ function workflowFilePath(path: string): string {
   return refMarker === -1 ? path : path.slice(0, refMarker);
 }
 
-export async function actionWorkflowGraphs(
+async function workflowGraphsForRuns(
   repo: string,
-  number: number,
   headSha: string,
-  fetchers: WorkflowGraphFetchers = liveWorkflowGraphFetchers,
+  runs: WorkflowRunRow[],
+  fetchers: WorkflowGraphFetchers,
 ): Promise<WorkflowGraph[]> {
-  let runs = workflowRunsForLease(repo, number, headSha);
-  if (runs.length === 0 || runs.some((run) => !run.workflow_path)) {
-    const refreshed = await fetchers.fetchWorkflowRuns(repo, headSha);
-    for (const run of refreshed) storeRun(repo, number, compactRun(run));
-    runs = workflowRunsForLease(repo, number, headSha);
-  }
   const paths = [...new Set(runs.map((run) => workflowFilePath(run.workflow_path)).filter(Boolean))];
   const settled = await Promise.allSettled(paths.map(async (path) => {
     let source = getFileContents(headSha, path);
@@ -261,6 +256,35 @@ export async function actionWorkflowGraphs(
     console.error(`Workflow graph load failed for ${repo}:${paths[index]}@${headSha}:`, result.reason);
     return { path: paths[index]!, name: null, jobs: [], error: "Workflow definition unavailable" };
   });
+}
+
+export async function actionWorkflowGraphs(
+  repo: string,
+  number: number,
+  headSha: string,
+  fetchers: WorkflowGraphFetchers = liveWorkflowGraphFetchers,
+): Promise<WorkflowGraph[]> {
+  let runs = workflowRunsForLease(repo, number, headSha);
+  if (runs.length === 0 || runs.some((run) => !run.workflow_path)) {
+    const refreshed = await fetchers.fetchWorkflowRuns(repo, headSha);
+    for (const run of refreshed) storeRun(repo, number, compactRun(run));
+    runs = workflowRunsForLease(repo, number, headSha);
+  }
+  return workflowGraphsForRuns(repo, headSha, runs, fetchers);
+}
+
+export async function repoActionWorkflowGraphs(
+  repo: string,
+  headSha: string,
+  fetchers: WorkflowGraphFetchers = liveWorkflowGraphFetchers,
+): Promise<WorkflowGraph[]> {
+  let runs = workflowRunsForCommit(repo, headSha);
+  if (runs.length === 0 || runs.some((run) => !run.workflow_path)) {
+    const refreshed = await fetchers.fetchWorkflowRuns(repo, headSha);
+    for (const run of refreshed) storeRun(repo, null, compactRun(run));
+    runs = workflowRunsForCommit(repo, headSha);
+  }
+  return workflowGraphsForRuns(repo, headSha, runs, fetchers);
 }
 
 

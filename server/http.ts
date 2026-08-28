@@ -117,7 +117,7 @@ import { createTmuxFocusHandler } from "./tmuxFocus.ts";
 import type { TmuxFocusHandler } from "./tmuxFocus.ts";
 import { needsMeRank } from "./rank.ts";
 import { invalidateInbox, invalidatePr } from "./rendererInvalidation.ts";
-import { actionJobLog, actionWorkflowGraphs, activateActionsLease, cacheActionsRun, cacheGithubActionsForCommit, cacheRepoActionsRunJobs, cachedJobLogs, formatJobLogs, formatRunJobs } from "./runLogs.ts";
+import { actionJobLog, actionWorkflowGraphs, activateActionsLease, cacheActionsRun, cacheGithubActionsForCommit, cacheRepoActionsRunJobs, cachedJobLogs, formatJobLogs, formatRunJobs, repoActionWorkflowGraphs } from "./runLogs.ts";
 const cockpitRoot = process.cwd();
 
 function json(data: unknown, status = 200): Response {
@@ -1610,41 +1610,71 @@ function actionRunMatchesStatus(run: WorkflowRunRow, filter: string): boolean {
 
 async function handleRepoActions(url: URL): Promise<Response> {
   const tracked = await trackedRepos();
-  const requestedRepo = url.searchParams.get("repo");
-  if (requestedRepo && !tracked.includes(requestedRepo)) return json({ error: "repo is not tracked" }, 404);
-  const repos = requestedRepo ? [requestedRepo] : tracked;
-  const workflow = url.searchParams.get("workflow") ?? "";
+  // Repeated repo/workflow params are ANDed by dimension and ORed within each dimension.
+  const requestedRepos = url.searchParams.getAll("repo").filter(Boolean);
+  const unknownRepo = requestedRepos.find((repo) => !tracked.includes(repo));
+  if (unknownRepo) return json({ error: "repo is not tracked" }, 404);
+  const repos = requestedRepos.length > 0 ? [...new Set(requestedRepos)] : tracked;
+  const requestedWorkflows = [...new Set(url.searchParams.getAll("workflow").filter(Boolean))];
   const status = url.searchParams.get("status") ?? "all";
+  const headSha = url.searchParams.get("headSha") ?? "";
+  if (headSha && !/^[0-9a-f]{40}$/i.test(headSha)) return json({ error: "invalid head sha" }, 400);
   const page = Math.max(1, Number.parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
   const allRuns = listWorkflowRuns(repos, 1000);
   const workflows = [...new Set(allRuns.map((run) => run.workflow_name).filter(Boolean))]
     .sort((left, right) => left.localeCompare(right));
-  const workflowRuns = workflow ? allRuns.filter((run) => run.workflow_name === workflow) : allRuns;
-  const latestSuccessful = workflow
+  const commitRuns = headSha ? allRuns.filter((run) => run.head_sha === headSha) : allRuns;
+  const workflowRuns = requestedWorkflows.length > 0
+    ? commitRuns.filter((run) => requestedWorkflows.includes(run.workflow_name))
+    : commitRuns;
+  const latestSuccessful = requestedWorkflows.length === 1
     ? workflowRuns.find((run) => run.conclusion === "success") ?? null
     : null;
   const filtered = workflowRuns.filter((run) => actionRunMatchesStatus(run, status));
   const pageSize = 50;
   const start = (page - 1) * pageSize;
   const runId = Number(url.searchParams.get("runId"));
+  let selectedRun: WorkflowRunRow | null = null;
   let jobs: SerializedActionJob[] = [];
-  if (Number.isSafeInteger(runId) && runId > 0 && requestedRepo) {
-    const selectedRun = allRuns.find((run) => run.run_id === runId);
+  if (Number.isSafeInteger(runId) && runId > 0 && repos.length === 1) {
+    selectedRun = commitRuns.find((run) => run.run_id === runId) ?? null;
     if (!selectedRun) return json({ error: "workflow run not found" }, 404);
-    if (selectedRun.jobs_fetched_at === null || ACTIVE_ACTION_STATUSES[selectedRun.status] === true) {
-      await cacheRepoActionsRunJobs(selectedRun);
+    if (headSha) {
+      for (const run of commitRuns) {
+        if (run.jobs_fetched_at === null || ACTIVE_ACTION_STATUSES[run.status] === true) {
+          await cacheRepoActionsRunJobs(run);
+        }
+      }
+      jobs = listRunJobs(selectedRun.repo, headSha).map(serializeActionJob);
+    } else {
+      if (selectedRun.jobs_fetched_at === null || ACTIVE_ACTION_STATUSES[selectedRun.status] === true) {
+        await cacheRepoActionsRunJobs(selectedRun);
+      }
+      jobs = listRunJobsForRun(selectedRun.repo, selectedRun.run_id, selectedRun.run_attempt).map(serializeActionJob);
     }
-    jobs = listRunJobsForRun(selectedRun.repo, selectedRun.run_id, selectedRun.run_attempt).map(serializeActionJob);
   }
   return json({
     repos: tracked,
     workflows,
     runs: filtered.slice(start, start + pageSize).map(serializeActionRun),
     latestSuccessful: latestSuccessful ? serializeActionRun(latestSuccessful) : null,
+    selectedRun: selectedRun ? serializeActionRun(selectedRun) : null,
     jobs,
     page,
     hasMore: start + pageSize < filtered.length,
   });
+}
+
+async function handleRepoActionGraph(url: URL): Promise<Response> {
+  const repo = url.searchParams.get("repo") ?? "";
+  const headSha = url.searchParams.get("headSha") ?? "";
+  if (!(await trackedRepos()).includes(repo)) return json({ error: "repo is not tracked" }, 404);
+  if (!/^[0-9a-f]{40}$/i.test(headSha)) return json({ error: "invalid head sha" }, 400);
+  try {
+    return json({ headSha, workflows: await repoActionWorkflowGraphs(repo, headSha) });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 502);
+  }
 }
 
 async function handleRepoActionLog(jobId: string, url: URL): Promise<Response> {
@@ -2602,6 +2632,9 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     }
     if (req.method === "GET" && url.pathname === "/api/actions/runs") {
       return handleRepoActions(url);
+    }
+    if (req.method === "GET" && url.pathname === "/api/actions/graph") {
+      return handleRepoActionGraph(url);
     }
     if (
       req.method === "GET" &&

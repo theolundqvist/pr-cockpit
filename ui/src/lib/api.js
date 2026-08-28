@@ -71,12 +71,26 @@ export async function fetchActionLog(repo, number, jobId, sha = null, signal = n
 export async function fetchRepoActions(filters = {}, signal = null) {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(filters)) {
-    if (value !== null && value !== undefined && value !== "") params.set(key, String(value));
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (item !== "") params.append(key, String(item));
+      }
+    } else if (value !== null && value !== undefined && value !== "") {
+      params.set(key, String(value));
+    }
   }
   const query = params.toString();
   const res = await fetch(`/api/actions/runs${query ? `?${query}` : ""}`, { signal });
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new Error(body?.error || `actions ${res.status}`);
+  return body;
+}
+
+export async function fetchRepoActionGraph(repo, headSha, signal = null) {
+  const params = new URLSearchParams({ repo, headSha });
+  const res = await fetch(`/api/actions/graph?${params}`, { signal });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.error || `action graph ${res.status}`);
   return body;
 }
 

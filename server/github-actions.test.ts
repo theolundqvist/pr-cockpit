@@ -127,3 +127,55 @@ test("repo-wide Actions retains non-PR runs and reports latest success independe
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test("repo-wide Actions accepts repeated repository and workflow filters", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-actions-multiselect-"));
+  try {
+    const script = `
+      const { ingestActionsState } = await import(${JSON.stringify(new URL("./runLogs.ts", import.meta.url).href)});
+      const { buildFetchHandler } = await import(${JSON.stringify(new URL("./http.ts", import.meta.url).href)});
+      const run = (id, workflowName, headSha, eventAt) => ({
+        id, attempt: 1, headSha, headBranch: "main", workflowName,
+        workflowPath: ".github/workflows/test.yml", displayTitle: workflowName,
+        event: "push", actorLogin: "ci", prNumber: null, status: "completed",
+        conclusion: "failure", eventAt, createdAt: eventAt, updatedAt: eventAt,
+        runStartedAt: eventAt, runNumber: id, htmlUrl: "https://example.test/" + id,
+      });
+      await ingestActionsState("acme/app", { run: run(11, "Release Backend", "a".repeat(40), "2026-08-28T11:00:00Z") });
+      await ingestActionsState("acme/web", { run: run(12, "Deploy Frontend", "b".repeat(40), "2026-08-28T12:00:00Z") });
+      await ingestActionsState("acme/app", { run: run(13, "Unselected Workflow", "c".repeat(40), "2026-08-28T13:00:00Z") });
+      const params = new URLSearchParams();
+      params.append("repo", "acme/app");
+      params.append("repo", "acme/web");
+      params.append("workflow", "Release Backend");
+      params.append("workflow", "Deploy Frontend");
+      params.set("status", "failed");
+      const response = await buildFetchHandler(4899)(new Request("http://127.0.0.1:4899/api/actions/runs?" + params));
+      console.log(JSON.stringify({ status: response.status, body: await response.json() }));
+      process.exit(0);
+    `;
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: {
+        ...Bun.env,
+        COCKPIT_DATA_DIR: dataDir,
+        COCKPIT_REPOS: "acme/app,acme/web",
+        COCKPIT_MOCK: "1",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      process.exited,
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(stderr);
+    const result = JSON.parse(stdout);
+    expect(result.status).toBe(200);
+    expect(result.body.runs.map((run: { id: number }) => run.id)).toEqual([12, 11]);
+    expect(result.body.latestSuccessful).toBeNull();
+    expect(result.body.workflows).toEqual(["Deploy Frontend", "Release Backend", "Unselected Workflow"]);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});

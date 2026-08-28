@@ -2,10 +2,22 @@
   import ActionsGraph from "./ActionsGraph.svelte";
   import ActionLog from "./ActionLog.svelte";
   import ActionStatusIcon from "./ActionStatusIcon.svelte";
-  import { fetchActionCommits, fetchActionGraph, fetchActionLog, fetchActions } from "./api.js";
+  import { fetchActionCommits, fetchActionGraph, fetchActionLog, fetchActions, fetchRepoActionGraph, fetchRepoActionLog, fetchRepoActions } from "./api.js";
   import { durationText, relativeTime } from "./time.js";
 
-  let { repo, number, headSha, selectedSha = null, requestedJobId = null, active = false, runUrl = $bindable(null) } = $props();
+  let {
+    repo,
+    number = null,
+    headSha,
+    selectedSha = null,
+    requestedJobId = null,
+    preferredRunId = null,
+    active = false,
+    startInOverview = true,
+    fullHeight = false,
+    onSelectRun = null,
+    runUrl = $bindable(null),
+  } = $props();
 
   let snapshot = $state(null);
   let loading = $state(true);
@@ -113,7 +125,7 @@
   }
 
   $effect(() => {
-    if (!active) {
+    if (!active || number === null) {
       commitLoading = false;
       return;
     }
@@ -142,10 +154,11 @@
   $effect(() => {
     activeSha;
     requestedJobId;
+    preferredRunId;
     snapshot = null;
     graphSnapshot = null;
     selectedJobId = requestedJobId;
-    overviewMode = requestedJobId === null;
+    overviewMode = requestedJobId === null && startInOverview;
     logs = {};
     logErrors = {};
     loading = true;
@@ -160,12 +173,17 @@
     async function refresh(initial) {
       if (initial) loading = true;
       try {
-        const next = await fetchActions(repo, number, activeSha, controller.signal);
+        const next = number === null
+          ? await fetchRepoActions({ repo: [repo], headSha: activeSha, runId: preferredRunId }, controller.signal)
+          : await fetchActions(repo, number, activeSha, controller.signal);
         if (stopped || key !== `${repo}#${number}:${activeSha}:${refreshNonce}`) return;
         snapshot = next;
         loadError = "";
         if (!next.jobs.some((job) => job.id === selectedJobId)) {
-          selectedJobId = chooseDefaultJob(next.jobs)?.id ?? null;
+          const preferredJobs = preferredRunId === null
+            ? next.jobs
+            : next.jobs.filter((job) => job.runId === preferredRunId);
+          selectedJobId = chooseDefaultJob(preferredJobs)?.id ?? chooseDefaultJob(next.jobs)?.id ?? null;
         }
       } catch (error) {
         if (!stopped) loadError = error instanceof Error ? error.message : String(error);
@@ -193,7 +211,10 @@
     const key = `${repo}#${number}:${activeSha}:${refreshNonce}`;
     let stopped = false;
     const controller = new AbortController();
-    fetchActionGraph(repo, number, activeSha, controller.signal).then(
+    const request = number === null
+      ? fetchRepoActionGraph(repo, activeSha, controller.signal)
+      : fetchActionGraph(repo, number, activeSha, controller.signal);
+    request.then(
       (next) => {
         if (stopped || key !== `${repo}#${number}:${activeSha}:${refreshNonce}`) return;
         graphSnapshot = next;
@@ -219,7 +240,9 @@
     const id = job.id;
     logLoadingId = id;
     try {
-      const result = await fetchActionLog(repo, number, id, activeSha, controller.signal);
+      const result = number === null
+        ? await fetchRepoActionLog(repo, activeSha, id, controller.signal)
+        : await fetchActionLog(repo, number, id, activeSha, controller.signal);
       if (selectedJobId !== id) return;
       logs = { ...logs, [id]: result };
       const nextErrors = { ...logErrors };
@@ -249,6 +272,7 @@
     overviewMode = false;
   }
   function selectCommit(event) {
+    if (number === null) return;
     const sha = event.currentTarget.value;
     location.hash = `#/pr/${repo}/${number}/actions?sha=${sha}`;
   }
@@ -267,27 +291,36 @@
   <ActionStatusIcon {status} {conclusion} />
 {/snippet}
 
+{#snippet workflowHeading(group)}
+  {@render statusIcon(group.run.status, group.run.conclusion)}
+  <span class="workflow-name">{group.run.workflowName || "Workflow"}</span>
+  {#if group.run.attempt > 1}<span class="attempt">attempt {group.run.attempt}</span>{/if}
+  {#if group.run.eventAt}<span class="run-time">{relativeTime(group.run.eventAt)}</span>{/if}
+{/snippet}
+
 <div class="actions-viewbar">
   <div class="view-picker" aria-label="Actions view">
     <button class:active={overviewMode} onclick={() => overviewMode = true}>Overview</button>
     <button class:active={!overviewMode} disabled={!selectedJob} onclick={() => overviewMode = false}>Job log</button>
   </div>
   <div class="actions-view-controls">
-    <label class="commit-picker">
-      <span>Commit</span>
-      <select
-        aria-label="Workflow commit"
-        value={activeSha}
-        disabled={commitLoading && commits.length === 0}
-        onchange={selectCommit}
-      >
-        {#each commitOptions as commit (commit.sha)}
-          <option value={commit.sha}>{commit.sha.slice(0, 7)} · {commit.headline}</option>
-        {/each}
-      </select>
-    </label>
-    {#if commitError}
-      <button class="link refresh-link" onclick={() => commitNonce++}>Retry commits</button>
+    {#if number !== null}
+      <label class="commit-picker">
+        <span>Commit</span>
+        <select
+          aria-label="Workflow commit"
+          value={activeSha}
+          disabled={commitLoading && commits.length === 0}
+          onchange={selectCommit}
+        >
+          {#each commitOptions as commit (commit.sha)}
+            <option value={commit.sha}>{commit.sha.slice(0, 7)} · {commit.headline}</option>
+          {/each}
+        </select>
+      </label>
+      {#if commitError}
+        <button class="link refresh-link" onclick={() => commitNonce++}>Retry commits</button>
+      {/if}
     {/if}
     {#if loadError || graphError}
       <button class="link refresh-link" onclick={() => refreshNonce++}>Retry data load</button>
@@ -315,7 +348,7 @@
   {/if}
 </div>
 {#if !overviewMode}
-  <div class="actions-layout">
+  <div class="actions-layout" class:full-height={fullHeight}>
     <aside class="workflow-list" aria-label="Workflow runs">
       {#if loading && !snapshot}
         <div class="empty">Loading workflow runs…</div>
@@ -329,12 +362,15 @@
       {:else}
         {#each groups as group (`${group.run.id}:${group.run.attempt}`)}
           <section class="workflow-group">
-            <header class="workflow-head">
-              {@render statusIcon(group.run.status, group.run.conclusion)}
-              <span class="workflow-name">{group.run.workflowName || "Workflow"}</span>
-              {#if group.run.attempt > 1}<span class="attempt">attempt {group.run.attempt}</span>{/if}
-              {#if group.run.eventAt}<span class="run-time">{relativeTime(group.run.eventAt)}</span>{/if}
-            </header>
+            {#if onSelectRun}
+              <button class="workflow-head run-switch" type="button" class:current={group.run.id === preferredRunId} onclick={() => onSelectRun(group.run)}>
+                {@render workflowHeading(group)}
+              </button>
+            {:else}
+              <header class="workflow-head">
+                {@render workflowHeading(group)}
+              </header>
+            {/if}
             <div class="jobs">
               {#each group.jobs as job (job.id)}
                 <button class="job-row" class:active={selectedJobId === job.id} onclick={() => selectJob(job)}>
@@ -481,6 +517,10 @@
     gap: 20px;
     align-items: start;
   }
+  .actions-layout.full-height {
+    min-height: calc(100vh - 245px);
+    align-items: stretch;
+  }
   .workflow-list {
     display: flex;
     min-width: 0;
@@ -506,6 +546,20 @@
     border-bottom: 1px solid var(--border);
     background: var(--surface);
     font-size: 11px;
+  }
+  .run-switch {
+    width: 100%;
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .run-switch:hover {
+    background: var(--surface-hover);
+  }
+  .run-switch.current {
+    box-shadow: inset 3px 0 var(--accent);
   }
   .workflow-name {
     min-width: 0;
