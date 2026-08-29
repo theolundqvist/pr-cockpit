@@ -90,7 +90,7 @@
       </div>
       <div class="run-links">
         {#if run.prNumber}<a href={`#/pr/${run.repo}/${run.prNumber}`}>Open PR #{run.prNumber}</a>{/if}
-        {#if run.htmlUrl}<a href={run.htmlUrl}>Open run on GitHub</a>{/if}
+        {#if run.htmlUrl}<a href={run.htmlUrl} target="_blank" rel="noopener noreferrer">Open run on GitHub</a>{/if}
         {#if canRerunFailed && run.status === "completed"}
           <button class="rerun-button" type="button" disabled={rerunPending} onclick={() => rerunFailed(run)}>
             {rerunPending ? "Re-running…" : "Re-run failed jobs"}
