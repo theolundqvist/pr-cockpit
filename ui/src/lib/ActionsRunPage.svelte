@@ -3,6 +3,7 @@
   import ActionsView from "./ActionsView.svelte";
   import { prefetchRepoRun, rememberedActionRun, rememberActionRun } from "./actionPrefetch.js";
   import { fetchRepoActions, rerunFailedActionJobs } from "./api.js";
+  import { isTypingTarget } from "./dom.js";
 
   let { repo, runId } = $props();
 
@@ -60,6 +61,18 @@
       if (!controller.signal.aborted) loading = false;
     });
     return () => controller.abort();
+  });
+
+  $effect(() => {
+    function onKey(event) {
+      if (event.metaKey || event.ctrlKey || event.altKey || isTypingTarget(event.target)) return;
+      if (event.key === "o" && run?.htmlUrl) {
+        window.open(run.htmlUrl, "_blank", "noopener");
+        event.preventDefault();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   });
 </script>
 
