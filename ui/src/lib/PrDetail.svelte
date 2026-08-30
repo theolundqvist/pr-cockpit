@@ -1624,7 +1624,7 @@
   }
 
   function viewedFileStorageKey() {
-    return `${VIEWED_FILES_KEY_PREFIX}${repo}#${number}`;
+    return `${VIEWED_FILES_KEY_PREFIX}${repo}#${number}${rangeKey === "all" ? "" : `:${rangeKey}`}`;
   }
 
   function loadViewedFileRecords() {
@@ -1648,11 +1648,6 @@
   function syncViewedFiles(nextFiles) {
     const nextCollapsed = new Set(collapsedFiles);
     for (const path of viewedFiles) nextCollapsed.delete(path);
-    if (rangeKey !== "all") {
-      viewedFiles = new Set();
-      collapsedFiles = nextCollapsed;
-      return;
-    }
 
     const records = loadViewedFileRecords();
     const nextViewed = new Set();
@@ -1689,7 +1684,6 @@
     viewedFiles = nextViewed;
     collapsedFiles = nextCollapsed;
 
-    if (rangeKey !== "all") return;
     const records = loadViewedFileRecords();
     for (const file of targetFiles) {
       if (viewed) records[file.path] = { fingerprint: fileDiffFingerprint(file) };
