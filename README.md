@@ -10,7 +10,7 @@ PR Cockpit is a keyboard-first macOS app that keeps pull requests, diffs, thread
 
 The local server serves the queue and open pull request from SQLite instead of rebuilding every screen from GitHub. Webhook markers trigger targeted refreshes, WebSocket invalidations update the UI, and a poller repairs missed events.
 
-Warm-cache opens of the large private pull request `scape-app/scape#8132`:
+Warm-cache opens of a large private pull request with 1,879 changed files:
 
 | Product | p50 | p95 | p99 |
 | --- | ---: | ---: | ---: |

@@ -592,7 +592,7 @@ test("--use-as-proxy reads through an existing local replica", async () => {
     port: 0,
     fetch(request) {
       if (new URL(request.url).pathname === "/healthz") {
-        return Response.json({ root: "/local/pr-cockpit", replica: { host: "scape-agent", connected: true } });
+        return Response.json({ root: "/local/pr-cockpit", replica: { host: "build-server", connected: true } });
       }
       return new Response("proxied\n");
     },
@@ -600,7 +600,7 @@ test("--use-as-proxy reads through an existing local replica", async () => {
 
   try {
     const child = Bun.spawn(
-      [join(import.meta.dir, "pr-cockpit"), "--use-as-proxy", "ssh://scape-agent", "owner/repo#1"],
+      [join(import.meta.dir, "pr-cockpit"), "--use-as-proxy", "ssh://build-server", "owner/repo#1"],
       {
         env: {
           ...Bun.env,
@@ -630,7 +630,7 @@ test("a running server's persisted replica source overrides the install seed", a
   const home = mkdtempSync(join(tmpdir(), "pr-cockpit-replica-setting-"));
   const configDir = join(home, ".config", "pr-cockpit");
   mkdirSync(configDir, { recursive: true });
-  writeFileSync(join(configDir, "config"), "COCKPIT_PROXY=scape-agent\n");
+  writeFileSync(join(configDir, "config"), "COCKPIT_PROXY=build-server\n");
   const server = Bun.serve({
     port: 0,
     fetch(request) {
@@ -675,7 +675,7 @@ test("an installed CLI symlink starts the repository launcher", async () => {
   writeFileSync(join(bin, "curl"), `#!/usr/bin/env bash
 if [[ "$*" == *"/healthz"* ]]; then
   [[ -f ${JSON.stringify(ready)} ]] || exit 22
-  printf '{"replica":{"host":"scape-agent"}}'
+  printf '{"replica":{"host":"build-server"}}'
 else
   printf 'proxied\\n'
 fi
@@ -686,7 +686,7 @@ fi
   symlinkSync(join(scripts, "pr-cockpit"), join(bin, "pr-cockpit"));
 
   try {
-    const child = Bun.spawn([join(bin, "pr-cockpit"), "--use-as-proxy", "scape-agent", "owner/repo#1"], {
+    const child = Bun.spawn([join(bin, "pr-cockpit"), "--use-as-proxy", "build-server", "owner/repo#1"], {
       env: {
         ...Bun.env,
         HOME: home,

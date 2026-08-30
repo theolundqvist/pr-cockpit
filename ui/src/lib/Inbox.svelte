@@ -1898,7 +1898,6 @@
     }
   }
 
-  /* Scape Desktop visual language: hierarchy and rows carry the layout. */
   .page {
     padding: 18px 32px 76px;
   }

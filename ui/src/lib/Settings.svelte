@@ -1188,7 +1188,6 @@
     }
   }
 
-  /* Settings use Scape's semantic type roles and flat grouped rows. */
   .page {
     --settings-page-inset: 18px;
     padding: var(--settings-page-inset) 32px 96px;

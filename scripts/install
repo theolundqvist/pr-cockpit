@@ -162,7 +162,10 @@ if [[ ! -f "$config_file" ]]; then
 # Uncomment and edit to point the cockpit at your own repos.
 # COCKPIT_REPOS="owner/repo,owner/other-repo"
 # COCKPIT_PORT=4820
-# COCKPIT_PROXY="scape-agent"       # replicate another Cockpit over SSH
+1: - Agents mutate existing PRs through `pr-cockpit`; use its `--body-file` commands for exact multiline text, never `gh` or direct GitHub APIs.
+- Keep examples, fixtures, benchmarks, and docs free of private company, product, repository, host, and infrastructure names; do not perform unrelated hosting or infrastructure work here.
+2: COCKPIT_PROXY="build-server"                        # optional Cockpit replica source over SSH
+3: # COCKPIT_PROXY="build-server"       # replicate another Cockpit over SSH
 # COCKPIT_PROXY_PORT=4820           # Cockpit port on the SSH host
 # COCKPIT_DEFAULT_REPO="owner/repo"
 # COCKPIT_TMUX_HOSTS="builder,build-vm"

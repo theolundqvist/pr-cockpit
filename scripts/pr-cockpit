@@ -303,7 +303,7 @@ proxy="${proxy#ssh://}"
 proxy="${proxy%/}"
 proxy_port="${env_proxy_port:-${COCKPIT_PROXY_PORT:-4820}}"
 if [[ -n "$proxy" && ! "$proxy" =~ ^([A-Za-z0-9._-]+@)?[A-Za-z0-9._-]+$ ]]; then
-  echo "pr-cockpit: proxy must be an SSH host such as scape-agent or root@host" >&2
+  echo "pr-cockpit: proxy must be an SSH host such as build-server or root@host" >&2
   exit 2
 fi
 bun_bin=$(command -v bun || true)

@@ -154,7 +154,7 @@ test("window and diff layout settings persist independently", async () => {
 
   try {
     const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], {
-      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_REPLICA_SSH_HOST: "scape-agent" },
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_REPLICA_SSH_HOST: "build-server" },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -175,7 +175,7 @@ test("window and diff layout settings persist independently", async () => {
     expect(result.initial.code_theme).toBe("github");
     expect(result.initial.general_scale).toBe(100);
     expect(result.initial.diff_scale).toBe(100);
-    expect(result.initial.replica_ssh_host).toBe("scape-agent");
+    expect(result.initial.replica_ssh_host).toBe("build-server");
     expect(result.replica.replica_ssh_host).toBe("root@dev-vm");
     expect(result.invalidReplicaError).toBe("invalid replica SSH host");
     expect(result.afterInvalidReplica.replica_ssh_host).toBe("root@dev-vm");

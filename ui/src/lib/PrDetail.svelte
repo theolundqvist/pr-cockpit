@@ -5654,7 +5654,6 @@
     }
   }
 
-  /* Scape Desktop visual language: the PR is the surface, not a stack of cards. */
   .page {
     padding: 0 32px 88px;
   }

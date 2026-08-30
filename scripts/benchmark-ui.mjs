@@ -78,13 +78,35 @@ function compare(id, label, cockpitDefinition, githubDefinition, cockpitSamples,
   };
 }
 
-const SEARCH_WORDS = "remove  harness efficiency";
-const SEARCH_REPO = "scape-app/scape";
-const SEARCH_RESULT_PR = 8133;
+const SEARCH_WORDS = process.env.BENCHMARK_SEARCH_QUERY?.trim() ?? "";
+const SEARCH_REPO = process.env.BENCHMARK_SEARCH_REPO?.trim() ?? "";
+const SEARCH_RESULT_PR = Number(process.env.BENCHMARK_SEARCH_PR ?? 0);
 const SEARCH_RESULTS_URL = `https://github.com/${SEARCH_REPO}/pulls?q=${encodeURIComponent(`is:pr is:open ${SEARCH_WORDS}`)}`;
 const SEARCH_COCKPIT_URL = process.env.COCKPIT_URL ?? "http://127.0.0.1:4825";
-const LARGE_DIFF_URL = process.env.COCKPIT_LARGE_DIFF_URL ?? null;
+const LARGE_DIFF_URL = process.env.COCKPIT_LARGE_DIFF_URL?.trim() || null;
+const LARGE_DIFF_REF = process.env.COCKPIT_LARGE_DIFF_REF?.trim() ?? "";
 const LARGE_DIFF_FRAMES = 120;
+
+const REPOSITORY_PATTERN = /^[^/\s]+\/[^/\s]+$/;
+const PULL_REQUEST_REF_PATTERN = /^[^/\s]+\/[^/\s]+\/[1-9]\d*$/;
+const CURSOR_CODEBASE_PATTERN = /^https:\/\/cursor\.com\/codebase\/[^/\s]+\/[^/\s]+\/tree\/\S+$/;
+
+function requireBenchmarkSettings(settings) {
+  for (const [name, value] of Object.entries(settings)) {
+    if (!value || (typeof value === "number" && (!Number.isInteger(value) || value < 1))) {
+      throw new Error(`${name} is required for this benchmark`);
+    }
+    if (name.endsWith("_REPO") && !REPOSITORY_PATTERN.test(value)) {
+      throw new Error(`${name} must use owner/repo format`);
+    }
+    if (name === "COCKPIT_LARGE_DIFF_REF" && !PULL_REQUEST_REF_PATTERN.test(value)) {
+      throw new Error(`${name} must use owner/repo/number format`);
+    }
+    if (name === "BENCHMARK_CURSOR_ORIGIN_URL" && !CURSOR_CODEBASE_PATTERN.test(value)) {
+      throw new Error(`${name} must be an HTTPS Cursor codebase tree URL`);
+    }
+  }
+}
 
 async function benchmarkPrOpen(page, repo, prs) {
   const samples = [];
@@ -200,6 +222,7 @@ async function benchmarkDiffOpen(page, repo, prs) {
 async function mainLargeDiff() {
   let server = null;
   let targetURL = LARGE_DIFF_URL;
+  requireBenchmarkSettings(targetURL ? { COCKPIT_LARGE_DIFF_URL: targetURL } : { COCKPIT_LARGE_DIFF_REF: LARGE_DIFF_REF });
   if (!targetURL) {
     const build = Bun.spawn([process.execPath, "run", "build"], {
       cwd: join(ROOT, "ui"),
@@ -218,7 +241,7 @@ async function mainLargeDiff() {
       stderr: "inherit",
     });
     await waitForURL(server, baseURL);
-    targetURL = `${baseURL}/#/pr/scape-app/scape/7448/files`;
+    targetURL = `${baseURL}/#/pr/${LARGE_DIFF_REF}/files`;
   }
   const browser = await chromium.launch({ headless: true });
   try {
@@ -373,8 +396,9 @@ async function benchmarkGithubDiffOpen(page, repo, prs) {
   return samples;
 }
 
-const CURSOR_ORIGIN_URL = "https://cursor.com/codebase/scape/scape/tree/staging";
-const CURSOR_PR_NUMBER = 8105;
+const CURSOR_ORIGIN_URL = process.env.BENCHMARK_CURSOR_ORIGIN_URL?.trim() ?? "";
+const CURSOR_CODEBASE_URL = CURSOR_ORIGIN_URL.split("/tree/")[0];
+const CURSOR_PR_NUMBER = Number(process.env.BENCHMARK_CURSOR_PR ?? 0);
 
 function cursorMeasurement(definition, samples) {
   return {
@@ -389,13 +413,13 @@ async function connectCursorPage(endpoint) {
   const browser = await chromium.connectOverCDP(endpoint, { timeout: 90_000 });
   const page = browser.contexts()
     .flatMap((context) => context.pages())
-    .find((candidate) => candidate.url().includes("cursor.com/codebase/scape/scape"));
+    .find((candidate) => candidate.url().startsWith(CURSOR_CODEBASE_URL));
   if (!page) throw new Error(`Cursor Origin page unavailable at ${endpoint}; open ${CURSOR_ORIGIN_URL} in the authenticated browser`);
   return { browser, page };
 }
 
 async function waitForCursorList(page) {
-  await page.goto("https://cursor.com/codebase/scape/scape/pulls");
+  await page.goto(`${CURSOR_CODEBASE_URL}/pulls`);
   await page.waitForFunction(
     () => document.readyState !== "loading" && location.pathname.endsWith("/pulls"),
     undefined,
@@ -492,12 +516,12 @@ async function measureCursorOpen(page) {
   }, CURSOR_PR_NUMBER);
 }
 
-const RENDER_REPO = "scape-app/scape";
-const RENDER_PR = 8132;
+const RENDER_REPO = process.env.BENCHMARK_RENDER_REPO?.trim() ?? "";
+const RENDER_PR = Number(process.env.BENCHMARK_RENDER_PR ?? 0);
 const RENDER_RUNS = 100;
 const RENDER_GITHUB_LIST_URL = `https://github.com/${RENDER_REPO}/pulls?q=${encodeURIComponent(`is:pr ${RENDER_PR}`)}`;
-const RENDER_CURSOR_LIST_URL = "https://cursor.com/codebase/scape/scape/pulls";
-const RENDER_BOUNDARY = `Pull-request list row for #${RENDER_PR} to painted detail: title, first conversation body, no loading indicator`;
+const RENDER_CURSOR_LIST_URL = `${CURSOR_CODEBASE_URL}/pulls`;
+const RENDER_BOUNDARY = "Pull-request list row to painted detail: title, first conversation body, no loading indicator";
 
 function summarizeRender(samples) {
   const round = (value) => Math.round(value * 10) / 10;
@@ -671,6 +695,11 @@ async function writeResults(update) {
 }
 
 async function mainPrivateSearch() {
+  requireBenchmarkSettings({
+    BENCHMARK_SEARCH_QUERY: SEARCH_WORDS,
+    BENCHMARK_SEARCH_REPO: SEARCH_REPO,
+    BENCHMARK_SEARCH_PR: SEARCH_RESULT_PR,
+  });
   const endpoint = process.env.CURSOR_CDP_URL ?? "http://127.0.0.1:9334";
   const version = await (await fetch(`${endpoint}/json/version`)).json();
   const browser = await chromium.connectOverCDP(endpoint, { timeout: 90_000 });
@@ -691,7 +720,7 @@ async function mainPrivateSearch() {
     const metric = compare(
       "pr-search",
       "Search PRs",
-      `⌘K palette open, query applied, to painted ${SEARCH_REPO.split("/").at(-1)}#${SEARCH_RESULT_PR} result`,
+      "⌘K palette open, query applied, to first painted configured result",
       "Load the repo-scoped pull-request search URL for the same query to first painted result",
       cockpitSamples,
       githubSamples,
@@ -715,12 +744,12 @@ async function mainPrivateSearch() {
           runs: RUNS,
           warmups: WARMUPS,
           auth: "One signed-in visible Chromium drives both products",
-          dataset: `PR Cockpit global cache and GitHub's ${SEARCH_REPO} pull-request list receive the query "${SEARCH_WORDS.replace(/\s+/g, " ")}"; Cockpit requires ${SEARCH_REPO}#${SEARCH_RESULT_PR}`,
+          dataset: "A configured private-repository query run against PR Cockpit's global cache and GitHub's pull-request search",
           cache: "Warm browser cache and warm PR Cockpit disk cache; neither is cleared between warmups or measured runs",
-          cockpitURL: SEARCH_COCKPIT_URL,
-          resultsURL: SEARCH_RESULTS_URL,
-          cdp: endpoint,
-          paintBoundary: `PR Cockpit: palette shortcut and programmatic query application to painted ${SEARCH_REPO}#${SEARCH_RESULT_PR}; GitHub: repo-scoped query URL navigation to first painted result; both followed by two requestAnimationFrame callbacks`,
+          cockpitURL: "Configured PR Cockpit endpoint",
+          resultsURL: "Authenticated GitHub pull-request search",
+          cdp: "Configured browser debugging endpoint",
+          paintBoundary: "PR Cockpit: palette shortcut and programmatic query application to first painted result; GitHub: repository-scoped query URL navigation to first painted result; both followed by two requestAnimationFrame callbacks",
         };
         return previous;
       });
@@ -738,6 +767,11 @@ async function mainPrivateSearch() {
   }
 
 async function mainRenderP99() {
+  requireBenchmarkSettings({
+    BENCHMARK_CURSOR_ORIGIN_URL: CURSOR_ORIGIN_URL,
+    BENCHMARK_RENDER_REPO: RENDER_REPO,
+    BENCHMARK_RENDER_PR: RENDER_PR,
+  });
   const endpoint = process.env.CURSOR_CDP_URL ?? "http://127.0.0.1:9334";
   const version = await (await fetch(`${endpoint}/json/version`)).json();
   const browser = await chromium.connectOverCDP(endpoint, { timeout: 90_000 });
@@ -768,9 +802,9 @@ async function mainRenderP99() {
       session: version.webSocketDebuggerUrl,
     };
     const phases = [
-      { key: "github", product: "GitHub", definition: `Pull-request list row to painted detail of #${RENDER_PR}`, page: githubPage, measure: measureGithubRender },
-      { key: "cursorOrigin", product: "Cursor Origin", definition: `Origin pull-request row to painted detail of #${RENDER_PR}`, page: cursorPage, measure: (page) => measureCursorRender(page, cursorListURL) },
-      { key: "cockpit", product: "PR Cockpit", definition: `Inbox row to painted detail of #${RENDER_PR}`, page: cockpitPage, measure: measureCockpitRender },
+      { key: "github", product: "GitHub", definition: "Pull-request list row to painted configured detail", page: githubPage, measure: measureGithubRender },
+      { key: "cursorOrigin", product: "Cursor Origin", definition: "Configured pull-request row to painted detail", page: cursorPage, measure: (page) => measureCursorRender(page, cursorListURL) },
+      { key: "cockpit", product: "PR Cockpit", definition: "Inbox row to painted configured detail", page: cockpitPage, measure: measureCockpitRender },
     ];
     const measurements = {};
     for (const phase of phases) {
@@ -814,12 +848,12 @@ async function mainRenderP99() {
           runs,
           warmups,
           auth: "One signed-in visible Chromium drives all three products",
-          dataset: `${RENDER_REPO}#${RENDER_PR}, a large open pull request`,
+          dataset: "Private benchmark repository; representative large pull request with 1,879 changed files, 125,659 changed lines (108,995 added, 16,664 removed), and about 360 comments",
           cache: "Warm browser cache and warm PR Cockpit disk cache; neither is cleared between warmups or measured runs",
-          cockpitURL: `${SEARCH_COCKPIT_URL}/#/pr/${RENDER_REPO}/${RENDER_PR}`,
-          githubListURL: RENDER_GITHUB_LIST_URL,
-          cursorListURL,
-          cdp: endpoint,
+          cockpitURL: "Configured PR Cockpit pull-request route",
+          githubListURL: "Authenticated GitHub pull-request search",
+          cursorListURL: "Authenticated Cursor Origin pull-request list",
+          cdp: "Configured browser debugging endpoint",
           paintBoundary: `${RENDER_BOUNDARY}, followed by two requestAnimationFrame callbacks`,
           percentiles: `p99 is the 99th of ${runs} measured samples per product, not an interpolated estimate`,
           transientRetries: "Iterations lost to a transient network error are retried and never recorded as samples",
@@ -836,6 +870,10 @@ async function mainRenderP99() {
 }
 
 async function mainCursorOrigin() {
+  requireBenchmarkSettings({
+    BENCHMARK_CURSOR_ORIGIN_URL: CURSOR_ORIGIN_URL,
+    BENCHMARK_CURSOR_PR: CURSOR_PR_NUMBER,
+  });
   const smoke = process.argv.includes("--smoke");
   const runs = smoke ? 1 : RUNS;
   const warmups = smoke ? 0 : WARMUPS;
@@ -868,26 +906,26 @@ async function mainCursorOrigin() {
         runs,
         warmups,
         auth: "Authenticated isolated Chromium profile",
-        dataset: `scape-app/scape staging; representative open PR #${CURSOR_PR_NUMBER}`,
+        dataset: "Private benchmark repository; representative open pull request",
         cache: "Warm authenticated browser profile and HTTP cache; cache is not cleared between warmups or measured runs",
-        sourceURL: CURSOR_ORIGIN_URL,
-        cdp: endpoint,
+        sourceURL: "Authenticated Cursor Origin pull-request page",
+        cdp: "Configured browser debugging endpoint",
         paintBoundary: "Visible selector followed by two requestAnimationFrame callbacks",
       },
       selectors: {
-        openStart: `visible PR-list a[href$="/github/pull/${CURSOR_PR_NUMBER}"]`,
-        openPainted: `[data-testid="cursor-review-pr-shell"] plus visible h1 aria-label containing #${CURSOR_PR_NUMBER}`,
+        openStart: "visible configured PR-list link",
+        openPainted: '[data-testid="cursor-review-pr-shell"] plus visible pull-request heading',
         diffStart: 'visible [role="tab"] whose text starts with Changes',
-        diffPath: `/codebase/scape/scape/pull/${CURSOR_PR_NUMBER}/changes`,
+        diffPath: "Configured pull-request changes route",
         diffPainted: 'visible [class*="changesTabPanel"] plus first visible descendant [class*="lineContainer"]',
       },
       metrics: {
-        "pr-open": cursorMeasurement(`Origin PR #${CURSOR_PR_NUMBER} list row to first painted PR detail`, openSamples),
+        "pr-open": cursorMeasurement("Configured pull-request list row to first painted PR detail", openSamples),
         "pr-search": {
           available: false,
           reason: "Cursor Origin exposes PR filters but no comparable PR word-search interaction",
         },
-        "diff-open": cursorMeasurement(`Origin PR #${CURSOR_PR_NUMBER} Changes tab to first painted diff line`, diffSamples),
+        "diff-open": cursorMeasurement("Configured pull-request Changes tab to first painted diff line", diffSamples),
       },
     };
     console.log(JSON.stringify(result, null, 2));

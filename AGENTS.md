@@ -23,8 +23,10 @@ This repository is worked on by humans and coding agents alike. Leave it easier 
 - Workflow jobs use commit-check semantics: green check for success, red cross for failure, orange spinner while active, and gray minus when skipped. Logs preserve ANSI colors and open at the bottom. Commit status icons and failing-check rows open Cockpit’s Actions tab at the exact commit and job; its selector covers the full mirror range, not GraphQL’s last 100 commits.
 - Operational telemetry belongs on a dedicated Usage page in Settings, not among general controls; it keeps three days of hourly context and forecasts the active GitHub quota window.
 - File status lives in the colored leading icon; moved files use a distinct move glyph, never a text badge beside the name.
-- Agents mutate existing PRs through `pr-cockpit`; use its `--body-file` commands for exact multiline text, never `gh` or direct GitHub APIs.
-- Do not perform Vercel or `forge.scape.app` infrastructure work from this repository.
+1: - Agents mutate existing PRs through `pr-cockpit`; use its `--body-file` commands for exact multiline text, never `gh` or direct GitHub APIs.
+- Keep examples, fixtures, benchmarks, and docs free of private company, product, repository, host, and infrastructure names; do not perform unrelated hosting or infrastructure work here.
+2: COCKPIT_PROXY="build-server"                        # optional Cockpit replica source over SSH
+3: # COCKPIT_PROXY="build-server"       # replicate another Cockpit over SSH
 - For manual app recordings, launch `/Users/theo/dev/pr-cockpit`; this `pr-cockpit-v3` checkout is the legacy landing worktree.
 
 ## Pull requests
@@ -43,7 +45,10 @@ Server environment:
 COCKPIT_PORT=4820                                  # HTTP port
 COCKPIT_DATA_DIR="$HOME/.local/share/pr-cockpit"   # SQLite cache, images, queued actions
 COCKPIT_REPOS="owner/repo,owner/other-repo"        # seeds tracked repos on first launch
-COCKPIT_PROXY="scape-agent"                        # optional Cockpit replica source over SSH
+1: - Agents mutate existing PRs through `pr-cockpit`; use its `--body-file` commands for exact multiline text, never `gh` or direct GitHub APIs.
+- Keep examples, fixtures, benchmarks, and docs free of private company, product, repository, host, and infrastructure names; do not perform unrelated hosting or infrastructure work here.
+2: COCKPIT_PROXY="build-server"                        # optional Cockpit replica source over SSH
+3: # COCKPIT_PROXY="build-server"       # replicate another Cockpit over SSH
 COCKPIT_PROXY_PORT=4820                            # Cockpit port on that SSH host
 ```
 

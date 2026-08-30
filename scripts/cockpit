@@ -101,7 +101,7 @@ proxy="${proxy_arg:-${env_proxy:-${COCKPIT_PROXY:-}}}"
 proxy="${proxy#ssh://}"
 proxy="${proxy%/}"
 if [[ -n "$proxy" && ! "$proxy" =~ ^([A-Za-z0-9._-]+@)?[A-Za-z0-9._-]+$ ]]; then
-  echo "pr-cockpit: proxy must be an SSH host such as scape-agent or root@host" >&2
+  echo "pr-cockpit: proxy must be an SSH host such as build-server or root@host" >&2
   exit 2
 fi
 if [[ -n "$proxy" ]]; then

@@ -16,7 +16,7 @@ PR Cockpit: Inbox row to painted PR detail
 
 GitHub: Pull-request result to painted PR detail
 
-Cursor Origin: Origin PR #8105 list row to first painted PR detail
+Cursor Origin: Configured pull-request list row to first painted PR detail
 
 | Run | PR Cockpit | GitHub | Cursor Origin |
 | --- | --- | --- | --- |
@@ -45,7 +45,7 @@ Cursor Origin: Cursor Origin exposes PR filters but no comparable PR word-search
 
 ### Every run in milliseconds
 
-PR Cockpit: ⌘K palette open, query applied, to painted scape#8133 result
+PR Cockpit: ⌘K palette open, query applied, to first painted configured result
 
 GitHub: Load the repo-scoped pull-request search URL for the same query to first painted result
 
@@ -78,7 +78,7 @@ PR Cockpit: Files click to painted cached diff
 
 GitHub: Files changed click to painted GitHub diff
 
-Cursor Origin: Origin PR #8105 Changes tab to first painted diff line
+Cursor Origin: Configured pull-request Changes tab to first painted diff line
 
 | Run | PR Cockpit | GitHub | Cursor Origin |
 | --- | --- | --- | --- |
@@ -97,9 +97,9 @@ Cursor Origin: Origin PR #8105 Changes tab to first painted diff line
 
 ## Open a huge PR
 
-scape-app/scape#8132, a large open pull request: 1,879 changed files, 125,659 changed lines (108,995 added, 16,664 removed), about 360 comments
+Private benchmark repository; representative large pull request with 1,879 changed files, 125,659 changed lines (108,995 added, 16,664 removed), and about 360 comments
 
-Pull-request list row for #8132 to painted detail: title, first conversation body, no loading indicator
+Pull-request list row to painted detail: title, first conversation body, no loading indicator
 
 | Product | Runs | min | p50 | p90 | p95 | p99 | max | mean |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -109,11 +109,11 @@ Pull-request list row for #8132 to painted detail: title, first conversation bod
 
 ### Every run in milliseconds
 
-PR Cockpit: Inbox row to painted detail of #8132
+PR Cockpit: Inbox row to painted configured detail
 
-GitHub: Pull-request list row to painted detail of #8132
+GitHub: Pull-request list row to painted configured detail
 
-Cursor Origin: Origin pull-request row to painted detail of #8132
+Cursor Origin: Configured pull-request row to painted detail
 
 | Run | PR Cockpit | GitHub | Cursor Origin |
 | --- | --- | --- | --- |
@@ -244,12 +244,12 @@ Cursor Origin: Origin pull-request row to painted detail of #8132
 | runs | 12 |
 | warmups | 3 |
 | auth | One signed-in visible Chromium drives both products |
-| dataset | PR Cockpit global cache and GitHub's scape-app/scape pull-request list receive the query "remove harness efficiency"; Cockpit requires scape-app/scape#8133 |
+| dataset | A configured private-repository query run against PR Cockpit's global cache and GitHub's pull-request search |
 | cache | Warm browser cache and warm PR Cockpit disk cache; neither is cleared between warmups or measured runs |
 | cockpitURL | http://127.0.0.1:4825 |
-| resultsURL | https://github.com/scape-app/scape/pulls?q=is%3Apr%20is%3Aopen%20remove%20%20harness%20efficiency |
+| resultsURL | Authenticated GitHub pull-request search |
 | cdp | http://127.0.0.1:9334 |
-| paintBoundary | PR Cockpit: palette shortcut and programmatic query application to painted scape-app/scape#8133; GitHub: repo-scoped query URL navigation to first painted result; both followed by two requestAnimationFrame callbacks |
+| paintBoundary | PR Cockpit: palette shortcut and programmatic query application to first painted result; GitHub: repository-scoped query URL navigation to first painted result; both followed by two requestAnimationFrame callbacks |
 
 ### Cursor Origin
 
@@ -262,9 +262,9 @@ Cursor Origin: Origin pull-request row to painted detail of #8132
 | runs | 12 |
 | warmups | 3 |
 | auth | Authenticated isolated Chromium profile |
-| dataset | scape-app/scape staging; representative open PR #8105 |
+| dataset | Private benchmark repository; representative open pull request |
 | cache | Warm authenticated browser profile and HTTP cache; cache is not cleared between warmups or measured runs |
-| sourceURL | https://cursor.com/codebase/scape/scape/tree/staging |
+| sourceURL | Authenticated Cursor Origin pull-request page |
 | cdp | http://127.0.0.1:9334 |
 | paintBoundary | Visible selector followed by two requestAnimationFrame callbacks |
 
@@ -279,13 +279,13 @@ Cursor Origin: Origin pull-request row to painted detail of #8132
 | runs | 100 |
 | warmups | 3 |
 | auth | One signed-in visible Chromium drives all three products |
-| dataset | scape-app/scape#8132, a large open pull request: 1,879 changed files, 125,659 changed lines (108,995 added, 16,664 removed), about 360 comments |
+| dataset | Private benchmark repository; representative large pull request with 1,879 changed files, 125,659 changed lines (108,995 added, 16,664 removed), and about 360 comments |
 | cache | Warm browser cache and warm PR Cockpit disk cache; neither is cleared between warmups or measured runs |
-| cockpitURL | http://127.0.0.1:4825/#/pr/scape-app/scape/8132 |
-| githubListURL | https://github.com/scape-app/scape/pulls?q=is%3Apr%208132 |
-| cursorListURL | https://cursor.com/codebase/scape/scape/pulls?q=is%3Apr+is%3Aopen+author%3A%40me |
+| cockpitURL | Configured PR Cockpit pull-request route |
+| githubListURL | Authenticated GitHub pull-request search |
+| cursorListURL | Authenticated Cursor Origin pull-request list |
 | cdp | http://127.0.0.1:9334 |
-| paintBoundary | Pull-request list row for #8132 to painted detail: title, first conversation body, no loading indicator, followed by two requestAnimationFrame callbacks |
+| paintBoundary | Pull-request list row to painted detail: title, first conversation body, no loading indicator, followed by two requestAnimationFrame callbacks |
 | percentiles | p99 is the 99th of 100 measured samples per product, not an interpolated estimate |
 | transientRetries | Iterations lost to a transient network error are retried and never recorded as samples |
 | cockpitRemeasuredAt | 2026-08-23T13:05:00.000Z |
