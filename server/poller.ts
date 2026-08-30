@@ -1,4 +1,5 @@
-import { fetchGithubQuota, fetchPrDetail, lookupPr, searchClosedPrs, searchOpenPrs, searchRecentPrs, type PrDetail } from "./github.ts";
+import { fetchGithubQuota, fetchPrDetail, fetchPrDetailPart, lookupPr, searchClosedPrs, searchOpenPrs, searchRecentPrs, type GithubQuotaResource, type PrDetail, type PrDetailScope } from "./github.ts";
+import type { GithubUsageSource } from "./githubUsage.ts";
 import {
   deleteWebhookRegistrationsForPr,
   evictReposNotIn,
@@ -23,24 +24,36 @@ import { discoveredRepos, refreshWorktreeScan } from "./worktreeScan.ts";
 import { onPrActivity } from "./activity.ts";
 import { scoreReviewers } from "./reviewScore.ts";
 import { invalidateInbox, invalidatePr, publishPollCompleted } from "./rendererInvalidation.ts";
+import { refreshRecentActions } from "./runLogs.ts";
 import { GRAPHQL_BACKGROUND_RESERVE } from "../ui/src/lib/quotaImpact.js";
 
 const INDEX_SWEEP_MS = 1_800_000;
+const GRAPHQL_WINDOW_MS = 60 * 60_000;
 
 export let lastPollAt: string | null = null;
+
+export function setLastPollAt(value: string | null): void {
+  lastPollAt = value;
+}
 
 let quotaPauseResetAt: string | null = null;
 let openInboxKeys = new Set<string>();
 
+export function backgroundQuotaAvailable(quota: GithubQuotaResource, now = Date.now()): boolean {
+  const resetIn = Math.max(0, Date.parse(quota.resetAt) - now);
+  const pacedReserve = Math.ceil(quota.limit * Math.min(resetIn, GRAPHQL_WINDOW_MS) / GRAPHQL_WINDOW_MS);
+  return quota.remaining > Math.max(GRAPHQL_BACKGROUND_RESERVE, pacedReserve);
+}
+
 export async function backgroundPollAllowed(): Promise<boolean> {
   const quota = await fetchGithubQuota();
-  if (quota.graphql.remaining > GRAPHQL_BACKGROUND_RESERVE) {
+  if (backgroundQuotaAvailable(quota.graphql)) {
     quotaPauseResetAt = null;
     return true;
   }
   if (quotaPauseResetAt !== quota.graphql.resetAt) {
     quotaPauseResetAt = quota.graphql.resetAt;
-    console.warn(`background polling paused with ${quota.graphql.remaining} GraphQL points left; resets ${quota.graphql.resetAt}`);
+    console.warn(`background GitHub refreshes paused with ${quota.graphql.remaining} GraphQL points left; resets ${quota.graphql.resetAt}`);
   }
   return false;
 }
@@ -98,10 +111,18 @@ function prefetchDetailImages(detail: PrDetail): void {
   prefetchImages(urls).catch((err) => console.error(`image prefetch failed for ${detail.url}:`, err));
 }
 
-async function refreshPrNow(repo: string, number: number): Promise<void> {
+async function refreshPrNow(
+  repo: string,
+  number: number,
+  source: GithubUsageSource = "app detail",
+  scope: PrDetailScope = "all",
+): Promise<void> {
   const previous = getPr(repo, number);
   const snapshotCutoffAt = new Date().toISOString();
-  const detail = await fetchPrDetail(repo, number);
+  const current = previous ? JSON.parse(previous.detail_json) as PrDetail : null;
+  const detail = scope === "all" || current === null
+    ? await fetchPrDetail(repo, number, source)
+    : await fetchPrDetailPart(repo, number, current, scope, source);
   if (!previous || previous.head_sha !== detail.headRefOid) {
     fetchMirror(repo).catch((err) => console.error(`mirror fetch failed for ${repo}:`, err));
     onPrActivity(repo, number, previous !== null);
@@ -178,6 +199,7 @@ export interface PollDeps {
   refreshWorktreeScan: typeof refreshWorktreeScan;
   trackedRepos: typeof trackedRepos;
   listWebhookRegistrations: typeof listWebhookRegistrations;
+  refreshRecentActions?: typeof refreshRecentActions;
   searchOpenPrs: typeof searchOpenPrs;
   searchRecentPrs: typeof searchRecentPrs;
   searchClosedPrs: typeof searchClosedPrs;
@@ -211,6 +233,16 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
       deps.publishPollCompleted(lastPollAt);
       return { checked: 0, refreshed: 0 };
     }
+    const refreshActions = deps.refreshRecentActions;
+    if (refreshActions) {
+      const actionRefreshes = await Promise.allSettled(repos.map((repo) => refreshActions(repo)));
+      actionRefreshes.forEach((result, index) => {
+        if (result.status === "rejected") {
+          console.error(`Actions refresh failed for ${repos[index]}:`, result.reason);
+        }
+      });
+    }
+
 
     const hits = await deps.searchOpenPrs(searchRepos);
     const nextOpenInboxKeys = new Set(hits.map((hit) => prKeyOf(hit.repo, hit.number)));
@@ -224,7 +256,7 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
       // fetched_at deliberately stays put: thread resolution moves none of these fields, so only detail staleness repairs it.
       const unchanged = cached && cached.head_sha === hit.headRefOid && cached.updated_at === hit.updatedAt && cached.ci_status === hit.ciState;
       if (unchanged) continue;
-      await deps.refreshPr(hit.repo, hit.number);
+      await deps.refreshPr(hit.repo, hit.number, "background poll");
       refreshed++;
     }
 
@@ -254,7 +286,7 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
       try {
         const status = await deps.lookupPr(reg.repo, reg.number);
         if (status?.state === "OPEN") {
-          await deps.refreshPr(reg.repo, reg.number);
+          await deps.refreshPr(reg.repo, reg.number, "background poll");
           continue;
         }
         deps.deleteWebhookRegistrationsForPr(reg.repo, reg.number);
@@ -303,6 +335,7 @@ export const pollOnce = createPollOnce({
   refreshWorktreeScan,
   trackedRepos,
   listWebhookRegistrations,
+  refreshRecentActions,
   searchOpenPrs,
   searchRecentPrs,
   searchClosedPrs,

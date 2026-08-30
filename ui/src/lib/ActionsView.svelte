@@ -1,10 +1,37 @@
 <script>
   import ActionsGraph from "./ActionsGraph.svelte";
   import ActionLog from "./ActionLog.svelte";
-  import { fetchActionGraph, fetchActionLog, fetchActions } from "./api.js";
+  import ActionStatusIcon from "./ActionStatusIcon.svelte";
+  import {
+    actionLogKey,
+    cachedActionLog,
+    chooseDefaultActionJob,
+    loadActionLog,
+    loadRepoRunSnapshot,
+    prefetchActionLogs,
+  } from "./actionPrefetch.js";
+  import { fetchActionCommits, fetchActionGraph, fetchActionLog, fetchActions, fetchRepoActionGraph, fetchRepoActionLog } from "./api.js";
   import { durationText, relativeTime } from "./time.js";
 
-  let { repo, number, headSha, runUrl = $bindable(null) } = $props();
+  let {
+    repo,
+    number = null,
+    headSha,
+    selectedSha = null,
+    requestedJobId = null,
+    preferredRunId = null,
+    preferredRunAttempt = null,
+    active = false,
+    startInOverview = true,
+    fullHeight = false,
+    refreshRevision = 0,
+    onSelectRun = null,
+    onRerunFailed = null,
+    rerunPending = false,
+    rerunError = "",
+    canRerunFailed = $bindable(false),
+    runUrl = $bindable(null),
+  } = $props();
 
   let snapshot = $state(null);
   let loading = $state(true);
@@ -17,6 +44,19 @@
   let logs = $state({});
   let logErrors = $state({});
   let logLoadingId = $state(null);
+  let commits = $state([]);
+  let commitError = $state("");
+  let commitLoading = $state(true);
+  let commitNonce = $state(0);
+
+  let activeSha = $derived(selectedSha ?? headSha);
+  let commitOptions = $derived.by(() => {
+    const options = [...commits].reverse();
+    if (!options.some((commit) => commit.sha === activeSha)) {
+      options.unshift({ sha: activeSha, headline: activeSha === headSha ? "Current head" : "Selected commit" });
+    }
+    return options;
+  });
 
   const terminalFailures = new Set(["failure", "timed_out", "action_required", "startup_failure", "stale"]);
 
@@ -92,26 +132,145 @@
   let hasActiveJobs = $derived((snapshot?.jobs ?? []).some((job) => job.status !== "completed"));
 
   function chooseDefaultJob(jobs) {
-    return jobs.find((job) => terminalFailures.has(job.conclusion))
-      ?? jobs.find((job) => job.status !== "completed")
-      ?? jobs[0]
-      ?? null;
+    return chooseDefaultActionJob(jobs);
+  }
+
+  function groupCanRerun(group) {
+    return group.run.status === "completed"
+      && group.jobs.some((job) => terminalFailures.has(job.conclusion));
+  }
+
+  function groupRerunPending(group) {
+    return rerunPending && group.run.id === preferredRunId;
+  }
+
+  function groupRerunError(group) {
+    return group.run.id === preferredRunId ? rerunError : "";
+  }
+
+  function applyQueuedRun(run) {
+    if (!snapshot) return;
+    snapshot = {
+      ...snapshot,
+      runs: [run, ...snapshot.runs.filter((candidate) => candidate.id !== run.id)],
+      jobs: snapshot.jobs.filter((job) => job.runId !== run.id),
+      selectedRun: snapshot.selectedRun?.id === run.id ? run : snapshot.selectedRun,
+    };
+    if (selectedJob?.runId === run.id) selectedJobId = null;
+  }
+
+  async function triggerRerun(group) {
+    if (!onRerunFailed || !groupCanRerun(group) || groupRerunPending(group)) return;
+    try {
+      const result = await onRerunFailed(group.run);
+      if (result?.run) applyQueuedRun(result.run);
+      refreshNonce++;
+    } catch {
+      // The run page owns and renders the shared error state.
+    }
   }
 
   $effect(() => {
-    const key = `${repo}#${number}:${headSha}:${refreshNonce}`;
+    const displayed = groups.find((group) =>
+      group.run.id === preferredRunId
+      && (preferredRunAttempt === null || group.run.attempt === preferredRunAttempt)
+    );
+    canRerunFailed = displayed ? groupCanRerun(displayed) : false;
+  });
+
+  $effect(() => {
+    if (!active || number === null) {
+      commitLoading = false;
+      return;
+    }
+    const key = `${repo}#${number}:${headSha}:${commitNonce}`;
     let stopped = false;
+    const controller = new AbortController();
+    commitLoading = true;
+    fetchActionCommits(repo, number, controller.signal).then(
+      (next) => {
+        if (stopped || key !== `${repo}#${number}:${headSha}:${commitNonce}`) return;
+        commits = next.commits;
+        commitError = "";
+      },
+      (error) => {
+        if (!stopped) commitError = error instanceof Error ? error.message : String(error);
+      },
+    ).finally(() => {
+      if (!stopped) commitLoading = false;
+    });
+    return () => {
+      stopped = true;
+      controller.abort();
+    };
+  });
+
+  $effect(() => {
+    activeSha;
+    requestedJobId;
+    preferredRunId;
+    snapshot = null;
+    graphSnapshot = null;
+    selectedJobId = requestedJobId;
+    overviewMode = requestedJobId === null && startInOverview;
+    logs = {};
+    logErrors = {};
+    loading = true;
+  });
+
+  $effect(() => {
+    if (!active) return;
+    const key = `${repo}#${number}:${activeSha}:${refreshNonce}:${refreshRevision}`;
+    let stopped = false;
+    const controller = new AbortController();
 
     async function refresh(initial) {
       if (initial) loading = true;
       try {
-        const next = await fetchActions(repo, number);
-        if (stopped || key !== `${repo}#${number}:${headSha}:${refreshNonce}`) return;
+        const next = number === null
+          ? await loadRepoRunSnapshot(
+              { repo, headSha: activeSha, id: preferredRunId },
+              false,
+              !initial || refreshNonce > 0 || refreshRevision > 0,
+            )
+          : await fetchActions(repo, number, activeSha, controller.signal);
+        if (stopped || key !== `${repo}#${number}:${activeSha}:${refreshNonce}:${refreshRevision}`) return;
         snapshot = next;
         loadError = "";
-        if (!next.jobs.some((job) => job.id === selectedJobId)) {
-          selectedJobId = chooseDefaultJob(next.jobs)?.id ?? null;
+        const preferredJobs = preferredRunId === null
+          ? next.jobs
+          : next.jobs.filter((job) =>
+              job.runId === preferredRunId
+              && (preferredRunAttempt === null || job.attempt === preferredRunAttempt)
+            );
+        const defaultJob = chooseDefaultJob(preferredJobs) ?? chooseDefaultJob(next.jobs);
+        if (!next.jobs.some((job) => job.id === selectedJobId)) selectedJobId = defaultJob?.id ?? null;
+        const targetJob = next.jobs.find((job) => job.id === selectedJobId) ?? defaultJob;
+        const targetJobs = targetJob
+          ? next.jobs.filter((job) => job.runId === targetJob.runId && job.attempt === targetJob.attempt)
+          : [];
+        const cached = {};
+        for (const job of targetJobs) {
+          const result = cachedActionLog(actionLogKey(repo, activeSha, job.id));
+          if (result) cached[job.id] = result;
         }
+        if (Object.keys(cached).length > 0) logs = { ...logs, ...cached };
+        void prefetchActionLogs(
+          targetJobs,
+          (job) => actionLogKey(repo, activeSha, job.id),
+          (job) => number === null
+            ? fetchRepoActionLog(repo, activeSha, job.id, null, true)
+            : fetchActionLog(repo, number, job.id, activeSha, null, true),
+          () => !stopped,
+        ).then(() => {
+          if (stopped) return;
+          const prefetched = {};
+          for (const job of targetJobs) {
+            const result = cachedActionLog(actionLogKey(repo, activeSha, job.id));
+            if (result) prefetched[job.id] = result;
+          }
+          if (Object.keys(prefetched).length > 0) logs = { ...logs, ...prefetched };
+        });
       } catch (error) {
         if (!stopped) loadError = error instanceof Error ? error.message : String(error);
       } finally {
@@ -120,20 +279,30 @@
     }
 
     void refresh(true);
-    const timer = setInterval(() => {
+    const activeTimer = setInterval(() => {
       if (hasActiveJobs) void refresh(false);
     }, 5_000);
+    const leaseTimer = setInterval(() => {
+      if (!hasActiveJobs) void refresh(false);
+    }, 60_000);
     return () => {
       stopped = true;
-      clearInterval(timer);
+      controller.abort();
+      clearInterval(activeTimer);
+      clearInterval(leaseTimer);
     };
   });
   $effect(() => {
-    const key = `${repo}#${number}:${headSha}:${refreshNonce}`;
+    if (!active) return;
+    const key = `${repo}#${number}:${activeSha}:${refreshNonce}:${refreshRevision}`;
     let stopped = false;
-    fetchActionGraph(repo, number).then(
+    const controller = new AbortController();
+    const request = number === null
+      ? fetchRepoActionGraph(repo, activeSha, controller.signal)
+      : fetchActionGraph(repo, number, activeSha, controller.signal);
+    request.then(
       (next) => {
-        if (stopped || key !== `${repo}#${number}:${headSha}:${refreshNonce}`) return;
+        if (stopped || key !== `${repo}#${number}:${activeSha}:${refreshNonce}:${refreshRevision}`) return;
         graphSnapshot = next;
         graphError = "";
       },
@@ -143,60 +312,86 @@
     );
     return () => {
       stopped = true;
+      controller.abort();
     };
   });
 
 
-  async function loadLog(job) {
-    const id = job.id;
-    logLoadingId = id;
+  async function loadLogId(id, background = false) {
+    const capturedRepo = repo;
+    const capturedSha = activeSha;
+    if (!background) logLoadingId = id;
     try {
-      const result = await fetchActionLog(repo, number, id);
-      if (selectedJobId !== id) return;
-      logs = { ...logs, [id]: result };
+      let result = await loadActionLog(
+        actionLogKey(capturedRepo, capturedSha, id),
+        () => number === null
+          ? fetchRepoActionLog(capturedRepo, capturedSha, id, null, background)
+          : fetchActionLog(capturedRepo, number, id, capturedSha, null, background),
+      );
+      if (!background && result?.state === "deferred") {
+        result = await loadActionLog(
+          actionLogKey(capturedRepo, capturedSha, id),
+          () => number === null
+            ? fetchRepoActionLog(capturedRepo, capturedSha, id)
+            : fetchActionLog(capturedRepo, number, id, capturedSha),
+        );
+      }
+      if (`${capturedRepo}:${capturedSha}` !== `${repo}:${activeSha}`) return;
+      if (result?.state === "ready" || result?.state === "not-produced") {
+        logs = { ...logs, [id]: result };
+      }
       const nextErrors = { ...logErrors };
       delete nextErrors[id];
       logErrors = nextErrors;
     } catch (error) {
-      logErrors = { ...logErrors, [id]: error instanceof Error ? error.message : String(error) };
+      if (!background) logErrors = { ...logErrors, [id]: error instanceof Error ? error.message : String(error) };
     } finally {
-      if (logLoadingId === id) logLoadingId = null;
+      if (!background && logLoadingId === id) logLoadingId = null;
     }
   }
 
   $effect(() => {
+    if (!active || requestedJobId === null) return;
+    activeSha;
+    void loadLogId(requestedJobId, true);
+  });
+
+  $effect(() => {
+    if (!active) return;
     const job = selectedJob;
     if (!job || job.status !== "completed" || logs[job.id] || logErrors[job.id]) return;
-    void loadLog(job);
+    void loadLogId(job.id);
   });
 
   function selectJob(job) {
     selectedJobId = job.id;
     overviewMode = false;
   }
+  function selectCommit(event) {
+    if (number === null) return;
+    const sha = event.currentTarget.value;
+    location.hash = `#/pr/${repo}/${number}/actions?sha=${sha}`;
+  }
+
 
   function retryLog() {
     if (!selectedJob) return;
     const nextErrors = { ...logErrors };
     delete nextErrors[selectedJob.id];
     logErrors = nextErrors;
-    void loadLog(selectedJob);
+    void loadLogId(selectedJob.id);
   }
 </script>
 
 {#snippet statusIcon(status, conclusion)}
-  {@const tone = stateTone(status, conclusion)}
-  <span class="status-icon {tone}" aria-hidden="true">
-    {#if tone === "ready"}
-      <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="7"></circle><path d="m4.6 8.1 2.2 2.2 4.7-4.8"></path></svg>
-    {:else if tone === "fail"}
-      <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="7"></circle><path d="m5.4 5.4 5.2 5.2m0-5.2-5.2 5.2"></path></svg>
-    {:else if tone === "wait"}
-      <svg class="status-spinner" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"></circle></svg>
-    {:else}
-      <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5"></circle><path d="M5.5 8h5"></path></svg>
-    {/if}
-  </span>
+  <ActionStatusIcon {status} {conclusion} />
+{/snippet}
+
+{#snippet workflowHeading(group)}
+  {@render statusIcon(group.run.status, group.run.conclusion)}
+  <span class="workflow-name">{group.run.workflowName || "Workflow"}</span>
+  {#if group.run.attempt > 1}<span class="attempt">attempt {group.run.attempt}</span>{/if}
+  {#if group.run.eventAt}<span class="run-time">{relativeTime(group.run.eventAt)}</span>{/if}
 {/snippet}
 
 <div class="actions-viewbar">
@@ -204,9 +399,29 @@
     <button class:active={overviewMode} onclick={() => overviewMode = true}>Overview</button>
     <button class:active={!overviewMode} disabled={!selectedJob} onclick={() => overviewMode = false}>Job log</button>
   </div>
-  {#if loadError || graphError}
-    <button class="link refresh-link" onclick={() => refreshNonce++}>Retry data load</button>
-  {/if}
+  <div class="actions-view-controls">
+    {#if number !== null}
+      <label class="commit-picker">
+        <span>Commit</span>
+        <select
+          aria-label="Workflow commit"
+          value={activeSha}
+          disabled={commitLoading && commits.length === 0}
+          onchange={selectCommit}
+        >
+          {#each commitOptions as commit (commit.sha)}
+            <option value={commit.sha}>{commit.sha.slice(0, 7)} · {commit.headline}</option>
+          {/each}
+        </select>
+      </label>
+      {#if commitError}
+        <button class="link refresh-link" onclick={() => commitNonce++}>Retry commits</button>
+      {/if}
+    {/if}
+    {#if loadError || graphError}
+      <button class="link refresh-link" onclick={() => refreshNonce++}>Retry data load</button>
+    {/if}
+  </div>
 </div>
 
 <div class="overview-panel" class:hidden={!overviewMode}>
@@ -229,7 +444,7 @@
   {/if}
 </div>
 {#if !overviewMode}
-  <div class="actions-layout">
+  <div class="actions-layout" class:full-height={fullHeight}>
     <aside class="workflow-list" aria-label="Workflow runs">
       {#if loading && !snapshot}
         <div class="empty">Loading workflow runs…</div>
@@ -243,12 +458,23 @@
       {:else}
         {#each groups as group (`${group.run.id}:${group.run.attempt}`)}
           <section class="workflow-group">
-            <header class="workflow-head">
-              {@render statusIcon(group.run.status, group.run.conclusion)}
-              <span class="workflow-name">{group.run.workflowName || "Workflow"}</span>
-              {#if group.run.attempt > 1}<span class="attempt">attempt {group.run.attempt}</span>{/if}
-              {#if group.run.eventAt}<span class="run-time">{relativeTime(group.run.eventAt)}</span>{/if}
+            <header class="workflow-head" class:current={group.run.id === preferredRunId && (preferredRunAttempt === null || group.run.attempt === preferredRunAttempt)}>
+              {#if onSelectRun}
+                <button class="run-switch" type="button" onclick={() => onSelectRun(group.run)}>
+                  {@render workflowHeading(group)}
+                </button>
+              {:else}
+                {@render workflowHeading(group)}
+              {/if}
+              {#if onRerunFailed && groupCanRerun(group)}
+                <button class="rerun-button" type="button" disabled={groupRerunPending(group)} onclick={() => triggerRerun(group)}>
+                  {groupRerunPending(group) ? "Re-running…" : "Re-run failed jobs"}
+                </button>
+              {/if}
             </header>
+            {#if groupRerunError(group)}
+              <div class="rerun-error" role="alert">{groupRerunError(group)}</div>
+            {/if}
             <div class="jobs">
               {#each group.jobs as job (job.id)}
                 <button class="job-row" class:active={selectedJobId === job.id} onclick={() => selectJob(job)}>
@@ -345,6 +571,35 @@
     opacity: 0.45;
     cursor: default;
   }
+  .actions-view-controls,
+  .commit-picker {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .actions-view-controls {
+    min-width: 0;
+    justify-content: flex-end;
+  }
+  .commit-picker {
+    min-width: 0;
+    color: var(--text-faint);
+    font-size: 11px;
+  }
+  .commit-picker select {
+    width: min(420px, 42vw);
+    height: 29px;
+    min-width: 0;
+    padding: 0 8px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    color: var(--text);
+    background: var(--panel);
+    font: 11px var(--mono);
+  }
+  .commit-picker select:disabled {
+    color: var(--text-faint);
+  }
   .refresh-link {
     color: var(--fail);
   }
@@ -365,6 +620,10 @@
     grid-template-columns: minmax(300px, 34%) minmax(0, 1fr);
     gap: 20px;
     align-items: start;
+  }
+  .actions-layout.full-height {
+    min-height: calc(100vh - 245px);
+    align-items: stretch;
   }
   .workflow-list {
     display: flex;
@@ -390,6 +649,51 @@
     padding: 9px 11px;
     border-bottom: 1px solid var(--border);
     background: var(--surface);
+    font-size: 11px;
+  }
+  .workflow-head.current {
+    box-shadow: inset 3px 0 var(--accent);
+  }
+  .run-switch {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    align-items: center;
+    gap: 8px;
+    padding: 0;
+    border: 0;
+    color: inherit;
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+  }
+  .run-switch:hover .workflow-name {
+    color: var(--accent);
+  }
+  .rerun-button {
+    min-height: 25px;
+    flex: none;
+    padding: 0 8px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    color: var(--text-muted);
+    background: var(--panel);
+    font: 600 10px var(--sans);
+    cursor: pointer;
+  }
+  .rerun-button:hover:not(:disabled) {
+    color: var(--text);
+    background: var(--panel-raised);
+  }
+  .rerun-button:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+  .rerun-error {
+    padding: 7px 11px;
+    border-bottom: 1px solid var(--border);
+    color: var(--fail);
+    background: color-mix(in srgb, var(--fail) 6%, var(--panel));
     font-size: 11px;
   }
   .workflow-name {
@@ -463,60 +767,9 @@
     color: var(--fail);
     font-size: 11px;
   }
-  :global(.status-icon) {
-    display: inline-flex;
-    width: 16px;
-    height: 16px;
-    margin-top: 1px;
-    flex: none;
-    align-items: center;
-    justify-content: center;
-    color: var(--text-faint);
-  }
   .workflow-head :global(.status-icon),
   .log-title-row :global(.status-icon) {
     margin-top: 0;
-  }
-  :global(.status-icon.ready) {
-    color: var(--ready);
-  }
-  :global(.status-icon.fail) {
-    color: var(--fail);
-  }
-  :global(.status-icon.wait) {
-    color: var(--review);
-  }
-  :global(.status-icon svg) {
-    width: 16px;
-    height: 16px;
-    fill: none;
-    stroke: currentColor;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    stroke-width: 1.5;
-  }
-  :global(.status-icon.ready circle),
-  :global(.status-icon.fail circle) {
-    fill: currentColor;
-    stroke: none;
-  }
-  :global(.status-icon.ready path),
-  :global(.status-icon.fail path) {
-    stroke: var(--native-on-accent);
-    stroke-width: 1.5;
-  }
-  :global(.status-spinner circle) {
-    stroke-dasharray: 24 14;
-    transform-origin: center;
-    animation: status-spin 0.9s linear infinite;
-  }
-  @keyframes status-spin {
-    to { transform: rotate(360deg); }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    :global(.status-spinner circle) {
-      animation: none;
-    }
   }
   .log-pane {
     min-width: 0;

@@ -37,30 +37,88 @@ export async function fetchPrDetail(repo, number) {
   if (!res.ok) throw new Error(`detail ${res.status}`);
   return res.json();
 }
-export async function fetchActions(repo, number) {
-  const res = await fetch(`/api/pr/${repo}/${number}/actions`);
+function actionCommitQuery(sha, prefetch = false) {
+  const params = new URLSearchParams();
+  if (sha) params.set("sha", sha);
+  if (prefetch) params.set("prefetch", "1");
+  const query = params.toString();
+  return query ? `?${query}` : "";
+}
+
+export async function fetchActions(repo, number, sha = null, signal = null) {
+  const res = await fetch(`/api/pr/${repo}/${number}/actions${actionCommitQuery(sha)}`, { signal });
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new Error(body?.error || `actions ${res.status}`);
   return body;
 }
-export async function fetchActionGraph(repo, number) {
-  const res = await fetch(`/api/pr/${repo}/${number}/actions/graph`);
+export async function fetchActionGraph(repo, number, sha = null, signal = null) {
+  const res = await fetch(`/api/pr/${repo}/${number}/actions/graph${actionCommitQuery(sha)}`, { signal });
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new Error(body?.error || `action graph ${res.status}`);
   return body;
 }
 
+export async function fetchActionCommits(repo, number, signal = null) {
+  const res = await fetch(`/api/pr/${repo}/${number}/actions/commits`, { signal });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.error || `action commits ${res.status}`);
+  return body;
+}
 
-export async function fetchActionLog(repo, number, jobId) {
-  const res = await fetch(`/api/pr/${repo}/${number}/actions/jobs/${jobId}/log`);
+
+export async function fetchActionLog(repo, number, jobId, sha = null, signal = null, prefetch = false) {
+  const res = await fetch(`/api/pr/${repo}/${number}/actions/jobs/${jobId}/log${actionCommitQuery(sha, prefetch)}`, { signal });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.error || `action log ${res.status}`);
+  return body;
+}
+export async function fetchRepoActions(filters = {}, signal = null) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (item !== "") params.append(key, String(item));
+      }
+    } else if (value !== null && value !== undefined && value !== "") {
+      params.set(key, String(value));
+    }
+  }
+  const query = params.toString();
+  const res = await fetch(`/api/actions/runs${query ? `?${query}` : ""}`, { signal });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.error || `actions ${res.status}`);
+  return body;
+}
+
+export async function rerunFailedActionJobs(repo, runId) {
+  const res = await fetch(`/api/actions/runs/${repo}/${runId}/rerun-failed-jobs`, { method: "POST" });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.error || `re-run failed jobs ${res.status}`);
+  return body;
+}
+
+export async function fetchRepoActionGraph(repo, headSha, signal = null) {
+  const params = new URLSearchParams({ repo, headSha });
+  const res = await fetch(`/api/actions/graph?${params}`, { signal });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.error || `action graph ${res.status}`);
+  return body;
+}
+
+export async function fetchRepoActionLog(repo, headSha, jobId, signal = null, prefetch = false) {
+  const params = new URLSearchParams({ repo, headSha });
+  if (prefetch) params.set("prefetch", "1");
+  const res = await fetch(`/api/actions/jobs/${jobId}/log?${params}`, { signal });
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new Error(body?.error || `action log ${res.status}`);
   return body;
 }
 
 
-export async function fetchPrCommitStats(repo, number) {
-  const res = await fetch(`/api/pr/${repo}/${number}/commit-stats`);
+
+export async function fetchPrCommitStats(repo, number, testPattern, signal = null) {
+  const params = new URLSearchParams({ testPattern: testPattern.source });
+  const res = await fetch(`/api/pr/${repo}/${number}/commit-stats?${params}`, { signal });
   if (!res.ok) throw new Error(`commit-stats ${res.status}`);
   return res.json();
 }
@@ -71,13 +129,13 @@ export async function fetchPrDetails(keys) {
   return (await res.json()).details;
 }
 
-export async function fetchPrDiff(repo, number, range = null) {
+export async function fetchPrDiff(repo, number, range = null, signal = null) {
   try {
     const params = new URLSearchParams();
     if (range?.base) params.set("base", range.base);
     if (range?.head) params.set("head", range.head);
     const qs = params.size ? `?${params}` : "";
-    const res = await fetch(`/api/pr/${repo}/${number}/diff${qs}`);
+    const res = await fetch(`/api/pr/${repo}/${number}/diff${qs}`, { signal });
     if (res.status === 503) {
       return { ok: false, building: true, retryAfterMs: (Number(res.headers.get("retry-after")) || 5) * 1000 };
     }
@@ -242,6 +300,14 @@ export async function startGithubSetup(scopes) {
   return res.json();
 }
 
+
+export async function fetchMergedPrAnalytics(repo, base = "staging", days = 180, signal) {
+  const params = new URLSearchParams({ repo, base, days: String(days) });
+  const res = await fetch(`/api/merged-pr-analytics?${params}`, { signal });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.error || `merged-pr-analytics ${res.status}`);
+  return body;
+}
 
 // startup has several independent settings readers; identical concurrent GETs
 // serialize on chromium's cache lock, so one in-flight request serves them all
@@ -414,5 +480,11 @@ export async function fetchAgentRunDetail(id) {
 export async function fetchQuota() {
   const res = await fetch("/api/quota");
   if (!res.ok) throw new Error(`quota ${res.status}`);
+  return await res.json();
+}
+
+export async function fetchGithubUsage() {
+  const res = await fetch("/api/github-usage");
+  if (!res.ok) throw new Error(`github usage ${res.status}`);
   return await res.json();
 }

@@ -3,6 +3,9 @@
   import PrDetail from "./lib/PrDetail.svelte";
   import Palette from "./lib/Palette.svelte";
   import Settings from "./lib/Settings.svelte";
+  import Usage from "./lib/Usage.svelte";
+  import ActionsPage from "./lib/ActionsPage.svelte";
+  import ActionsRunPage from "./lib/ActionsRunPage.svelte";
   import Onboarding from "./lib/Onboarding.svelte";
   import FindBar from "./lib/FindBar.svelte";
   import HistoryNav from "./lib/HistoryNav.svelte";
@@ -16,6 +19,8 @@
   import { prefs } from "./lib/prefs.svelte.js";
   import { quota } from "./lib/quota.svelte.js";
   import { quotaImpact } from "./lib/quotaImpact.js";
+  import { navigationForShortcut } from "./lib/navigationShortcuts.js";
+  import { isRecordingShortcut } from "./lib/shortcutCapture.js";
   import { SETTINGS_SECTION_KEY, SETTINGS_SECTIONS, normalizeSettingsSection, settingsSectionHref } from "./lib/settingsSections.js";
 
   window.cockpitFlash = showFlash;
@@ -23,13 +28,18 @@
   const isShell = navigator.userAgent.includes("Electron");
 
   function parseRoute(hash) {
-    const match = hash.match(/^#\/pr\/([^/]+)\/([^/]+)\/(\d+)(?:\/(files|agents|actions)|\/history\/([^/?]+)(?:\?symbol=([^&]+))?)?$/);
+    const match = hash.match(/^#\/pr\/([^/]+)\/([^/]+)\/(\d+)(?:\/(files|agents)|\/(actions)(?:\?([^#]+))?|\/history\/([^/?]+)(?:\?symbol=([^&]+))?)?$/i);
     if (match) {
       let historyPath = null;
       let historySymbol = null;
+      const actionParams = new URLSearchParams(match[6] ?? "");
+      const actionSha = actionParams.get("sha");
+      const actionJobText = actionParams.get("job");
+      if (actionSha !== null && !/^[0-9a-f]{40}$/i.test(actionSha)) return { name: "inbox" };
+      if (actionJobText !== null && !/^\d+$/.test(actionJobText)) return { name: "inbox" };
       try {
-        historyPath = match[5] ? decodeURIComponent(match[5]) : null;
-        historySymbol = match[6] ? decodeURIComponent(match[6]) : null;
+        historyPath = match[7] ? decodeURIComponent(match[7]) : null;
+        historySymbol = match[8] ? decodeURIComponent(match[8]) : null;
       } catch {
         return { name: "inbox" };
       }
@@ -37,9 +47,31 @@
         name: "detail",
         repo: `${match[1]}/${match[2]}`,
         number: Number(match[3]),
-        tab: historyPath ? "files" : match[4] ?? "conversation",
+        tab: historyPath ? "files" : match[5] ?? match[4] ?? "conversation",
+        actionSha,
+        actionJob: actionJobText === null ? null : Number(actionJobText),
         historyPath,
         historySymbol,
+      };
+    }
+    const actionsRunMatch = hash.match(/^#\/actions\/run\/([^/]+)\/([^/]+)\/(\d+)$/);
+    if (actionsRunMatch) {
+      return {
+        name: "actionsRun",
+        repo: `${actionsRunMatch[1]}/${actionsRunMatch[2]}`,
+        runId: Number(actionsRunMatch[3]),
+      };
+    }
+    if (hash === "#/actions" || hash.startsWith("#/actions?")) {
+      const params = new URLSearchParams(hash.split("?")[1] ?? "");
+      return {
+        name: "actions",
+        repos: params.getAll("repo"),
+        workflows: params.getAll("workflow"),
+        status: params.get("status") ?? "all",
+        repoProvided: params.has("repo"),
+        workflowProvided: params.has("workflow"),
+        statusProvided: params.has("status"),
       };
     }
     const settingsMatch = hash.match(/^#\/settings(?:\/([^/]+))?$/);
@@ -56,6 +88,19 @@
   let setupOpen = $state(false);
   let inboxRevision = $state(0);
   let detailRevision = $state(0);
+
+  $effect(() => {
+    const navigate = (event) => {
+      if (isRecordingShortcut()) return;
+      const destination = navigationForShortcut(event);
+      if (!destination) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      location.hash = destination.href;
+    };
+    window.addEventListener("keydown", navigate, { capture: true });
+    return () => window.removeEventListener("keydown", navigate, { capture: true });
+  });
   let pollCompletedAt = $state(null);
   let bannerHeight = $state(0);
   let impact = $derived(quotaImpact(quota.resources));
@@ -213,8 +258,20 @@
           <span>Find a PR</span>
           <span class="nav-kbd"><Kbd keys={["cmd", "k"]} /></span>
         </button>
+        <a
+          class="nav-item"
+          class:active={route.name === "actions" || route.name === "actionsRun"}
+          href="#/actions"
+          aria-current={route.name === "actions" || route.name === "actionsRun" ? "page" : undefined}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="8" />
+            <path d="m10 8.7 5 3.3-5 3.3z" />
+          </svg>
+          <span>Actions</span>
+        </a>
 
-        <span class="nav-label nav-label-lower">Control</span>
+
         <a
           class="nav-item"
           class:active={route.name === "settings"}
@@ -261,9 +318,17 @@
       {#if setupOpen}
         <Onboarding onDone={finishSetup} onCancel={() => (setupOpen = false)} />
       {:else if route.name === "detail"}
-        <PrDetail repo={route.repo} number={route.number} tab={route.tab} historyPath={route.historyPath} historySymbol={route.historySymbol} refreshRevision={detailRevision} />
+        <PrDetail repo={route.repo} number={route.number} tab={route.tab} actionSha={route.actionSha} actionJob={route.actionJob} historyPath={route.historyPath} historySymbol={route.historySymbol} refreshRevision={detailRevision} />
       {:else if route.name === "settings"}
-        <Settings section={route.section} onRunSetup={() => (setupOpen = true)} />
+        {#if route.section === "usage"}
+          <Usage />
+        {:else}
+          <Settings section={route.section} onRunSetup={() => (setupOpen = true)} />
+        {/if}
+      {:else if route.name === "actions"}
+        <ActionsPage repos={route.repos} workflows={route.workflows} status={route.status} repoProvided={route.repoProvided} workflowProvided={route.workflowProvided} statusProvided={route.statusProvided} />
+      {:else if route.name === "actionsRun"}
+        <ActionsRunPage repo={route.repo} runId={route.runId} />
       {:else if reposConfigured === false}
         <Onboarding onDone={finishSetup} />
       {:else if reposConfigured}
@@ -276,7 +341,7 @@
       {/if}
     </main>
 
-    {#if route.name === "detail" || route.name === "settings"}
+    {#if route.name === "detail" || route.name === "settings" || route.name === "actions" || route.name === "actionsRun"}
       <FindBar />
     {/if}
 

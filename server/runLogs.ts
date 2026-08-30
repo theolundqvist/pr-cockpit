@@ -2,7 +2,6 @@ import { gzip, gunzip } from "node:zlib";
 import { promisify } from "node:util";
 import {
   RUN_JOB_LOG_FORMAT_VERSION,
-  activeActionsLeases,
   actionsLease,
   getFileContents,
   getRunJobLog,
@@ -14,17 +13,22 @@ import {
   renewActionsLease,
   saveFileContents,
   saveRunJobLog,
+  replaceActionWorkflows,
   saveRunJobLogError,
   upsertRunJob,
   upsertWorkflowRun,
   workflowRunsForLease,
+  workflowRunsForCommit,
   type RunJobRow,
+  type WorkflowRunRow,
 } from "./db.ts";
 import {
+  fetchActionWorkflows,
   fetchFileContents,
   fetchGithubQuota,
   fetchJobLog,
   fetchRunJobs,
+  fetchRecentWorkflowRuns,
   fetchWorkflowRuns,
   fetchWorkflowRun,
   type RunJob,
@@ -45,9 +49,17 @@ export interface CompactRun {
   headBranch: string;
   workflowName: string;
   workflowPath: string;
+  displayTitle: string;
+  event: string;
+  actorLogin: string | null;
+  prNumber: number | null;
   status: string;
   conclusion: string | null;
   eventAt: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+  runStartedAt: string | null;
+  runNumber: number;
   htmlUrl: string | null;
 }
 
@@ -100,7 +112,23 @@ export function cleanJobLog(text: string): string {
   return text.replace(/^\uFEFF/, "").replace(TIMESTAMP_LINE_RE, "");
 }
 
+function pullRequestNumber(value: unknown): number | null {
+  if (!Array.isArray(value)) return null;
+  for (const candidate of value) {
+    if (
+      candidate &&
+      typeof candidate === "object" &&
+      "number" in candidate &&
+      typeof candidate.number === "number" &&
+      Number.isInteger(candidate.number)
+    ) {
+      return candidate.number;
+    }
+  }
+  return null;
+}
 function compactRun(run: WorkflowRun): CompactRun {
+
   return {
     id: run.id,
     attempt: run.run_attempt ?? 1,
@@ -108,9 +136,17 @@ function compactRun(run: WorkflowRun): CompactRun {
     headBranch: run.head_branch,
     workflowName: run.name,
     workflowPath: run.path ?? "",
+    displayTitle: run.display_title ?? run.name,
+    event: run.event ?? "",
+    actorLogin: run.actor?.login ?? null,
+    prNumber: pullRequestNumber(run.pull_requests),
     status: run.status,
     conclusion: run.conclusion,
     eventAt: run.updated_at,
+    createdAt: run.created_at ?? null,
+    updatedAt: run.updated_at ?? null,
+    runStartedAt: run.run_started_at ?? null,
+    runNumber: run.run_number ?? 0,
     htmlUrl: run.html_url,
   };
 }
@@ -200,18 +236,12 @@ function workflowFilePath(path: string): string {
   return refMarker === -1 ? path : path.slice(0, refMarker);
 }
 
-export async function actionWorkflowGraphs(
+async function workflowGraphsForRuns(
   repo: string,
-  number: number,
   headSha: string,
-  fetchers: WorkflowGraphFetchers = liveWorkflowGraphFetchers,
+  runs: WorkflowRunRow[],
+  fetchers: WorkflowGraphFetchers,
 ): Promise<WorkflowGraph[]> {
-  let runs = workflowRunsForLease(repo, number, headSha);
-  if (runs.length === 0 || runs.some((run) => !run.workflow_path)) {
-    const refreshed = await fetchers.fetchWorkflowRuns(repo, headSha);
-    for (const run of refreshed) storeRun(repo, number, compactRun(run));
-    runs = workflowRunsForLease(repo, number, headSha);
-  }
   const paths = [...new Set(runs.map((run) => workflowFilePath(run.workflow_path)).filter(Boolean))];
   const settled = await Promise.allSettled(paths.map(async (path) => {
     let source = getFileContents(headSha, path);
@@ -230,6 +260,35 @@ export async function actionWorkflowGraphs(
   });
 }
 
+export async function actionWorkflowGraphs(
+  repo: string,
+  number: number,
+  headSha: string,
+  fetchers: WorkflowGraphFetchers = liveWorkflowGraphFetchers,
+): Promise<WorkflowGraph[]> {
+  let runs = workflowRunsForLease(repo, number, headSha);
+  if (runs.length === 0 || runs.some((run) => !run.workflow_path)) {
+    const refreshed = await fetchers.fetchWorkflowRuns(repo, headSha);
+    for (const run of refreshed) storeRun(repo, number, compactRun(run));
+    runs = workflowRunsForLease(repo, number, headSha);
+  }
+  return workflowGraphsForRuns(repo, headSha, runs, fetchers);
+}
+
+export async function repoActionWorkflowGraphs(
+  repo: string,
+  headSha: string,
+  fetchers: WorkflowGraphFetchers = liveWorkflowGraphFetchers,
+): Promise<WorkflowGraph[]> {
+  let runs = workflowRunsForCommit(repo, headSha);
+  if (runs.length === 0 || runs.some((run) => !run.workflow_path)) {
+    const refreshed = await fetchers.fetchWorkflowRuns(repo, headSha);
+    for (const run of refreshed) storeRun(repo, null, compactRun(run));
+    runs = workflowRunsForCommit(repo, headSha);
+  }
+  return workflowGraphsForRuns(repo, headSha, runs, fetchers);
+}
+
 
 export function compactActionsPayload(event: string, payload: any): { run?: CompactRun; job?: CompactJob } | null {
   if (event === "workflow_run" && payload.workflow_run) {
@@ -243,9 +302,17 @@ export function compactActionsPayload(event: string, payload: any): { run?: Comp
         headBranch: raw.head_branch ?? "",
         workflowName: raw.name ?? raw.workflow_name ?? "",
         workflowPath: raw.path ?? "",
+        displayTitle: raw.display_title ?? raw.name ?? raw.workflow_name ?? "",
+        event: raw.event ?? "",
+        actorLogin: raw.actor?.login ?? null,
+        prNumber: pullRequestNumber(raw.pull_requests),
         status: raw.status,
         conclusion: raw.conclusion ?? null,
         eventAt: raw.updated_at ?? raw.run_started_at ?? "",
+        createdAt: raw.created_at ?? null,
+        updatedAt: raw.updated_at ?? null,
+        runStartedAt: raw.run_started_at ?? null,
+        runNumber: raw.run_number ?? 0,
         htmlUrl: raw.html_url ?? null,
       },
     };
@@ -282,12 +349,28 @@ export function compactActionsPayload(event: string, payload: any): { run?: Comp
   return null;
 }
 
-function storeRun(repo: string, number: number, run: CompactRun): boolean {
+function storeRun(repo: string, number: number | null, run: CompactRun): boolean {
   return upsertWorkflowRun({
-    repo, run_id: run.id, run_attempt: run.attempt, pr_number: number, head_sha: run.headSha,
-    head_branch: run.headBranch, workflow_name: run.workflowName, workflow_path: run.workflowPath ?? "",
-    status: run.status, conclusion: run.conclusion, event_at: run.eventAt, html_url: run.htmlUrl,
+    repo, run_id: run.id, run_attempt: run.attempt, pr_number: number ?? run.prNumber,
+    head_sha: run.headSha, head_branch: run.headBranch, workflow_name: run.workflowName,
+    workflow_path: run.workflowPath ?? "", display_title: run.displayTitle, event: run.event,
+    actor_login: run.actorLogin, status: run.status, conclusion: run.conclusion,
+    event_at: run.eventAt, created_at: run.createdAt, updated_at: run.updatedAt,
+    run_started_at: run.runStartedAt, run_number: run.runNumber, html_url: run.htmlUrl,
   });
+}
+export async function refreshRecentActions(
+  repo: string,
+  runFetcher: typeof fetchRecentWorkflowRuns = fetchRecentWorkflowRuns,
+  workflowFetcher: typeof fetchActionWorkflows = fetchActionWorkflows,
+): Promise<number> {
+  const [runs, workflows] = await Promise.all([runFetcher(repo), workflowFetcher(repo)]);
+  replaceActionWorkflows(repo, workflows);
+  let changed = 0;
+  for (const raw of runs) {
+    if (storeRun(repo, null, compactRun(raw))) changed++;
+  }
+  return changed;
 }
 
 function jobIsComplete(job: { status: string; conclusion: string | null }): boolean {
@@ -422,7 +505,10 @@ async function repairActionsLease(repo: string, number: number, headSha: string,
     await queueReconciliation(repo, {
       id: row.run_id, attempt: row.run_attempt, headSha: row.head_sha, headBranch: row.head_branch,
       workflowName: row.workflow_name, workflowPath: row.workflow_path,
-      status: row.status, conclusion: row.conclusion, eventAt: row.event_at, htmlUrl: row.html_url,
+      displayTitle: row.display_title, event: row.event, actorLogin: row.actor_login,
+      prNumber: row.pr_number, status: row.status, conclusion: row.conclusion,
+      eventAt: row.event_at, createdAt: row.created_at, updatedAt: row.updated_at,
+      runStartedAt: row.run_started_at, runNumber: row.run_number, htmlUrl: row.html_url,
     }, fetchers, false);
   }
 }
@@ -450,6 +536,58 @@ function queueActionsLease(
   return entry.promise;
 }
 
+export async function cacheGithubActionsForCommit(
+  repo: string,
+  number: number,
+  headSha: string,
+  fetchers: ActionsFetchers = liveFetchers,
+): Promise<void> {
+  const runs = (await fetchers.fetchWorkflowRuns(repo, headSha)).map(compactRun);
+  for (const run of runs) storeRun(repo, number, run);
+  for (const run of runs) {
+    const jobs = (await fetchers.fetchRunJobs(repo, run.id, run.status === "completed" ? run.attempt : undefined))
+      .map((job) => compactJob(job, run));
+    for (const job of jobs) storeJob(repo, job);
+    markWorkflowRunJobsFetched(repo, run.id, run.attempt);
+  }
+}
+
+export async function cacheRepoActionsRunJobs(
+  run: WorkflowRunRow,
+  fetchers: ActionsFetchers = liveFetchers,
+  background = false,
+): Promise<boolean> {
+  if (background && await fetchers.restRemaining() <= REST_BACKGROUND_RESERVE) return false;
+  const compact: CompactRun = {
+    id: run.run_id,
+    attempt: run.run_attempt,
+    headSha: run.head_sha,
+    headBranch: run.head_branch,
+    workflowName: run.workflow_name,
+    workflowPath: run.workflow_path,
+    displayTitle: run.display_title,
+    event: run.event,
+    actorLogin: run.actor_login,
+    prNumber: run.pr_number,
+    status: run.status,
+    conclusion: run.conclusion,
+    eventAt: run.event_at,
+    createdAt: run.created_at,
+    updatedAt: run.updated_at,
+    runStartedAt: run.run_started_at,
+    runNumber: run.run_number,
+    htmlUrl: run.html_url,
+  };
+  const jobs = await fetchers.fetchRunJobs(
+    run.repo,
+    run.run_id,
+    run.status === "completed" ? run.run_attempt : undefined,
+  );
+  for (const job of jobs) storeJob(run.repo, compactJob(job, compact));
+  markWorkflowRunJobsFetched(run.repo, run.run_id, run.run_attempt);
+  return true;
+}
+
 export function activateActionsLease(
   repo: string,
   number: number,
@@ -460,17 +598,6 @@ export function activateActionsLease(
   return queueActionsLease(repo, number, headSha, fetchers);
 }
 
-export async function resumeActionsLeases(fetchers: ActionsFetchers = liveFetchers): Promise<void> {
-  const failures: unknown[] = [];
-  for (const lease of activeActionsLeases()) {
-    try {
-      await queueActionsLease(lease.repo, lease.number, lease.head_sha, fetchers);
-    } catch (error) {
-      failures.push(error);
-    }
-  }
-  if (failures.length > 0) throw new AggregateError(failures, "failed to resume Actions leases");
-}
 
 export async function ingestActionsState(
   repo: string,
@@ -480,9 +607,9 @@ export async function ingestActionsState(
   const item = state.run ?? state.job;
   if (!item) return false;
   const pr = openPrForAction(repo, item.headSha, item.headBranch);
-  if (!pr) return false;
   if (state.run) {
-    const changed = storeRun(repo, pr.number, state.run);
+    const changed = storeRun(repo, pr?.number ?? null, state.run);
+    if (!pr) return changed;
     const lease = actionsLease(repo, pr.number);
     if (changed && lease?.head_sha === pr.head_sha && state.run.status === "completed") {
       const row = workflowRunsForLease(repo, pr.number, pr.head_sha)
@@ -492,7 +619,9 @@ export async function ingestActionsState(
     return changed;
   }
   const job = state.job!;
+  if (!job.headSha) return false;
   const changed = storeJob(repo, job);
+  if (!pr) return changed;
   const lease = actionsLease(repo, pr.number);
   if (changed && lease?.head_sha === pr.head_sha && jobProducesLog(job) && getRunJobLog(repo, job.id) === null) {
     await fetchLogs(repo, [job], fetchers, true);
@@ -506,7 +635,7 @@ export interface CachedJobLog {
 }
 
 export interface ActionJobLog extends CachedJobLog {
-  state: "pending" | "not-produced" | "ready";
+  state: "pending" | "not-produced" | "ready" | "deferred";
 }
 
 export async function actionJobLog(
@@ -514,6 +643,7 @@ export async function actionJobLog(
   headSha: string,
   jobId: number,
   fetchers: ActionsFetchers = liveFetchers,
+  background = false,
 ): Promise<ActionJobLog | null> {
   let job = listRunJobs(repo, headSha).find((candidate) => candidate.job_id === jobId);
   if (!job) return null;
@@ -523,6 +653,9 @@ export async function actionJobLog(
   const cachedBefore = getRunJobLog(repo, jobId);
   const canUseCached = cachedBefore !== null && job.log_truncated !== 1;
   if (cachedBefore === null || job.log_truncated === 1 || job.log_format_version < RUN_JOB_LOG_FORMAT_VERSION) {
+    if (background && await fetchers.restRemaining() <= REST_BACKGROUND_RESERVE) {
+      return { job, body: null, state: "deferred" };
+    }
     const key = `${repo}:${jobId}`;
     let pending = logFetches.get(key);
     if (!pending) {

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Timer entrypoint: pull the checked-out branch, and only when new commits landed
+# rebuild the UI and restart the systemd user service. update-pull treats
+# up-to-date/ahead as "noop" and preserves colliding local edits on a backup branch.
+set -Eeuo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+result="$(scripts/update-pull)"
+if [[ "$result" != "updated" ]]; then
+  echo "auto-update: $result"
+  exit 0
+fi
+
+(cd ui && bun install --frozen-lockfile --silent && bun run build >/dev/null)
+systemctl --user restart pr-cockpit.service
+echo "auto-update: updated to $(git rev-parse --short HEAD) and restarted"

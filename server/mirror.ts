@@ -220,12 +220,48 @@ export type MirrorDiffResult =
   | { status: "diff-failed" };
 
 export type CommitFileStat = { path: string; additions: number; deletions: number };
+export type PullRequestCommit = { sha: string; headline: string; committedAt: string };
+
+export type MirrorCommitListResult =
+  | { status: "ok"; commits: PullRequestCommit[] }
+  | { status: "no-mirror" }
+  | { status: "missing-commit" }
+  | { status: "list-failed" };
+
 
 export type MirrorCommitStatsResult =
   | { status: "ok"; commits: Array<{ sha: string; files: CommitFileStat[] }> }
   | { status: "no-mirror" }
   | { status: "missing-commit" }
   | { status: "stats-failed" };
+
+export type CommitLineCount = {
+  additions: number;
+  deletions: number;
+  skippedTests: boolean;
+  testsOnly: boolean;
+};
+
+export function summarizeCommitStats(
+  commits: Array<{ sha: string; files: CommitFileStat[] }>,
+  testPattern: RegExp,
+): Record<string, CommitLineCount> {
+  const counts: Record<string, CommitLineCount> = {};
+  for (const commit of commits) {
+    const totals = { additions: 0, deletions: 0, skippedTests: false, testsOnly: false };
+    const tests = { additions: 0, deletions: 0 };
+    for (const file of commit.files) {
+      const bucket = testPattern.test(file.path) ? tests : totals;
+      bucket.additions += file.additions;
+      bucket.deletions += file.deletions;
+      if (bucket === tests) totals.skippedTests = true;
+    }
+    counts[commit.sha] = totals.additions === 0 && totals.deletions === 0 && totals.skippedTests
+      ? { additions: tests.additions, deletions: tests.deletions, skippedTests: false, testsOnly: true }
+      : totals;
+  }
+  return counts;
+}
 
 export type MirrorFileResult =
   | { status: "ok"; content: string }
@@ -303,6 +339,44 @@ export async function diffFromMirror(
   const dir = mirrorDir(repo);
   if (!(await Bun.file(`${dir}/HEAD`).exists())) return { status: "no-mirror" };
   return diffFromGitDir(dir, base, head, mode);
+}
+
+export async function commitsFromGitDir(
+  gitDir: string,
+  base: string,
+  head: string,
+): Promise<Exclude<MirrorCommitListResult, { status: "no-mirror" }>> {
+  if (!(await commitExists(gitDir, base)) || !(await commitExists(gitDir, head))) return { status: "missing-commit" };
+  const result = await git([
+    "--git-dir",
+    gitDir,
+    "log",
+    "--reverse",
+    "--topo-order",
+    "--format=%H%x00%s%x00%aI%x00",
+    `${base}..${head}`,
+  ]);
+  if (!result.ok) return { status: "list-failed" };
+  const fields = result.stdout.split("\0");
+  const commits: PullRequestCommit[] = [];
+  for (let index = 0; index + 2 < fields.length; index += 3) {
+    const sha = fields[index]!.trimStart();
+    const headline = fields[index + 1]!;
+    const committedAt = fields[index + 2]!;
+    if (sha !== "") commits.push({ sha, headline, committedAt });
+  }
+  return { status: "ok", commits };
+}
+
+export async function commitsFromMirror(
+  repo: string,
+  base: string,
+  head: string,
+): Promise<MirrorCommitListResult> {
+  touch(repo);
+  const dir = mirrorDir(repo);
+  if (!(await Bun.file(`${dir}/HEAD`).exists())) return { status: "no-mirror" };
+  return commitsFromGitDir(dir, base, head);
 }
 
 export async function commitStatsFromGitDir(

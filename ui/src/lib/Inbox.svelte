@@ -773,6 +773,7 @@
       <button class="view-tab" role="tab" aria-selected={view === "closed"} class:active={view === "closed"} onclick={() => showView("closed")}>
         Recently merged {#if view === "open"}<Kbd keys="tab" />{/if}
       </button>
+      <a class="view-tab" role="tab" aria-selected="false" href="#/actions">Actions</a>
     </div>
 
     {#if filterOpen && view === "open"}
@@ -1937,6 +1938,7 @@
     color: var(--text);
     font-size: 14px;
     font-weight: 500;
+    text-decoration: none;
     transition: background-color 140ms ease, box-shadow 140ms ease, transform 140ms var(--ease-out);
   }
   .view-tab.active {

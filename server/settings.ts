@@ -6,6 +6,7 @@ const DEFAULT_POLL_INTERVAL_S = 180;
 const envRepos = Bun.env.COCKPIT_REPOS ?? "";
 const envRepoRoots = Bun.env.COCKPIT_REPO_ROOTS ?? "";
 const envReviewBots = Bun.env.COCKPIT_REVIEW_BOTS ?? "[]";
+const envReplicaSshHost = Bun.env.COCKPIT_REPLICA_SSH_HOST ?? Bun.env.COCKPIT_PROXY ?? "";
 
 export type AgentTrigger = "keybind" | "activity";
 export type AgentModel = "opus" | "sonnet";
@@ -113,9 +114,16 @@ export function normalizeDiffLayout(value: unknown): DiffLayout {
   return value === "unified" || value === "split" ? value : "split";
 }
 
+export function normalizeReplicaSshHost(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const host = value.trim().replace(/^ssh:\/\//, "").replace(/\/$/, "");
+  return /^([A-Za-z0-9._-]+@)?[A-Za-z0-9._-]+$/.test(host) ? host : "";
+}
+
 export function seedSettings(): void {
   if (getSetting("repos") === null) setSetting("repos", envRepos);
   if (getSetting("poll_interval_s") === null) setSetting("poll_interval_s", String(DEFAULT_POLL_INTERVAL_S));
+  if (getSetting("replica_ssh_host") === null) setSetting("replica_ssh_host", normalizeReplicaSshHost(envReplicaSshHost));
   if (getSetting("default_repo") === null) setSetting("default_repo", parseRepos(getSetting("repos") ?? "")[0] ?? "");
   if (getSetting("per_view_window_size") === null) setSetting("per_view_window_size", "false");
   if (getSetting("per_view_window_position") === null) setSetting("per_view_window_position", "false");
@@ -190,6 +198,7 @@ export interface Settings {
   repos: string;
   default_repo: string;
   poll_interval_s: number;
+  replica_ssh_host: string;
   per_view_window_size: boolean;
   per_view_window_position: boolean;
   theme: ThemePreference;
@@ -218,10 +227,14 @@ export interface Settings {
 }
 
 export function readSettings(): Settings {
+  const storedReplicaSshHost = getSetting("replica_ssh_host");
   return {
     repos: getSetting("repos") ?? envRepos,
     default_repo: getSetting("default_repo") ?? "",
     poll_interval_s: clampInterval(Number(getSetting("poll_interval_s"))),
+    replica_ssh_host: Bun.env.COCKPIT_REPLICA_OVERRIDE === "1"
+      ? normalizeReplicaSshHost(envReplicaSshHost)
+      : normalizeReplicaSshHost(storedReplicaSshHost === null ? envReplicaSshHost : storedReplicaSshHost),
     per_view_window_size: getSetting("per_view_window_size") === "true",
     per_view_window_position: getSetting("per_view_window_position") === "true",
     theme: normalizeThemePreference(getSetting("theme")),
@@ -255,6 +268,7 @@ export function writeSettings(
     repos: string;
     default_repo: string;
     poll_interval_s: number;
+    replica_ssh_host: string;
     per_view_window_size: boolean;
     per_view_window_position: boolean;
     theme: string;
@@ -282,9 +296,16 @@ export function writeSettings(
     relay_url: string;
   }>,
 ): Settings {
+  const replicaSshHost = patch.replica_ssh_host === undefined
+    ? undefined
+    : normalizeReplicaSshHost(patch.replica_ssh_host);
+  if (replicaSshHost === "" && (typeof patch.replica_ssh_host !== "string" || patch.replica_ssh_host.trim() !== "")) {
+    throw new Error("invalid replica SSH host");
+  }
   if (patch.repos !== undefined) setSetting("repos", patch.repos);
   if (patch.default_repo !== undefined) setSetting("default_repo", patch.default_repo);
   if (patch.poll_interval_s !== undefined) setSetting("poll_interval_s", String(clampInterval(Number(patch.poll_interval_s))));
+  if (replicaSshHost !== undefined) setSetting("replica_ssh_host", replicaSshHost);
   if (patch.per_view_window_size !== undefined) setSetting("per_view_window_size", patch.per_view_window_size ? "true" : "false");
   if (patch.per_view_window_position !== undefined) setSetting("per_view_window_position", patch.per_view_window_position ? "true" : "false");
   if (patch.theme !== undefined) setSetting("theme", normalizeThemePreference(patch.theme));

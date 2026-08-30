@@ -1,6 +1,7 @@
 import { getPr, getSetting, setSetting } from "./db.ts";
 import { ghToken } from "./github.ts";
-import { pollOnce, refreshPr } from "./poller.ts";
+import { backgroundPollAllowed, pollOnce, refreshPr } from "./poller.ts";
+import { prDetailScopeForEvent, refreshPrFromEvent } from "./eventRefresh.ts";
 import { relayConfig } from "./settings.ts";
 import { ingestActionsState, type CompactJob, type CompactRun } from "./runLogs.ts";
 
@@ -77,7 +78,9 @@ export async function pollRelayOnce(
       if (!refreshed.has(key)) {
         refreshed.add(key);
         if (getPr(marker.repo, marker.number) !== null) {
-          refreshPr(marker.repo, marker.number).catch((error) =>
+          void refreshPrFromEvent(marker.repo, marker.number, prDetailScopeForEvent(marker.event), async (repo, number, scope) => {
+            if (await backgroundPollAllowed()) await refreshPr(repo, number, "relay", scope);
+          }).catch((error) =>
             console.error(`relay-triggered refresh failed for ${key}:`, error)
           );
         }

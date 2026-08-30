@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -332,6 +332,7 @@ test("resolve rejects PR resource query options", async () => {
   ], {
     stdout: "pipe",
     stderr: "pipe",
+    env: { ...Bun.env, COCKPIT_PORT: "1" },
   });
   const [, exitCode] = await Promise.all([
     new Response(process.stderr).text(),
@@ -476,5 +477,274 @@ test("update delegates to the running server and waits for the new revision", as
   } finally {
     server.stop(true);
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("mutation commands enqueue every PR operation and wait for completion", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pr-cockpit-mutations-"));
+  const bodyPath = join(root, "body.txt");
+  const body = "first paragraph\n\nsecond paragraph\n";
+  writeFileSync(bodyPath, body);
+  const received: unknown[] = [];
+  let nextId = 1;
+  const server = Bun.serve({
+    port: 0,
+    async fetch(request) {
+      const url = new URL(request.url);
+      if (request.method === "POST" && url.pathname.endsWith("/mutations")) {
+        expect(request.headers.get("x-pr-cockpit-cli")).toBe("1");
+        received.push(await request.json());
+        return Response.json({ id: nextId++ }, { status: 201 });
+      }
+      if (request.method === "GET" && url.pathname === "/api/mutations") {
+        expect(url.searchParams.get("repo")).toBe("owner/repo");
+        expect(url.searchParams.get("number")).toBe("17");
+        return Response.json({ mutations: [] });
+      }
+      return new Response("not found", { status: 404 });
+    },
+  });
+  const cases: Array<{ args: string[]; payload: { kind: string; [key: string]: unknown } }> = [
+    { args: ["comment", "owner/repo#17", "--body-file", bodyPath], payload: { kind: "comment", body } },
+    { args: ["reply", "owner/repo#17", "0123456789", "--body-file", bodyPath], payload: { kind: "reply-to-thread", threadHandle: "0123456789", body } },
+    { args: ["unresolve", "owner/repo#17", "0123456789"], payload: { kind: "resolve-thread", threadHandle: "0123456789", resolved: false } },
+    { args: ["review", "owner/repo#17", "approve"], payload: { kind: "review-verdict", event: "APPROVE", body: "" } },
+    { args: ["review", "owner/repo#17", "request-changes", "--body-file", bodyPath], payload: { kind: "review-verdict", event: "REQUEST_CHANGES", body } },
+    { args: ["merge", "owner/repo#17", "--method", "rebase", "--force"], payload: { kind: "merge", force: true, method: "rebase" } },
+    { args: ["update-branch", "owner/repo#17"], payload: { kind: "update-branch" } },
+    { args: ["ready-for-review", "owner/repo#17"], payload: { kind: "ready-for-review" } },
+    { args: ["close", "owner/repo#17"], payload: { kind: "close" } },
+    { args: ["edit-body", "owner/repo#17", "--body-file", bodyPath], payload: { kind: "edit-body", body } },
+    { args: ["edit-title", "owner/repo#17", "fix(ui): preserve width"], payload: { kind: "edit-title", title: "fix(ui): preserve width" } },
+    { args: ["auto-merge", "owner/repo#17", "enable", "--method", "squash"], payload: { kind: "github-auto-merge", enable: true, method: "squash" } },
+    { args: ["auto-merge", "owner/repo#17", "disable"], payload: { kind: "github-auto-merge", enable: false } },
+    { args: ["cockpit-auto-merge", "owner/repo#17", "enable"], payload: { kind: "auto-merge", enable: true } },
+    {
+      args: ["inline-comment", "owner/repo#17", "--path", "src/a.ts", "--line", "9", "--side", "right", "--start-line", "7", "--start-side", "right", "--body-file", bodyPath],
+      payload: { kind: "inline-comment", path: "src/a.ts", line: 9, side: "RIGHT", body, startLine: 7, startSide: "RIGHT" },
+    },
+    { args: ["assign", "owner/repo#17", "theo", "bot-user"], payload: { kind: "assign", logins: ["theo", "bot-user"] } },
+    { args: ["unassign", "owner/repo#17", "theo"], payload: { kind: "unassign", logins: ["theo"] } },
+    { args: ["request-reviewers", "owner/repo#17", "reviewer"], payload: { kind: "request-reviewers", logins: ["reviewer"] } },
+    { args: ["unrequest-reviewers", "owner/repo#17", "reviewer"], payload: { kind: "unrequest-reviewers", logins: ["reviewer"] } },
+  ];
+
+  try {
+    for (const scenario of cases) {
+      const process = Bun.spawn([join(import.meta.dir, "pr-cockpit"), ...scenario.args], {
+        env: { ...Bun.env, COCKPIT_PORT: String(server.port) },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [output, error, exitCode] = await Promise.all([
+        new Response(process.stdout).text(),
+        new Response(process.stderr).text(),
+        process.exited,
+      ]);
+      expect(exitCode).toBe(0);
+      expect(error).toBe("");
+      expect(JSON.parse(output)).toEqual({ ok: true, id: received.length, kind: scenario.payload.kind });
+    }
+    expect(received).toEqual(cases.map((scenario) => ({ payload: scenario.payload })));
+  } finally {
+    server.stop(true);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("mutation commands report queued GitHub failures", async () => {
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const url = new URL(request.url);
+      if (request.method === "POST") return Response.json({ id: 91 }, { status: 201 });
+      if (url.pathname === "/api/mutations") {
+        return Response.json({ mutations: [{ id: 91, state: "failed", error: "branch protection rejected merge" }] });
+      }
+      return new Response("not found", { status: 404 });
+    },
+  });
+  const process = Bun.spawn([join(import.meta.dir, "pr-cockpit"), "merge", "owner/repo#17"], {
+    env: { ...Bun.env, COCKPIT_PORT: String(server.port) },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  try {
+    const [output, error, exitCode] = await Promise.all([
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+      process.exited,
+    ]);
+    expect(exitCode).toBe(1);
+    expect(output).toBe("");
+    expect(error).toBe("pr-cockpit: branch protection rejected merge\n");
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("--use-as-proxy reads through an existing local replica", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pr-cockpit-proxy-cli-"));
+  const dataDir = join(home, "data");
+  mkdirSync(dataDir);
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      if (new URL(request.url).pathname === "/healthz") {
+        return Response.json({ root: "/local/pr-cockpit", replica: { host: "scape-agent", connected: true } });
+      }
+      return new Response("proxied\n");
+    },
+  });
+
+  try {
+    const child = Bun.spawn(
+      [join(import.meta.dir, "pr-cockpit"), "--use-as-proxy", "ssh://scape-agent", "owner/repo#1"],
+      {
+        env: {
+          ...Bun.env,
+          HOME: home,
+          COCKPIT_DATA_DIR: dataDir,
+          COCKPIT_PORT: String(server.port),
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const [output, error, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect(exitCode).toBe(0);
+    expect(error).toBe("");
+    expect(output).toBe("proxied\n");
+  } finally {
+    server.stop(true);
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a running server's persisted replica source overrides the install seed", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pr-cockpit-replica-setting-"));
+  const configDir = join(home, ".config", "pr-cockpit");
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(join(configDir, "config"), "COCKPIT_PROXY=scape-agent\n");
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      if (new URL(request.url).pathname === "/healthz") {
+        return Response.json({ root: "/local/pr-cockpit", replica: { host: "other-agent", connected: true } });
+      }
+      return new Response("persisted replica\n");
+    },
+  });
+
+  try {
+    const child = Bun.spawn([join(import.meta.dir, "pr-cockpit"), "owner/repo#1"], {
+      env: { ...Bun.env, HOME: home, COCKPIT_PORT: String(server.port) },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [output, error, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect(exitCode).toBe(0);
+    expect(error).toBe("");
+    expect(output).toBe("persisted replica\n");
+  } finally {
+    server.stop(true);
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("an installed CLI symlink starts the repository launcher", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pr-cockpit-symlink-launcher-"));
+  const root = join(home, "app");
+  const scripts = join(root, "scripts");
+  const bin = join(home, "bin");
+  const dataDir = join(home, "data");
+  const ready = join(home, "ready");
+  mkdirSync(scripts, { recursive: true });
+  mkdirSync(bin);
+  copyFileSync(join(import.meta.dir, "pr-cockpit"), join(scripts, "pr-cockpit"));
+  writeFileSync(join(scripts, "cockpit"), `#!/usr/bin/env bash\ntouch ${JSON.stringify(ready)}\n`);
+  writeFileSync(join(bin, "curl"), `#!/usr/bin/env bash
+if [[ "$*" == *"/healthz"* ]]; then
+  [[ -f ${JSON.stringify(ready)} ]] || exit 22
+  printf '{"replica":{"host":"scape-agent"}}'
+else
+  printf 'proxied\\n'
+fi
+`);
+  chmodSync(join(scripts, "pr-cockpit"), 0o755);
+  chmodSync(join(scripts, "cockpit"), 0o755);
+  chmodSync(join(bin, "curl"), 0o755);
+  symlinkSync(join(scripts, "pr-cockpit"), join(bin, "pr-cockpit"));
+
+  try {
+    const child = Bun.spawn([join(bin, "pr-cockpit"), "--use-as-proxy", "scape-agent", "owner/repo#1"], {
+      env: {
+        ...Bun.env,
+        HOME: home,
+        PATH: `${bin}:${Bun.env.PATH}`,
+        COCKPIT_DATA_DIR: dataDir,
+        COCKPIT_PORT: "4895",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [output, error, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect(exitCode).toBe(0);
+    expect(error).toBe("");
+    expect(output).toBe("proxied\n");
+    expect(readFileSync(ready, "utf8")).toBe("");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("proxy backend starts a local replica server", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pr-cockpit-proxy-launcher-"));
+  const bin = join(home, "bin");
+  const dataDir = join(home, "data");
+  const argsFile = join(home, "replica-env");
+  mkdirSync(bin);
+  const bun = join(bin, "bun");
+  writeFileSync(bun, '#!/usr/bin/env bash\nprintf \"%s\\n\" \"$COCKPIT_REPLICA_SSH_HOST\" \"$COCKPIT_PROXY_PORT\" \"$COCKPIT_PORT\" > \"$PROXY_ARGS\"\n');
+  chmodSync(bun, 0o755);
+
+  try {
+    const child = Bun.spawn(
+      [join(import.meta.dir, "cockpit"), "--server-only", "--use-as-proxy", "ssh://root@dev-vm"],
+      {
+        env: {
+          ...Bun.env,
+          HOME: home,
+          PATH: `${bin}:${Bun.env.PATH}`,
+          COCKPIT_DATA_DIR: dataDir,
+          COCKPIT_PORT: "4891",
+          COCKPIT_PROXY_PORT: "4820",
+          PROXY_ARGS: argsFile,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    expect(await child.exited).toBe(0);
+    expect(readFileSync(argsFile, "utf8").trim().split("\n")).toEqual([
+      "root@dev-vm",
+      "4820",
+      "4891",
+    ]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
   }
 });

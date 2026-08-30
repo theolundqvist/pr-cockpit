@@ -8,6 +8,8 @@ const ANSI_COLORS = new Map([
   [90, "bright-black"], [91, "bright-red"], [92, "bright-green"], [93, "bright-yellow"],
   [94, "bright-blue"], [95, "bright-magenta"], [96, "bright-cyan"], [97, "bright-white"],
 ]);
+const URL_RE = /https?:\/\/[^\s<>"'`]+/g;
+
 
 function styledText(value) {
   const matches = [...value.matchAll(ANSI_SGR_RE)];
@@ -43,6 +45,83 @@ function styledText(value) {
   }
   append(value.slice(cursor));
   return { text: segments.map((segment) => segment.text).join(""), segments };
+}
+
+function trimUrlPunctuation(value) {
+  let trimmed = value.replace(/[.,;:"]+$/, "");
+  while (trimmed.endsWith(")")) {
+    const open = [...trimmed].filter((character) => character === "(").length;
+    const close = [...trimmed].filter((character) => character === ")").length;
+    if (close <= open) break;
+    trimmed = trimmed.slice(0, -1);
+  }
+  return trimmed;
+}
+
+function actionUrlTarget(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return value;
+  }
+  if (url.hostname.toLowerCase() !== "github.com") return value;
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (parts.length >= 5 && parts[2] === "actions" && parts[3] === "runs" && /^\d+$/.test(parts[4])) {
+    return `#/actions/run/${parts[0]}/${parts[1]}/${parts[4]}`;
+  }
+  if (parts.length >= 4 && parts[2] === "pull" && /^\d+$/.test(parts[3])) {
+    return `#/pr/${parts[0]}/${parts[1]}/${parts[3]}`;
+  }
+  return value;
+}
+
+function sliceStyledSegments(segments, start, end) {
+  if (!segments) return null;
+  const sliced = [];
+  let offset = 0;
+  for (const segment of segments) {
+    const segmentEnd = offset + segment.text.length;
+    const overlapStart = Math.max(start, offset);
+    const overlapEnd = Math.min(end, segmentEnd);
+    if (overlapStart < overlapEnd) {
+      sliced.push({
+        ...segment,
+        text: segment.text.slice(overlapStart - offset, overlapEnd - offset),
+      });
+    }
+    offset = segmentEnd;
+    if (offset >= end) break;
+  }
+  return sliced.length > 0 ? sliced : null;
+}
+
+export function linkifyActionLogLine(text, segments = null) {
+  const matches = [...text.matchAll(URL_RE)];
+  if (matches.length === 0) return null;
+  const parts = [];
+  let cursor = 0;
+  const append = (start, end, href = null) => {
+    if (start >= end) return;
+    const part = { text: text.slice(start, end) };
+    const styled = sliceStyledSegments(segments, start, end);
+    if (styled) part.segments = styled;
+    if (href) {
+      part.href = href;
+      part.external = !href.startsWith("#/");
+    }
+    parts.push(part);
+  };
+  for (const match of matches) {
+    const start = match.index;
+    const visibleUrl = trimUrlPunctuation(match[0]);
+    const end = start + visibleUrl.length;
+    append(cursor, start);
+    append(start, end, actionUrlTarget(visibleUrl));
+    cursor = end;
+  }
+  append(cursor, text.length);
+  return parts;
 }
 
 function decodeCommandText(value) {
@@ -123,6 +202,8 @@ export function parseActionLog(text, jobConclusion = null, failedStep = null) {
     const styled = styledText(textValue);
     const item = { line, text: styled.text, tone, ...fields };
     if (styled.segments) item.segments = styled.segments;
+    const parts = linkifyActionLogLine(styled.text, styled.segments);
+    if (parts) item.parts = parts;
     if (groupStack.length > 0) item.groups = [...groupStack];
     const step = ensureStep(postCleanup ? "Post job cleanup" : "Set up job");
     if (rootGroupDepth > 0 && step.rootGroup) item.rootGroupId = step.rootGroup.id;

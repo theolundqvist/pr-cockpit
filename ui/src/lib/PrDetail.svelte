@@ -71,9 +71,8 @@
     { value: "REQUEST_CHANGES", label: "Request changes", tone: "red" },
   ];
 
-  let { repo, number, tab, historyPath = null, historySymbol = null, refreshRevision = 0 } = $props();
+  let { repo, number, tab, actionSha = null, actionJob = null, historyPath = null, historySymbol = null, refreshRevision = 0 } = $props();
   let handledRefreshRevision = refreshRevision;
-
   loadPrIndex();
 
   let lastG = 0;
@@ -101,7 +100,7 @@
   let conflictFiles = $state([]);
   let conflictFilesState = $state("idle");
   let conflictFilesError = $state(null);
-  let commitFileStats = $state({});
+  let commitLineCounts = $state({});
   let loadedCommitStatsKey = "";
   let loadedConflictKey = "";
 
@@ -248,7 +247,7 @@
   let buildingDeadline = 0;
   const BUILD_CAP_MS = 120_000;
   $effect(() => {
-    if (!pr) return;
+    if (!pr || tab !== "files") return;
     const r = range;
     const rewrittenSince = rangeKey === "since" && anchorRewritten;
     const head = pr.headRefOid;
@@ -258,11 +257,12 @@
     loadedDiffKey = dkey;
     const token = {};
     diffFetch = token;
+    const controller = new AbortController();
     let retryTimer;
     const isSince = rangeKey === "since" && r;
     Promise.all([
-      fetchPrDiff(repo, number, r),
-      isSince ? fetchPrDiff(repo, number, null) : Promise.resolve(null),
+      fetchPrDiff(repo, number, r, controller.signal),
+      isSince ? fetchPrDiff(repo, number, null, controller.signal) : Promise.resolve(null),
     ]).then(async ([res, prRes]) => {
       if (diffFetch !== token) return;
       if (res.ok) {
@@ -318,7 +318,11 @@
       diffState = "error";
       buildingKey = "";
     });
-    return () => clearTimeout(retryTimer);
+    return () => {
+      controller.abort();
+      if (diffFetch === token) diffFetch = null;
+      clearTimeout(retryTimer);
+    };
   });
 
   function retryDiff() {
@@ -1152,22 +1156,27 @@
   });
 
   $effect(() => {
-    const key = pr ? `${repo}#${number}#${pr.headRefOid}#${pr.baseRefOid ?? ""}` : "";
-    if (!key) {
-      loadedCommitStatsKey = "";
-      commitFileStats = {};
-      return;
-    }
-    if (key === loadedCommitStatsKey) return;
+    const key = pr && tab === "conversation"
+      ? `${repo}#${number}#${pr.headRefOid}#${pr.baseRefOid ?? ""}#${testPattern.source}`
+      : "";
+    if (!key || key === loadedCommitStatsKey) return;
     loadedCommitStatsKey = key;
-    fetchPrCommitStats(repo, number).then(
+    const controller = new AbortController();
+    let finished = false;
+    fetchPrCommitStats(repo, number, testPattern, controller.signal).then(
       (res) => {
+        finished = true;
         if (key !== loadedCommitStatsKey) return;
-        commitFileStats = res.commits ?? {};
+        commitLineCounts = res.commits ?? {};
       },
-      // the timeline falls back to the per-commit totals GitHub already gave us
-      () => {},
+      () => {
+        finished = true;
+      },
     );
+    return () => {
+      controller.abort();
+      if (!finished && loadedCommitStatsKey === key) loadedCommitStatsKey = "";
+    };
   });
 
   let rollup = $derived(pr?.lastCommit.nodes[0]?.commit.statusCheckRollup ?? null);
@@ -1344,7 +1353,7 @@
       showFlash(result.error);
       return;
     }
-    if (result?.warning) showFlash(result.warning);
+    if (result?.warning && result.exitCode) showFlash(result.warning);
     if (!result?.changed) return;
     if (tab !== "files") {
       goToTab("files");
@@ -1562,27 +1571,6 @@
   let testsHidden = $derived(testFiles.length > 0 && testFiles.every((f) => collapsedFiles.has(f.path)));
   let treeFiles = $derived(testsHidden ? files.filter((f) => !testPattern.test(f.path)) : files);
 
-  // Counts exclude test files, matching the header's headline numbers. A commit that touched nothing
-  // else would read as an empty +0 −0, so it reports its test counts muted instead.
-  let commitLineCounts = $derived.by(() => {
-    const counts = {};
-    for (const [sha, fileList] of Object.entries(commitFileStats)) {
-      const totals = { additions: 0, deletions: 0, skippedTests: false, testsOnly: false };
-      const tests = { additions: 0, deletions: 0 };
-      for (const file of fileList) {
-        const bucket = testPattern.test(file.path) ? tests : totals;
-        bucket.additions += file.additions;
-        bucket.deletions += file.deletions;
-        if (bucket === tests) totals.skippedTests = true;
-      }
-      if (totals.additions === 0 && totals.deletions === 0 && totals.skippedTests) {
-        counts[sha] = { additions: tests.additions, deletions: tests.deletions, skippedTests: false, testsOnly: true };
-        continue;
-      }
-      counts[sha] = totals;
-    }
-    return counts;
-  });
 
   $effect(() => {
     if (tab !== "files" || diffState !== "ready" || treeFiles.length === 0) return;
@@ -2389,16 +2377,17 @@
             <ul class="ci-failure-list">
               {#each failingChecks as check}
                 <li>
-                  <span class="ci-failure-check">
-                    <strong title={check.name}>{check.name}</strong>
-                    {#if check.required}<span class="attention-chip ci-required">Required</span>{/if}
-                    <span>{check.status}</span>
-                  </span>
-                  {#if check.url}
-                    <a href={check.url} target="_blank" rel="noreferrer">Open logs ↗</a>
-                  {:else}
-                    <span class="ci-location">PR checks · use copied command</span>
-                  {/if}
+                  <a
+                    class="ci-failure-row"
+                    href={`#/pr/${repo}/${number}/actions?sha=${pr.headRefOid}${check.jobId === null ? "" : `&job=${check.jobId}`}`}
+                  >
+                    <span class="ci-failure-check">
+                      <strong title={check.name}>{check.name}</strong>
+                      {#if check.required}<span class="attention-chip ci-required">Required</span>{/if}
+                      <span>{check.status}</span>
+                    </span>
+                    <span class="ci-open-logs">Open logs</span>
+                  </a>
                 </li>
               {/each}
             </ul>
@@ -2490,7 +2479,6 @@
           </button>
         {/if}
       {/if}
-
       <nav class="tabs">
         <a class="tab" class:active={tab === "conversation"} href="#/pr/{repo}/{number}" onclick={(event) => guardTabNavigation(event, "conversation")}>
           Conversation {#if tab === "files"}<Kbd keys="d" />{/if}
@@ -2506,9 +2494,9 @@
         </a>
       </nav>
 
-      <div style:display={tab === "actions" ? "contents" : "none"}>
-        <ActionsView {repo} {number} headSha={pr.headRefOid} bind:runUrl={actionsRunUrl} />
-      </div>
+      {#if tab === "actions"}
+        <ActionsView {repo} {number} headSha={pr.headRefOid} selectedSha={actionSha} requestedJobId={actionJob} active bind:runUrl={actionsRunUrl} />
+      {/if}
 
       {#if tab === "files"}
         <div class="files-layout">
@@ -2734,9 +2722,7 @@
                     class:fail={FAILED_CI_STATES.has(event.ciState)}
                     class:running={RUNNING_CI_STATES.has(event.ciState)}
                     class:neutral={!event.ciState}
-                    href="https://github.com/{repo}/commit/{event.oid}/checks"
-                    target="_blank"
-                    rel="noreferrer"
+                    href="#/pr/{repo}/{number}/actions?sha={event.oid}"
                     aria-label="{commitCiLabel(event.ciState)} for {event.oid.slice(0, 7)}. View workflow runs"
                     title="{commitCiLabel(event.ciState)} · View workflow runs for {event.oid.slice(0, 7)}"
                   >
@@ -3340,6 +3326,9 @@
   .page {
     height: var(--general-height);
     overflow-y: auto;
+    /* Native scrollbars stay composited instead of repainting on every scroll. */
+    scrollbar-width: thin;
+    scrollbar-color: var(--scroll) transparent;
     display: flex;
     justify-content: center;
     align-items: flex-start;
@@ -5136,13 +5125,28 @@
     padding: 0 12px 9px 43px;
   }
   .ci-failure-list li {
+    min-width: 0;
+    border-top: 1px solid var(--border-soft);
+    font-size: 10px;
+  }
+  .ci-failure-row {
     display: flex;
     align-items: center;
     min-width: 0;
-    gap: 10px;
     min-height: 27px;
-    border-top: 1px solid var(--border-soft);
-    font-size: 10px;
+    margin: 0 -8px;
+    padding: 0 8px;
+    gap: 10px;
+    border-radius: 4px;
+    color: inherit;
+    text-decoration: none;
+  }
+  .ci-failure-row:hover {
+    background: var(--surface-hover);
+  }
+  .ci-failure-row:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
   }
   .ci-failure-check {
     display: flex;
@@ -5165,14 +5169,13 @@
     background: var(--review-bg);
     color: var(--review);
   }
-  .ci-failure-list a,
+  .ci-open-logs,
   .ci-location {
     flex: none;
     color: var(--link);
     font-size: 10px;
-    text-decoration: none;
   }
-  .ci-failure-list a:hover {
+  .ci-failure-row:hover .ci-open-logs {
     text-decoration: underline;
   }
   .ci-failure-error {
@@ -5612,10 +5615,11 @@
     .ci-failure-error {
       padding: 0 10px 8px 39px;
     }
-    .ci-failure-list li {
+    .ci-failure-row {
       align-items: flex-start;
       flex-direction: column;
       gap: 2px;
+      margin: 0;
       padding: 6px 0;
     }
     .ci-failure-check {

@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type {
+  ActionWorkflow,
   AssignableUser,
   FileContents,
   FileHistoryCommit,
@@ -562,6 +563,8 @@ function fixtureJobLog(repo: string, jobId: number): string {
   ];
   return lines.map((line, index) => `${new Date(Date.parse(at(50)) + index * 1_000).toISOString().replace("Z", "0000Z")} ${line}`).join("\n");
 }
+const failedJobReruns: Array<{ repo: string; runId: number }> = [];
+
 
 export const mockGithub = isMockGithub ? {
   viewerLogin: snapshot?.viewer ?? VIEWER,
@@ -613,6 +616,16 @@ export const mockGithub = isMockGithub ? {
   },
   runJobs: fixtureRunJobs,
   workflowRun: fixtureWorkflowRun,
+  actionWorkflows: (_repo: string): ActionWorkflow[] => [
+    { id: 1, name: "CI", path: ".github/workflows/ci.yml", state: "active" },
+    { id: 2, name: "Release Backend", path: ".github/workflows/release.yml", state: "active" },
+    { id: 3, name: "Tag Staging Release", path: ".github/workflows/tag.yml", state: "active" },
+  ],
+  rerunFailedJobs: async (repo: string, runId: number): Promise<void> => {
+    failedJobReruns.push({ repo, runId });
+    await Bun.sleep(350);
+  },
+  failedJobRerunCalls: (): Array<{ repo: string; runId: number }> => structuredClone(failedJobReruns),
   jobLog: fixtureJobLog,
   fileHistory: (repo: string, path: string, base: string): FileHistoryCommit[] => {
     const key = capturedHistory ?? { repo: REPO, path: "src/flight.ts", base: "main" };

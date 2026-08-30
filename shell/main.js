@@ -620,7 +620,7 @@ if (!app.requestSingleInstanceLock()) {
     });
     ipcMain.handle("cockpit:open-setup", async (_event, action) => {
       if (!win || win.isDestroyed()) return { error: "setup launch failed: no cockpit window" };
-      return launchSetupTerminal(action, win.getBounds());
+      return launchSetupTerminal(action, win.getBounds(), process.env, process.platform, process.env.COCKPIT_REPLICA_SSH_HOST || "");
     });
     ipcMain.handle("cockpit:native-palette", () => currentNativePalette());
     ipcMain.handle("cockpit:open-window", (_event, hash) => {
@@ -852,7 +852,12 @@ if (!app.requestSingleInstanceLock()) {
     paletteWin.webContents.on("did-navigate-in-page", (event, url) => {
       const hash = new URL(url).hash;
       const go = hash.match(/^#\/palette\/(go|window|github)\/([^/]+\/[^/]+)\/(\d+)$/);
-      if (go) {
+      const route = hash.match(/^#\/palette\/route\/(inbox|actions|settings)$/);
+      if (route) {
+        const destinations = { inbox: "#/", actions: "#/actions", settings: "#/settings" };
+        win.webContents.executeJavaScript(`location.hash = ${JSON.stringify(destinations[route[1]])}`);
+        showMainWindow();
+      } else if (go) {
         const [, verb, repo, number] = go;
         if (verb === "github") shell.openExternal(`https://github.com/${repo}/pull/${number}`);
         else if (verb === "window") openExtraWindow(`#/pr/${repo}/${number}`);

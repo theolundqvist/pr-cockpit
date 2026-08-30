@@ -8,6 +8,7 @@
   import KeyBar from "./KeyBar.svelte";
   import ShortcutInput from "./ShortcutInput.svelte";
   import Kbd from "./Kbd.svelte";
+  import SettingsAnalytics from "./SettingsAnalytics.svelte";
   import { SETTINGS_SECTION_KEY, SETTINGS_SECTIONS, normalizeSettingsSection } from "./settingsSections.js";
   let { onRunSetup, section = "general" } = $props();
 
@@ -37,6 +38,7 @@
   let keybindOpenApp = $state("");
   let keybindOpenPalette = $state("");
   let relayUrl = $state("");
+  let replicaSshHost = $state("");
   let relayInfo = $state(null);
   let relayCoverage = $state(null);
   let loaded = $state(false);
@@ -112,6 +114,7 @@
     repos = toLines(s.repos);
     defaultRepo = s.default_repo;
     pollInterval = s.poll_interval_s;
+    replicaSshHost = s.replica_ssh_host;
     perViewWindowSize = s.per_view_window_size;
     perViewWindowPosition = s.per_view_window_position;
     themeName = s.theme;
@@ -197,6 +200,7 @@
         repos: toCsv(repos),
         default_repo: defaultRepo.trim(),
         poll_interval_s: Number(pollInterval),
+        replica_ssh_host: replicaSshHost.trim(),
         per_view_window_size: perViewWindowSize,
         per_view_window_position: perViewWindowPosition,
         theme: themeName,
@@ -246,7 +250,7 @@
 
   $effect(() => {
     function onKey(e) {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+      if (activeTab !== "analytics" && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
         save();
         return;
@@ -329,6 +333,8 @@
             <span class="hint">Seconds — minimum 60 (GitHub quota), 180 recommended</span>
             <input class="input narrow" type="number" min="60" step="10" bind:value={pollInterval} />
           </label>
+
+
 
           <div class="field field-wide">
             <span class="label">Team sync</span>
@@ -628,6 +634,19 @@
         </label>
       {/if}
 
+      {#if activeTab === "advanced"}
+        <label class="field">
+          <span class="label">Connect to primary Cockpit database over SSH</span>
+          <span class="hint">For example, if you have multiple machines and want to save API quota, PR Cockpit can act as a replica of another machine's database.</span>
+          <input class="input mono" bind:value={replicaSshHost} placeholder="user@host" spellcheck="false" autocomplete="off" />
+        </label>
+      {/if}
+
+      {#if activeTab === "analytics"}
+        <SettingsAnalytics repos={configuredRepos} />
+      {/if}
+
+      {#if activeTab !== "analytics"}
       <div class="actions">
         <button class="btn" disabled={saving || keybindClash || agentKeybindIssues.size > 0} onclick={save}>
           {saving ? "Saving…" : "Save"}
@@ -635,12 +654,15 @@
         </button>
         {#if saved}<span class="saved">Saved</span>{/if}
       </div>
+      {/if}
       </div>
     {/if}
   </div>
 </div>
 
-<KeyBar keys={[{ key: "⌘s", label: "save" }, { key: "esc", label: "back" }]} />
+{#if activeTab !== "analytics"}
+  <KeyBar keys={[{ key: "⌘s", label: "save" }, { key: "esc", label: "back" }]} />
+{/if}
 
 <style>
   .page {

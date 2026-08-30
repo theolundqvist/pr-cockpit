@@ -4,6 +4,7 @@
   import { isTypingTarget } from "./dom.js";
   import { isRecordingShortcut } from "./shortcutCapture.js";
   import { prKey } from "./prKey.js";
+  import { pageNavigationResults } from "./navigationShortcuts.js";
   import Kbd from "./Kbd.svelte";
 
   let { standalone = false } = $props();
@@ -30,6 +31,7 @@
   const RANK_TONE = ["fail", "review", "ready", "wait"];
 
   const matches = (hay, tokens) => tokens.every((t) => hay.includes(t));
+  const resultKey = (result) => result.kind === "command" ? `command:${result.id}` : prKey(result);
 
   let instant = $derived.by(() => {
     const q = query.trim().toLowerCase();
@@ -63,8 +65,9 @@
   });
 
   let results = $derived.by(() => {
+    const commands = pageNavigationResults(query);
     const seen = new Set();
-    const merged = [];
+    const merged = [...commands];
     for (const row of [...instant, ...indexInstant]) {
       const key = prKey(row);
       if (seen.has(key)) continue;
@@ -79,6 +82,7 @@
     }
     return merged;
   });
+  let selectedResult = $derived(results[selected] ?? null);
 
   $effect(() => {
     query;
@@ -154,6 +158,14 @@
   });
 
   function choose(result) {
+    if (result.kind === "command") {
+      if (standalone) location.hash = `#/palette/route/${result.id}`;
+      else {
+        location.hash = result.href;
+        close();
+      }
+      return;
+    }
     if (standalone) {
       location.hash = `#/palette/go/${result.repo}/${result.number}`;
       return;
@@ -163,6 +175,13 @@
   }
 
   function chooseInNewWindow(result) {
+    if (result.kind === "command") {
+      if (standalone) location.hash = `#/palette/route/${result.id}`;
+      else if (window.cockpitShell?.openWindow) window.cockpitShell.openWindow(result.href);
+      else window.open(`${location.pathname}${result.href}`, "_blank");
+      close();
+      return;
+    }
     if (standalone) {
       location.hash = `#/palette/window/${result.repo}/${result.number}`;
       return;
@@ -174,6 +193,10 @@
   }
 
   function chooseOnGithub(result) {
+    if (result.kind === "command") {
+      choose(result);
+      return;
+    }
     if (standalone) {
       location.hash = `#/palette/github/${result.repo}/${result.number}`;
       return;
@@ -256,26 +279,30 @@
           class="palette-input"
           bind:this={inputEl}
           bind:value={query}
-          placeholder="PR, branch, or #"
+          placeholder="PR, page, branch, or #"
           spellcheck="false"
           autocomplete="off"
         />
         {#if standalone}<span class="palette-esc">esc</span>{/if}
       </div>
       <div class="palette-results">
-        {#each results as result, i (prKey(result))}
+        {#each results as result, i (resultKey(result))}
           <button
             class="palette-result"
-            data-pr-key={prKey(result)}
+            data-result-key={resultKey(result)}
             class:active={i === selected}
             onmouseenter={() => (selected = i)}
             onclick={() => choose(result)}
           >
-            <span class="pr-chip badge {result.chip.tone}">{result.chip.label}</span>
-            <span class="pr-title">{result.title}</span>
-            <span class="pr-ref mono">{repoTail(result.repo)}#{result.number}</span>
-            {#if result.rankTone}
-              <span class="pr-rank {result.rankTone}"></span>
+            {#if result.kind === "command"}
+              <span class="command-chip">page</span>
+              <span class="pr-title">{result.title}</span>
+              <span class="pr-ref mono">{result.href}</span>
+            {:else}
+              <span class="pr-chip badge {result.chip.tone}">{result.chip.label}</span>
+              <span class="pr-title">{result.title}</span>
+              <span class="pr-ref mono">{repoTail(result.repo)}#{result.number}</span>
+              {#if result.rankTone}<span class="pr-rank {result.rankTone}"></span>{/if}
             {/if}
             {#if i === selected}<Kbd keys={enterKeys} />{/if}
           </button>
@@ -287,7 +314,7 @@
         <div class="palette-hint">
           <span class="hint" class:on={held === "none"}><Kbd keys="enter" />open</span>
           <span class="hint" class:on={held === "shift"}><Kbd keys="shift+enter" />new window</span>
-          <span class="hint" class:on={held === "meta"}><Kbd keys="cmd+enter" />github</span>
+          {#if selectedResult?.kind !== "command"}<span class="hint" class:on={held === "meta"}><Kbd keys="cmd+enter" />github</span>{/if}
         </div>
       {/if}
     </div>
@@ -418,6 +445,16 @@
     flex: none;
     min-width: 58px;
     justify-content: center;
+  }
+  .command-chip {
+    min-width: 58px;
+    padding: 2px 7px;
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+    border-radius: 999px;
+    color: var(--accent);
+    font: 600 10px var(--mono);
+    text-align: center;
+    text-transform: uppercase;
   }
   .pr-title {
     flex: 1;

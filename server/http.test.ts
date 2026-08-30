@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
-import { buildFetchHandler, buildPrAgentSummary, checkoutTargetFor, formatPrAgentSummary, mergeabilityNeedsRefresh, reviewThreadHandle, snapshotStatus, statsExcludingTests, trackedDetailIsStale } from "./http.ts";
+import { beforeEach, describe, expect, test } from "bun:test";
+import { buildFetchHandler, buildPrAgentSummary, checkoutTargetFor, formatPrAgentSummary, mergeabilityNeedsRefresh, normalizeAgentMutation, reviewThreadHandle, snapshotStatus, statsExcludingTests, trackedDetailIsStale } from "./http.ts";
 import { GithubRequestError, StalePrHeadError, type PrDetail } from "./github.ts";
 import { db, getCachedPrDetail, getPr, getSetting, listRunJobs, saveDiff, saveFileContents, setSetting, upsertCachedPrDetail, upsertPr, upsertPrIndex, upsertRunJob, upsertWorkflowRun } from "./db.ts";
 import { testMatcher } from "../ui/src/lib/testPath.js";
@@ -184,6 +184,90 @@ describe("health", () => {
 
     expect(response.status).toBe(200);
     expect(body.root).toBe(process.cwd());
+  });
+});
+
+describe("merged PR analytics", () => {
+  beforeEach(() => db.exec("DELETE FROM merged_pr_analytics_cache"));
+
+  test("returns the repository/base response, caps the window, and serves the durable cache", async () => {
+    const calls: Array<{ repo: string; base: string }> = [];
+    const analytics = {
+      repo: "example-org/webapp",
+      base: "release/v2",
+      asOf: new Date().toISOString(),
+      pullRequests: [{
+        number: 42,
+        title: "Ship release analytics",
+        url: "https://github.com/example-org/webapp/pull/42",
+        author: "octocat",
+        mergedAt: "2026-08-26T09:30:00.000Z",
+      }],
+    };
+    const fetchHandler = buildFetchHandler(4820, {
+      fetchMergedPrAnalytics: async (repo, base) => {
+        calls.push({ repo, base });
+        return analytics;
+      },
+    });
+
+    const url = "http://127.0.0.1:4820/api/merged-pr-analytics?repo=example-org%2Fwebapp&base=release%2Fv2&days=999";
+    const response = await fetchHandler(new Request(url));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(analytics);
+    expect(calls).toEqual([{ repo: "example-org/webapp", base: "release/v2" }]);
+
+    const cachedResponse = await fetchHandler(new Request(url));
+    expect(cachedResponse.status).toBe(200);
+    expect(await cachedResponse.json()).toEqual(analytics);
+    expect(calls).toHaveLength(1);
+  });
+
+  test("windows the cached payload to the requested days", async () => {
+    const recent = {
+      number: 7,
+      title: "Fresh merge",
+      url: "https://github.com/example-org/api/pull/7",
+      author: "hubot",
+      mergedAt: new Date(Date.now() - 24 * 60 * 60_000).toISOString(),
+    };
+    const old = { ...recent, number: 6, title: "Old merge", mergedAt: new Date(Date.now() - 40 * 24 * 60 * 60_000).toISOString() };
+    const fetchHandler = buildFetchHandler(4820, {
+      fetchMergedPrAnalytics: async (repo, base) => ({ repo, base, asOf: new Date().toISOString(), pullRequests: [recent, old] }),
+    });
+
+    const response = await fetchHandler(new Request(
+      "http://127.0.0.1:4820/api/merged-pr-analytics?repo=example-org%2Fapi&base=main&days=30",
+    ));
+    const body = await response.json();
+    expect(body.pullRequests).toEqual([recent]);
+  });
+
+  test("rejects invalid repository, base, and days parameters before fetching", async () => {
+    let calls = 0;
+    const fetchHandler = buildFetchHandler(4820, {
+      fetchMergedPrAnalytics: async () => {
+        calls += 1;
+        throw new Error("should not fetch");
+      },
+    });
+    const invalidQueries = [
+      "base=main&days=30",
+      "repo=example-org&base=main&days=30",
+      "repo=example-org%2Fwebapp&days=30",
+      "repo=example-org%2Fwebapp&base=..%2Fmain&days=30",
+      "repo=example-org%2Fwebapp&base=main&days=0",
+      "repo=example-org%2Fwebapp&base=main&days=1.5",
+      "repo=example-org%2Fwebapp&base=main&days=recent",
+    ];
+
+    for (const query of invalidQueries) {
+      const response = await fetchHandler(new Request(`http://127.0.0.1:4820/api/merged-pr-analytics?${query}`));
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: "invalid repo/base/days" });
+    }
+    expect(calls).toBe(0);
   });
 });
 
@@ -573,6 +657,76 @@ describe("agent PR summary", () => {
     }));
     expect(await repeated.json()).toEqual({ resolved: true, alreadyResolved: true });
     expect(resolvedIds).toEqual([threadId, threadId]);
+  });
+
+  test("normalizes agent-friendly merge and thread mutations", () => {
+    const repo = "cockpit-test/agent-mutations";
+    const number = 987654327;
+    const threadId = "PRRT_agent_mutation";
+    const row = trackedPrRow({ repo, number, fetchedAt: new Date().toISOString() });
+    const detail = JSON.parse(row.detail_json) as PrDetail;
+    detail.reviewThreads.nodes = [{
+      id: threadId,
+      isResolved: false,
+      isOutdated: false,
+      path: "src/value.ts",
+      line: 7,
+      diffSide: "RIGHT",
+      comments: {
+        nodes: [{
+          databaseId: 42,
+          diffHunk: "",
+          author: null,
+          body: "root",
+          createdAt: "2026-08-27T00:00:00Z",
+          reactions: [],
+        }],
+      },
+    }];
+    upsertPr({ ...row, detail_json: JSON.stringify(detail) });
+    const threadHandle = reviewThreadHandle(threadId);
+
+    expect(normalizeAgentMutation(repo, number, detail, { kind: "merge", force: true, method: "rebase" })).toEqual({
+      kind: "merge",
+      force: true,
+      baseRef: "main",
+      method: "rebase",
+      source: "explicit",
+    });
+    expect(normalizeAgentMutation(repo, number, detail, {
+      kind: "reply-to-thread",
+      threadHandle,
+      body: "fixed",
+    })).toEqual({ kind: "reply-to-thread", rootCommentId: 42, body: "fixed" });
+    expect(normalizeAgentMutation(repo, number, detail, {
+      kind: "resolve-thread",
+      threadHandle,
+      resolved: false,
+    })).toEqual({ kind: "resolve-thread", threadId, resolved: false });
+
+    db.query("DELETE FROM prs WHERE repo = ? AND number = ?").run(repo, number);
+  });
+
+  test("accepts trusted CLI mutations through the agent route", async () => {
+    const repo = "cockpit-test/agent-mutation-route";
+    const number = 987654328;
+    upsertPr(trackedPrRow({ repo, number, fetchedAt: new Date().toISOString() }));
+    const handler = buildFetchHandler(4820);
+    const url = `http://127.0.0.1:4820/api/agent/pr/cockpit-test/agent-mutation-route/${number}/mutations`;
+    const denied = await handler(new Request(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ payload: { kind: "auto-merge", enable: true } }),
+    }));
+    expect(denied.status).toBe(403);
+
+    const accepted = await handler(new Request(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-pr-cockpit-cli": "1" },
+      body: JSON.stringify({ payload: { kind: "auto-merge", enable: true } }),
+    }));
+    expect(accepted.status).toBe(201);
+    expect(await accepted.json()).toHaveProperty("id");
   });
 
   test("recomputes tracked PR rank when resolution refresh fails", async () => {
@@ -1119,7 +1273,7 @@ describe("PR file edits", () => {
     };
     const fetchHandler = buildFetchHandler(4820, {
       startGithubSetup: async (scopes) => {
-        requestedScopes = scopes;
+        requestedScopes = scopes ?? [];
         return auth;
       },
     });
@@ -1387,15 +1541,20 @@ describe("contextual editor target", () => {
   });
 });
 describe("Actions viewer API", () => {
-  test("serves current-head workflow jobs and an on-demand log", async () => {
+  test("serves current and selected-commit workflow jobs with on-demand logs", async () => {
     const repo = "http-actions/viewer";
     const number = 96133;
     const head = "f".repeat(40);
+    const previous = "e".repeat(40);
     const row = trackedPrRow({ repo, number, fetchedAt: "2026-08-25T08:00:00Z" });
+    const detail = { ...JSON.parse(row.detail_json), headRefOid: head };
+    detail.commitList.nodes.push({
+      commit: { oid: previous, messageHeadline: "Previous commit", committedDate: "2026-08-25T07:00:00Z" },
+    });
     upsertPr({
       ...row,
       head_sha: head,
-      detail_json: JSON.stringify({ ...JSON.parse(row.detail_json), headRefOid: head }),
+      detail_json: JSON.stringify(detail),
     });
     upsertWorkflowRun({
       repo,
@@ -1429,6 +1588,39 @@ describe("Actions viewer API", () => {
       runner_group_name: "hosted",
       labels_json: "[\"arm64\"]",
       failed_step: "Compile",
+    });
+    upsertWorkflowRun({
+      repo,
+      run_id: 43,
+      run_attempt: 1,
+      pr_number: number,
+      head_sha: previous,
+      head_branch: "actions-viewer",
+      workflow_name: "CI",
+      workflow_path: ".github/workflows/ci.yml",
+      status: "completed",
+      conclusion: "success",
+      event_at: "2026-08-25T07:02:00Z",
+      html_url: "https://github.com/http-actions/viewer/actions/runs/43",
+    });
+    upsertRunJob({
+      repo,
+      job_id: 4301,
+      run_id: 43,
+      run_attempt: 1,
+      head_sha: previous,
+      head_branch: "actions-viewer",
+      workflow_name: "CI",
+      name: "build previous",
+      status: "completed",
+      conclusion: "success",
+      started_at: "2026-08-25T07:00:00Z",
+      completed_at: "2026-08-25T07:02:00Z",
+      html_url: "https://github.com/http-actions/viewer/actions/runs/43/job/4301",
+      runner_name: "runner-2",
+      runner_group_name: "hosted",
+      labels_json: "[\"arm64\"]",
+      failed_step: null,
     });
     let activations = 0;
     const fetchHandler = buildFetchHandler(4820, {
@@ -1487,6 +1679,39 @@ describe("Actions viewer API", () => {
       const logResponse = await fetchHandler(new Request(`http://127.0.0.1:4820/api/pr/http-actions/viewer/${number}/actions/jobs/4401/log`));
       expect(logResponse.status).toBe(200);
       expect(await logResponse.json()).toMatchObject({ body: "complete log", state: "ready", job: { id: 4401, name: "build" } });
+      const historicalLoads: string[] = [];
+      let logHead = "";
+      const historicalHandler = buildFetchHandler(4820, {
+        cacheGithubActionsForCommit: async (_repo, _number, sha) => {
+          historicalLoads.push(sha);
+        },
+        actionJobLog: async (_repo, sha, jobId) => {
+          logHead = sha;
+          return {
+            job: listRunJobs(repo, previous).find((job) => job.job_id === jobId)!,
+            body: "previous log",
+            state: "ready",
+          };
+        },
+      });
+      const historicalResponse = await historicalHandler(new Request(
+        `http://127.0.0.1:4820/api/pr/http-actions/viewer/${number}/actions?sha=${previous}`,
+      ));
+      expect(historicalResponse.status).toBe(200);
+      expect(await historicalResponse.json()).toMatchObject({
+        headSha: previous,
+        runs: [{ id: 43, conclusion: "success" }],
+        jobs: [{ id: 4301, name: "build previous", conclusion: "success" }],
+      });
+      expect(historicalLoads).toEqual([previous]);
+
+      const historicalLog = await historicalHandler(new Request(
+        `http://127.0.0.1:4820/api/pr/http-actions/viewer/${number}/actions/jobs/4301/log?sha=${previous}`,
+      ));
+      expect(historicalLog.status).toBe(200);
+      expect(await historicalLog.json()).toMatchObject({ body: "previous log", job: { id: 4301 } });
+      expect(logHead).toBe(previous);
+
 
       let finishActivation = () => {};
       const activation = new Promise<void>((resolve) => {

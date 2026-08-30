@@ -16,6 +16,7 @@ import { checkState, type PrCheck } from "./checkState.ts";
 import { checkName, liveCheckNames } from "../ui/src/lib/checks.js";
 import { eligibleWebhookRepos, forwarderStatuses, reconcileForwarders, wantedRepos } from "./forwarders.ts";
 import { prKeyOf } from "./prKey.ts";
+import { prDetailScopeForEvent, refreshPrFromEvent } from "./eventRefresh.ts";
 import { backgroundPollAllowed, refreshPr } from "./poller.ts";
 import { listWorktrees } from "./worktreeScan.ts";
 import { compactActionsPayload, ingestActionsState } from "./runLogs.ts";
@@ -101,34 +102,6 @@ async function pollReviews(): Promise<void> {
   }
 }
 
-// check_run/check_suite/status events arrive in bursts (one per CI job transition); refreshing on
-// every event burned the whole 5000/hr GraphQL quota. First event refreshes immediately, the rest
-// of the burst coalesces into one trailing refresh.
-const HOOK_REFRESH_THROTTLE_MS = 30_000;
-const lastHookRefreshAt = new Map<string, number>();
-const pendingHookRefresh = new Map<string, Promise<void>>();
-
-function hookRefresh(repo: string, number: number, refresh: typeof refreshPr): Promise<void> {
-  const key = prKeyOf(repo, number);
-  const doRefresh = async () => {
-    lastHookRefreshAt.set(key, Date.now());
-    await refresh(repo, number);
-  };
-  const sinceLast = Date.now() - (lastHookRefreshAt.get(key) ?? 0);
-  if (sinceLast >= HOOK_REFRESH_THROTTLE_MS) return doRefresh();
-
-  const pending = pendingHookRefresh.get(key);
-  if (pending) return pending;
-  let trailing: Promise<void>;
-  trailing = new Promise<void>((resolve, reject) => {
-    setTimeout(() => void doRefresh().then(resolve, reject), HOOK_REFRESH_THROTTLE_MS - sinceLast);
-  }).finally(() => {
-    if (pendingHookRefresh.get(key) === trailing) pendingHookRefresh.delete(key);
-  });
-  pendingHookRefresh.set(key, trailing);
-  return trailing;
-}
-
 function extractHookRepoAndNumber(body: Record<string, unknown>): { repo: string | null; number: number | null } {
   const repository = body.repository as { full_name?: string } | undefined;
   const pullRequest = body.pull_request as { number?: number } | undefined;
@@ -145,7 +118,11 @@ function extractHookRepoAndNumber(body: Record<string, unknown>): { repo: string
   return { repo: repository?.full_name ?? null, number };
 }
 
-async function handleHook(req: Request, refresh: typeof refreshPr): Promise<Response> {
+async function handleHook(
+  req: Request,
+  refresh: typeof refreshPr,
+  refreshAllowed: typeof backgroundPollAllowed,
+): Promise<Response> {
   const event = req.headers.get("x-github-event") ?? "";
   let body: Record<string, unknown>;
   try {
@@ -170,7 +147,9 @@ async function handleHook(req: Request, refresh: typeof refreshPr): Promise<Resp
     for (const affectedNumber of openPrNumbersForBranch(repo, ref.slice("refs/heads/".length))) {
       recordPrWebhookActivity(repo, affectedNumber, receivedAt);
       touchWebhookRegistrations(repo, affectedNumber, receivedAt);
-      void hookRefresh(repo, affectedNumber, refresh).catch((e) =>
+      void refreshPrFromEvent(repo, affectedNumber, "all", async (targetRepo, targetNumber, scope) => {
+        if (await refreshAllowed()) await refresh(targetRepo, targetNumber, "webhook", scope);
+      }).catch((e) =>
         console.error(`hook-triggered refresh failed for ${repo}#${affectedNumber}:`, e)
       );
     }
@@ -186,7 +165,9 @@ async function handleHook(req: Request, refresh: typeof refreshPr): Promise<Resp
   recordPrWebhookActivity(repo, number, receivedAt);
   touchWebhookRegistrations(repo, number, receivedAt);
 
-  void hookRefresh(repo, number, refresh).catch((e) =>
+  void refreshPrFromEvent(repo, number, prDetailScopeForEvent(event), async (targetRepo, targetNumber, scope) => {
+    if (await refreshAllowed()) await refresh(targetRepo, targetNumber, "webhook", scope);
+  }).catch((e) =>
     console.error(`hook-triggered refresh failed for ${repo}#${number}:`, e)
   );
   return new Response("ok");
@@ -314,9 +295,12 @@ async function handleQuota(): Promise<Response> {
   }
 }
 
-export function buildWebhookRoutes(refresh: typeof refreshPr = refreshPr) {
+export function buildWebhookRoutes(
+  refresh: typeof refreshPr = refreshPr,
+  refreshAllowed: typeof backgroundPollAllowed = backgroundPollAllowed,
+) {
   return async function handleWebhookRoute(req: Request, url: URL): Promise<Response | null> {
-    if (req.method === "POST" && url.pathname === "/hook") return handleHook(req, refresh);
+    if (req.method === "POST" && url.pathname === "/hook") return handleHook(req, refresh, refreshAllowed);
     if (req.method === "GET" && url.pathname === "/status") return handleStatus();
     if (req.method === "GET" && url.pathname === "/reviews") return handleReviews();
     if (req.method === "GET" && url.pathname === "/quota") return handleQuota();

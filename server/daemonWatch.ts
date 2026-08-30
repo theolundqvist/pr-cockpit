@@ -1,6 +1,7 @@
 import { fetchDaemonStatus, type DaemonStatus } from "./daemon.ts";
-import { refreshPr } from "./poller.ts";
+import { backgroundPollAllowed, refreshPr } from "./poller.ts";
 import { prKey, prKeyOf } from "./prKey.ts";
+import { refreshPrFromEvent } from "./eventRefresh.ts";
 
 const POLL_INTERVAL_MS = 10_000;
 export interface Signal {
@@ -64,9 +65,9 @@ async function tick(): Promise<void> {
 
   for (const { repo, number } of changedSignals(collectSignals(status))) {
     const key = prKeyOf(repo, number);
-    void refreshPr(repo, number).catch((err) =>
-      console.error(`daemon-triggered refresh failed for ${key}:`, err),
-    );
+    void refreshPrFromEvent(repo, number, "all", async (targetRepo, targetNumber, scope) => {
+      if (await backgroundPollAllowed()) await refreshPr(targetRepo, targetNumber, "daemon", scope);
+    }).catch((err) => console.error(`daemon-triggered refresh failed for ${key}:`, err));
   }
 }
 

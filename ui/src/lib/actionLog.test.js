@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseActionLog } from "./actionLog.js";
+import { linkifyActionLogLine, parseActionLog } from "./actionLog.js";
 
 describe("parseActionLog", () => {
   test("turns runner actions and groups into concluded steps", () => {
@@ -127,6 +127,46 @@ describe("parseActionLog", () => {
       { text: " plain ", color: null, bold: false },
       { text: "cyan", color: "bright-cyan", bold: true },
     ]);
+  });
+
+  test("linkifies action, pull request, external, punctuated, and ANSI-split URLs", () => {
+    const runUrl = "https://github.com/scape-app/infrastructure/actions/runs/33173309040/job/77?check=1";
+    const prUrl = "https://github.com/scape-app/scape/pull/6757/files#diff";
+    const externalUrl = "https://example.com/docs?q=actions";
+    const parsed = parseActionLog([
+      `Found infrastructure deploy run: ${runUrl}`,
+      `Review ${prUrl}`,
+      `Docs: ${externalUrl}.`,
+      "\u001b[31mhttps://github.com/scape-app/infrastructure/actions/\u001b[0mruns/33173309040",
+    ].join("\n"));
+    const [run, pr, external, ansi] = parsed.steps[0].lines;
+
+    expect(run.parts.find((part) => part.href)).toMatchObject({
+      text: runUrl,
+      href: "#/actions/run/scape-app/infrastructure/33173309040",
+      external: false,
+    });
+    expect(pr.parts.find((part) => part.href)).toMatchObject({
+      text: prUrl,
+      href: "#/pr/scape-app/scape/6757",
+      external: false,
+    });
+    expect(external.parts).toEqual([
+      { text: "Docs: " },
+      { text: externalUrl, href: externalUrl, external: true },
+      { text: "." },
+    ]);
+    expect(ansi.parts.find((part) => part.href)).toEqual({
+      text: "https://github.com/scape-app/infrastructure/actions/runs/33173309040",
+      href: "#/actions/run/scape-app/infrastructure/33173309040",
+      external: false,
+      segments: [
+        { text: "https://github.com/scape-app/infrastructure/actions/", color: "red", bold: false },
+        { text: "runs/33173309040", color: null, bold: false },
+      ],
+    });
+
+    expect(linkifyActionLogLine("Run: https://example.com/test).").at(-1)).toEqual({ text: ")." });
   });
 
 });
