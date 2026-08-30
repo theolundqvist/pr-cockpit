@@ -664,4 +664,96 @@
       --app-content-gutter: 14px;
     }
   }
+
+  /* Phone: the rail becomes a bottom tab bar so the queue keeps the full
+     width, and the sidebar preference cannot strand a touch user without
+     navigation. */
+  @media (max-width: 700px), (pointer: coarse) and (max-height: 500px) {
+    .app-shell,
+    .app-shell.sidebar-hidden {
+      --app-rail-width: 0px;
+      --app-content-gutter: 16px;
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: auto minmax(0, 1fr) auto;
+    }
+
+    .app-shell.sidebar-hidden .app-sidebar {
+      display: flex;
+    }
+
+    .app-sidebar {
+      grid-row: 3;
+      flex-direction: row;
+      align-items: stretch;
+      padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+      border-top: 1px solid var(--border-soft);
+      border-right: 0;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+
+    .app-sidebar::-webkit-scrollbar {
+      display: none;
+    }
+
+    .app-nav {
+      flex: 1;
+      flex-direction: row;
+      justify-content: space-around;
+      gap: 4px;
+    }
+
+    .nav-item {
+      flex: 1 1 0;
+      width: auto;
+      min-width: 64px;
+      min-height: 46px;
+      flex-direction: column;
+      justify-content: center;
+      gap: 3px;
+      padding-inline: 4px;
+      font-size: 10.5px;
+      line-height: 13px;
+      text-align: center;
+    }
+
+    .nav-item > span {
+      display: block;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .nav-item > .nav-kbd,
+    .nav-label,
+    .quota-status {
+      display: none;
+    }
+
+    /* the chevron alone reads as "back"; its label would crowd the section
+       tabs it shares the bar with */
+    .settings-back {
+      flex: 0 0 48px;
+      min-width: 48px;
+      margin-bottom: 0;
+    }
+
+    .settings-back > span {
+      display: none;
+    }
+
+    .app-main {
+      grid-row: 2;
+      padding-top: 34px;
+    }
+
+    .app-history {
+      top: 4px;
+    }
+
+    .app-drag-region {
+      display: none;
+    }
+  }
 </style>

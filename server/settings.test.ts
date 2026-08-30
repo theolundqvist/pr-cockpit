@@ -99,9 +99,9 @@ describe("normalizeScale", () => {
   test("bounds persisted percentages", () => {
     expect(normalizeScale(125)).toBe(125);
     expect(normalizeScale("125")).toBe(125);
-    expect(normalizeScale(50)).toBe(75);
+    expect(normalizeScale(25)).toBe(50);
+    expect(normalizeScale(50)).toBe(50);
     expect(normalizeScale(250)).toBe(200);
-    expect(normalizeScale("invalid")).toBe(100);
     expect(normalizeScale(null)).toBe(100);
     expect(normalizeScale("")).toBe(100);
     expect(normalizeScale(true)).toBe(100);

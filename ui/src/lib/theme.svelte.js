@@ -30,7 +30,7 @@ function normalizeFont(value) {
 function normalizeScale(value) {
   if (typeof value !== "number" && (typeof value !== "string" || value.trim() === "")) return 100;
   const scale = Number(value);
-  return Number.isFinite(scale) ? Math.min(200, Math.max(75, Math.round(scale))) : 100;
+  return Number.isFinite(scale) ? Math.min(200, Math.max(50, Math.round(scale))) : 100;
 }
 
 const initialTheme = systemTheme();
@@ -84,8 +84,10 @@ export function setScales(generalValue, diffValue) {
     const root = document.documentElement;
     root.style.setProperty("--general-scale", String(generalFactor));
     root.style.setProperty("--general-width", `${100 / generalFactor}vw`);
-    root.style.setProperty("--viewport-height", `${100 / generalFactor}vh`);
+    root.style.setProperty("--viewport-height", `${100 / generalFactor}dvh`);
     root.style.setProperty("--diff-font-size", `${12.5 * diffRelativeScale}px`);
+    root.style.setProperty("--mobile-control-font-size", `${16 / generalFactor}px`);
+    root.style.setProperty("--mobile-control-min-height", `${44 / generalFactor}px`);
   }
 }
 

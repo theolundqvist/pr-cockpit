@@ -64,4 +64,12 @@
     color: var(--text-dim);
     letter-spacing: 0;
   }
+
+  /* Shortcut hints mean nothing without a keyboard, and the row overflows a
+     phone anyway. */
+  @media (max-width: 700px), (pointer: coarse) and (max-height: 500px) {
+    .keybar {
+      display: none;
+    }
+  }
 </style>

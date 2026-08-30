@@ -147,7 +147,12 @@
       else if (top + ROW_HEIGHT > root.scrollTop + root.clientHeight) root.scrollTop = top + ROW_HEIGHT - root.clientHeight;
       updateWindow();
       await tick();
-      treeEl.querySelector(".file.selected")?.scrollIntoView({ block: "nearest" });
+      const row = treeEl.querySelector(".file.selected");
+      if (!row) return;
+      const rowRect = row.getBoundingClientRect();
+      const rootRect = root.getBoundingClientRect();
+      if (rowRect.top < rootRect.top) root.scrollTop -= rootRect.top - rowRect.top;
+      else if (rowRect.bottom > rootRect.bottom) root.scrollTop += rowRect.bottom - rootRect.bottom;
     });
   });
 </script>
@@ -331,5 +336,11 @@
   .file.selected {
     background: var(--link-bg);
     box-shadow: none;
+  }
+
+  @media (max-width: 700px), (pointer: coarse) and (max-height: 500px) {
+    .row {
+      min-height: 44px;
+    }
   }
 </style>

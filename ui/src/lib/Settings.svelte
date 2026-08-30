@@ -436,13 +436,13 @@
           <label class="field">
             <span class="label">General scale (%)</span>
             <span class="hint">Scales everything except diff text</span>
-            <input class="input narrow" type="number" min="75" max="200" step="5" bind:value={generalScale} />
+            <input class="input narrow" type="number" min="50" max="200" step="5" bind:value={generalScale} />
           </label>
 
           <label class="field">
             <span class="label">Diff scale (%)</span>
             <span class="hint">Scales diff text and line numbers independently</span>
-            <input class="input narrow" type="number" min="75" max="200" step="5" bind:value={diffScale} />
+            <input class="input narrow" type="number" min="50" max="200" step="5" bind:value={diffScale} />
           </label>
 
           <label class="check-field settings-option grid-option">

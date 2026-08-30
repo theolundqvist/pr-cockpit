@@ -60,10 +60,12 @@
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
   --general-scale: 1;
-  --viewport-height: 100vh;
+  --viewport-height: 100dvh;
   --general-height: var(--viewport-height);
   --general-width: 100vw;
   --diff-font-size: 12.5px;
+  --mobile-control-font-size: 16px;
+  --mobile-control-min-height: 44px;
 
   /* Layout primitives are intentionally semantic rather than page-specific. */
   --space-1: 4px;
@@ -118,6 +120,29 @@
   --meta-sep: #d1d1d1;
   --scroll: #d7d7d7;
   --scroll-hover: #bebebe;
+}
+
+/* Phone layout: the keyboard hint bar is dead weight on touch, so the pages
+   that reserve room for it get that space back. */
+@media (max-width: 700px), (pointer: coarse) and (max-height: 500px) {
+  :root {
+    --keybar-height: 0px;
+  }
+
+  /* Mobile Safari zooms the page when a focused form control is below 16px.
+     Keep text controls readable without disabling user zoom. */
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]),
+  textarea,
+  select {
+    min-height: var(--mobile-control-min-height) !important;
+    font-size: var(--mobile-control-font-size) !important;
+  }
+
+  button,
+  a,
+  [role="button"] {
+    touch-action: manipulation;
+  }
 }
 
 [data-font-interface="alacritty"] {
