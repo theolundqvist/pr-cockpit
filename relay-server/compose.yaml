@@ -1,0 +1,86 @@
+name: pr-cockpit-relay
+
+services:
+  relay:
+    image: pr-cockpit-relay:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    user: "${COCKPIT_UID:?COCKPIT_UID is required}:${COCKPIT_GID:?COCKPIT_GID is required}"
+    environment:
+      RELAY_ADDR: "0.0.0.0:4821"
+      RELAY_DB_PATH: /data/relay.db
+      RELAY_RETENTION: "${RELAY_RETENTION:-168h}"
+    env_file:
+      - /etc/pr-cockpit-relay/relay.env
+    ports:
+      - "127.0.0.1:4821:4821/tcp"
+    volumes:
+      - type: bind
+        source: /var/lib/pr-cockpit-relay/relay
+        target: /data
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    cpus: "${RELAY_CPUS:-4.0}"
+    mem_limit: "${RELAY_MEMORY:-2g}"
+    restart: unless-stopped
+    stop_grace_period: 15s
+    healthcheck:
+      test: ["CMD", "/relay-server", "-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  caddy:
+    image: caddy:2-alpine
+    user: "${COCKPIT_UID:?COCKPIT_UID is required}:${COCKPIT_GID:?COCKPIT_GID is required}"
+    environment:
+      RELAY_DOMAIN: "${RELAY_DOMAIN:?RELAY_DOMAIN is required}"
+    ports:
+      - "80:8080/tcp"
+      - "443:8443/tcp"
+    volumes:
+      - type: bind
+        source: /opt/pr-cockpit-relay/Caddyfile
+        target: /etc/caddy/Caddyfile
+        read_only: true
+      - type: bind
+        source: /var/lib/pr-cockpit-relay/caddy/data
+        target: /data
+      - type: bind
+        source: /var/lib/pr-cockpit-relay/caddy/config
+        target: /config
+    depends_on:
+      relay:
+        condition: service_healthy
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    cpus: "${CADDY_CPUS:-1.0}"
+    mem_limit: "${CADDY_MEMORY:-512m}"
+    restart: unless-stopped
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

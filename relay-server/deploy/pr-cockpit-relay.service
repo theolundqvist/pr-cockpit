@@ -1,0 +1,39 @@
+[Unit]
+Description=PR Cockpit GitHub relay
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/opt/pr-cockpit-relay/compose.yaml
+ConditionPathExists=/etc/pr-cockpit-relay/relay.env
+ConditionPathExists=/etc/pr-cockpit-relay/compose.env
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/pr-cockpit-relay
+Environment=DOCKER_CONFIG=/run/pr-cockpit-relay-docker
+RuntimeDirectory=pr-cockpit-relay-docker
+RuntimeDirectoryMode=0700
+UMask=0077
+ExecStartPre=/usr/bin/docker compose --env-file /etc/pr-cockpit-relay/compose.env --env-file /etc/pr-cockpit-relay/runtime.env -f /opt/pr-cockpit-relay/compose.yaml config --quiet
+ExecStart=/usr/bin/docker compose --env-file /etc/pr-cockpit-relay/compose.env --env-file /etc/pr-cockpit-relay/runtime.env -f /opt/pr-cockpit-relay/compose.yaml up --detach --build --remove-orphans
+ExecReload=/usr/bin/docker compose --env-file /etc/pr-cockpit-relay/compose.env --env-file /etc/pr-cockpit-relay/runtime.env -f /opt/pr-cockpit-relay/compose.yaml up --detach --build --remove-orphans
+ExecStop=/usr/bin/docker compose --env-file /etc/pr-cockpit-relay/compose.env --env-file /etc/pr-cockpit-relay/runtime.env -f /opt/pr-cockpit-relay/compose.yaml down
+TimeoutStartSec=0
+TimeoutStopSec=45
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/run/pr-cockpit-relay-docker
+
+[Install]
+WantedBy=multi-user.target

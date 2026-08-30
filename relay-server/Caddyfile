@@ -1,0 +1,20 @@
+{
+	http_port 8080
+	https_port 8443
+	admin off
+	servers {
+		protocols h1 h2
+		timeouts {
+			read_body 15s
+			read_header 5s
+		}
+	}
+	log {
+		output stdout
+		format json
+	}
+}
+
+{$RELAY_DOMAIN} {
+	reverse_proxy relay:4821
+}

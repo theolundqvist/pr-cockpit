@@ -1,0 +1,10 @@
+.git
+.gitignore
+Dockerfile
+compose.yaml
+Caddyfile
+deploy
+data
+*.db
+*.db-shm
+*.db-wal
