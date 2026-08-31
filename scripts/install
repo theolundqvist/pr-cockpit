@@ -78,6 +78,10 @@ quiet_in "root dependency install" "$root" "$bun" install
 quiet_in "UI dependency install" "$root/ui" "$bun" install
 if [[ "$platform" == "Darwin" ]]; then
   quiet_in "shell dependency install" "$root/shell" "$bun" install
+  if ! "$root/scripts/ensure-electron-dist.sh" "$root"; then
+    echo "pr-cockpit: Electron.app repair failed" >&2
+    exit 1
+  fi
 fi
 
 # Both guards import from node_modules, so they only run once install has populated it.
@@ -157,15 +161,12 @@ config_dir="$HOME/.config/pr-cockpit"
 config_file="$config_dir/config"
 if [[ ! -f "$config_file" ]]; then
   mkdir -p "$config_dir"
-  cat > "$config_file" <<EXAMPLE
+  cat > "$config_file" <<'EXAMPLE'
 # pr-cockpit config — plain shell vars, env still wins over these.
 # Uncomment and edit to point the cockpit at your own repos.
 # COCKPIT_REPOS="owner/repo,owner/other-repo"
 # COCKPIT_PORT=4820
-1: - Agents mutate existing PRs through `pr-cockpit`; use its `--body-file` commands for exact multiline text, never `gh` or direct GitHub APIs.
-- Keep examples, fixtures, benchmarks, and docs free of private company, product, repository, host, and infrastructure names; do not perform unrelated hosting or infrastructure work here.
-2: COCKPIT_PROXY="build-server"                        # optional Cockpit replica source over SSH
-3: # COCKPIT_PROXY="build-server"       # replicate another Cockpit over SSH
+# COCKPIT_PROXY="build-server"       # optional Cockpit replica source over SSH
 # COCKPIT_PROXY_PORT=4820           # Cockpit port on the SSH host
 # COCKPIT_DEFAULT_REPO="owner/repo"
 # COCKPIT_TMUX_HOSTS="builder,build-vm"

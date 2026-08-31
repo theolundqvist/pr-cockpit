@@ -24,7 +24,7 @@ function fakeInstall(
   mkdirSync(join(root, "shell"), { recursive: true });
   mkdirSync(bin, { recursive: true });
   copyFileSync(join(import.meta.dir, "install"), join(root, "scripts/install"));
-  for (const name of ["cockpit", "make-app.sh", "pr-cockpit"]) {
+  for (const name of ["cockpit", "make-app.sh", "pr-cockpit", "ensure-electron-dist.sh"]) {
     writeFileSync(join(root, "scripts", name), "#!/usr/bin/env bash\nexit 0\n");
     chmodSync(join(root, "scripts", name), 0o755);
   }
