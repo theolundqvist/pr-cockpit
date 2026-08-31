@@ -107,7 +107,15 @@ systemctl daemon-reload
 systemctl enable "$SERVICE_NAME"
 systemctl restart "$SERVICE_NAME"
 
+FORWARDING_STATUS=disabled
+if grep -q '^RELAY_FORWARD_WEBHOOK_URL=.' "$COMPOSE_ENV_FILE"; then
+  FORWARDING_STATUS=enabled
+fi
+
 printf '%s\n' \
   "Installed $SERVICE_NAME with container UID:GID $COCKPIT_UID:$COCKPIT_GID." \
   "Caddy publishes TLS traffic on TCP 443 and ACME HTTP challenges on TCP 80." \
-  "Relay port 4821 is also available on host loopback only; it is never published publicly."
+  "Relay port 4821 is also available on host loopback only; it is never published publicly." \
+  "Usage is available on host loopback only at http://127.0.0.1:4822/usage."
+printf 'Webhook forwarding is %s; leave RELAY_FORWARD_WEBHOOK_URL unset or empty in %s to disable it.\n' \
+  "$FORWARDING_STATUS" "$COMPOSE_ENV_FILE"

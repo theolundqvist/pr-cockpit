@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS markers (
   job_json TEXT
 );
 CREATE INDEX IF NOT EXISTS markers_retention_idx ON markers(ts, seq);
+
 CREATE TABLE IF NOT EXISTS installation_coverage (
   owner TEXT PRIMARY KEY,
   all_repos INTEGER NOT NULL CHECK (all_repos IN (0, 1))
@@ -84,6 +85,15 @@ CREATE TABLE IF NOT EXISTS installation_repos (
   repo TEXT NOT NULL,
   PRIMARY KEY(owner, repo),
   FOREIGN KEY(owner) REFERENCES installation_coverage(owner) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS usage_daily (
+  day TEXT NOT NULL,
+  github_user_id INTEGER NOT NULL,
+  login TEXT NOT NULL,
+  first_seen_ms INTEGER NOT NULL,
+  last_seen_ms INTEGER NOT NULL,
+  sessions INTEGER NOT NULL,
+  PRIMARY KEY(day, github_user_id)
 );
 `)
 	return err
@@ -241,12 +251,25 @@ func scanMarker(row scanner) (Marker, error) {
 }
 
 func (s *Store) Cleanup(ctx context.Context) (int64, error) {
-	cutoff := time.Now().Add(-s.retention).UnixMilli()
+	return s.cleanup(ctx, time.Now().UTC())
+}
+
+func (s *Store) cleanup(ctx context.Context, now time.Time) (int64, error) {
+	cutoff := now.Add(-s.retention).UnixMilli()
 	result, err := s.db.ExecContext(ctx, `DELETE FROM markers WHERE ts < ?`, cutoff)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	deletedMarkers, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+
+	oldestUsageDay := now.AddDate(0, 0, -89).Format(time.DateOnly)
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM usage_daily WHERE day < ?`, oldestUsageDay); err != nil {
+		return deletedMarkers, err
+	}
+	return deletedMarkers, nil
 }
 
 func (s *Store) CoverageFor(ctx context.Context, repos []string) (map[string]bool, error) {
@@ -340,4 +363,91 @@ func repoOwner(repo string) string {
 		return ""
 	}
 	return owner
+}
+
+type UsageUser struct {
+	ID          int64  `json:"id"`
+	Login       string `json:"login"`
+	FirstSeenAt string `json:"firstSeenAt"`
+	LastSeenAt  string `json:"lastSeenAt"`
+	Sessions    int64  `json:"sessions"`
+}
+
+type UsageDay struct {
+	Day   string      `json:"day"`
+	Users []UsageUser `json:"users"`
+}
+
+type UsageReport struct {
+	GeneratedAt string     `json:"generatedAt"`
+	DAU         int64      `json:"dau"`
+	WAU         int64      `json:"wau"`
+	Days        []UsageDay `json:"days"`
+}
+
+func (s *Store) RecordActivity(ctx context.Context, identity GitHubIdentity, at time.Time) error {
+	at = at.UTC()
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO usage_daily(day, github_user_id, login, first_seen_ms, last_seen_ms, sessions)
+VALUES(?, ?, ?, ?, ?, 1)
+ON CONFLICT(day, github_user_id) DO UPDATE SET
+  login = excluded.login,
+  first_seen_ms = MIN(usage_daily.first_seen_ms, excluded.first_seen_ms),
+  last_seen_ms = MAX(usage_daily.last_seen_ms, excluded.last_seen_ms),
+  sessions = usage_daily.sessions + 1
+`, at.Format(time.DateOnly), identity.ID, identity.Login, at.UnixMilli(), at.UnixMilli())
+	return err
+}
+
+func (s *Store) Usage(ctx context.Context, days int, now time.Time) (UsageReport, error) {
+	now = now.UTC()
+	today := now.Format(time.DateOnly)
+	weekStart := now.AddDate(0, 0, -6).Format(time.DateOnly)
+	report := UsageReport{
+		GeneratedAt: now.Format(time.RFC3339Nano),
+		Days:        make([]UsageDay, days),
+	}
+	dayByName := make(map[string]*UsageDay, days)
+	for offset := range days {
+		day := now.AddDate(0, 0, -offset).Format(time.DateOnly)
+		report.Days[offset] = UsageDay{Day: day, Users: []UsageUser{}}
+		dayByName[day] = &report.Days[offset]
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_daily WHERE day = ?`, today).Scan(&report.DAU); err != nil {
+		return UsageReport{}, err
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT github_user_id) FROM usage_daily WHERE day BETWEEN ? AND ?`, weekStart, today).Scan(&report.WAU); err != nil {
+		return UsageReport{}, err
+	}
+	start := now.AddDate(0, 0, -(days - 1)).Format(time.DateOnly)
+	rows, err := s.db.QueryContext(ctx, `
+SELECT day, github_user_id, login, first_seen_ms, last_seen_ms, sessions
+FROM usage_daily
+WHERE day BETWEEN ? AND ?
+ORDER BY day DESC, github_user_id
+`, start, today)
+	if err != nil {
+		return UsageReport{}, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var day string
+		var user UsageUser
+		var firstSeenMS, lastSeenMS int64
+		if err := rows.Scan(&day, &user.ID, &user.Login, &firstSeenMS, &lastSeenMS, &user.Sessions); err != nil {
+			return UsageReport{}, err
+		}
+		current := dayByName[day]
+		if current == nil {
+			continue
+		}
+		user.FirstSeenAt = time.UnixMilli(firstSeenMS).UTC().Format(time.RFC3339Nano)
+		user.LastSeenAt = time.UnixMilli(lastSeenMS).UTC().Format(time.RFC3339Nano)
+		current.Users = append(current.Users, user)
+	}
+	if err := rows.Err(); err != nil {
+		return UsageReport{}, err
+	}
+	return report, nil
 }

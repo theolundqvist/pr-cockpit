@@ -49,9 +49,10 @@ func run(address string) error {
 	}
 	defer store.Close()
 	server, err := relay.NewServer(store, relay.Config{
-		WebhookSecret: secret,
-		GitHubAPIURL:  envOr("GITHUB_API_URL", "https://api.github.com"),
-		Logger:        slog.Default(),
+		WebhookSecret:     secret,
+		GitHubAPIURL:      envOr("GITHUB_API_URL", "https://api.github.com"),
+		ForwardWebhookURL: os.Getenv("RELAY_FORWARD_WEBHOOK_URL"),
+		Logger:            slog.Default(),
 	})
 	if err != nil {
 		return err
@@ -61,17 +62,53 @@ func run(address string) error {
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 15 * time.Second,
 		MaxHeaderBytes: 1 << 20,
 	}
+	adminAddress := envOr("RELAY_ADMIN_ADDR", "127.0.0.1:4822")
+	adminServer := &http.Server{
+		Addr: adminAddress, Handler: server.AdminHandler(),
+		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 15 * time.Second,
+		MaxHeaderBytes: 1 << 20,
+	}
+	publicListener, err := net.Listen("tcp", address)
+	if err != nil {
+		return fmt.Errorf("listen on relay address: %w", err)
+	}
+	adminListener, err := net.Listen("tcp", adminAddress)
+	if err != nil {
+		publicListener.Close()
+		return fmt.Errorf("listen on admin address: %w", err)
+	}
 	stopping := make(chan os.Signal, 1)
 	signal.Notify(stopping, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-stopping
-		server.Shutdown()
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		httpServer.Shutdown(ctx)
-	}()
-	slog.Info("relay listening", "address", address)
-	err = httpServer.ListenAndServe()
+	defer signal.Stop(stopping)
+	errs := make(chan error, 2)
+	go func() { errs <- httpServer.Serve(publicListener) }()
+	go func() { errs <- adminServer.Serve(adminListener) }()
+	slog.Info("relay listening", "address", address, "adminAddress", adminAddress)
+
+	var serveErr error
+	serveResults := 0
+	select {
+	case <-stopping:
+	case result := <-errs:
+		serveErr = normalizeServeError(result)
+		serveResults = 1
+	}
+	server.Shutdown()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	shutdownErr := errors.Join(httpServer.Shutdown(ctx), adminServer.Shutdown(ctx))
+	if shutdownErr != nil {
+		shutdownErr = errors.Join(shutdownErr, httpServer.Close(), adminServer.Close())
+	}
+	for serveResults < 2 {
+		result := <-errs
+		serveErr = errors.Join(serveErr, normalizeServeError(result))
+		serveResults++
+	}
+	return errors.Join(serveErr, shutdownErr)
+}
+
+func normalizeServeError(err error) error {
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}

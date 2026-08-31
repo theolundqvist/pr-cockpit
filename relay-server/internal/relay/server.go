@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -10,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,19 +22,21 @@ import (
 )
 
 const (
-	subscriberBuffer    = 256
-	cleanupInterval     = time.Minute
-	maxReplayBacklog    = 10_000
-	bodyReaderLimit     = 64
-	maxSubscribers      = 1024
-	maxPrincipalStreams = 4
+	subscriberBuffer     = 256
+	cleanupInterval      = time.Minute
+	maxReplayBacklog     = 10_000
+	bodyReaderLimit      = 64
+	maxSubscribers       = 1024
+	maxPrincipalStreams  = 4
+	forwardResponseLimit = 64 << 10
 )
 
 type Config struct {
-	WebhookSecret string
-	GitHubAPIURL  string
-	HTTPClient    *http.Client
-	Logger        *slog.Logger
+	WebhookSecret     string
+	GitHubAPIURL      string
+	ForwardWebhookURL string
+	HTTPClient        *http.Client
+	Logger            *slog.Logger
 }
 
 var errSubscriberCapacity = errors.New("subscriber capacity reached")
@@ -49,17 +53,19 @@ type subscriber struct {
 func (s *subscriber) stop() { s.once.Do(func() { close(s.done) }) }
 
 type Server struct {
-	store            *Store
-	secret           []byte
-	access           *AccessChecker
-	tickets          *Tickets
-	logger           *slog.Logger
-	publishMu        sync.Mutex
-	cleanupAfter     atomic.Int64
-	subscribers      map[*subscriber]struct{}
-	principalStreams map[string]int
-	bodySlots        chan struct{}
-	upgrader         websocket.Upgrader
+	store             *Store
+	secret            []byte
+	access            *AccessChecker
+	forwardClient     *http.Client
+	forwardWebhookURL string
+	tickets           *Tickets
+	logger            *slog.Logger
+	publishMu         sync.Mutex
+	cleanupAfter      atomic.Int64
+	subscribers       map[*subscriber]struct{}
+	principalStreams  map[string]int
+	bodySlots         chan struct{}
+	upgrader          websocket.Upgrader
 }
 
 func NewServer(store *Store, config Config) (*Server, error) {
@@ -72,19 +78,55 @@ func NewServer(store *Store, config Config) (*Server, error) {
 	if config.GitHubAPIURL == "" {
 		config.GitHubAPIURL = "https://api.github.com"
 	}
+	if err := validateForwardWebhookURL(config.ForwardWebhookURL); err != nil {
+		return nil, err
+	}
 	if config.Logger == nil {
 		config.Logger = slog.Default()
 	}
+	var forwardClient *http.Client
+	if config.ForwardWebhookURL != "" {
+		forwardClient = newForwardHTTPClient(config.HTTPClient)
+	}
 	server := &Server{
 		store: store, secret: []byte(config.WebhookSecret),
-		access:  NewAccessChecker(config.HTTPClient, config.GitHubAPIURL),
-		tickets: NewTickets(), logger: config.Logger,
+		access:            NewAccessChecker(config.HTTPClient, config.GitHubAPIURL),
+		forwardClient:     forwardClient,
+		forwardWebhookURL: config.ForwardWebhookURL,
+		tickets:           NewTickets(), logger: config.Logger,
 		subscribers:      make(map[*subscriber]struct{}),
 		principalStreams: make(map[string]int), bodySlots: make(chan struct{}, bodyReaderLimit),
 		upgrader: websocket.Upgrader{HandshakeTimeout: 10 * time.Second, CheckOrigin: func(*http.Request) bool { return true }},
 	}
 	server.cleanupAfter.Store(time.Now().Add(cleanupInterval).UnixNano())
 	return server, nil
+}
+
+func newForwardHTTPClient(client *http.Client) *http.Client {
+	if client == nil {
+		client = &http.Client{}
+	}
+	forwardClient := *client
+	forwardClient.Jar = nil
+	forwardClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	if forwardClient.Timeout <= 0 || forwardClient.Timeout > 10*time.Second {
+		forwardClient.Timeout = 10 * time.Second
+	}
+	return &forwardClient
+}
+
+func validateForwardWebhookURL(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || !parsed.IsAbs() || parsed.Scheme != "https" || parsed.Host == "" ||
+		parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || strings.Contains(raw, "#") {
+		return errors.New("forward webhook URL must be an absolute HTTPS URL without userinfo, query, or fragment")
+	}
+	return nil
 }
 
 func (s *Server) Handler() http.Handler {
@@ -98,6 +140,31 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /stream", s.handleStream)
 	return mux
 }
+
+func (s *Server) AdminHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /usage", s.handleUsage)
+	return mux
+}
+
+func (s *Server) handleUsage(response http.ResponseWriter, request *http.Request) {
+	days := 7
+	if request.URL.Query().Has("days") {
+		var err error
+		days, err = strconv.Atoi(request.URL.Query().Get("days"))
+		if err != nil || days < 1 || days > 90 {
+			http.Error(response, "days must be between 1 and 90", http.StatusBadRequest)
+			return
+		}
+	}
+	report, err := s.store.Usage(request.Context(), days, time.Now())
+	if err != nil {
+		s.internalError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, report)
+}
+
 func (s *Server) acquireBodyReader(response http.ResponseWriter) (func(), bool) {
 	select {
 	case s.bodySlots <- struct{}{}:
@@ -137,30 +204,62 @@ func (s *Server) handleGitHub(response http.ResponseWriter, request *http.Reques
 		http.Error(response, "invalid JSON", http.StatusBadRequest)
 		return
 	}
+
 	event := request.Header.Get("X-GitHub-Event")
 	if event == "" {
 		event = "unknown"
 	}
+	status := http.StatusOK
+	message := "ok"
 	if event == "installation" || event == "installation_repositories" {
 		if err := s.store.UpdateInstallation(request.Context(), event, payload); err != nil {
 			s.internalError(response, err)
 			return
 		}
-		response.Write([]byte("ok"))
+	} else if payload.Repository == nil || payload.Repository.FullName == "" {
+		status = http.StatusAccepted
+		message = "no repository"
+	} else {
+		run, job := compactActions(event, payload)
+		marker := Marker{TS: time.Now().UnixMilli(), Repo: payload.Repository.FullName, Number: pullNumber(payload), Event: event, Run: run, Job: job}
+		if _, err := s.publish(request.Context(), marker); err != nil {
+			s.internalError(response, err)
+			return
+		}
+	}
+	s.forwardWebhook(request.Context(), body, request.Header)
+	response.WriteHeader(status)
+	response.Write([]byte(message))
+}
+
+func (s *Server) forwardWebhook(ctx context.Context, body []byte, source http.Header) {
+	if s.forwardWebhookURL == "" {
 		return
 	}
-	if payload.Repository == nil || payload.Repository.FullName == "" {
-		response.WriteHeader(http.StatusAccepted)
-		response.Write([]byte("no repository"))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, s.forwardWebhookURL, bytes.NewReader(body))
+	if err != nil {
+		s.logger.Warn("relay webhook forwarding failed")
 		return
 	}
-	run, job := compactActions(event, payload)
-	marker := Marker{TS: time.Now().UnixMilli(), Repo: payload.Repository.FullName, Number: pullNumber(payload), Event: event, Run: run, Job: job}
-	if _, err := s.publish(request.Context(), marker); err != nil {
-		s.internalError(response, err)
+	for name, values := range source {
+		lowerName := strings.ToLower(name)
+		if lowerName != "content-type" && lowerName != "x-hub-signature-256" && !strings.HasPrefix(lowerName, "x-github-") {
+			continue
+		}
+		for _, value := range values {
+			request.Header.Add(name, value)
+		}
+	}
+	response, err := s.forwardClient.Do(request)
+	if err != nil {
+		s.logger.Warn("relay webhook forwarding failed")
 		return
 	}
-	response.Write([]byte("ok"))
+	_, drainErr := io.Copy(io.Discard, io.LimitReader(response.Body, forwardResponseLimit))
+	closeErr := response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices || drainErr != nil || closeErr != nil {
+		s.logger.Warn("relay webhook forwarding failed")
+	}
 }
 
 func validSignature(secret, body []byte, header string) bool {
@@ -207,7 +306,7 @@ func (s *Server) maybeCleanup(ctx context.Context) {
 		return
 	}
 	if _, err := s.store.Cleanup(ctx); err != nil {
-		s.logger.Warn("marker retention cleanup failed", "error", err)
+		s.logger.Warn("relay cleanup failed", "error", err)
 	}
 }
 
@@ -368,11 +467,24 @@ func (s *Server) handleSession(response http.ResponseWriter, request *http.Reque
 		http.Error(response, "no readable repositories", http.StatusForbidden)
 		return
 	}
-	ticket, err := s.tickets.Issue(tokenHash(token), allowed, authExpires)
+	identity, identityExpires, err := s.access.Identity(request.Context(), token)
+	if err != nil {
+		status := accessStatus(err)
+		http.Error(response, http.StatusText(status), status)
+		return
+	}
+	if identityExpires.Before(authExpires) {
+		authExpires = identityExpires
+	}
+	ticket, err := s.tickets.Issue(strconv.FormatInt(identity.ID, 10), allowed, authExpires)
 	if err != nil {
 		http.Error(response, "session capacity reached", http.StatusServiceUnavailable)
 		return
 	}
+	if err := s.store.RecordActivity(request.Context(), identity, time.Now()); err != nil {
+		s.logger.Warn("record relay activity failed", "error", err)
+	}
+	s.maybeCleanup(request.Context())
 	writeJSON(response, http.StatusOK, map[string]any{"ticket": ticket, "expiresAt": authExpires.UnixMilli(), "repos": coverage})
 }
 
