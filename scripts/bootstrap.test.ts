@@ -29,10 +29,10 @@ function executable(path: string, body: string) {
   chmodSync(path, 0o755);
 }
 
-function stubbedPath(dir: string) {
+function stubbedPath(dir: string, platform: "Darwin" | "Linux" = "Darwin", ghExit = 0) {
   const bin = join(dir, "bin");
   mkdirSync(bin, { recursive: true });
-  executable(join(bin, "uname"), 'printf "Darwin\\n"');
+  executable(join(bin, "uname"), `if [[ "\${1:-}" == "-m" ]]; then printf "x86_64\\n"; else printf "${platform}\\n"; fi`);
   executable(
     join(bin, "git"),
     `if [[ "\${1:-}" == "-C" && "\${3:-}" == "rev-parse" ]]; then
@@ -42,7 +42,14 @@ elif [[ "\${1:-}" == "-C" && "\${3:-}" == "remote" ]]; then
 fi`,
   );
   executable(join(bin, "bun"), "exit 0");
-  executable(join(bin, "gh"), "exit 0");
+  executable(join(bin, "gh"), `exit ${ghExit}`);
+  executable(join(bin, "curl"), "exit 0");
+  executable(join(bin, "systemctl"), "exit 0");
+  executable(join(bin, "xdg-mime"), "exit 0");
+  executable(join(bin, "tar"), "exit 0");
+  executable(join(bin, "unzip"), "exit 0");
+  executable(join(bin, "sha256sum"), "cat >/dev/null");
+  executable(join(bin, "realpath"), `[[ "\${1:-}" == "-m" ]] && printf '%s\n' "$2" || printf '%s\n' "$1"`);
   return `${bin}:/usr/bin:/bin`;
 }
 
@@ -107,6 +114,42 @@ async function runBootstrap({
   ]);
   return { output, error, exitCode };
 }
+
+test("Linux bootstrap accepts an installed but unauthenticated gh binary", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cockpit-bootstrap-linux-"));
+  const home = join(root, "home");
+  try {
+    const result = await runBootstrap({
+      home,
+      target: join(root, "checkout"),
+      path: stubbedPath(root, "Linux", 1),
+      dryRun: true,
+    });
+    expect(result.error).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toContain("[3/3] Install PR Cockpit");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+test("Linux dry run names pinned user-tool downloads without network", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cockpit-bootstrap-linux-tools-"));
+  const home = join(root, "home");
+  try {
+    const path = stubbedPath(root, "Linux");
+    rmSync(join(root, "bin/bun"));
+    rmSync(join(root, "bin/gh"));
+    const result = await runBootstrap({ home, target: join(root, "checkout"), path, dryRun: true });
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toContain("would download pinned Bun 1.2.22");
+    expect(result.output).toContain("bun-linux-x64.zip");
+    expect(result.output).toContain("would download pinned GitHub CLI 2.76.2");
+    expect(result.output).toContain("gh_2.76.2_linux_amd64.tar.gz");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 
 test("a non-interactive install stays plain and skips the optional follow-up", async () => {
   const root = mkdtempSync(join(tmpdir(), "cockpit-bootstrap-"));

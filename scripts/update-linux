@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+if [[ "$(/usr/bin/id -u)" == "0" ]]; then echo "UPDATE_FAILED must not run as root" >&2; exit 1; fi
+if [[ "$(/usr/bin/uname -s)" != "Linux" ]]; then echo "UPDATE_FAILED Linux updater requires Linux" >&2; exit 1; fi
+set -Eeuo pipefail
+umask 077
+if [[ "$#" -gt 1 || ( "$#" -eq 1 && "${1:-}" != "--open" ) ]]; then
+  echo "usage: scripts/update-linux [--open]" >&2
+  exit 2
+fi
+
+data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
+manifest="$state_home/pr-cockpit/install-manifest.json"
+current="$data_home/pr-cockpit-runtime/current"
+if [[ ! -f "$manifest" || ! -x "$current/scripts/install-linux-tools" || ! -f "$current/scripts/linux-lifecycle.ts" ]]; then
+  echo "UPDATE_FAILED active Linux installation is incomplete" >&2
+  exit 1
+fi
+if ! active_tools="$("$current/scripts/install-linux-tools" --paths 2>&1)"; then
+  echo "UPDATE_FAILED ${active_tools:-installed user tool validation failed}" >&2
+  exit 1
+fi
+active_bun="${active_tools%%	*}"
+active_gh="${active_tools#*	}"
+versions="$data_home/pr-cockpit-tools/versions"
+if [[ "$active_tools" != *$'\t'* || "$active_gh" == *$'\t'* || ! -x "$active_bun" || -L "$active_bun" || ! -x "$active_gh" || -L "$active_gh" || "$(dirname "$(dirname "$active_bun")")" != "$versions" || "$(dirname "$(dirname "$active_gh")")" != "$versions" || "$(basename "$(dirname "$active_bun")")" != bun-* || "$(basename "$(dirname "$active_gh")")" != gh-* ]]; then
+  echo "UPDATE_FAILED installed user tool validation returned unknown binaries" >&2
+  exit 1
+fi
+export PATH="$(dirname "$active_bun"):$(dirname "$active_gh"):$PATH"
+bun="$active_bun"
+if ! source_state="$("$bun" "$current/scripts/linux-lifecycle.ts" source)"; then
+  echo "UPDATE_FAILED active Linux installation could not be verified" >&2
+  exit 1
+fi
+source_root="${source_state%%	*}"
+generation="${source_state#*	}"
+if [[ "$source_state" != *$'\t'* || -z "$source_root" || "$generation" == *$'\t'* || ! "$generation" =~ ^[0-9a-f]{64}$ || ! -e "$source_root/.git" ]]; then
+  echo "UPDATE_FAILED manifest source checkout is unavailable" >&2
+  exit 1
+fi
+
+launch_gui=0
+if [[ "${COCKPIT_AUTO_UPDATE:-0}" != "1" && ( "${COCKPIT_UPDATE_GUI:-0}" == "1" || "${1:-}" == "--open" ) ]]; then
+  launch_gui=1
+fi
+if [[ "${COCKPIT_AUTO_UPDATE:-0}" != "1" && "$launch_gui" -eq 0 && ( -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ) && -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+    process_file="$data_home/pr-cockpit/shell-process"
+  if [[ -r "$process_file" ]]; then
+    shell_pid="" recorded_start="" recorded_executable="" recorded_release=""
+    while IFS='=' read -r key value; do
+      [[ "$key" == "pid" ]] && shell_pid="$value"
+      [[ "$key" == "start" ]] && recorded_start="$value"
+      [[ "$key" == "executable" ]] && recorded_executable="$value"
+      [[ "$key" == "release" ]] && recorded_release="$value"
+    done < "$process_file"
+    if [[ "$shell_pid" =~ ^[0-9]+$ && -r "/proc/$shell_pid/stat" ]]; then
+      stat="$(<"/proc/$shell_pid/stat")"
+      rest="${stat##*) }"
+      set -- $rest
+      actual_start="${20:-}"
+      actual_executable="$(readlink -f "/proc/$shell_pid/exe" 2>/dev/null || true)"
+      current_release="$(readlink -f "$current" 2>/dev/null || true)"
+      if [[ -n "$current_release" && "$recorded_start" == "$actual_start" && "$recorded_executable" == "$actual_executable" && "$recorded_release" == "$current_release" && "$actual_executable" == "$current_release/shell/node_modules/electron/dist/electron" ]]; then
+        launch_gui=1
+      fi
+    fi
+  fi
+fi
+
+if ! pull_reason="$(cd "$source_root" && "$source_root/scripts/update-pull" 2>&1)"; then
+  echo "UPDATE_FAILED ${pull_reason:-pull failed}" >&2
+  exit 1
+fi
+if [[ "$pull_reason" != "updated" ]]; then
+  active_revision="$("$bun" "$current/scripts/linux-lifecycle.ts" revision)" || {
+    echo "UPDATE_FAILED active Linux revision could not be verified" >&2
+    exit 1
+  }
+  source_revision="$(git -C "$source_root" rev-parse HEAD)" || {
+    echo "UPDATE_FAILED source revision could not be verified" >&2
+    exit 1
+  }
+  if [[ "$source_revision" == "$active_revision" ]]; then
+    if [[ "${COCKPIT_AUTO_UPDATE:-0}" == "1" ]]; then echo "auto-update: ${pull_reason:-noop}"; else echo "update: ${pull_reason:-noop}"; fi
+    exit 0
+  fi
+fi
+if [[ "${COCKPIT_AUTO_UPDATE:-0}" == "1" && "$pull_reason" != "updated" ]]; then
+  echo "auto-update: ${pull_reason:-noop}"
+  exit 0
+fi
+if ! tools_reason="$("$source_root/scripts/install-linux-tools" 2>&1)"; then
+  echo "UPDATE_FAILED ${tools_reason:-user tool provisioning failed}" >&2
+  exit 1
+fi
+export PATH="$data_home/pr-cockpit-tools/bin:$PATH"
+bun="$(command -v bun)"
+
+
+if ! staged_state="$("$bun" "$source_root/scripts/linux-lifecycle.ts" stage "$source_root" "$generation")"; then
+  echo "UPDATE_FAILED release staging failed" >&2
+  exit 1
+fi
+staged="${staged_state%%	*}"
+candidate_revision="${staged_state#*	}"
+if [[ "$staged_state" != *$'\t'* || -z "$staged" || "$candidate_revision" == *$'\t'* || ! "$candidate_revision" =~ ^[0-9a-f]{40,64}$ ]]; then
+  echo "UPDATE_FAILED release staging returned invalid state" >&2
+  exit 1
+fi
+
+# The graphical caller stays alive until the complete candidate exists.
+echo "PULL_OK"
+args=("$staged" "$source_root" "$generation" "$candidate_revision")
+if [[ "$launch_gui" -eq 1 ]]; then
+  args+=(--gui)
+fi
+if ! "$bun" "$staged/scripts/linux-lifecycle.ts" activate "${args[@]}"; then
+  echo "UPDATE_FAILED activation failed; the prior release was restored" >&2
+  exit 1
+fi

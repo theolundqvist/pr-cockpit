@@ -9,12 +9,16 @@ services:
     user: "${COCKPIT_UID:?COCKPIT_UID is required}:${COCKPIT_GID:?COCKPIT_GID is required}"
     environment:
       RELAY_ADDR: "0.0.0.0:4821"
+      RELAY_ADMIN_ADDR: "0.0.0.0:4822"
       RELAY_DB_PATH: /data/relay.db
       RELAY_RETENTION: "${RELAY_RETENTION:-168h}"
+      RELAY_FORWARD_WEBHOOK_URL: "${RELAY_FORWARD_WEBHOOK_URL:-}"
+      RELAY_FORWARD_REPO_DISCOVERY_UNTIL: "${RELAY_FORWARD_REPO_DISCOVERY_UNTIL:-}"
     env_file:
       - /etc/pr-cockpit-relay/relay.env
     ports:
       - "127.0.0.1:4821:4821/tcp"
+      - "127.0.0.1:4822:4822/tcp"
     volumes:
       - type: bind
         source: /var/lib/pr-cockpit-relay/relay

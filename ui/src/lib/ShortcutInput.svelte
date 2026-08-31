@@ -1,30 +1,14 @@
 <script>
   import { setRecordingShortcut } from "./shortcutCapture.js";
+  import { capturedShortcut } from "./shortcutPlatform.js";
 
-  let { value = "", defaultValue = "", onChange } = $props();
+  let { value = "", defaultValue = "", platform = "darwin", onChange } = $props();
 
   let recording = $state(false);
   let flash = $state("");
   let el = $state(null);
 
-  const SPECIAL = {
-    ArrowUp: "Up",
-    ArrowDown: "Down",
-    ArrowLeft: "Left",
-    ArrowRight: "Right",
-    Enter: "Return",
-    " ": "Space",
-    Tab: "Tab",
-    Backspace: "Backspace",
-    Delete: "Delete",
-  };
-
   const display = $derived(recording ? flash || "Press a shortcut…" : value || `${defaultValue} (default)`);
-
-  function keyToken(e) {
-    if (e.key.length === 1) return e.key.toUpperCase();
-    return SPECIAL[e.key] ?? e.key;
-  }
 
   function onKeydown(e) {
     // Swallow every key while recording so in-app shortcuts (palette, find, …) can't
@@ -42,13 +26,7 @@
       flash = "add a modifier";
       return;
     }
-    const combo = [];
-    if (e.metaKey) combo.push("Command");
-    if (e.ctrlKey) combo.push("Control");
-    if (e.altKey) combo.push("Option");
-    if (e.shiftKey) combo.push("Shift");
-    combo.push(keyToken(e));
-    onChange(combo.join("+"));
+    onChange(capturedShortcut(e, platform));
     recording = false;
   }
 

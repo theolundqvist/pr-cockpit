@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
+if [[ "$(/usr/bin/id -u)" == "0" ]]; then echo "pr-cockpit: must not run as root" >&2; exit 1; fi
 # One-command installer, safe to rerun as the upgrade path:
 #   curl -fsSL https://raw.githubusercontent.com/theolundqvist/pr-cockpit/main/scripts/bootstrap | bash
 set -euo pipefail
+umask 077
 
 repo_slug="theolundqvist/pr-cockpit"
 repo_url="https://github.com/$repo_slug.git"
@@ -140,67 +142,70 @@ need() {
   die "$what is missing — run: $fix"
 }
 
-if [[ "$(uname -s)" != "Darwin" ]]; then
-  die "macOS only — the app is an Electron bundle driven by LaunchAgents, launchctl, plutil and ditto"
+platform="$(uname -s)"
+if [[ "$platform" != "Darwin" && "$platform" != "Linux" ]]; then
+  die "unsupported platform: $platform"
 fi
 
-brew_bin="$(command -v brew || true)"
-
-if ! command -v git >/dev/null 2>&1; then
-  if confirm "git not found, install the Xcode command line tools now?"; then
-    run xcode-select --install || true
-    say "finish the Xcode command line tools install, then rerun this command"
-    exit 0
+if [[ "$platform" == "Linux" ]]; then
+  linux_packages="sudo apt-get install -y curl git tar unzip coreutils systemd xdg-utils libnss3 libgtk-3-0 libgbm1 libasound2 libxss1 libx11-xcb1 libdrm2 libxkbcommon0 libatspi2.0-0"
+  for prerequisite in git curl tar unzip sha256sum realpath systemctl xdg-mime stat sed wc tr sort od mktemp chmod ln mv rm rmdir cat sleep cut dirname readlink; do
+    command -v "$prerequisite" >/dev/null 2>&1 || die "missing Linux system prerequisites — on Debian/Ubuntu run: $linux_packages"
+  done
+  if [[ "$dry_run" == "1" ]]; then
+    case "$(uname -m)" in
+      x86_64) bun_asset="bun-linux-x64.zip"; gh_asset="gh_2.76.2_linux_amd64.tar.gz" ;;
+      aarch64|arm64) bun_asset="bun-linux-aarch64.zip"; gh_asset="gh_2.76.2_linux_arm64.tar.gz" ;;
+      *) die "unsupported Linux architecture: $(uname -m)" ;;
+    esac
+    command -v bun >/dev/null 2>&1 || say "would download pinned Bun 1.2.22 from https://github.com/oven-sh/bun/releases/download/bun-v1.2.22/$bun_asset"
+    command -v gh >/dev/null 2>&1 || say "would download pinned GitHub CLI 2.76.2 from https://github.com/cli/cli/releases/download/v2.76.2/$gh_asset"
   fi
-  need "git" "xcode-select --install"
-fi
+else
+  brew_bin="$(command -v brew || true)"
 
-if ! command -v bun >/dev/null 2>&1; then
-  if [[ -n "$brew_bin" ]]; then
-    if ! confirm "bun not found, install it with Homebrew now?"; then
-      need "bun" "brew install oven-sh/bun/bun"
+  if ! command -v git >/dev/null 2>&1; then
+    if confirm "git not found, install the Xcode command line tools now?"; then
+      run xcode-select --install || true
+      say "finish the Xcode command line tools install, then rerun this command"
+      exit 0
     fi
-    run "$brew_bin" install oven-sh/bun/bun
+    need "git" "xcode-select --install"
+  fi
+
+  if ! command -v bun >/dev/null 2>&1; then
+    if [[ -n "$brew_bin" ]]; then
+      if ! confirm "bun not found, install it with Homebrew now?"; then
+        need "bun" "brew install oven-sh/bun/bun"
+      fi
+      run "$brew_bin" install oven-sh/bun/bun
+      PATH="$("$brew_bin" --prefix)/bin:$PATH"
+    else
+      if ! confirm "bun not found, install it from https://bun.sh now?"; then
+        need "bun" "curl -fsSL https://bun.sh/install | bash"
+      fi
+      run bash -c 'curl -fsSL https://bun.sh/install | bash'
+      PATH="$HOME/.bun/bin:$PATH"
+    fi
+    export PATH
+    if [[ "$dry_run" != "1" ]] && ! command -v bun >/dev/null 2>&1; then
+      die "bun still not on PATH after install — open a new shell and rerun this command"
+    fi
+  fi
+
+  if ! command -v gh >/dev/null 2>&1; then
+    if [[ -z "$brew_bin" ]]; then
+      need "the GitHub CLI (gh)" "install Homebrew from https://brew.sh, then 'brew install gh' (or download gh from https://cli.github.com)"
+    fi
+    if ! confirm "the GitHub CLI (gh) is not found, install it with Homebrew now?"; then
+      need "the GitHub CLI (gh)" "brew install gh"
+    fi
+    run "$brew_bin" install gh
     PATH="$("$brew_bin" --prefix)/bin:$PATH"
-  else
-    if ! confirm "bun not found, install it from https://bun.sh now?"; then
-      need "bun" "curl -fsSL https://bun.sh/install | bash"
+    export PATH
+    if [[ "$dry_run" != "1" ]] && ! command -v gh >/dev/null 2>&1; then
+      die "gh still not on PATH after install — open a new shell and rerun this command"
     fi
-    run bash -c 'curl -fsSL https://bun.sh/install | bash'
-    PATH="$HOME/.bun/bin:$PATH"
-  fi
-  export PATH
-  if [[ "$dry_run" != "1" ]] && ! command -v bun >/dev/null 2>&1; then
-    die "bun still not on PATH after install — open a new shell and rerun this command"
-  fi
-fi
-
-if ! command -v gh >/dev/null 2>&1; then
-  if [[ -z "$brew_bin" ]]; then
-    need "the GitHub CLI (gh)" "install Homebrew from https://brew.sh, then 'brew install gh' (or download gh from https://cli.github.com)"
-  fi
-  if ! confirm "the GitHub CLI (gh) is not found, install it with Homebrew now?"; then
-    need "the GitHub CLI (gh)" "brew install gh"
-  fi
-  run "$brew_bin" install gh
-  PATH="$("$brew_bin" --prefix)/bin:$PATH"
-  export PATH
-  if [[ "$dry_run" != "1" ]] && ! command -v gh >/dev/null 2>&1; then
-    die "gh still not on PATH after install — open a new shell and rerun this command"
-  fi
-fi
-
-if command -v gh >/dev/null 2>&1 && ! gh auth status >/dev/null 2>&1; then
-  if [[ "$have_tty" -ne 1 ]]; then
-    die "gh is not authenticated and there is no terminal to log in on — run 'gh auth login', then rerun this command"
-  fi
-  if ! confirm "gh is not authenticated, run 'gh auth login' now?"; then
-    die "gh needs access to read your pull requests — run 'gh auth login', then rerun this command"
-  fi
-  # Workflow files require GitHub's workflow scope in addition to repository access.
-  run gh auth login --hostname github.com --git-protocol https --scopes repo,workflow <&3
-  if [[ "$dry_run" != "1" ]] && ! gh auth status >/dev/null 2>&1; then
-    die "gh is still not authenticated — run 'gh auth login', then rerun this command"
   fi
 fi
 
@@ -209,7 +214,7 @@ status "Prerequisites available"
 stage "2/3" "Prepare checkout"
 
 if [[ -n "${COCKPIT_HOME:-}" ]]; then
-  say "installing to $target — this path is baked into the LaunchAgents, so don't move it afterwards (rerun this command if you do)"
+  say "installing to $target — the installed runtime records this source checkout (rerun this command after moving it)"
 fi
 
 remote_slug() {
@@ -247,6 +252,7 @@ replace_legacy_checkout() {
 }
 uninstall_legacy_app() {
   [[ "$legacy_migration" -eq 1 ]] || return 0
+  [[ "$platform" == "Darwin" ]] || return 0
   say "uninstalling the legacy PR Cockpit app"
   if [[ "$dry_run" == "1" ]]; then
     say "would stop its background services and remove its app bundle"

@@ -79,49 +79,28 @@ describe("update handoff", () => {
     expect(readFileSync(order, "utf8")).toBe("install\ncockpit\n");
   });
 
-  test("rebuilds and restarts a headless Linux systemd service", () => {
+  test("delegates Linux updates to the transactional platform updater", () => {
     const root = mkdtempSync(join(tmpdir(), "update-handoff-linux-"));
     cleanups.push(() => rmSync(root, { recursive: true, force: true }));
-    git(root, ["init", "-q"]);
-    git(root, ["config", "user.email", "t@t.t"]);
-    git(root, ["config", "user.name", "t"]);
-    writeFileSync(join(root, "app.ts"), "seed\n");
-    git(root, ["add", "-A"]);
-    git(root, ["commit", "-q", "-m", "seed"]);
-
     const fakeBin = join(root, "bin");
+    const order = join(root, "order");
     mkdirSync(join(root, "scripts"));
     mkdirSync(fakeBin);
     cpSync(UPDATE_SCRIPT, join(root, "scripts", "update"), { mode: 0o755 });
-    writeFileSync(join(root, "scripts", "update-pull"), "#!/usr/bin/env bash\necho noop\n");
-    chmodSync(join(root, "scripts", "update-pull"), 0o755);
-    const order = join(root, "order");
-    writeFileSync(join(root, "scripts", "install"), `#!/usr/bin/env bash\necho install >> ${JSON.stringify(order)}\n`);
-    chmodSync(join(root, "scripts", "install"), 0o755);
-    writeFileSync(join(root, "scripts", "cockpit"), `#!/usr/bin/env bash\necho cockpit >> ${JSON.stringify(order)}\n`);
-    chmodSync(join(root, "scripts", "cockpit"), 0o755);
+    writeFileSync(join(root, "scripts", "update-linux"), `#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" > ${JSON.stringify(order)}\n`);
+    chmodSync(join(root, "scripts", "update-linux"), 0o755);
     writeFileSync(join(fakeBin, "uname"), "#!/usr/bin/env bash\necho Linux\n");
     chmodSync(join(fakeBin, "uname"), 0o755);
-    writeFileSync(
-      join(fakeBin, "systemctl"),
-      `#!/usr/bin/env bash\necho "systemctl:$*" >> ${JSON.stringify(order)}\n`,
-    );
-    chmodSync(join(fakeBin, "systemctl"), 0o755);
 
-    const proc = Bun.spawnSync([join(root, "scripts", "update")], {
+    const proc = Bun.spawnSync([join(root, "scripts", "update"), "--open"], {
       cwd: root,
-      env: {
-        ...process.env,
-        PATH: `${fakeBin}:${process.env.PATH}`,
-        COCKPIT_DATA_DIR: join(root, "data"),
-        COCKPIT_SYSTEMD_UNIT: "pr-cockpit.service",
-      },
+      env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` },
       stdout: "pipe",
       stderr: "pipe",
     });
 
     expect(proc.exitCode).toBe(0);
-    expect(readFileSync(order, "utf8")).toBe("install\nsystemctl:restart pr-cockpit.service\n");
+    expect(readFileSync(order, "utf8")).toBe("--open\n");
   });
 
   test("relaunches last-good without retrying a failed reconciliation", () => {
@@ -321,7 +300,7 @@ printf '{"root":"%s"}' ${JSON.stringify(canonicalRoot)}
     });
     expect(failedReconciliation.exitCode).toBe(0);
     expect(failedReconciliation.stderr.toString()).toContain("installation reconciliation failed");
-    expect(failedReconciliation.stderr.toString()).toContain("managed server unavailable");
+    expect(failedReconciliation.stderr.toString()).toContain("managed backend unavailable");
     expect(failedReconciliation.stderr.toString()).toContain("managed desktop app unavailable");
     expect(readFileSync(order, "utf8")).toBe("install\nopen\nopen\nopen\ninstall\nopen\ninstall\n");
   });

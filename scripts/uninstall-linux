@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+if [[ "$(/usr/bin/id -u)" == "0" ]]; then echo "pr-cockpit: must not run as root" >&2; exit 1; fi
+set -euo pipefail
+umask 077
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+
+if [[ "$(/usr/bin/uname -s)" != "Linux" ]]; then
+  echo "pr-cockpit: scripts/uninstall-linux only supports Linux" >&2
+  exit 1
+fi
+
+if [[ "${1:-}" != "" && "${1:-}" != "--purge" ]]; then
+  echo "usage: scripts/uninstall-linux [--purge]" >&2
+  exit 2
+fi
+export PATH="${XDG_DATA_HOME:-$HOME/.local/share}/pr-cockpit-tools/bin:$PATH"
+
+exec bun "$root/scripts/linux-lifecycle.ts" uninstall "$@"

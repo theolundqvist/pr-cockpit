@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Keyboard-first macOS app for GitHub pull request review. Pull requests, diffs, threads, and checks stay in a local cache, so a PR opens in 0.020 s.">
+  <meta name="description" content="Keyboard-first macOS and Linux app for GitHub pull request review. Pull requests, diffs, threads, and checks stay in a local cache, so a PR opens in 0.020 s.">
   <title>PR Cockpit — GitHub PRs at local speed</title>
   <link rel="canonical" href="https://theolundqvist.github.io/pr-cockpit/">
   <meta name="theme-color" content="#111110">
@@ -26,7 +26,7 @@
     "@type": "SoftwareApplication",
     "name": "PR Cockpit",
     "applicationCategory": "DeveloperApplication",
-    "operatingSystem": "macOS",
+    "operatingSystem": "macOS, Linux",
     "url": "https://theolundqvist.github.io/pr-cockpit/",
     "downloadUrl": "https://github.com/theolundqvist/pr-cockpit",
     "softwareHelp": "https://github.com/theolundqvist/pr-cockpit#readme",
@@ -34,7 +34,7 @@
     "isAccessibleForFree": true,
     "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
     "screenshot": "https://theolundqvist.github.io/pr-cockpit/screenshots/landing-inbox.png?v=bfd46ec27807",
-    "description": "A keyboard-first macOS app for GitHub pull request review. Pull requests, diffs, threads, checks, and images are kept in a local SQLite cache that GitHub webhooks refresh, so reviews and coding agents read them without waiting on github.com.",
+    "description": "A keyboard-first macOS and Linux app for GitHub pull request review. Pull requests, diffs, threads, checks, and images are kept in a local SQLite cache that GitHub webhooks refresh, so reviews and coding agents read them without waiting on github.com.",
     "author": { "@type": "Person", "name": "Theodor Lundqvist", "url": "https://github.com/theolundqvist" }
   }
   </script>
@@ -153,6 +153,19 @@
       font-weight: 650;
       letter-spacing: -0.06em;
       line-height: 0.98;
+    }
+
+    .hero-platforms {
+      margin: 20px 0 0;
+      color: var(--text-dim);
+      font-family: var(--mono);
+      font-size: 13px;
+      letter-spacing: 0.02em;
+    }
+
+    .hero-platforms span {
+      margin-inline: 8px;
+      color: var(--green);
     }
 
     .shot-shell {
@@ -445,6 +458,48 @@
       grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
       gap: 40px;
       align-items: center;
+    }
+
+    .linux-showcase {
+      display: grid;
+      gap: 18px;
+      margin-top: 32px;
+    }
+
+    .linux-primary {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 219px;
+      gap: 18px;
+      align-items: end;
+    }
+
+    .linux-main {
+      width: 100%;
+      margin: 0;
+    }
+
+    .linux-utilities {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .linux-frame {
+      min-width: 0;
+      margin: 0;
+    }
+
+    .linux-tray {
+      width: 219px;
+      justify-self: center;
+    }
+
+    .linux-frame figcaption {
+      margin-top: 10px;
+      color: var(--text-faint);
+      font-family: var(--mono);
+      font-size: 12px;
+      text-align: center;
     }
 
 
@@ -831,6 +886,33 @@
       line-height: 1;
     }
 
+    .install-platforms {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 16px 0 0;
+    }
+
+    .install-platforms span {
+      padding: 4px 9px;
+      border: 1px solid var(--border-strong);
+      border-radius: 999px;
+      color: var(--text-dim);
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+
+    .install-command-wrap {
+      display: grid;
+      gap: 10px;
+    }
+
+    .install-note {
+      margin: 0;
+      color: var(--text-faint);
+      font-size: 12px;
+    }
+
 
     .code-shell {
       display: flex;
@@ -980,6 +1062,14 @@
       .install-card {
         grid-template-columns: 1fr;
         gap: 24px;
+      }
+
+      .linux-utilities {
+        grid-template-columns: 1fr;
+      }
+
+      .linux-primary {
+        grid-template-columns: 1fr;
       }
 
       .section-intro {
@@ -1202,6 +1292,7 @@
   <main id="top">
     <section class="wrap hero">
       <h1>GitHub PRs at local speed.</h1>
+      <p class="hero-platforms">macOS <span>+</span> Linux</p>
       <div class="hero-benchmark" id="performance">
         <div class="benchmark-grid" id="benchmark-grid" aria-label="PR Cockpit, GitHub, and Cursor Origin performance comparison"></div>
         <p class="benchmark-method">
@@ -1245,6 +1336,63 @@
         <div>
           <h2 class="section-title">Three lanes. Zero triage.</h2>
           <p class="section-lede">Ready to merge, your move, waiting — every open PR sorted by what needs you.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-rule" id="linux">
+      <div class="wrap section">
+        <div class="section-intro">
+          <div>
+            <h2 class="section-title">Native on macOS and Linux.</h2>
+            <p class="section-lede">The same local cache, review workflow, command palette, tray controls, <code>prcockpit://</code> links, and self-update path. On Linux X11, <kbd>Super+Alt+K</kbd> opens search globally. Wayland runs through XWayland, where compositor policy can prevent the global shortcut.</p>
+          </div>
+        </div>
+        <div class="linux-showcase">
+          <div class="linux-primary">
+            <figure class="linux-frame linux-main">
+              <div class="shot-shell">
+                <button class="shot-button" type="button" data-lightbox="screenshots/landing-linux-main.png?v=365afc2" aria-label="Open Linux pull request screenshot">
+                  <img src="screenshots/landing-linux-main.png?v=365afc2" alt="PR Cockpit running natively on Linux with a pull request conversation open" width="1120" height="840" loading="lazy">
+                </button>
+              </div>
+              <figcaption>Linux · pull request conversation</figcaption>
+            </figure>
+            <figure class="linux-frame linux-tray">
+              <div class="shot-shell">
+                <button class="shot-button" type="button" data-lightbox="screenshots/landing-linux-tray.png?v=ada4de50" aria-label="Open Linux tray controls screenshot">
+                  <img src="screenshots/landing-linux-tray.png?v=ada4de50" alt="PR Cockpit Linux tray menu with Show, Update and Restart, and Quit actions" width="236" height="164" loading="lazy">
+                </button>
+              </div>
+              <figcaption>Tray controls</figcaption>
+            </figure>
+          </div>
+          <div class="linux-utilities">
+            <figure class="linux-frame">
+              <div class="shot-shell">
+                <button class="shot-button" type="button" data-lightbox="screenshots/landing-linux-files.png?v=365afc2" aria-label="Open Linux files screenshot">
+                  <img src="screenshots/landing-linux-files.png?v=365afc2" alt="PR Cockpit Files view running on Linux with the changed-file tree and split diff visible" width="1120" height="840" loading="lazy">
+                </button>
+              </div>
+              <figcaption>Files and diffs</figcaption>
+            </figure>
+            <figure class="linux-frame">
+              <div class="shot-shell">
+                <button class="shot-button" type="button" data-lightbox="screenshots/landing-linux-palette.png?v=365afc2" aria-label="Open Linux command palette screenshot">
+                  <img src="screenshots/landing-linux-palette.png?v=365afc2" alt="PR Cockpit global pull request command palette opened over the native Linux window" width="1120" height="840" loading="lazy">
+                </button>
+              </div>
+              <figcaption>Global command palette</figcaption>
+            </figure>
+            <figure class="linux-frame">
+              <div class="shot-shell">
+                <button class="shot-button" type="button" data-lightbox="screenshots/landing-linux-settings.png?v=365afc2" aria-label="Open Linux settings screenshot">
+                  <img src="screenshots/landing-linux-settings.png?v=365afc2" alt="PR Cockpit settings running in the native Linux desktop window" width="1120" height="840" loading="lazy">
+                </button>
+              </div>
+              <figcaption>Settings and local service</figcaption>
+            </figure>
+          </div>
         </div>
       </div>
     </section>
@@ -1384,11 +1532,11 @@
 
         <div class="how-card">
           <figure class="system">
-            <figcaption class="visually-hidden">GitHub is the source of truth. A GitHub webhook reaches the relay, which forwards the change signal to the PR Cockpit server on your Mac for an instant update. The server fetches only the changed pull request from GitHub and sends authenticated writes back to GitHub. Locally it reads and writes SQLite and cached images, and invalidates the UI over WebSocket. Agents talk to the server over the CLI and local API; humans use the UI.</figcaption>
+            <figcaption class="visually-hidden">GitHub is the source of truth. A GitHub webhook reaches the relay, which forwards the change signal to the PR Cockpit server on your machine for an instant update. The server fetches only the changed pull request from GitHub and sends authenticated writes back to GitHub. Locally it reads and writes SQLite and cached images, and invalidates the UI over WebSocket. Agents talk to the server over the CLI and local API; humans use the UI.</figcaption>
             <svg class="system-canvas" viewBox="0 0 1096 336" aria-hidden="true">
-              <!-- On your Mac boundary -->
+              <!-- Local machine boundary -->
               <rect class="sys-boundary" x="414" y="30" width="436" height="282" rx="4" />
-              <text class="sys-boundary-label" x="442" y="54">ON YOUR MAC</text>
+              <text class="sys-boundary-label" x="442" y="54">ON YOUR MACHINE</text>
 
               <!-- GitHub -->
               <rect class="sys-node" x="24" y="62" width="168" height="104" rx="3" />
@@ -1465,14 +1613,18 @@
         <div class="install-card">
           <div>
             <h2>Install.</h2>
+            <p class="install-platforms"><span>macOS</span><span>Linux</span></p>
           </div>
-          <div class="code-shell">
-            <pre class="code-block" role="region" aria-label="Install command" tabindex="0"><span class="prompt" aria-hidden="true">$ </span><code class="install-command">curl -fsSL https://raw.githubusercontent.com/theolundqvist/pr-cockpit/main/scripts/bootstrap | bash</code></pre>
-            <button class="copy-install" type="button" aria-label="Copy install command">
-              <svg class="icon-copy" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M15 5.5A1.5 1.5 0 0 0 13.5 4H5.5A1.5 1.5 0 0 0 4 5.5v8A1.5 1.5 0 0 0 5.5 15"></path></svg>
-              <svg class="icon-check" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 12.8 9.2 17.5 19.5 7"></path></svg>
-            </button>
-            <span class="copy-status visually-hidden" role="status"></span>
+          <div class="install-command-wrap">
+            <div class="code-shell">
+              <pre class="code-block" role="region" aria-label="Install command" tabindex="0"><span class="prompt" aria-hidden="true">$ </span><code class="install-command">curl -fsSL https://raw.githubusercontent.com/theolundqvist/pr-cockpit/main/scripts/bootstrap | bash</code></pre>
+              <button class="copy-install" type="button" aria-label="Copy install command">
+                <svg class="icon-copy" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M15 5.5A1.5 1.5 0 0 0 13.5 4H5.5A1.5 1.5 0 0 0 4 5.5v8A1.5 1.5 0 0 0 5.5 15"></path></svg>
+                <svg class="icon-check" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 12.8 9.2 17.5 19.5 7"></path></svg>
+              </button>
+              <span class="copy-status visually-hidden" role="status"></span>
+            </div>
+            <p class="install-note">One command detects your platform, checks prerequisites, and opens setup. Linux maintenance: <code>pr-cockpit update</code> · <code>$HOME/.pr-cockpit/scripts/uninstall</code> · add <code>--purge</code> to remove local data.</p>
           </div>
         </div>
       </div>
@@ -1503,7 +1655,7 @@
   </main>
 
   <footer class="wrap footer">
-    <span>PR reviews at local speed.</span>
+    <span>PR reviews at local speed on macOS and Linux.</span>
     <div class="footer-links">
       <a href="https://github.com/theolundqvist/pr-cockpit">GitHub</a>
       <a href="#top">Back to top ↑</a>

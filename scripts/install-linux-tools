@@ -1,0 +1,391 @@
+#!/usr/bin/env bash
+if [[ "$(/usr/bin/id -u)" == "0" ]]; then
+  echo "pr-cockpit: Linux user tools must not be installed as root" >&2
+  exit 1
+fi
+if [[ "$(/usr/bin/uname -s)" != "Linux" ]]; then
+  echo "pr-cockpit: Linux user tools require Linux" >&2
+  exit 1
+fi
+set -euo pipefail
+umask 077
+if [[ "$#" -gt 1 || ( "$#" -eq 1 && "${1:-}" != "--dry-run" && "${1:-}" != "--paths" ) ]]; then
+  echo "usage: scripts/install-linux-tools [--dry-run | --paths]" >&2
+  exit 2
+fi
+paths_mode=0
+if [[ "${1:-}" == "--dry-run" ]]; then
+  export COCKPIT_BOOTSTRAP_DRY_RUN=1
+elif [[ "${1:-}" == "--paths" ]]; then
+  paths_mode=1
+fi
+
+bun_version="1.2.22"
+gh_version="2.76.2"
+case "$(/usr/bin/uname -m)" in
+  x86_64)
+    bun_asset="bun-linux-x64.zip"
+    bun_sha="4c446af1a01d7b40e1e11baebc352f9b2bfd12887e51b97dd3b59879cee2743a"
+    bun_prior_sha="594f454d51ce57199d4320c85cbd495be9c054ef17aaebca5e6c908abfda6179"
+    gh_arch="amd64"
+    gh_sha="62544b0f3759bbf1155c0ac3d75838b5fe23d66dfb75cf8368f84fff8f82b93e"
+    gh_prior_sha="18367ca38b4462889ae38fba6a18c53a4c2818b6af309bbe53d0810bb06036e9"
+    ;;
+  aarch64|arm64)
+    bun_asset="bun-linux-aarch64.zip"
+    bun_sha="a97c687fb5e54de4e2fb0869a7ac9a2d9c3af75ac182e2b68138c1dd8f98131b"
+    bun_prior_sha="0e4c9e54876a160e91812ae3c62d36cfbd68f20e158cb732f63a0d6b7594287b"
+    gh_arch="arm64"
+    gh_sha="a77f6d709c5100cda8e9bbb8d8b7143120121233d9102ba2f2bc254134db18dc"
+    gh_prior_sha="fc6352cd6a710fb34e92f4771801a2f0a9e14b4e354645fb74e7453ef766e462"
+    ;;
+  *) echo "pr-cockpit: unsupported Linux architecture: $(/usr/bin/uname -m)" >&2; exit 1 ;;
+esac
+for prerequisite in curl unzip tar sha256sum realpath stat sed wc tr sort od mktemp chmod ln mv rm rmdir cat sleep cut dirname readlink; do
+  command -v "$prerequisite" >/dev/null 2>&1 || {
+    echo "pr-cockpit: missing Linux system prerequisites — on Debian/Ubuntu run:" >&2
+    echo "  sudo apt-get install -y curl git tar unzip coreutils systemd xdg-utils libnss3 libgtk-3-0 libgbm1 libasound2 libxss1 libx11-xcb1 libdrm2 libxkbcommon0 libatspi2.0-0" >&2
+    exit 1
+  }
+done
+
+
+[[ "$HOME" == /* && "$HOME" != "/" && -d "$HOME" && ! -L "$HOME" ]] || { echo "pr-cockpit: HOME must name a non-root, non-symlink user home" >&2; exit 1; }
+home="$(realpath -e "$HOME")"
+home_kind="$(stat -c %F "$HOME")"; home_uid="$(stat -c %u "$HOME")"; home_mode="$(stat -c %a "$HOME")"
+[[ "$home_kind" == "directory" && "$home_uid" == "$(/usr/bin/id -u)" && $((8#$home_mode & 022)) -eq 0 ]] || {
+  echo "pr-cockpit: insecure HOME ownership or mode: $HOME" >&2
+  exit 1
+}
+tool_root="$(realpath -ms "${XDG_DATA_HOME:-$home/.local/share}/pr-cockpit-tools")"
+secure_directory() {
+  local path current relative component kind component_uid component_mode
+  path="$1"
+  current="$home"
+  relative="${path#"$home"/}"
+  [[ "$path" == "$home/"* ]] || { echo "pr-cockpit: owned path escapes HOME: $path" >&2; exit 1; }
+  [[ -n "$relative" ]] || return 0
+  while [[ -n "$relative" ]]; do
+    component="${relative%%/*}"
+    if [[ "$relative" == */* ]]; then relative="${relative#*/}"; else relative=""; fi
+    [[ -n "$component" ]] || { echo "pr-cockpit: insecure empty owned directory component: $path" >&2; exit 1; }
+    current="$current/$component"
+    if [[ -e "$current" || -L "$current" ]]; then
+      kind="$(stat -c %F "$current")"; component_uid="$(stat -c %u "$current")"; component_mode="$(stat -c %a "$current")"
+      [[ "$kind" == "directory" && "$component_uid" == "$(/usr/bin/id -u)" && $((8#$component_mode & 022)) -eq 0 ]] || {
+        echo "pr-cockpit: insecure owned directory component: $current" >&2
+        exit 1
+      }
+    else
+      mkdir -m 0700 "$current"
+    fi
+  done
+}
+validate_secure_directory() {
+  local path="$1" current="$home" relative component kind component_uid component_mode
+  relative="${path#"$home"/}"
+  [[ "$path" == "$home/"* && -n "$relative" ]] || { echo "pr-cockpit: validation path escapes HOME: $path" >&2; exit 1; }
+  while [[ -n "$relative" ]]; do
+    component="${relative%%/*}"
+    if [[ "$relative" == */* ]]; then relative="${relative#*/}"; else relative=""; fi
+    current="$current/$component"
+    [[ -e "$current" || -L "$current" ]] || { echo "pr-cockpit: required owned directory is missing: $current" >&2; exit 1; }
+    kind="$(stat -c %F "$current")"; component_uid="$(stat -c %u "$current")"; component_mode="$(stat -c %a "$current")"
+    [[ "$kind" == "directory" && "$component_uid" == "$(/usr/bin/id -u)" && $((8#$component_mode & 022)) -eq 0 ]] || {
+      echo "pr-cockpit: insecure owned directory component: $current" >&2
+      exit 1
+    }
+  done
+}
+
+[[ "$tool_root" == "$home/"* ]] || { echo "pr-cockpit: Linux user tool root must be beneath HOME" >&2; exit 1; }
+bin_dir="$tool_root/bin"
+versions="$tool_root/versions"
+bun_url="https://github.com/oven-sh/bun/releases/download/bun-v${bun_version}/${bun_asset}"
+gh_asset="gh_${gh_version}_linux_${gh_arch}.tar.gz"
+gh_url="https://github.com/cli/cli/releases/download/v${gh_version}/${gh_asset}"
+
+if [[ "${COCKPIT_BOOTSTRAP_DRY_RUN:-0}" == "1" ]]; then
+  echo "pr-cockpit: would install pinned private Bun ${bun_version}: $bun_url"
+  echo "pr-cockpit: would install pinned private GitHub CLI ${gh_version}: $gh_url"
+  exit 0
+fi
+
+tool_lock="$(dirname "$tool_root")/.pr-cockpit-tools.lock"
+lock_token=""
+lock_target=""
+lock_held=0
+observed_target=""
+observed_token=""
+observed_pid=""
+observed_start=""
+staging=""
+links_snapshotted=0
+bun_before=""
+gh_before=""
+process_start() {
+  local pid="$1" stat rest
+  [[ -r "/proc/$pid/stat" ]] || { printf '-'; return; }
+  stat="$(cat "/proc/$pid/stat")"
+  rest="${stat##*) }"
+  set -- $rest
+  printf '%s' "${20:--}"
+}
+read_tool_lock_at() {
+  local path="$1" extra=""
+  [[ -L "$path" && "$(stat -c %u "$path")" == "$(/usr/bin/id -u)" ]] || return 1
+  observed_target="$(readlink "$path")"
+  IFS=: read -r observed_pid observed_start observed_token extra <<< "$observed_target"
+  [[ -z "$extra" && "$observed_pid" =~ ^[1-9][0-9]*$ && "$observed_start" =~ ^([0-9]+|-)$ && "$observed_token" =~ ^[0-9a-f]{16}$ ]] || return 1
+}
+read_tool_lock() {
+  read_tool_lock_at "$tool_lock"
+}
+release_tool_lock() {
+  local released
+  [[ "$lock_held" == "1" ]] || return 0
+  released="${tool_lock}.unlock-${lock_token}"
+  if ! mv -T "$tool_lock" "$released" 2>/dev/null; then
+    echo "pr-cockpit: tool lock ownership changed" >&2
+    return 1
+  fi
+  if ! read_tool_lock_at "$released" || [[ "$observed_target" != "$lock_target" ]]; then
+    [[ -e "$tool_lock" || -L "$tool_lock" ]] || mv -T "$released" "$tool_lock"
+    echo "pr-cockpit: tool lock ownership changed" >&2
+    return 1
+  fi
+  rm "$released"
+  lock_held=0
+}
+link_snapshot() {
+  local path="$1"
+  if [[ -L "$path" ]]; then
+    readlink "$path"
+  elif [[ -e "$path" ]]; then
+    printf '!foreign'
+  else
+    printf '!absent'
+  fi
+}
+restore_link() {
+  local leaf before expected path temporary_dir temporary
+  leaf="$1"; before="$2"; expected="$3"
+  path="$bin_dir/$leaf"
+  [[ "$before" != "!foreign" && -L "$path" && "$(readlink "$path")" == "$expected" && "$before" != "$expected" ]] || return 0
+  if [[ "$before" == "!absent" ]]; then
+    rm "$path"
+    return
+  fi
+  temporary_dir="$(mktemp -d "$bin_dir/.rollback.XXXXXX")"
+  temporary="$temporary_dir/$leaf"
+  ln -s "$before" "$temporary"
+  mv -Tf "$temporary" "$path"
+  rmdir "$temporary_dir"
+}
+cleanup() {
+  local status="$?"
+  trap - EXIT
+  if [[ "$status" != "0" && "$links_snapshotted" == "1" ]]; then
+    restore_link gh "$gh_before" "../versions/gh-$gh_version/gh" || status=1
+    restore_link bun "$bun_before" "../versions/bun-$bun_version/bun" || status=1
+  fi
+  [[ -z "$staging" ]] || rm -rf "$staging"
+  release_tool_lock || status=1
+  exit "$status"
+}
+acquire_tool_lock() {
+  local snapshot quarantine actual_start attempt
+  lock_token="$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+  lock_target="$$:$(process_start "$$"):$lock_token"
+  attempt=0
+  while [[ "$attempt" -lt 20 ]]; do
+    attempt=$((attempt + 1))
+    if ln -s "$lock_target" "$tool_lock" 2>/dev/null; then
+      lock_held=1
+      return 0
+    fi
+    if read_tool_lock; then
+      actual_start="$(process_start "$observed_pid")"
+      if ! kill -0 "$observed_pid" 2>/dev/null || [[ "$actual_start" != "$observed_start" ]]; then
+        snapshot="$observed_target"
+        read_tool_lock || continue
+        [[ "$observed_target" == "$snapshot" ]] || continue
+        quarantine="${tool_lock}.stale-${lock_token}"
+        if mv -T "$tool_lock" "$quarantine" 2>/dev/null; then
+          if [[ ! -L "$quarantine" || "$(readlink "$quarantine")" != "$snapshot" ]]; then
+            [[ -e "$tool_lock" || -L "$tool_lock" ]] || mv -T "$quarantine" "$tool_lock"
+            echo "pr-cockpit: tool lock changed during stale reclaim" >&2
+            exit 1
+          fi
+          rm "$quarantine"
+          continue
+        fi
+      fi
+    fi
+    sleep 0.025
+  done
+  echo "pr-cockpit: another Linux tool installation is active" >&2
+  exit 1
+}
+
+download() {
+  local url="$1" output="$2" expected="$3"
+  curl --proto '=https' --tlsv1.2 -fL --connect-timeout 10 --max-time 300 --retry 3 --retry-delay 2 --retry-max-time 300 --retry-all-errors "$url" -o "$output"
+  printf '%s  %s\n' "$expected" "$output" | sha256sum -c - >/dev/null
+}
+
+validate_owned_version() {
+  local destination binary expected_archive marker
+  destination="$1"; binary="$2"; expected_archive="$3"
+  marker="$destination/.pr-cockpit-tool"
+  [[ -d "$destination" && ! -L "$destination" && -f "$marker" && -f "$destination/$binary" && ! -L "$marker" && ! -L "$destination/$binary" ]] || {
+    echo "pr-cockpit: refusing to reuse foreign tool directory: $destination" >&2
+    exit 1
+  }
+  local directory_uid directory_mode marker_kind marker_uid marker_mode binary_kind binary_uid binary_mode entries
+  directory_uid="$(stat -c %u "$destination")"; directory_mode="$(stat -c %a "$destination")"
+  marker_kind="$(stat -c %F "$marker")"; marker_uid="$(stat -c %u "$marker")"; marker_mode="$(stat -c %a "$marker")"
+  binary_kind="$(stat -c %F "$destination/$binary")"; binary_uid="$(stat -c %u "$destination/$binary")"; binary_mode="$(stat -c %a "$destination/$binary")"
+  entries="$(printf '%s\n' "$destination"/* "$destination"/.[!.]* | while IFS= read -r entry; do if [[ -e "$entry" || -L "$entry" ]]; then printf '%s\n' "${entry##*/}"; fi; done)"
+  [[ "$directory_uid" == "$(/usr/bin/id -u)" && "$directory_mode" == "700" && "$marker_kind" == "regular file" && "$marker_uid" == "$(/usr/bin/id -u)" && "$marker_mode" == "600" && "$binary_kind" == "regular file" && "$binary_uid" == "$(/usr/bin/id -u)" && "$binary_mode" == "755" && "$(printf '%s\n' "$entries" | sort)" == "$(printf '%s\n' .pr-cockpit-tool "$binary" | sort)" ]] || {
+    echo "pr-cockpit: refusing insecure tool ownership: $destination" >&2
+    exit 1
+  }
+  local marker_archive expected_binary actual
+  marker_archive="$(sed -n 's/^archive=//p' "$marker")"; expected_binary="$(sed -n 's/^binary=//p' "$marker")"
+  actual="$(sha256sum "$destination/$binary" | cut -d ' ' -f 1)"
+  if [[ "$(wc -l < "$marker" | tr -d ' ')" != "2" || "$marker_archive" != "$expected_archive" || ! "$expected_binary" =~ ^[0-9a-f]{64}$ || "$actual" != "$expected_binary" ]]; then
+    echo "pr-cockpit: refusing to reuse changed tool directory: $destination" >&2
+    exit 1
+  fi
+}
+
+trusted_archive() {
+  local leaf="$1" version="$2"
+  case "$leaf:$version" in
+    "bun:$bun_version") printf '%s' "$bun_sha" ;;
+    "bun:1.2.21") printf '%s' "$bun_prior_sha" ;;
+    "gh:$gh_version") printf '%s' "$gh_sha" ;;
+    "gh:2.76.1") printf '%s' "$gh_prior_sha" ;;
+    *) echo "pr-cockpit: refusing unrecognized managed tool pin: $leaf-$version" >&2; exit 1 ;;
+  esac
+}
+managed_link_target() {
+  local leaf="$1" binary="$2" target destination version expected
+  [[ -L "$bin_dir/$leaf" ]] || { echo "pr-cockpit: refusing to replace foreign tool: $bin_dir/$leaf" >&2; exit 1; }
+  target="$(readlink "$bin_dir/$leaf")"
+  [[ "$target" =~ ^\.\./versions/${leaf}-[0-9]+\.[0-9]+\.[0-9]+/${binary}$ ]] || {
+    echo "pr-cockpit: refusing to replace foreign tool link: $bin_dir/$leaf" >&2
+    exit 1
+  }
+  destination="$(realpath -ms "$bin_dir/$target")"
+  [[ "$(dirname "$destination")" == "$versions/${leaf}-"* && "$(dirname "$(dirname "$destination")")" == "$versions" ]] || {
+    echo "pr-cockpit: refusing tool link outside owned versions: $bin_dir/$leaf" >&2
+    exit 1
+  }
+  version="${target#../versions/${leaf}-}"; version="${version%/$binary}"
+  expected="$(trusted_archive "$leaf" "$version")"
+  validate_owned_version "$(dirname "$destination")" "$binary" "$expected"
+  printf '%s' "$target"
+}
+publish_link() {
+  local target="$1" leaf="$2" binary="$3" existing="" temporary_dir temporary
+  if [[ -e "$bin_dir/$leaf" || -L "$bin_dir/$leaf" ]]; then
+    existing="$(managed_link_target "$leaf" "$binary")"
+    if [[ "$existing" == "$target" ]]; then return; fi
+    temporary_dir="$(mktemp -d "$bin_dir/.publish.XXXXXX")"; chmod 0700 "$temporary_dir"; temporary="$temporary_dir/$leaf"
+    ln -s "$target" "$temporary"
+    if [[ "$(managed_link_target "$leaf" "$binary")" != "$existing" ]]; then
+      rm -rf "$temporary_dir"
+      echo "pr-cockpit: tool link changed during upgrade: $bin_dir/$leaf" >&2
+      exit 1
+    fi
+    mv -Tf "$temporary" "$bin_dir/$leaf"
+    rmdir "$temporary_dir"
+    return
+  fi
+  if ! ln -s "$target" "$bin_dir/$leaf"; then
+    echo "pr-cockpit: refusing to replace concurrently created tool: $bin_dir/$leaf" >&2
+    exit 1
+  fi
+}
+
+extract_member() {
+  local format="$1" archive="$2" member="$3" output="$4" count kind permissions listed
+  if [[ "$format" == "zip" ]]; then
+    count="$(unzip -Z1 "$archive" | while IFS= read -r entry; do if [[ "$entry" == "$member" ]]; then printf 'x'; fi; done | wc -c | tr -d ' ')"
+    [[ "$count" == "1" ]] || { echo "pr-cockpit: archive does not contain exactly one $member" >&2; exit 1; }
+    kind="$(unzip -Z -l "$archive" | while IFS= read -r line; do
+      permissions="${line%% *}"
+      listed="${line##* }"
+      if [[ "$listed" == "$member" ]]; then printf '%s' "${permissions:0:1}"; fi
+    done)"
+    [[ "$kind" == "-" ]] || { echo "pr-cockpit: archive member is not regular: $member" >&2; exit 1; }
+    (set -C; umask 077; exec 3> "$output"; unzip -p "$archive" "$member" >&3)
+  else
+    count="$(tar -tzf "$archive" | while IFS= read -r entry; do if [[ "$entry" == "$member" ]]; then printf 'x'; fi; done | wc -c | tr -d ' ')"
+    [[ "$count" == "1" ]] || { echo "pr-cockpit: archive does not contain exactly one $member" >&2; exit 1; }
+    kind="$(tar -tvzf "$archive" "$member" | cut -c1)"
+    [[ "$kind" == "-" ]] || { echo "pr-cockpit: archive member is not regular: $member" >&2; exit 1; }
+    (set -C; umask 077; exec 3> "$output"; tar -xOzf "$archive" "$member" >&3)
+  fi
+}
+if [[ "$paths_mode" == "1" ]]; then
+  validate_secure_directory "$versions"
+  validate_owned_version "$versions/bun-$bun_version" bun "$bun_sha"
+  validate_owned_version "$versions/gh-$gh_version" gh "$gh_sha"
+  printf '%s\t%s\n' "$versions/bun-$bun_version/bun" "$versions/gh-$gh_version/gh"
+  exit 0
+fi
+secure_directory "$(dirname "$tool_root")"
+trap cleanup EXIT
+acquire_tool_lock
+secure_directory "$tool_root"
+secure_directory "$bin_dir"
+secure_directory "$versions"
+bun_before="$(link_snapshot "$bin_dir/bun")"
+gh_before="$(link_snapshot "$bin_dir/gh")"
+links_snapshotted=1
+staging="$(mktemp -d "$tool_root/.stage.XXXXXX")"
+chmod 0700 "$staging"
+if [[ "$paths_mode" == "0" ]]; then
+  for leaf in bun gh; do
+    if [[ -e "$bin_dir/$leaf" && ! -L "$bin_dir/$leaf" ]]; then
+      echo "pr-cockpit: refusing to replace foreign tool: $bin_dir/$leaf" >&2
+      exit 1
+    fi
+    if [[ -L "$bin_dir/$leaf" ]]; then
+      managed_link_target "$leaf" "$leaf" >/dev/null
+    fi
+  done
+fi
+destination="$versions/bun-$bun_version"
+if [[ -e "$destination" ]]; then
+  validate_owned_version "$destination" bun "$bun_sha"
+fi
+if [[ ! -x "$destination/bun" ]]; then
+  download "$bun_url" "$staging/$bun_asset" "$bun_sha"
+  mkdir -m 0700 "$staging/bun-release"
+  extract_member zip "$staging/$bun_asset" "${bun_asset%.zip}/bun" "$staging/bun-release/bun"
+  chmod 0755 "$staging/bun-release/bun"
+  printf 'archive=%s\nbinary=%s\n' "$bun_sha" "$(sha256sum "$staging/bun-release/bun" | cut -d ' ' -f 1)" > "$staging/bun-release/.pr-cockpit-tool"
+  chmod 0600 "$staging/bun-release/.pr-cockpit-tool"
+  mv -Tn "$staging/bun-release" "$destination"
+  validate_owned_version "$destination" bun "$bun_sha"
+fi
+publish_link "../versions/bun-$bun_version/bun" bun bun
+destination="$versions/gh-$gh_version"
+if [[ -e "$destination" ]]; then
+  validate_owned_version "$destination" gh "$gh_sha"
+fi
+if [[ ! -x "$destination/gh" ]]; then
+  download "$gh_url" "$staging/$gh_asset" "$gh_sha"
+  mkdir -m 0700 "$staging/gh-release"
+  extract_member tar "$staging/$gh_asset" "gh_${gh_version}_linux_${gh_arch}/bin/gh" "$staging/gh-release/gh"
+  chmod 0755 "$staging/gh-release/gh"
+  printf 'archive=%s\nbinary=%s\n' "$gh_sha" "$(sha256sum "$staging/gh-release/gh" | cut -d ' ' -f 1)" > "$staging/gh-release/.pr-cockpit-tool"
+  chmod 0600 "$staging/gh-release/.pr-cockpit-tool"
+  mv -Tn "$staging/gh-release" "$destination"
+  validate_owned_version "$destination" gh "$gh_sha"
+fi
+publish_link "../versions/gh-$gh_version/gh" gh gh
