@@ -1,11 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+platform="$(uname -s)"
 # The installed LaunchAgent runs a copy of this launcher outside ~/Documents,
 # while this remains the source of truth for builds, server code, and updates.
-root="${COCKPIT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+launcher_source="${BASH_SOURCE[0]}"
+while [[ -L "$launcher_source" ]]; do
+  launcher_dir="$(cd -P "$(dirname "$launcher_source")" && pwd)"
+  launcher_target="$(readlink "$launcher_source")"
+  if [[ "$launcher_target" == /* ]]; then
+    launcher_source="$launcher_target"
+  else
+    launcher_source="$launcher_dir/$launcher_target"
+  fi
+done
+launcher_dir="$(cd -P "$(dirname "$launcher_source")" && pwd)"
+root="${COCKPIT_ROOT:-$(cd "$launcher_dir/.." && pwd)}"
 root="$(cd "$root" && pwd -P)"
-script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")"
+script_path="$launcher_dir/$(basename "$launcher_source")"
 source_launcher="$(cd "$root/scripts" && pwd -P)/cockpit"
 bun="$(command -v bun || echo "$HOME/.bun/bin/bun")"
 gh_bin="${COCKPIT_GH_BIN:-}"
@@ -36,7 +48,11 @@ env_review_bots="${COCKPIT_REVIEW_BOTS:-}"
 env_proxy="${COCKPIT_PROXY:-}"
 env_proxy_port="${COCKPIT_PROXY_PORT:-}"
 
-config_file="$HOME/.config/pr-cockpit/config"
+if [[ "$platform" == "Linux" ]]; then
+  config_file="${XDG_CONFIG_HOME:-$HOME/.config}/pr-cockpit/config"
+else
+  config_file="$HOME/.config/pr-cockpit/config"
+fi
 if [[ -f "$config_file" ]]; then
   # shellcheck disable=SC1090
   source "$config_file"
@@ -45,7 +61,11 @@ fi
 port="${env_port:-${COCKPIT_PORT:-4820}}"
 url="http://127.0.0.1:$port"
 proxy_port="${env_proxy_port:-${COCKPIT_PROXY_PORT:-4820}}"
-data_dir="${env_data_dir:-${COCKPIT_DATA_DIR:-$HOME/.local/share/pr-cockpit}}"
+if [[ "$platform" == "Linux" ]]; then
+  data_dir="${env_data_dir:-${COCKPIT_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/pr-cockpit}}"
+else
+  data_dir="${env_data_dir:-${COCKPIT_DATA_DIR:-$HOME/.local/share/pr-cockpit}}"
+fi
 export COCKPIT_DATA_DIR="$data_dir"
 export COCKPIT_MANAGED=1
 export COCKPIT_REPOS="${env_repos:-${COCKPIT_REPOS:-}}"
@@ -67,6 +87,7 @@ show_existing=0
 server_only=0
 managed_server=0
 pr_arg=""
+protocol_arg=""
 reconcile_failed=0
 proxy_arg=""
 args=("$@")
@@ -91,6 +112,8 @@ while (( arg_index < ${#args[@]} )); do
       exit 2
     fi
     proxy_arg="${args[$arg_index]}"
+  elif [[ "$arg" == prcockpit://* ]]; then
+    protocol_arg="$arg"
   else
     pr_arg="$arg"
   fi
@@ -118,7 +141,7 @@ fi
 
 # The previous updater resumes its old body after pulling, but it always hands
 # off through the newly pulled source launcher. Reconcile once at that boundary.
-if [[ "${COCKPIT_SKIP_RECONCILE:-0}" != "1" && "$server_only" -eq 0 && "$foreground_shell" -eq 0 && "$script_path" == "$source_launcher" ]]; then
+if [[ "$platform" == "Darwin" && "${COCKPIT_SKIP_RECONCILE:-0}" != "1" && "$server_only" -eq 0 && "$foreground_shell" -eq 0 && "$script_path" == "$source_launcher" ]]; then
   runtime_dir="$HOME/Library/Application Support/PR Cockpit"
   current_rev="$(git -C "$root" rev-parse HEAD 2>/dev/null || true)"
   installed_rev="$(cat "$runtime_dir/installed-rev" 2>/dev/null || true)"
@@ -151,6 +174,80 @@ fi
 if [[ "$server_only" -eq 1 ]]; then
   cd "$root"
   exec env COCKPIT_PORT="$port" "$bun" server/main.ts
+fi
+
+if [[ "$platform" == "Linux" ]]; then
+  runtime_link="${XDG_DATA_HOME:-$HOME/.local/share}/pr-cockpit-runtime/current"
+  if [[ "${COCKPIT_LINUX_DEV:-0}" == "1" ]]; then
+    runtime_root="$root"
+    runtime_launcher="$script_path"
+  else
+    if [[ ! -d "$runtime_link" ]]; then
+      echo "pr-cockpit: installed Linux runtime is missing at $runtime_link" >&2
+      exit 1
+    fi
+    runtime_root="$(cd "$runtime_link" && pwd -P)"
+    runtime_launcher="$runtime_root/scripts/cockpit"
+    if [[ ! -x "$runtime_launcher" ]]; then
+      echo "pr-cockpit: active Linux runtime launcher is missing at $runtime_launcher" >&2
+      exit 1
+    fi
+  fi
+
+  electron_bin="$runtime_root/shell/node_modules/electron/dist/electron"
+  if [[ ! -x "$electron_bin" ]]; then
+    echo "pr-cockpit: active Linux Electron runtime is missing at $electron_bin" >&2
+    exit 1
+  fi
+
+  linux_server_is_ours() {
+    local health
+    health="$(curl --max-time 2 -fsS "$url/healthz" 2>/dev/null)" || return 1
+    [[ "$health" == *"\"root\":\"$runtime_root\""* ]]
+  }
+
+  linux_wait_for_server() {
+    for _ in $(seq 1 50); do
+      linux_server_is_ours && return 0
+      sleep 0.1
+    done
+    return 1
+  }
+
+  if ! linux_server_is_ours; then
+    if curl --max-time 2 -fsS -o /dev/null "$url/healthz"; then
+      echo "pr-cockpit: port $port is serving a different instance; set COCKPIT_PORT to a free port" >&2
+      exit 1
+    fi
+    if [[ "${COCKPIT_LINUX_DEV:-0}" == "1" ]]; then
+      mkdir -p "$data_dir"
+      nohup "$script_path" --server-only < /dev/null > "$data_dir/server.log" 2>&1 &
+      disown
+    else
+      systemctl --user start pr-cockpit.service
+    fi
+    if ! linux_wait_for_server; then
+      echo "pr-cockpit: Linux backend failed to start" >&2
+      exit 1
+    fi
+  fi
+
+  if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
+    echo "pr-cockpit: no graphical Linux session is available" >&2
+    exit 1
+  fi
+
+  export COCKPIT_LAUNCHER="$runtime_launcher"
+  export COCKPIT_RELEASE_ROOT="$(readlink -f "$runtime_root")"
+  electron_args=("$runtime_root/shell" "--cockpit-url=$target_url")
+  [[ -n "$protocol_arg" ]] && electron_args+=("$protocol_arg")
+  [[ -n "$hidden_flag" ]] && electron_args+=("$hidden_flag")
+  if [[ "$foreground_shell" -eq 1 ]]; then
+    exec env COCKPIT_URL="$target_url" "$electron_bin" "${electron_args[@]}"
+  fi
+  nohup env COCKPIT_URL="$target_url" "$electron_bin" "${electron_args[@]}" < /dev/null > /dev/null 2>&1 &
+  disown
+  exit 0
 fi
 
 snapshot_dir="$data_dir/static-last-good"

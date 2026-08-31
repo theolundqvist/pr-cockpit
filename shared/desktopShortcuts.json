@@ -1,0 +1,10 @@
+{
+  "darwin": {
+    "openApp": "Command+Control+G",
+    "openPalette": "Command+Option+K"
+  },
+  "linux": {
+    "openApp": "Super+Control+G",
+    "openPalette": "Super+Alt+K"
+  }
+}

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+if [[ "$(/usr/bin/id -u)" == "0" ]]; then echo "pr-cockpit: must not run as root" >&2; exit 1; fi
+set -euo pipefail
+umask 077
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+platform="$(uname -s)"
+if [[ "$platform" == "Linux" ]]; then
+  exec "$root/scripts/uninstall-linux" "$@"
+fi
+
+echo "pr-cockpit: uninstall is not supported on $platform" >&2
+exit 1

@@ -2,7 +2,7 @@
 
 **GitHub pull requests at local speed.**
 
-PR Cockpit is a keyboard-first macOS app that keeps pull requests, diffs, threads, checks, and images warm on your Mac. Reads feel immediate, while comments, reviews, edits, and merges sync through your existing `gh` login. GitHub remains the source of truth.
+PR Cockpit is a keyboard-first macOS and Linux app that keeps pull requests, diffs, threads, checks, and images warm on your machine. Reads feel immediate, while comments, reviews, edits, and merges sync through your existing `gh` login. GitHub remains the source of truth.
 
 [Website](https://theolundqvist.github.io/pr-cockpit/) · [Install](#install) · [CLI](#agents-listen-dont-poll) · [Self-host relay](docs/self-host-relay.md) · [Shortcuts](#shortcuts)
 
@@ -30,7 +30,7 @@ At p99, PR Cockpit painted the same pull request **47× faster than GitHub**. [M
 
 ## Search from anywhere
 
-Press <kbd>⌥⌘K</kbd> from any app, type, <kbd>enter</kbd>. The full pull request opens from the local cache.
+Press <kbd>⌥⌘K</kbd> from any app on macOS. On Linux X11, press <kbd>Super+Alt+K</kbd>; Wayland compositor policy can prevent the global shortcut. The full pull request opens from the local cache.
 
 ![Global pull request search opening a cached pull request](docs/screenshots/landing-search.gif)
 
@@ -97,11 +97,13 @@ pr-cockpit listen owner/repo#123
 
 ## Install
 
+The same bootstrap command installs the native desktop app and `pr-cockpit` CLI on macOS or Linux:
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/theolundqvist/pr-cockpit/main/scripts/bootstrap | bash
 ```
 
-The installer checks macOS prerequisites, asks before installing anything, shows each stage, and opens the four-step setup. Only after installation succeeds does it optionally offer to teach local coding assistants to use the cache-aware CLI. Run `pr-cockpit update` to upgrade. A legacy private installation is replaced while local pull-request data and settings are preserved.
+It detects the platform, checks prerequisites, asks before installing anything, shows each stage, and opens the four-step setup. On Linux it installs an immutable release, a user service, desktop entry, tray integration, and the `prcockpit://` handler; X11 is supported directly and Wayland sessions run through XWayland, where global shortcuts are compositor-dependent. Run `pr-cockpit update` to upgrade. On Linux, `$HOME/.pr-cockpit/scripts/uninstall` removes the app and `--purge` also removes local data.
 
 ## Start in four steps
 
@@ -116,7 +118,7 @@ Run **Settings → Run setup again** whenever you want to change repositories or
 
 | Key | Action |
 | --- | --- |
-| <kbd>⌥⌘K</kbd> | Search pull requests from any app |
+| <kbd>⌥⌘K</kbd> macOS<br><kbd>Super+Alt+K</kbd> Linux X11 | Search pull requests globally; Wayland depends on compositor policy |
 | <kbd>j</kbd> / <kbd>k</kbd> | Move |
 | <kbd>enter</kbd> / <kbd>esc</kbd> | Open / back |
 | <kbd>d</kbd> | Conversation / Files |

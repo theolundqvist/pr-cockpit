@@ -7,8 +7,12 @@ const { windowBoundsForPersistence, windowBoundsForRestore } = require("./window
 const { finishEditorSession, runEditorSession } = require("./editorLaunch");
 const { launchSetupTerminal } = require("./setupLaunch");
 const { getNativePalette } = require("./nativePalette");
-
+const { configuredShortcuts, platformPolicy } = require("./platformPolicy");
+const { deepLinkHash, deepLinkParts, protocolArgFromArgv, protocolUrlFromArgv } = require("./protocolArgv");
+const { createShellProcessOwnership } = require("./shellProcessOwnership");
 app.setName("PR Cockpit");
+const desktopPolicy = platformPolicy();
+if (desktopPolicy.desktopName) app.setDesktopName(desktopPolicy.desktopName);
 
 // Only scripts/cockpit (the installed app) sets COCKPIT_MANAGED; every other launch is an isolated dev instance.
 const isManaged = process.env.COCKPIT_MANAGED === "1";
@@ -17,7 +21,7 @@ if (!isManaged) {
   console.log("pr-cockpit: dev instance — isolated userData, no protocol/shortcut registration, temp data dir");
 }
 
-if (isManaged) {
+if (isManaged && process.platform === "darwin") {
   if (process.defaultApp) {
     if (process.argv.length >= 2) app.setAsDefaultProtocolClient("prcockpit", process.execPath, [path.resolve(process.argv[1])]);
   } else {
@@ -44,8 +48,8 @@ const startHidden = process.argv.includes("--cockpit-hidden");
 const initialUrl = cockpitUrlFromArgv(process.argv) || process.env.COCKPIT_URL || "http://127.0.0.1:4820";
 const serverOrigin = new URL(initialUrl).origin;
 const paletteUrl = `${serverOrigin}/#/palette`;
-const DEFAULT_OPEN_APP = "Command+Control+G";
-const DEFAULT_OPEN_PALETTE = "Command+Option+K";
+const DEFAULT_OPEN_APP = desktopPolicy.shortcuts.openApp;
+const DEFAULT_OPEN_PALETTE = desktopPolicy.shortcuts.openPalette;
 
 const editorPreparations = new Map();
 const editorCheckoutPaths = new Map();
@@ -111,7 +115,6 @@ function saveZoomLevel(level) {
 
 const dataDir =
   process.env.COCKPIT_DATA_DIR || (isManaged ? path.join(__dirname, "..", "data") : path.join(os.tmpdir(), "pr-cockpit-dev"));
-const pidFile = path.join(dataDir, "shell.pid");
 
 function loadAllBounds() {
   try {
@@ -196,22 +199,23 @@ function quitPrCockpit() {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  function writePidFile() {
-    try {
-      fs.mkdirSync(dataDir, { recursive: true });
-      const started = execSync(`ps -o lstart= -p ${process.pid}`).toString().trim();
-      fs.writeFileSync(pidFile, `${process.pid}\n${started}\n`);
-    } catch (err) {
-      console.error("pr-cockpit: failed to write pidfile", err);
-    }
-  }
-
-  function removePidFile() {
-    try {
-      if (fs.readFileSync(pidFile, "utf8").split("\n")[0].trim() === String(process.pid)) fs.unlinkSync(pidFile);
-    } catch {
-      // pidfile gone or owned by a newer instance
-    }
+  let shellProcessOwnership = null;
+  if (process.platform === "linux" && isManaged) {
+    const release = fs.realpathSync(process.env.COCKPIT_RELEASE_ROOT || "");
+    const executable = fs.realpathSync(process.execPath);
+    const expectedExecutable = path.join(release, "shell", "node_modules", "electron", "dist", "electron");
+    if (executable !== expectedExecutable) throw new Error("Linux shell executable is outside the active immutable release");
+    const stat = fs.readFileSync(`/proc/${process.pid}/stat`, "utf8");
+    const fields = stat.slice(stat.lastIndexOf(") ") + 2).trim().split(/\s+/);
+    const start = fields[19];
+    if (!start) throw new Error("Linux shell start time is unavailable");
+    shellProcessOwnership = createShellProcessOwnership(fs, dataDir, {
+      pid: process.pid,
+      start,
+      executable,
+      release,
+    });
+    app.on("will-quit", () => shellProcessOwnership.removeOwned());
   }
 
   let tray = null;
@@ -225,9 +229,10 @@ if (!app.requestSingleInstanceLock()) {
   let pendingMainUrl = null;
   let pendingMainShow = false;
   let mainWindowReadyToShow = false;
-  let pendingDeepLink = null;
+  let pendingDeepLink = process.platform === "linux" && isManaged ? deepLinkHash(protocolUrlFromArgv(process.argv)) : null;
   let mainRetryTimer = null;
   let mainReady = false;
+  let pendingFlashMessage = null;
   let mainLoadFailed = false;
   let handingOff = false;
   let zoomLevel = loadZoomLevel();
@@ -272,7 +277,7 @@ if (!app.requestSingleInstanceLock()) {
       x: anchor ? anchor.x + 34 : undefined,
       y: anchor ? anchor.y + 34 : undefined,
       backgroundColor: windowBackgroundColor(),
-      titleBarStyle: "hiddenInset",
+      ...desktopPolicy.mainWindow,
       webPreferences: { sandbox: true, preload: path.join(__dirname, "preload.js") },
       show: false,
     });
@@ -299,21 +304,6 @@ if (!app.requestSingleInstanceLock()) {
     return extra;
   }
 
-  function deepLinkParts(url) {
-    try {
-      const u = new URL(url);
-      if (u.protocol !== "prcockpit:" || u.host !== "pr") return null;
-      const parts = u.pathname.split("/").filter(Boolean);
-      return parts.length === 3 ? parts : null;
-    } catch {
-      return null;
-    }
-  }
-
-  function deepLinkHash(url) {
-    const parts = deepLinkParts(url);
-    return parts ? `#/pr/${parts[0]}/${parts[1]}/${parts[2]}` : null;
-  }
 
   function showMainWindow() {
     if (!win || win.isDestroyed()) {
@@ -364,6 +354,11 @@ if (!app.requestSingleInstanceLock()) {
     hideDockIcon();
   }
 
+  const hideMenuItem = {
+    label: desktopPolicy.menu.hideLabel,
+    click: hideAppFromDock,
+    ...(desktopPolicy.menu.hideAccelerator ? { accelerator: desktopPolicy.menu.hideAccelerator } : {}),
+  };
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
       {
@@ -371,8 +366,8 @@ if (!app.requestSingleInstanceLock()) {
         submenu: [
           { role: "about" },
           { type: "separator" },
-          { role: "hide" },
-          { label: "Hide from Dock", accelerator: "Command+Q", click: hideAppFromDock },
+          ...(desktopPolicy.menu.hideRole ? [{ role: "hide" }] : []),
+          hideMenuItem,
           { type: "separator" },
           { label: "Quit PR Cockpit", click: quitPrCockpit },
         ],
@@ -387,28 +382,46 @@ if (!app.requestSingleInstanceLock()) {
     ]),
   );
 
-  // The lightweight Finder wrapper wakes the launch-agent-owned app with a
-  // benign signal instead of starting a second Electron process.
-  process.on("SIGWINCH", () => {
-    if (!isQuitting) showMainWindow();
-  });
-  // The launcher waits for this pidfile before sending SIGWINCH, so a launch
-  // race cannot lose the reveal request while Electron is still booting.
-  writePidFile();
+  if (process.platform === "darwin") {
+    const pidFile = path.join(dataDir, "shell.pid");
+    function removePidFile() {
+      try {
+        if (fs.readFileSync(pidFile, "utf8").split("\n")[0].trim() === String(process.pid)) fs.unlinkSync(pidFile);
+      } catch {
+        // pidfile gone or owned by a newer instance
+      }
+    }
+    app.on("will-quit", removePidFile);
+    process.on("SIGWINCH", () => {
+      if (!isQuitting) showMainWindow();
+    });
+    try {
+      fs.mkdirSync(dataDir, { recursive: true });
+      const started = execSync(`ps -o lstart= -p ${process.pid}`).toString().trim();
+      fs.writeFileSync(pidFile, `${process.pid}\n${started}\n`);
+    } catch (err) {
+      console.error("pr-cockpit: failed to write pidfile", err);
+    }
 
-  // Cold prcockpit:// click launches the bundle directly (unmanaged, no server); hand off to the installed launcher.
-  function handOffToManaged(url) {
-    handingOff = true;
-    const parts = deepLinkParts(url);
-    const installedLauncher = path.join(os.homedir(), "Library", "Application Support", "PR Cockpit", "launch");
-    const usesInstalledLauncher = !process.env.COCKPIT_LAUNCHER && fs.existsSync(installedLauncher);
-    const cockpit =
-      process.env.COCKPIT_LAUNCHER || (usesInstalledLauncher ? installedLauncher : path.join(__dirname, "..", "scripts", "cockpit"));
-    const env = usesInstalledLauncher
-      ? { ...process.env, COCKPIT_ROOT: path.join(__dirname, ".."), COCKPIT_LAUNCHER: cockpit, COCKPIT_NO_BUILD: "1" }
-      : process.env;
-    spawn(cockpit, parts ? [`${parts[0]}/${parts[1]}#${parts[2]}`] : [], { detached: true, stdio: "ignore", env }).unref();
-    quitPrCockpit();
+    app.on("open-url", (event, url) => {
+      event.preventDefault();
+      if (!deepLinkHash(url)) return;
+      if (isManaged) {
+        openDeepLink(url);
+        return;
+      }
+      handingOff = true;
+      const parts = deepLinkParts(url);
+      const installedLauncher = path.join(os.homedir(), "Library", "Application Support", "PR Cockpit", "launch");
+      const usesInstalledLauncher = !process.env.COCKPIT_LAUNCHER && fs.existsSync(installedLauncher);
+      const cockpit =
+        process.env.COCKPIT_LAUNCHER || (usesInstalledLauncher ? installedLauncher : path.join(__dirname, "..", "scripts", "cockpit"));
+      const env = usesInstalledLauncher
+        ? { ...process.env, COCKPIT_ROOT: path.join(__dirname, ".."), COCKPIT_LAUNCHER: cockpit, COCKPIT_NO_BUILD: "1" }
+        : process.env;
+      spawn(cockpit, parts ? [`${parts[0]}/${parts[1]}#${parts[2]}`] : [], { detached: true, stdio: "ignore", env }).unref();
+      quitPrCockpit();
+    });
   }
 
   function openDeepLink(url) {
@@ -423,14 +436,6 @@ if (!app.requestSingleInstanceLock()) {
     }
   }
 
-  app.on("open-url", (event, url) => {
-    event.preventDefault();
-    if (!isManaged) {
-      handOffToManaged(url);
-      return;
-    }
-    openDeepLink(url);
-  });
 
   function flushPendingBoundsSave() {
     if (!boundsSaveTimer) return;
@@ -465,6 +470,7 @@ if (!app.requestSingleInstanceLock()) {
       cwd: path.join(__dirname, ".."),
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
+      ...(process.platform === "linux" ? { env: { ...process.env, COCKPIT_UPDATE_GUI: "1" } } : {}),
     });
     let handedOff = false;
     let stdout = "";
@@ -474,7 +480,7 @@ if (!app.requestSingleInstanceLock()) {
       stdout += chunk.toString();
       if (!handedOff && stdout.includes("PULL_OK")) {
         handedOff = true;
-        // The updater replaces this bundle immediately after the pull succeeds.
+        // The updater has staged a complete replacement and owns relaunch from here.
         app.exit(0);
       }
     });
@@ -485,9 +491,10 @@ if (!app.requestSingleInstanceLock()) {
       updating = false;
       showUpdateFailed(err.message);
     });
-    child.once("exit", () => {
+    child.once("exit", (code) => {
       if (handedOff) return;
       updating = false;
+      if (code === 0) return;
       const match = stderr.match(/UPDATE_FAILED (.*)/);
       showUpdateFailed(match ? match[1].trim() : "update failed");
     });
@@ -502,15 +509,21 @@ if (!app.requestSingleInstanceLock()) {
     flushPendingBoundsSave();
   });
 
-  app.on("will-quit", () => {
-    removePidFile();
-  });
 
   app.on("second-instance", (event, argv) => {
     // launchd may retry its hidden foreground-shell job while another managed
     // instance still owns Electron's lock. That is a background ownership
     // collision, not a request to reveal the UI.
     if (argv.includes("--cockpit-hidden")) return;
+    const protocolArg = protocolArgFromArgv(argv);
+    if (protocolArg) {
+      const protocolUrl = protocolUrlFromArgv(argv);
+      if (protocolUrl) {
+        pendingMainShow = true;
+        openDeepLink(protocolUrl);
+      }
+      return;
+    }
     const url = cockpitUrlFromArgv(argv);
     if (!win || win.isDestroyed()) {
       if (url) pendingMainUrl = url;
@@ -544,7 +557,7 @@ if (!app.requestSingleInstanceLock()) {
       width: 1440,
       height: 900,
       backgroundColor: windowBackgroundColor(),
-      titleBarStyle: "hiddenInset",
+      ...desktopPolicy.mainWindow,
       webPreferences: { sandbox: true, preload: path.join(__dirname, "preload.js") },
       show: false,
     });
@@ -646,22 +659,27 @@ if (!app.requestSingleInstanceLock()) {
       broadcastNativePalette();
     });
 
-    tray = new Tray(path.join(__dirname, "..", "assets", "tray-iconTemplate.png"));
+    tray = new Tray(path.join(__dirname, "..", "assets", desktopPolicy.trayIcon));
     tray.setToolTip("PR Cockpit");
     tray.setContextMenu(
       Menu.buildFromTemplate([
         {
-          label: "Show Cockpit",
+          label: desktopPolicy.menu.showLabel,
           click: showMainWindow,
         },
         { type: "separator" },
-        { label: "Update & Restart", click: updateAndRestart },
-        { label: "Kill Server & Quit", click: killServerAndQuit },
-        { type: "separator" },
+        ...(desktopPolicy.menu.canUpdate ? [{ label: desktopPolicy.menu.updateLabel, click: updateAndRestart }] : []),
+        ...(desktopPolicy.menu.canStopServer
+          ? [
+              { label: desktopPolicy.menu.stopServerLabel, click: killServerAndQuit },
+              { type: "separator" },
+            ]
+          : []),
         { label: "Quit PR Cockpit", click: quitPrCockpit },
       ]),
     );
     tray.on("click", showMainWindow);
+    shellProcessOwnership?.markTrayReady();
 
     attachZoomShortcuts(win);
 
@@ -672,6 +690,11 @@ if (!app.requestSingleInstanceLock()) {
         return;
       }
       mainReady = true;
+      if (pendingFlashMessage) {
+        const message = pendingFlashMessage;
+        pendingFlashMessage = null;
+        flashRenderer(message);
+      }
       if (pendingDeepLink) {
         const hash = pendingDeepLink;
         pendingDeepLink = null;
@@ -789,7 +812,7 @@ if (!app.requestSingleInstanceLock()) {
       height: 440,
       // nonactivating NSPanel: takes keyboard focus while another app stays active —
       // app.focus({steal:true}) is ignored by modern macOS cooperative activation
-      type: "panel",
+      ...desktopPolicy.paletteWindow,
       frame: false,
       resizable: false,
       alwaysOnTop: true,
@@ -896,24 +919,37 @@ if (!app.requestSingleInstanceLock()) {
     }
 
     function flashRenderer(message) {
+      if (!win || win.isDestroyed() || !mainReady) {
+        pendingFlashMessage = message;
+        return;
+      }
       win.webContents
         .executeJavaScript(`window.cockpitFlash && window.cockpitFlash(${JSON.stringify(message)})`)
-        .catch(() => {});
+        .catch(() => {
+          pendingFlashMessage = message;
+        });
     }
 
     function registerOrDefault(accelerator, fallback, handler) {
-      try {
-        if (globalShortcut.register(accelerator, handler)) return;
-      } catch {
-        // malformed accelerator string
-      }
+      const register = (candidate) => {
+        try {
+          return globalShortcut.register(candidate, handler);
+        } catch {
+          return false;
+        }
+      };
+      if (register(accelerator)) return;
       console.error(`pr-cockpit: failed to register global shortcut ${accelerator}`);
+      if (accelerator !== fallback && register(fallback)) {
+        flashRenderer(`Couldn't register the shortcut ${accelerator} — falling back to ${fallback}.`);
+        return;
+      }
+      if (accelerator !== fallback) console.error(`pr-cockpit: failed to register fallback global shortcut ${fallback}`);
       flashRenderer(
         accelerator === fallback
           ? `Couldn't register the shortcut ${accelerator} — another app may be using it.`
-          : `Couldn't register the shortcut ${accelerator} — falling back to ${fallback}.`,
+          : `Couldn't register the shortcuts ${accelerator} or ${fallback} — another app may be using them.`,
       );
-      if (accelerator !== fallback) globalShortcut.register(fallback, handler);
     }
 
     let appliedApp = null;
@@ -925,8 +961,9 @@ if (!app.requestSingleInstanceLock()) {
       nativeTheme.themeSource = shellThemePreference;
       syncWindowBackground();
       if (!isManaged) return; // dev instance: don't steal the installed app's global shortcuts
-      const openApp = settings?.keybind_open_app || DEFAULT_OPEN_APP;
-      const openPalette = settings?.keybind_open_palette || DEFAULT_OPEN_PALETTE;
+      const shortcuts = configuredShortcuts(process.platform, settings);
+      const openApp = shortcuts.openApp;
+      const openPalette = shortcuts.openPalette;
       if (openApp === appliedApp && openPalette === appliedPalette) return;
       appliedApp = openApp;
       appliedPalette = openPalette;

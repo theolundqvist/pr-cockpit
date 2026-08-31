@@ -4,7 +4,8 @@ const repoRoot = `${import.meta.dir}/..`;
 let updateAvailable = false;
 // The revision this process booted from. static/ is only rebuilt by the same update that restarts the
 // server, so a client seeing this change knows a new build is on disk and a reload is safe.
-const bootRev = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: repoRoot }).stdout.toString().trim();
+const sourceRoot = process.env.COCKPIT_SOURCE_ROOT || repoRoot;
+const bootRev = process.env.COCKPIT_RELEASE_REVISION || Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: repoRoot }).stdout.toString().trim();
 
 export function updatesEnabled(): boolean {
   return process.env.COCKPIT_UPDATE_DISABLED !== "1";
@@ -13,14 +14,14 @@ export function updatesEnabled(): boolean {
 async function checkForUpdate(): Promise<void> {
   try {
     const fetchProc = Bun.spawn(["git", "fetch", "--quiet", "origin", "main"], {
-      cwd: repoRoot,
+      cwd: sourceRoot,
       stdout: "ignore",
       stderr: "ignore",
     });
     await fetchProc.exited;
 
-    const revListProc = Bun.spawn(["git", "rev-list", "HEAD..origin/main", "--count"], {
-      cwd: repoRoot,
+    const revListProc = Bun.spawn(["git", "rev-list", `${bootRev}..origin/main`, "--count"], {
+      cwd: sourceRoot,
       stdout: "pipe",
       stderr: "ignore",
     });

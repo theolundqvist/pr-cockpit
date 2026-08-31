@@ -10,6 +10,7 @@
   import Kbd from "./Kbd.svelte";
   import SettingsAnalytics from "./SettingsAnalytics.svelte";
   import { SETTINGS_SECTION_KEY, SETTINGS_SECTIONS, normalizeSettingsSection } from "./settingsSections.js";
+  import { desktopShortcutDefaults, shortcutsClash } from "./shortcutPlatform.js";
   let { onRunSetup, section = "general" } = $props();
 
 
@@ -38,6 +39,7 @@
   let keybindOpenApp = $state("");
   let keybindOpenPalette = $state("");
   let relayUrl = $state("");
+  let desktopPlatform = $state("darwin");
   let replicaSshHost = $state("");
   let relayInfo = $state(null);
   let relayCoverage = $state(null);
@@ -74,7 +76,8 @@
   const toCsv = (text) => text.split(/[\n,]+/).map((r) => r.trim()).filter(Boolean).join(",");
 
   let configuredRepos = $derived(toCsv(repos).split(",").filter(Boolean));
-  let keybindClash = $derived(!!keybindOpenApp && keybindOpenApp === keybindOpenPalette);
+  let shortcutDefaults = $derived(desktopShortcutDefaults(desktopPlatform));
+  let keybindClash = $derived(shortcutsClash(keybindOpenApp, keybindOpenPalette, shortcutDefaults));
 
   // single-char keys the PR-detail and inbox handlers already own
   const RESERVED_KEYS = new Set([..."123456789", ..."gGdJKjkxcvremMusqopT", ..."ez", "A", "C", "/"]);
@@ -134,6 +137,7 @@
     agentDefaults = s.agent_defaults;
     agentHarness = s.agent_harness;
     harnessAvailable = s.harness_available;
+    desktopPlatform = s.desktop_platform ?? "darwin";
     keybindOpenApp = s.keybind_open_app;
     keybindOpenPalette = s.keybind_open_palette;
     relayUrl = s.relay_url;
@@ -480,13 +484,13 @@
           <label class="field">
             <span class="label">Open cockpit</span>
             <span class="hint">Global shortcut that shows the main window from anywhere</span>
-            <ShortcutInput value={keybindOpenApp} defaultValue="Command+Control+G" onChange={(a) => (keybindOpenApp = a)} />
+            <ShortcutInput value={keybindOpenApp} defaultValue={shortcutDefaults.openApp} platform={desktopPlatform} onChange={(a) => (keybindOpenApp = a)} />
           </label>
 
           <label class="field">
             <span class="label">Open palette</span>
             <span class="hint">Global shortcut for the standalone PR-search palette</span>
-            <ShortcutInput value={keybindOpenPalette} defaultValue="Command+Option+K" onChange={(a) => (keybindOpenPalette = a)} />
+            <ShortcutInput value={keybindOpenPalette} defaultValue={shortcutDefaults.openPalette} platform={desktopPlatform} onChange={(a) => (keybindOpenPalette = a)} />
             {#if keybindClash}
               <span class="hint invalid-hint">Same combo bound twice — pick different shortcuts</span>
             {/if}

@@ -24,7 +24,7 @@ function fakeInstall(
   mkdirSync(join(root, "shell"), { recursive: true });
   mkdirSync(bin, { recursive: true });
   copyFileSync(join(import.meta.dir, "install"), join(root, "scripts/install"));
-  for (const name of ["cockpit", "make-app.sh", "pr-cockpit"]) {
+  for (const name of ["cockpit", "install-linux", "make-app.sh", "pr-cockpit"]) {
     writeFileSync(join(root, "scripts", name), "#!/usr/bin/env bash\nexit 0\n");
     chmodSync(join(root, "scripts", name), 0o755);
   }
@@ -104,11 +104,9 @@ async function install(
   }
 }
 
-test("headless Linux install builds server assets without macOS registration", async () => {
+test("Linux install delegates before any macOS registration or checkout build", async () => {
   const result = await install(null, { platform: "Linux" });
   expect(result.exitCode).toBe(0);
-  expect(result.stdout).toContain("[3/3] Build UI");
-  expect(result.stdout).toContain("headless server build is ready");
   expect(result.calls).toBe("");
   expect(result.serverPlist).toBe("");
 });

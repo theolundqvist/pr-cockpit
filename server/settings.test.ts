@@ -203,3 +203,80 @@ test("window and diff layout settings persist independently", async () => {
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test("shortcut defaults migrate once to an empty platform sentinel", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-shortcut-settings-"));
+  const settingsModuleUrl = new URL("./settings.ts", import.meta.url).href;
+  const dbModuleUrl = new URL("./db.ts", import.meta.url).href;
+  // Static imports cannot isolate the database because the child must set COCKPIT_DATA_DIR before module loading.
+  const scenario = `
+    const { readSettings, seedSettings, writeSettings } = await import(${JSON.stringify(settingsModuleUrl)});
+    const { db } = await import(${JSON.stringify(dbModuleUrl)});
+    const resetShortcuts = (openApp, openPalette) => {
+      db.query("delete from settings where key in ('keybind_open_app', 'keybind_open_palette', 'keybind_platform_defaults_migrated')").run();
+      if (openApp !== null) db.query("insert into settings (key, value) values ('keybind_open_app', ?)").run(openApp);
+      if (openPalette !== null) db.query("insert into settings (key, value) values ('keybind_open_palette', ?)").run(openPalette);
+    };
+
+    resetShortcuts(null, null);
+    seedSettings();
+    const fresh = readSettings();
+    const untouched = writeSettings({
+      keybind_open_app: fresh.keybind_open_app,
+      keybind_open_palette: fresh.keybind_open_palette,
+    });
+
+    resetShortcuts("Command+Control+G", "Command+Option+K");
+    seedSettings();
+    const seeded = readSettings();
+
+    resetShortcuts("Custom+Exact Bytes", "Option+K");
+    seedSettings();
+    const mixed = readSettings();
+
+    db.query("update settings set value = 'Command+Control+G' where key = 'keybind_open_app'").run();
+    db.query("update settings set value = 'Command+Option+K' where key = 'keybind_open_palette'").run();
+    seedSettings();
+    const afterMigration = readSettings();
+
+    const written = writeSettings({
+      keybind_open_app: "  Super+Alt+ß  ",
+      keybind_open_palette: "Control+Shift+P",
+      desktop_platform: "not-client-writable",
+    });
+
+    console.log(JSON.stringify({ fresh, untouched, seeded, mixed, afterMigration, written }));
+    db.close();
+  `;
+
+  try {
+    const childProcess = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      childProcess.exited,
+      new Response(childProcess.stdout).text(),
+      new Response(childProcess.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(stderr);
+    const result = JSON.parse(stdout);
+    expect(result.fresh.keybind_open_app).toBe("");
+    expect(result.fresh.keybind_open_palette).toBe("");
+    expect(result.fresh.desktop_platform).toBe(process.platform);
+    expect(result.untouched.keybind_open_app).toBe("");
+    expect(result.untouched.keybind_open_palette).toBe("");
+    expect(result.seeded.keybind_open_app).toBe("");
+    expect(result.seeded.keybind_open_palette).toBe("");
+    expect(result.mixed.keybind_open_app).toBe("Custom+Exact Bytes");
+    expect(result.mixed.keybind_open_palette).toBe("");
+    expect(result.afterMigration.keybind_open_app).toBe("Command+Control+G");
+    expect(result.afterMigration.keybind_open_palette).toBe("Command+Option+K");
+    expect(result.written.keybind_open_app).toBe("  Super+Alt+ß  ");
+    expect(result.written.keybind_open_palette).toBe("Control+Shift+P");
+    expect(result.written.desktop_platform).toBe(process.platform);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});

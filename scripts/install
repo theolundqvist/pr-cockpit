@@ -3,6 +3,11 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
+platform="$(uname -s)"
+if [[ "$platform" == "Linux" ]]; then
+  exec "$root/scripts/install-linux" "$@"
+fi
+
 if [[ -t 1 ]]; then
   bold=$'\033[1m'
   accent=$'\033[36m'
@@ -51,9 +56,6 @@ fi
 if ! command -v gh >/dev/null 2>&1; then
   echo "pr-cockpit: gh not found — install from https://cli.github.com"
   missing=1
-elif ! gh auth status >/dev/null 2>&1; then
-  echo "pr-cockpit: gh is installed but not authenticated — run 'gh auth login'"
-  missing=1
 fi
 if [[ "$missing" -eq 1 ]]; then
   exit 1
@@ -63,15 +65,11 @@ bun="$(command -v bun)"
 gh_bin="$(command -v gh)"
 launch_path="$HOME/.local/bin:$(dirname "$bun"):$(dirname "$gh_bin"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-platform="$(uname -s)"
-if [[ "$platform" != "Darwin" && "$platform" != "Linux" ]]; then
+if [[ "$platform" != "Darwin" ]]; then
   echo "pr-cockpit: unsupported platform: $platform"
   exit 1
 fi
 stage_count=6
-if [[ "$platform" == "Linux" ]]; then
-  stage_count=3
-fi
 
 stage "1/$stage_count" "Install dependencies"
 quiet_in "root dependency install" "$root" "$bun" install
@@ -88,10 +86,6 @@ quiet_in "worktree runtime check" "$root" "$bun" scripts/check-worktree-runtime.
 stage "3/$stage_count" "Build UI"
 quiet_in "UI build" "$root/ui" "$bun" run build
 
-if [[ "$platform" == "Linux" ]]; then
-  echo "pr-cockpit: headless server build is ready"
-  exit 0
-fi
 
 stage "4/6" "Install desktop app"
 COCKPIT_GH_BIN="$gh_bin" "$root/scripts/make-app.sh"
@@ -162,10 +156,7 @@ if [[ ! -f "$config_file" ]]; then
 # Uncomment and edit to point the cockpit at your own repos.
 # COCKPIT_REPOS="owner/repo,owner/other-repo"
 # COCKPIT_PORT=4820
-1: - Agents mutate existing PRs through `pr-cockpit`; use its `--body-file` commands for exact multiline text, never `gh` or direct GitHub APIs.
-- Keep examples, fixtures, benchmarks, and docs free of private company, product, repository, host, and infrastructure names; do not perform unrelated hosting or infrastructure work here.
-2: COCKPIT_PROXY="build-server"                        # optional Cockpit replica source over SSH
-3: # COCKPIT_PROXY="build-server"       # replicate another Cockpit over SSH
+# COCKPIT_PROXY="build-server"      # optional Cockpit replica source over SSH
 # COCKPIT_PROXY_PORT=4820           # Cockpit port on the SSH host
 # COCKPIT_DEFAULT_REPO="owner/repo"
 # COCKPIT_TMUX_HOSTS="builder,build-vm"
