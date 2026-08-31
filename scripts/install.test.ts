@@ -24,7 +24,7 @@ function fakeInstall(
   mkdirSync(join(root, "shell"), { recursive: true });
   mkdirSync(bin, { recursive: true });
   copyFileSync(join(import.meta.dir, "install"), join(root, "scripts/install"));
-  for (const name of ["cockpit", "install-linux", "make-app.sh", "pr-cockpit"]) {
+  for (const name of ["cockpit", "ensure-electron-dist.sh", "install-linux", "make-app.sh", "pr-cockpit"]) {
     writeFileSync(join(root, "scripts", name), "#!/usr/bin/env bash\nexit 0\n");
     chmodSync(join(root, "scripts", name), 0o755);
   }
@@ -89,6 +89,8 @@ async function install(
     const curlCalls = readFileSync(fake.curlCalls, "utf8");
     const serverPlistPath = join(installHome, "Library/LaunchAgents/app.pr-cockpit.server.plist");
     const serverPlist = existsSync(serverPlistPath) ? readFileSync(serverPlistPath, "utf8") : "";
+    const configPath = join(installHome, ".config/pr-cockpit/config");
+    const config = existsSync(configPath) ? readFileSync(configPath, "utf8") : "";
     return {
       stdout,
       stderr,
@@ -97,6 +99,7 @@ async function install(
       curlCalls,
       root: fake.root,
       serverPlist,
+      config,
       localBin: join(installHome, ".local/bin"),
     };
   } finally {
@@ -109,6 +112,14 @@ test("Linux install delegates before any macOS registration or checkout build", 
   expect(result.exitCode).toBe(0);
   expect(result.calls).toBe("");
   expect(result.serverPlist).toBe("");
+});
+
+test("new config is a commented inert example", async () => {
+  const result = await install(null);
+  expect(result.exitCode).toBe(0);
+  expect(result.config).toContain('# COCKPIT_PROXY="build-server"');
+  expect(result.config).not.toContain("Agents mutate existing PRs");
+  expect(result.config).not.toMatch(/^[^#\n]*COCKPIT_PROXY=/m);
 });
 
 test("an app registration left behind by another root is replaced", async () => {
