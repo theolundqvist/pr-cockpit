@@ -111,6 +111,14 @@ FORWARDING_STATUS=disabled
 if grep -q '^RELAY_FORWARD_WEBHOOK_URL=.' "$COMPOSE_ENV_FILE"; then
   FORWARDING_STATUS=enabled
 fi
+FORWARD_REPO_DISCOVERY_UNTIL=
+while IFS= read -r line; do
+  case "$line" in
+    RELAY_FORWARD_REPO_DISCOVERY_UNTIL=*)
+      FORWARD_REPO_DISCOVERY_UNTIL=${line#*=}
+      ;;
+  esac
+done <"$COMPOSE_ENV_FILE"
 
 printf '%s\n' \
   "Installed $SERVICE_NAME with container UID:GID $COCKPIT_UID:$COCKPIT_GID." \
@@ -119,3 +127,11 @@ printf '%s\n' \
   "Usage is available on host loopback only at http://127.0.0.1:4822/usage."
 printf 'Webhook forwarding is %s; leave RELAY_FORWARD_WEBHOOK_URL unset or empty in %s to disable it.\n' \
   "$FORWARDING_STATUS" "$COMPOSE_ENV_FILE"
+if [ "$FORWARDING_STATUS" = enabled ]; then
+  if [ -n "$FORWARD_REPO_DISCOVERY_UNTIL" ]; then
+    printf 'Repository forwarding cutoff is %s; repositories first seen at or after it stay new-relay-only.\n' \
+      "$FORWARD_REPO_DISCOVERY_UNTIL"
+  else
+    printf '%s\n' "Repository forwarding cutoff is empty; all repositories are forwarded."
+  fi
+fi

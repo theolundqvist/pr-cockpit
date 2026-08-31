@@ -13,6 +13,7 @@ services:
       RELAY_DB_PATH: /data/relay.db
       RELAY_RETENTION: "${RELAY_RETENTION:-168h}"
       RELAY_FORWARD_WEBHOOK_URL: "${RELAY_FORWARD_WEBHOOK_URL:-}"
+      RELAY_FORWARD_REPO_DISCOVERY_UNTIL: "${RELAY_FORWARD_REPO_DISCOVERY_UNTIL:-}"
     env_file:
       - /etc/pr-cockpit-relay/relay.env
     ports:

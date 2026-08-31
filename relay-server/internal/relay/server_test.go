@@ -627,19 +627,32 @@ func TestStreamLimitSpansTokensForSameGitHubUser(t *testing.T) {
 	}
 }
 
-func TestActivityWriteFailureDoesNotDenySession(t *testing.T) {
+func TestActivityTransactionFailureDoesNotDenySession(t *testing.T) {
 	server, store := newTestRelay(t, githubAccess(func(*http.Request) int { return http.StatusOK }))
-	if _, err := store.db.Exec(`DROP TABLE usage_daily`); err != nil {
+	if _, err := store.db.Exec(`INSERT INTO installation_coverage(owner, all_repos) VALUES('owner', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`DROP TABLE usage_repo_daily`); err != nil {
 		t.Fatal(err)
 	}
 	if status, _ := postSession(t, server, "token"); status != http.StatusOK {
 		t.Fatalf("status = %d, want 200 despite activity write failure", status)
 	}
+	var users, repos int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM usage_daily`).Scan(&users); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM usage_repos`).Scan(&repos); err != nil {
+		t.Fatal(err)
+	}
+	if users != 0 || repos != 0 {
+		t.Fatalf("partial activity persisted: users = %d, repos = %d", users, repos)
+	}
 }
 
 func TestSuccessfulSessionTriggersUsageRetentionCleanup(t *testing.T) {
 	server, store := newTestRelay(t, githubAccess(func(*http.Request) int { return http.StatusOK }))
-	if err := store.RecordActivity(context.Background(), GitHubIdentity{ID: 999, Login: "old-user"}, time.Now().UTC().AddDate(0, 0, -90)); err != nil {
+	if err := store.RecordActivity(context.Background(), GitHubIdentity{ID: 999, Login: "old-user"}, nil, time.Now().UTC().AddDate(0, 0, -90)); err != nil {
 		t.Fatal(err)
 	}
 	server.cleanupAfter.Store(0)
@@ -652,6 +665,88 @@ func TestSuccessfulSessionTriggersUsageRetentionCleanup(t *testing.T) {
 	}
 	if oldRows != 0 {
 		t.Fatalf("old usage rows = %d, want 0", oldRows)
+	}
+}
+
+func TestSessionRecordsOnlyReadableReposWithRelayCoverage(t *testing.T) {
+	server, store := newTestRelay(t, githubAccess(func(request *http.Request) int {
+		if request.URL.Path == "/repos/owner/unreadable" {
+			return http.StatusNotFound
+		}
+		return http.StatusOK
+	}))
+	if _, err := store.db.Exec(`
+INSERT INTO installation_coverage(owner, all_repos) VALUES('owner', 0);
+INSERT INTO installation_repos(owner, repo) VALUES('owner', 'owner/known');
+`); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/session", bytes.NewBufferString(
+		`{"repos":[" owner/known ","owner/known","owner/unknown","owner/unreadable"]}`,
+	))
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", response.Code)
+	}
+	var sessionResponse struct {
+		Ticket string          `json:"ticket"`
+		Repos  map[string]bool `json:"repos"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &sessionResponse); err != nil {
+		t.Fatal(err)
+	}
+	session, ok := server.tickets.Consume(sessionResponse.Ticket)
+	if !ok {
+		t.Fatal("session ticket was not issued")
+	}
+	if _, ok := session.repos["owner/unknown"]; !ok {
+		t.Fatal("readable unknown repository missing from ticket")
+	}
+	if _, ok := session.repos["owner/known"]; !ok {
+		t.Fatal("readable known repository missing from ticket")
+	}
+	if !sessionResponse.Repos["owner/known"] || sessionResponse.Repos["owner/unknown"] {
+		t.Fatalf("coverage = %#v", sessionResponse.Repos)
+	}
+	if _, ok := session.repos["owner/unreadable"]; ok {
+		t.Fatal("unreadable repository present in ticket")
+	}
+	var unknownAllTime, unknownDaily, knownDaily int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM usage_repos WHERE repo = 'owner/unknown'`).Scan(&unknownAllTime); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM usage_repo_daily WHERE repo = 'owner/unknown'`).Scan(&unknownDaily); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM usage_repo_daily WHERE repo = 'owner/known'`).Scan(&knownDaily); err != nil {
+		t.Fatal(err)
+	}
+	if unknownAllTime != 0 || unknownDaily != 0 || knownDaily != 1 {
+		t.Fatalf("repo rows: unknown all-time = %d, unknown daily = %d, known daily = %d", unknownAllTime, unknownDaily, knownDaily)
+	}
+	adminResponse := httptest.NewRecorder()
+	server.AdminHandler().ServeHTTP(adminResponse, httptest.NewRequest(http.MethodGet, "/usage?days=2", nil))
+	if adminResponse.Code != http.StatusOK {
+		t.Fatalf("admin status = %d", adminResponse.Code)
+	}
+	var report UsageReport
+	if err := json.Unmarshal(adminResponse.Body.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Repos) != 1 || report.Repos[0].Name != "owner/known" || report.Repos[0].Sessions != 1 {
+		t.Fatalf("report = %#v", report)
+	}
+	var userRepos []UsageUserRepo
+	for _, day := range report.Days {
+		if len(day.Users) != 0 {
+			userRepos = day.Users[0].Repos
+			break
+		}
+	}
+	if len(userRepos) != 1 || userRepos[0].Name != "owner/known" {
+		t.Fatalf("user repos = %#v", userRepos)
 	}
 }
 
@@ -905,4 +1000,234 @@ func TestForwardWebhookURLValidation(t *testing.T) {
 	if server.access.client != injected || server.forwardClient == injected || server.forwardClient.Timeout != 10*time.Second {
 		t.Fatalf("access client changed or forwarding client was not cloned and bounded")
 	}
+}
+
+func newCutoffRelay(t *testing.T, store *Store, target *httptest.Server, cutoff, now time.Time) *Server {
+	t.Helper()
+	config := Config{
+		WebhookSecret: "secret", ForwardWebhookURL: target.URL, HTTPClient: target.Client(),
+	}
+	if !cutoff.IsZero() {
+		config.ForwardRepoDiscoveryUntil = cutoff.Format(time.RFC3339)
+	}
+	server, err := NewServer(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.now = func() time.Time { return now }
+	t.Cleanup(server.Shutdown)
+	return server
+}
+
+func sendRepositoryWebhook(t *testing.T, server *Server, repo string) int {
+	t.Helper()
+	response := httptest.NewRecorder()
+	body := []byte(`{"repository":{"full_name":"` + repo + `"}}`)
+	server.Handler().ServeHTTP(response, signedWebhookRequest(body, "push"))
+	return response.Code
+}
+
+func TestEmptyForwardRepoCutoffPreservesForwardAll(t *testing.T) {
+	forwarded := make(chan struct{}, 1)
+	target := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		forwarded <- struct{}{}
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	defer target.Close()
+	store := newUsageStore(t)
+	server := newCutoffRelay(t, store, target, time.Time{}, time.Now())
+	if status := sendRepositoryWebhook(t, server, "owner/new"); status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	<-forwarded
+	var remembered int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM legacy_forward_repos`).Scan(&remembered); err != nil {
+		t.Fatal(err)
+	}
+	if remembered != 0 {
+		t.Fatalf("remembered repositories = %d, want 0 without cutoff", remembered)
+	}
+}
+
+func TestInvalidForwardRepoCutoffFailsStartup(t *testing.T) {
+	store := newUsageStore(t)
+	for _, cutoff := range []string{"tomorrow", "2026-09-01T12:00:00", "2026-09-01"} {
+		if _, err := NewServer(store, Config{
+			WebhookSecret: "secret", ForwardRepoDiscoveryUntil: cutoff,
+		}); err == nil {
+			t.Fatalf("cutoff %q was accepted", cutoff)
+		}
+	}
+}
+
+func TestRepoSeenBeforeCutoffPersistsAcrossRestart(t *testing.T) {
+	forwarded := make(chan struct{}, 3)
+	target := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		forwarded <- struct{}{}
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	defer target.Close()
+	store := newUsageStore(t)
+	cutoff := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	before := newCutoffRelay(t, store, target, cutoff, cutoff.Add(-time.Nanosecond))
+	if status := sendRepositoryWebhook(t, before, "owner/legacy"); status != http.StatusOK {
+		t.Fatalf("before-cutoff status = %d", status)
+	}
+	<-forwarded
+	before.Shutdown()
+
+	after := newCutoffRelay(t, store, target, cutoff, cutoff.Add(time.Nanosecond))
+	if status := sendRepositoryWebhook(t, after, "owner/legacy"); status != http.StatusOK {
+		t.Fatalf("remembered status = %d", status)
+	}
+	<-forwarded
+	if status := sendRepositoryWebhook(t, after, "owner/new"); status != http.StatusOK {
+		t.Fatalf("new repository status = %d", status)
+	}
+	select {
+	case <-forwarded:
+		t.Fatal("new repository forwarded after cutoff")
+	default:
+	}
+	remembered, err := store.IsLegacyForwardRepo(context.Background(), "owner/legacy")
+	if err != nil || !remembered {
+		t.Fatalf("remembered = %v, error = %v", remembered, err)
+	}
+}
+
+func TestRepoFirstSeenAtOrAfterCutoffDoesNotForward(t *testing.T) {
+	forwarded := make(chan struct{}, 2)
+	target := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		forwarded <- struct{}{}
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	defer target.Close()
+	store := newUsageStore(t)
+	cutoff := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	server := newCutoffRelay(t, store, target, cutoff, cutoff)
+	if status := sendRepositoryWebhook(t, server, "owner/exact"); status != http.StatusOK {
+		t.Fatalf("exact-cutoff status = %d", status)
+	}
+	server.now = func() time.Time { return cutoff.Add(time.Second) }
+	if status := sendRepositoryWebhook(t, server, "owner/after"); status != http.StatusOK {
+		t.Fatalf("after-cutoff status = %d", status)
+	}
+	select {
+	case <-forwarded:
+		t.Fatal("new repository forwarded at or after cutoff")
+	default:
+	}
+	latest, _, err := store.LatestBounds(context.Background())
+	if err != nil || latest != 2 {
+		t.Fatalf("latest = %d, error = %v", latest, err)
+	}
+}
+
+func TestNoRepoWebhookForwardsAfterCutoff(t *testing.T) {
+	forwarded := make(chan struct{}, 1)
+	target := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		forwarded <- struct{}{}
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	defer target.Close()
+	store := newUsageStore(t)
+	cutoff := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	server := newCutoffRelay(t, store, target, cutoff, cutoff)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, signedWebhookRequest([]byte(`{}`), "ping"))
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", response.Code)
+	}
+	<-forwarded
+}
+
+func TestRepoEligibilityFailureIsBestEffort(t *testing.T) {
+	forwarded := make(chan struct{}, 2)
+	target := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		forwarded <- struct{}{}
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	defer target.Close()
+	store := newUsageStore(t)
+	cutoff := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	server := newCutoffRelay(t, store, target, cutoff, cutoff.Add(-time.Second))
+	if _, err := store.db.Exec(`DROP TABLE legacy_forward_repos`); err != nil {
+		t.Fatal(err)
+	}
+	if status := sendRepositoryWebhook(t, server, "owner/before"); status != http.StatusOK {
+		t.Fatalf("insert-failure status = %d", status)
+	}
+	<-forwarded
+	server.now = func() time.Time { return cutoff }
+	if status := sendRepositoryWebhook(t, server, "owner/after"); status != http.StatusOK {
+		t.Fatalf("lookup-failure status = %d", status)
+	}
+	select {
+	case <-forwarded:
+		t.Fatal("repository forwarded after eligibility lookup failure")
+	default:
+	}
+	latest, _, err := store.LatestBounds(context.Background())
+	if err != nil || latest != 2 {
+		t.Fatalf("latest = %d, error = %v", latest, err)
+	}
+}
+
+func TestForwardCutoffUsesWebhookReceivedTime(t *testing.T) {
+	forwarded := make(chan struct{}, 1)
+	target := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		forwarded <- struct{}{}
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	defer target.Close()
+	store := newUsageStore(t)
+	cutoff := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	server := newCutoffRelay(t, store, target, cutoff, cutoff)
+	nowCalls := 0
+	server.now = func() time.Time {
+		nowCalls++
+		if nowCalls == 1 {
+			return cutoff.Add(-time.Nanosecond)
+		}
+		return cutoff
+	}
+	if status := sendRepositoryWebhook(t, server, "owner/crossing"); status != http.StatusOK {
+		t.Fatalf("status = %d", status)
+	}
+	<-forwarded
+	if nowCalls != 1 {
+		t.Fatalf("clock reads = %d, want 1", nowCalls)
+	}
+	remembered, err := store.IsLegacyForwardRepo(context.Background(), "owner/crossing")
+	if err != nil || !remembered {
+		t.Fatalf("remembered = %v, error = %v", remembered, err)
+	}
+}
+
+func TestDisabledPreCutoffDiscoveryForwardsAfterRestart(t *testing.T) {
+	store := newUsageStore(t)
+	cutoff := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	before, err := NewServer(store, Config{
+		WebhookSecret: "secret", ForwardRepoDiscoveryUntil: cutoff.Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before.now = func() time.Time { return cutoff.Add(-time.Second) }
+	if status := sendRepositoryWebhook(t, before, "owner/discovered-disabled"); status != http.StatusOK {
+		t.Fatalf("disabled status = %d", status)
+	}
+	before.Shutdown()
+
+	forwarded := make(chan struct{}, 1)
+	target := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		forwarded <- struct{}{}
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	defer target.Close()
+	after := newCutoffRelay(t, store, target, cutoff, cutoff)
+	if status := sendRepositoryWebhook(t, after, "owner/discovered-disabled"); status != http.StatusOK {
+		t.Fatalf("enabled status = %d", status)
+	}
+	<-forwarded
 }

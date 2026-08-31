@@ -32,11 +32,12 @@ const (
 )
 
 type Config struct {
-	WebhookSecret     string
-	GitHubAPIURL      string
-	ForwardWebhookURL string
-	HTTPClient        *http.Client
-	Logger            *slog.Logger
+	WebhookSecret             string
+	GitHubAPIURL              string
+	ForwardWebhookURL         string
+	ForwardRepoDiscoveryUntil string
+	HTTPClient                *http.Client
+	Logger                    *slog.Logger
 }
 
 var errSubscriberCapacity = errors.New("subscriber capacity reached")
@@ -53,19 +54,21 @@ type subscriber struct {
 func (s *subscriber) stop() { s.once.Do(func() { close(s.done) }) }
 
 type Server struct {
-	store             *Store
-	secret            []byte
-	access            *AccessChecker
-	forwardClient     *http.Client
-	forwardWebhookURL string
-	tickets           *Tickets
-	logger            *slog.Logger
-	publishMu         sync.Mutex
-	cleanupAfter      atomic.Int64
-	subscribers       map[*subscriber]struct{}
-	principalStreams  map[string]int
-	bodySlots         chan struct{}
-	upgrader          websocket.Upgrader
+	store                     *Store
+	secret                    []byte
+	access                    *AccessChecker
+	forwardClient             *http.Client
+	forwardWebhookURL         string
+	forwardRepoDiscoveryUntil time.Time
+	now                       func() time.Time
+	tickets                   *Tickets
+	logger                    *slog.Logger
+	publishMu                 sync.Mutex
+	cleanupAfter              atomic.Int64
+	subscribers               map[*subscriber]struct{}
+	principalStreams          map[string]int
+	bodySlots                 chan struct{}
+	upgrader                  websocket.Upgrader
 }
 
 func NewServer(store *Store, config Config) (*Server, error) {
@@ -81,6 +84,14 @@ func NewServer(store *Store, config Config) (*Server, error) {
 	if err := validateForwardWebhookURL(config.ForwardWebhookURL); err != nil {
 		return nil, err
 	}
+	var forwardRepoDiscoveryUntil time.Time
+	if config.ForwardRepoDiscoveryUntil != "" {
+		var err error
+		forwardRepoDiscoveryUntil, err = time.Parse(time.RFC3339, config.ForwardRepoDiscoveryUntil)
+		if err != nil {
+			return nil, errors.New("forward repository discovery cutoff must be RFC3339")
+		}
+	}
 	if config.Logger == nil {
 		config.Logger = slog.Default()
 	}
@@ -90,10 +101,12 @@ func NewServer(store *Store, config Config) (*Server, error) {
 	}
 	server := &Server{
 		store: store, secret: []byte(config.WebhookSecret),
-		access:            NewAccessChecker(config.HTTPClient, config.GitHubAPIURL),
-		forwardClient:     forwardClient,
-		forwardWebhookURL: config.ForwardWebhookURL,
-		tickets:           NewTickets(), logger: config.Logger,
+		access:                    NewAccessChecker(config.HTTPClient, config.GitHubAPIURL),
+		forwardClient:             forwardClient,
+		forwardWebhookURL:         config.ForwardWebhookURL,
+		forwardRepoDiscoveryUntil: forwardRepoDiscoveryUntil,
+		now:                       time.Now,
+		tickets:                   NewTickets(), logger: config.Logger,
 		subscribers:      make(map[*subscriber]struct{}),
 		principalStreams: make(map[string]int), bodySlots: make(chan struct{}, bodyReaderLimit),
 		upgrader: websocket.Upgrader{HandshakeTimeout: 10 * time.Second, CheckOrigin: func(*http.Request) bool { return true }},
@@ -204,6 +217,7 @@ func (s *Server) handleGitHub(response http.ResponseWriter, request *http.Reques
 		http.Error(response, "invalid JSON", http.StatusBadRequest)
 		return
 	}
+	receivedAt := s.now()
 
 	event := request.Header.Get("X-GitHub-Event")
 	if event == "" {
@@ -211,6 +225,7 @@ func (s *Server) handleGitHub(response http.ResponseWriter, request *http.Reques
 	}
 	status := http.StatusOK
 	message := "ok"
+	forward := true
 	if event == "installation" || event == "installation_repositories" {
 		if err := s.store.UpdateInstallation(request.Context(), event, payload); err != nil {
 			s.internalError(response, err)
@@ -221,15 +236,36 @@ func (s *Server) handleGitHub(response http.ResponseWriter, request *http.Reques
 		message = "no repository"
 	} else {
 		run, job := compactActions(event, payload)
-		marker := Marker{TS: time.Now().UnixMilli(), Repo: payload.Repository.FullName, Number: pullNumber(payload), Event: event, Run: run, Job: job}
+		marker := Marker{TS: receivedAt.UnixMilli(), Repo: payload.Repository.FullName, Number: pullNumber(payload), Event: event, Run: run, Job: job}
 		if _, err := s.publish(request.Context(), marker); err != nil {
 			s.internalError(response, err)
 			return
 		}
+		forward = s.shouldForwardRepository(request.Context(), payload.Repository.FullName, receivedAt)
 	}
-	s.forwardWebhook(request.Context(), body, request.Header)
+	if forward {
+		s.forwardWebhook(request.Context(), body, request.Header)
+	}
 	response.WriteHeader(status)
 	response.Write([]byte(message))
+}
+
+func (s *Server) shouldForwardRepository(ctx context.Context, repo string, receivedAt time.Time) bool {
+	if s.forwardRepoDiscoveryUntil.IsZero() {
+		return true
+	}
+	if receivedAt.Before(s.forwardRepoDiscoveryUntil) {
+		if err := s.store.RememberLegacyForwardRepo(ctx, repo); err != nil {
+			s.logger.Warn("legacy forwarding eligibility failed")
+		}
+		return true
+	}
+	eligible, err := s.store.IsLegacyForwardRepo(ctx, repo)
+	if err != nil {
+		s.logger.Warn("legacy forwarding eligibility failed")
+		return false
+	}
+	return eligible
 }
 
 func (s *Server) forwardWebhook(ctx context.Context, body []byte, source http.Header) {
@@ -463,6 +499,12 @@ func (s *Server) handleSession(response http.ResponseWriter, request *http.Reque
 		}
 		coverage[repo] = readable && known[repo]
 	}
+	activityRepos := make([]string, 0, len(allowed))
+	for _, repo := range allowed {
+		if coverage[repo] {
+			activityRepos = append(activityRepos, repo)
+		}
+	}
 	if len(allowed) == 0 {
 		http.Error(response, "no readable repositories", http.StatusForbidden)
 		return
@@ -481,7 +523,7 @@ func (s *Server) handleSession(response http.ResponseWriter, request *http.Reque
 		http.Error(response, "session capacity reached", http.StatusServiceUnavailable)
 		return
 	}
-	if err := s.store.RecordActivity(request.Context(), identity, time.Now()); err != nil {
+	if err := s.store.RecordActivity(request.Context(), identity, activityRepos, time.Now()); err != nil {
 		s.logger.Warn("record relay activity failed", "error", err)
 	}
 	s.maybeCleanup(request.Context())

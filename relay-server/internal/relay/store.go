@@ -75,7 +75,9 @@ CREATE TABLE IF NOT EXISTS markers (
   job_json TEXT
 );
 CREATE INDEX IF NOT EXISTS markers_retention_idx ON markers(ts, seq);
-
+CREATE TABLE IF NOT EXISTS legacy_forward_repos (
+  repo TEXT PRIMARY KEY
+);
 CREATE TABLE IF NOT EXISTS installation_coverage (
   owner TEXT PRIMARY KEY,
   all_repos INTEGER NOT NULL CHECK (all_repos IN (0, 1))
@@ -94,6 +96,21 @@ CREATE TABLE IF NOT EXISTS usage_daily (
   last_seen_ms INTEGER NOT NULL,
   sessions INTEGER NOT NULL,
   PRIMARY KEY(day, github_user_id)
+);
+CREATE TABLE IF NOT EXISTS usage_repos (
+  repo TEXT PRIMARY KEY,
+  first_seen_ms INTEGER NOT NULL,
+  last_seen_ms INTEGER NOT NULL,
+  sessions INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS usage_repo_daily (
+  day TEXT NOT NULL,
+  github_user_id INTEGER NOT NULL,
+  repo TEXT NOT NULL,
+  first_seen_ms INTEGER NOT NULL,
+  last_seen_ms INTEGER NOT NULL,
+  sessions INTEGER NOT NULL,
+  PRIMARY KEY(day, github_user_id, repo)
 );
 `)
 	return err
@@ -139,6 +156,20 @@ func (s *Store) Append(ctx context.Context, marker Marker) (Marker, error) {
 		return Marker{}, err
 	}
 	return marker, nil
+}
+
+func (s *Store) RememberLegacyForwardRepo(ctx context.Context, repo string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO legacy_forward_repos(repo) VALUES(?)`, repo)
+	return err
+}
+
+func (s *Store) IsLegacyForwardRepo(ctx context.Context, repo string) (bool, error) {
+	var present int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM legacy_forward_repos WHERE repo = ?`, repo).Scan(&present)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return present == 1, err
 }
 
 func nullableJSON(value any) (any, error) {
@@ -269,6 +300,9 @@ func (s *Store) cleanup(ctx context.Context, now time.Time) (int64, error) {
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM usage_daily WHERE day < ?`, oldestUsageDay); err != nil {
 		return deletedMarkers, err
 	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM usage_repo_daily WHERE day < ?`, oldestUsageDay); err != nil {
+		return deletedMarkers, err
+	}
 	return deletedMarkers, nil
 }
 
@@ -365,12 +399,18 @@ func repoOwner(repo string) string {
 	return owner
 }
 
+type UsageUserRepo struct {
+	Name     string `json:"name"`
+	Sessions int64  `json:"sessions"`
+}
+
 type UsageUser struct {
-	ID          int64  `json:"id"`
-	Login       string `json:"login"`
-	FirstSeenAt string `json:"firstSeenAt"`
-	LastSeenAt  string `json:"lastSeenAt"`
-	Sessions    int64  `json:"sessions"`
+	ID          int64           `json:"id"`
+	Login       string          `json:"login"`
+	FirstSeenAt string          `json:"firstSeenAt"`
+	LastSeenAt  string          `json:"lastSeenAt"`
+	Sessions    int64           `json:"sessions"`
+	Repos       []UsageUserRepo `json:"repos"`
 }
 
 type UsageDay struct {
@@ -378,16 +418,33 @@ type UsageDay struct {
 	Users []UsageUser `json:"users"`
 }
 
-type UsageReport struct {
-	GeneratedAt string     `json:"generatedAt"`
-	DAU         int64      `json:"dau"`
-	WAU         int64      `json:"wau"`
-	Days        []UsageDay `json:"days"`
+type UsageRepo struct {
+	Name        string `json:"name"`
+	FirstSeenAt string `json:"firstSeenAt"`
+	LastSeenAt  string `json:"lastSeenAt"`
+	Sessions    int64  `json:"sessions"`
+	DAU         int64  `json:"dau"`
+	WAU         int64  `json:"wau"`
 }
 
-func (s *Store) RecordActivity(ctx context.Context, identity GitHubIdentity, at time.Time) error {
+type UsageReport struct {
+	GeneratedAt string      `json:"generatedAt"`
+	DAU         int64       `json:"dau"`
+	WAU         int64       `json:"wau"`
+	Days        []UsageDay  `json:"days"`
+	Repos       []UsageRepo `json:"repos"`
+}
+
+func (s *Store) RecordActivity(ctx context.Context, identity GitHubIdentity, repos []string, at time.Time) error {
 	at = at.UTC()
-	_, err := s.db.ExecContext(ctx, `
+	day := at.Format(time.DateOnly)
+	atMS := at.UnixMilli()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
 INSERT INTO usage_daily(day, github_user_id, login, first_seen_ms, last_seen_ms, sessions)
 VALUES(?, ?, ?, ?, ?, 1)
 ON CONFLICT(day, github_user_id) DO UPDATE SET
@@ -395,8 +452,32 @@ ON CONFLICT(day, github_user_id) DO UPDATE SET
   first_seen_ms = MIN(usage_daily.first_seen_ms, excluded.first_seen_ms),
   last_seen_ms = MAX(usage_daily.last_seen_ms, excluded.last_seen_ms),
   sessions = usage_daily.sessions + 1
-`, at.Format(time.DateOnly), identity.ID, identity.Login, at.UnixMilli(), at.UnixMilli())
-	return err
+`, day, identity.ID, identity.Login, atMS, atMS); err != nil {
+		return err
+	}
+	for _, repo := range repos {
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO usage_repos(repo, first_seen_ms, last_seen_ms, sessions)
+VALUES(?, ?, ?, 1)
+ON CONFLICT(repo) DO UPDATE SET
+  first_seen_ms = MIN(usage_repos.first_seen_ms, excluded.first_seen_ms),
+  last_seen_ms = MAX(usage_repos.last_seen_ms, excluded.last_seen_ms),
+  sessions = usage_repos.sessions + 1
+`, repo, atMS, atMS); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO usage_repo_daily(day, github_user_id, repo, first_seen_ms, last_seen_ms, sessions)
+VALUES(?, ?, ?, ?, ?, 1)
+ON CONFLICT(day, github_user_id, repo) DO UPDATE SET
+  first_seen_ms = MIN(usage_repo_daily.first_seen_ms, excluded.first_seen_ms),
+  last_seen_ms = MAX(usage_repo_daily.last_seen_ms, excluded.last_seen_ms),
+  sessions = usage_repo_daily.sessions + 1
+`, day, identity.ID, repo, atMS, atMS); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) Usage(ctx context.Context, days int, now time.Time) (UsageReport, error) {
@@ -406,6 +487,7 @@ func (s *Store) Usage(ctx context.Context, days int, now time.Time) (UsageReport
 	report := UsageReport{
 		GeneratedAt: now.Format(time.RFC3339Nano),
 		Days:        make([]UsageDay, days),
+		Repos:       []UsageRepo{},
 	}
 	dayByName := make(map[string]*UsageDay, days)
 	for offset := range days {
@@ -429,13 +511,12 @@ ORDER BY day DESC, github_user_id
 	if err != nil {
 		return UsageReport{}, err
 	}
-	defer rows.Close()
-
 	for rows.Next() {
 		var day string
 		var user UsageUser
 		var firstSeenMS, lastSeenMS int64
 		if err := rows.Scan(&day, &user.ID, &user.Login, &firstSeenMS, &lastSeenMS, &user.Sessions); err != nil {
+			rows.Close()
 			return UsageReport{}, err
 		}
 		current := dayByName[day]
@@ -444,7 +525,74 @@ ORDER BY day DESC, github_user_id
 		}
 		user.FirstSeenAt = time.UnixMilli(firstSeenMS).UTC().Format(time.RFC3339Nano)
 		user.LastSeenAt = time.UnixMilli(lastSeenMS).UTC().Format(time.RFC3339Nano)
+		user.Repos = []UsageUserRepo{}
 		current.Users = append(current.Users, user)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return UsageReport{}, err
+	}
+	rows.Close()
+
+	type userKey struct {
+		day string
+		id  int64
+	}
+	users := make(map[userKey]*UsageUser)
+	for dayIndex := range report.Days {
+		for userIndex := range report.Days[dayIndex].Users {
+			user := &report.Days[dayIndex].Users[userIndex]
+			users[userKey{day: report.Days[dayIndex].Day, id: user.ID}] = user
+		}
+	}
+	rows, err = s.db.QueryContext(ctx, `
+SELECT day, github_user_id, repo, sessions
+FROM usage_repo_daily
+WHERE day BETWEEN ? AND ?
+ORDER BY day DESC, github_user_id, repo
+`, start, today)
+	if err != nil {
+		return UsageReport{}, err
+	}
+	for rows.Next() {
+		var day, repo string
+		var userID, sessions int64
+		if err := rows.Scan(&day, &userID, &repo, &sessions); err != nil {
+			rows.Close()
+			return UsageReport{}, err
+		}
+		if user := users[userKey{day: day, id: userID}]; user != nil {
+			user.Repos = append(user.Repos, UsageUserRepo{Name: repo, Sessions: sessions})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return UsageReport{}, err
+	}
+	rows.Close()
+
+	rows, err = s.db.QueryContext(ctx, `
+SELECT r.repo, r.first_seen_ms, r.last_seen_ms, r.sessions,
+       COUNT(DISTINCT CASE WHEN d.day = ? THEN d.github_user_id END),
+       COUNT(DISTINCT CASE WHEN d.day BETWEEN ? AND ? THEN d.github_user_id END)
+FROM usage_repos r
+LEFT JOIN usage_repo_daily d ON d.repo = r.repo AND d.day BETWEEN ? AND ?
+GROUP BY r.repo, r.first_seen_ms, r.last_seen_ms, r.sessions
+ORDER BY r.last_seen_ms DESC, r.repo
+`, today, weekStart, today, weekStart, today)
+	if err != nil {
+		return UsageReport{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var repo UsageRepo
+		var firstSeenMS, lastSeenMS int64
+		if err := rows.Scan(&repo.Name, &firstSeenMS, &lastSeenMS, &repo.Sessions, &repo.DAU, &repo.WAU); err != nil {
+			return UsageReport{}, err
+		}
+		repo.FirstSeenAt = time.UnixMilli(firstSeenMS).UTC().Format(time.RFC3339Nano)
+		repo.LastSeenAt = time.UnixMilli(lastSeenMS).UTC().Format(time.RFC3339Nano)
+		report.Repos = append(report.Repos, repo)
 	}
 	if err := rows.Err(); err != nil {
 		return UsageReport{}, err

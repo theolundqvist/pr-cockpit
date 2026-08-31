@@ -49,10 +49,11 @@ func run(address string) error {
 	}
 	defer store.Close()
 	server, err := relay.NewServer(store, relay.Config{
-		WebhookSecret:     secret,
-		GitHubAPIURL:      envOr("GITHUB_API_URL", "https://api.github.com"),
-		ForwardWebhookURL: os.Getenv("RELAY_FORWARD_WEBHOOK_URL"),
-		Logger:            slog.Default(),
+		WebhookSecret:             secret,
+		GitHubAPIURL:              envOr("GITHUB_API_URL", "https://api.github.com"),
+		ForwardWebhookURL:         os.Getenv("RELAY_FORWARD_WEBHOOK_URL"),
+		ForwardRepoDiscoveryUntil: os.Getenv("RELAY_FORWARD_REPO_DISCOVERY_UNTIL"),
+		Logger:                    slog.Default(),
 	})
 	if err != nil {
 		return err

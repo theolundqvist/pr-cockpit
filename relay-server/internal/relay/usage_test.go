@@ -1,7 +1,9 @@
 package relay
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
@@ -22,10 +24,10 @@ func TestActivityUpsertUsesUTCDayAndUpdatesLoginAndSessions(t *testing.T) {
 	zone := time.FixedZone("UTC+2", 2*60*60)
 	first := time.Date(2026, 9, 1, 1, 30, 0, 0, zone)
 	last := first.Add(20 * time.Minute)
-	if err := store.RecordActivity(context.Background(), GitHubIdentity{ID: 42, Login: "old-login"}, first); err != nil {
+	if err := store.RecordActivity(context.Background(), GitHubIdentity{ID: 42, Login: "old-login"}, []string{"owner/repo"}, first); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordActivity(context.Background(), GitHubIdentity{ID: 42, Login: "new-login"}, last); err != nil {
+	if err := store.RecordActivity(context.Background(), GitHubIdentity{ID: 42, Login: "new-login"}, []string{"owner/repo"}, last); err != nil {
 		t.Fatal(err)
 	}
 	report, err := store.Usage(context.Background(), 1, last)
@@ -45,6 +47,12 @@ func TestActivityUpsertUsesUTCDayAndUpdatesLoginAndSessions(t *testing.T) {
 	if user.FirstSeenAt != first.UTC().Format(time.RFC3339Nano) || user.LastSeenAt != last.UTC().Format(time.RFC3339Nano) {
 		t.Fatalf("activity bounds = %s–%s", user.FirstSeenAt, user.LastSeenAt)
 	}
+	if len(user.Repos) != 1 || user.Repos[0].Name != "owner/repo" || user.Repos[0].Sessions != 2 {
+		t.Fatalf("user repos = %#v", user.Repos)
+	}
+	if len(report.Repos) != 1 || report.Repos[0].Name != "owner/repo" || report.Repos[0].Sessions != 2 {
+		t.Fatalf("repos = %#v", report.Repos)
+	}
 }
 
 func TestUsageDAUAndWAUUseUTCDateBoundaries(t *testing.T) {
@@ -59,7 +67,7 @@ func TestUsageDAUAndWAUUseUTCDateBoundaries(t *testing.T) {
 		{GitHubIdentity{ID: 2, Login: "week-boundary"}, now.AddDate(0, 0, -6)},
 		{GitHubIdentity{ID: 3, Login: "outside-week"}, now.AddDate(0, 0, -7)},
 	} {
-		if err := store.RecordActivity(context.Background(), activity.identity, activity.at); err != nil {
+		if err := store.RecordActivity(context.Background(), activity.identity, []string{"owner/repo"}, activity.at); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -76,6 +84,9 @@ func TestUsageDAUAndWAUUseUTCDateBoundaries(t *testing.T) {
 	if len(report.Days) != 8 || report.Days[6].Day != "2026-08-25" || len(report.Days[6].Users) != 2 || report.Days[7].Day != "2026-08-24" || len(report.Days[7].Users) != 1 {
 		t.Fatalf("days = %#v", report.Days)
 	}
+	if len(report.Repos) != 1 || report.Repos[0].DAU != 1 || report.Repos[0].WAU != 2 {
+		t.Fatalf("repo usage = %#v", report.Repos)
+	}
 }
 
 func TestCleanupKeepsExactlyNinetyUsageDatesAndReturnsMarkerCount(t *testing.T) {
@@ -87,13 +98,14 @@ func TestCleanupKeepsExactlyNinetyUsageDatesAndReturnsMarkerCount(t *testing.T) 
 		t.Fatal(err)
 	}
 	for _, activity := range []struct {
-		id int64
-		at time.Time
+		id   int64
+		repo string
+		at   time.Time
 	}{
-		{id: 89, at: now.AddDate(0, 0, -89)},
-		{id: 90, at: now.AddDate(0, 0, -90)},
+		{id: 89, repo: "owner/retained", at: now.AddDate(0, 0, -89)},
+		{id: 90, repo: "owner/expired", at: now.AddDate(0, 0, -90)},
 	} {
-		if err := store.RecordActivity(context.Background(), GitHubIdentity{ID: activity.id, Login: "user"}, activity.at); err != nil {
+		if err := store.RecordActivity(context.Background(), GitHubIdentity{ID: activity.id, Login: "user"}, []string{activity.repo}, activity.at); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -111,5 +123,57 @@ func TestCleanupKeepsExactlyNinetyUsageDatesAndReturnsMarkerCount(t *testing.T) 
 	}
 	if count != 1 || oldestDay != now.AddDate(0, 0, -89).Format(time.DateOnly) {
 		t.Fatalf("usage rows = %d, oldest day = %s", count, oldestDay)
+	}
+	var dailyRepoCount, allTimeRepoCount int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM usage_repo_daily`).Scan(&dailyRepoCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM usage_repos`).Scan(&allTimeRepoCount); err != nil {
+		t.Fatal(err)
+	}
+	if dailyRepoCount != 1 || allTimeRepoCount != 2 {
+		t.Fatalf("daily repo rows = %d, all-time repos = %d", dailyRepoCount, allTimeRepoCount)
+	}
+}
+
+func TestRepoSessionsIncrementAndSortStably(t *testing.T) {
+	store := newUsageStore(t)
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	identity := GitHubIdentity{ID: 1, Login: "user"}
+	if err := store.RecordActivity(context.Background(), identity, []string{"owner/b", "owner/c"}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordActivity(context.Background(), identity, []string{"owner/b", "owner/a"}, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	report, err := store.Usage(context.Background(), 1, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	userRepos := report.Days[0].Users[0].Repos
+	if len(userRepos) != 3 || userRepos[0].Name != "owner/a" || userRepos[1].Name != "owner/b" || userRepos[1].Sessions != 2 || userRepos[2].Name != "owner/c" {
+		t.Fatalf("user repos = %#v", userRepos)
+	}
+	if len(report.Repos) != 3 || report.Repos[0].Name != "owner/a" || report.Repos[1].Name != "owner/b" || report.Repos[1].Sessions != 2 || report.Repos[2].Name != "owner/c" {
+		t.Fatalf("repos = %#v", report.Repos)
+	}
+}
+
+func TestUsageJSONUsesStableEmptyRepoArrays(t *testing.T) {
+	store := newUsageStore(t)
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	if err := store.RecordActivity(context.Background(), GitHubIdentity{ID: 1, Login: "user"}, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	report, err := store.Usage(context.Background(), 1, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Count(encoded, []byte(`"repos":[]`)) != 2 {
+		t.Fatalf("usage JSON = %s", encoded)
 	}
 }
