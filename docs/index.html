@@ -401,21 +401,31 @@
     .benchmark-lane.is-origin .benchmark-p50 { background: color-mix(in srgb, var(--blue) 100%, transparent); }
 
     .benchmark-method {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: center;
-      gap: 8px 14px;
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       margin: 18px 0 0;
       color: var(--text-faint);
       font-family: var(--mono);
       font-size: 11px;
-      text-align: center;
     }
 
-    .benchmark-method a + a::before {
-      margin-right: 14px;
+    .benchmark-method::after {
+      position: absolute;
+      left: 50%;
       color: var(--text-faint);
       content: "|";
+      transform: translateX(-50%);
+    }
+
+    .benchmark-method a:first-child {
+      justify-self: end;
+      margin-right: 22px;
+    }
+
+    .benchmark-method a:last-child {
+      justify-self: start;
+      margin-left: 22px;
     }
 
     .benchmark-method a:hover {
@@ -460,47 +470,6 @@
       align-items: center;
     }
 
-    .linux-showcase {
-      display: grid;
-      gap: 18px;
-      margin-top: 32px;
-    }
-
-    .linux-primary {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) 219px;
-      gap: 18px;
-      align-items: end;
-    }
-
-    .linux-main {
-      width: 100%;
-      margin: 0;
-    }
-
-    .linux-utilities {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 18px;
-    }
-
-    .linux-frame {
-      min-width: 0;
-      margin: 0;
-    }
-
-    .linux-tray {
-      width: 219px;
-      justify-self: center;
-    }
-
-    .linux-frame figcaption {
-      margin-top: 10px;
-      color: var(--text-faint);
-      font-family: var(--mono);
-      font-size: 12px;
-      text-align: center;
-    }
 
 
     .showcase {
@@ -1064,13 +1033,6 @@
         gap: 24px;
       }
 
-      .linux-utilities {
-        grid-template-columns: 1fr;
-      }
-
-      .linux-primary {
-        grid-template-columns: 1fr;
-      }
 
       .section-intro {
         margin-bottom: 24px;
@@ -1340,62 +1302,6 @@
       </div>
     </section>
 
-    <section class="section-rule" id="linux">
-      <div class="wrap section">
-        <div class="section-intro">
-          <div>
-            <h2 class="section-title">Native on macOS and Linux.</h2>
-            <p class="section-lede">The same local cache, review workflow, command palette, tray controls, <code>prcockpit://</code> links, and self-update path. On Linux X11, <kbd>Super+Alt+K</kbd> opens search globally. Wayland runs through XWayland, where compositor policy can prevent the global shortcut.</p>
-          </div>
-        </div>
-        <div class="linux-showcase">
-          <div class="linux-primary">
-            <figure class="linux-frame linux-main">
-              <div class="shot-shell">
-                <button class="shot-button" type="button" data-lightbox="screenshots/landing-linux-main.png?v=365afc2" aria-label="Open Linux pull request screenshot">
-                  <img src="screenshots/landing-linux-main.png?v=365afc2" alt="PR Cockpit running natively on Linux with a pull request conversation open" width="1120" height="840" loading="lazy">
-                </button>
-              </div>
-              <figcaption>Linux · pull request conversation</figcaption>
-            </figure>
-            <figure class="linux-frame linux-tray">
-              <div class="shot-shell">
-                <button class="shot-button" type="button" data-lightbox="screenshots/landing-linux-tray.png?v=ada4de50" aria-label="Open Linux tray controls screenshot">
-                  <img src="screenshots/landing-linux-tray.png?v=ada4de50" alt="PR Cockpit Linux tray menu with Show, Update and Restart, and Quit actions" width="236" height="164" loading="lazy">
-                </button>
-              </div>
-              <figcaption>Tray controls</figcaption>
-            </figure>
-          </div>
-          <div class="linux-utilities">
-            <figure class="linux-frame">
-              <div class="shot-shell">
-                <button class="shot-button" type="button" data-lightbox="screenshots/landing-linux-files.png?v=365afc2" aria-label="Open Linux files screenshot">
-                  <img src="screenshots/landing-linux-files.png?v=365afc2" alt="PR Cockpit Files view running on Linux with the changed-file tree and split diff visible" width="1120" height="840" loading="lazy">
-                </button>
-              </div>
-              <figcaption>Files and diffs</figcaption>
-            </figure>
-            <figure class="linux-frame">
-              <div class="shot-shell">
-                <button class="shot-button" type="button" data-lightbox="screenshots/landing-linux-palette.png?v=365afc2" aria-label="Open Linux command palette screenshot">
-                  <img src="screenshots/landing-linux-palette.png?v=365afc2" alt="PR Cockpit global pull request command palette opened over the native Linux window" width="1120" height="840" loading="lazy">
-                </button>
-              </div>
-              <figcaption>Global command palette</figcaption>
-            </figure>
-            <figure class="linux-frame">
-              <div class="shot-shell">
-                <button class="shot-button" type="button" data-lightbox="screenshots/landing-linux-settings.png?v=365afc2" aria-label="Open Linux settings screenshot">
-                  <img src="screenshots/landing-linux-settings.png?v=365afc2" alt="PR Cockpit settings running in the native Linux desktop window" width="1120" height="840" loading="lazy">
-                </button>
-              </div>
-              <figcaption>Settings and local service</figcaption>
-            </figure>
-          </div>
-        </div>
-      </div>
-    </section>
 
     <section class="section-rule">
       <div class="wrap section">
