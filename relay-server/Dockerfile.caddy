@@ -1,0 +1,7 @@
+FROM caddy:2-alpine
+
+# BusyBox cp drops the security.capability xattr; the official binary's
+# cap_net_bind_service makes execve fail under cap_drop ALL + no-new-privileges,
+# and Caddy only binds unprivileged 8080/8443 here.
+RUN cp /usr/bin/caddy /tmp/caddy \
+    && mv /tmp/caddy /usr/bin/caddy

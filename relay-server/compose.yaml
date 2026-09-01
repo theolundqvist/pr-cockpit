@@ -49,7 +49,10 @@ services:
         max-file: "3"
 
   caddy:
-    image: caddy:2-alpine
+    image: pr-cockpit-caddy:local
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
     user: "${COCKPIT_UID:?COCKPIT_UID is required}:${COCKPIT_GID:?COCKPIT_GID is required}"
     environment:
       RELAY_DOMAIN: "${RELAY_DOMAIN:?RELAY_DOMAIN is required}"
