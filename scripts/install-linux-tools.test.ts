@@ -111,7 +111,7 @@ test("dry run plans both unconditional private pins even with external tools", a
   const downloadsBefore = readFileSync(f.log);
   const result = await runFixture(f, {}, ["--dry-run"]);
   expect(result.exitCode).toBe(0);
-  expect(result.stdout).toContain("would install pinned private Bun 1.2.22");
+  expect(result.stdout).toContain("would install pinned private Bun 1.3.14");
   expect(result.stdout).toContain("would install pinned private GitHub CLI 2.76.2");
   expect(readFileSync(f.log)).toEqual(downloadsBefore);
   expect(existsSync(tools)).toBe(false);
@@ -130,15 +130,15 @@ test("installs verified pinned Bun and GitHub CLI into the owned user tool root"
   expect(f.stderr).toBe("");
   const tools = join(f.dataHome, "pr-cockpit-tools");
   expect(lstatSync(join(tools, "bin/bun")).isSymbolicLink()).toBe(true);
-  expect(readlinkSync(join(tools, "bin/bun"))).toBe("../versions/bun-1.2.22/bun");
+  expect(readlinkSync(join(tools, "bin/bun"))).toBe("../versions/bun-1.3.14/bun");
   expect(readlinkSync(join(tools, "bin/gh"))).toBe("../versions/gh-2.76.2/gh");
-  expect(statSync(join(tools, "versions/bun-1.2.22/bun")).mode & 0o777).toBe(0o755);
+  expect(statSync(join(tools, "versions/bun-1.3.14/bun")).mode & 0o777).toBe(0o755);
   expect(statSync(join(tools, "versions/gh-2.76.2/gh")).mode & 0o777).toBe(0o755);
   const downloads = readFileSync(f.log, "utf8");
   expect(downloads).toContain("--proto =https --tlsv1.2 -fL");
   expect(downloads).toContain("--connect-timeout 10 --max-time 300");
   expect(downloads).toContain("--retry 3 --retry-delay 2 --retry-max-time 300 --retry-all-errors");
-  expect(downloads).toContain("bun-v1.2.22/bun-linux-x64.zip");
+  expect(downloads).toContain("bun-v1.3.14/bun-linux-x64.zip");
   expect(downloads).toContain("v2.76.2/gh_2.76.2_linux_amd64.tar.gz");
 });
 
@@ -154,7 +154,7 @@ test("normal mode provisions private pins without changing external tools", asyn
   expect(result.exitCode).toBe(0);
   expect(readFileSync(join(f.bin, "bun"))).toEqual(bunBefore);
   expect(readFileSync(join(f.bin, "gh"))).toEqual(ghBefore);
-  expect(readlinkSync(join(tools, "bin/bun"))).toBe("../versions/bun-1.2.22/bun");
+  expect(readlinkSync(join(tools, "bin/bun"))).toBe("../versions/bun-1.3.14/bun");
   expect(readlinkSync(join(tools, "bin/gh"))).toBe("../versions/gh-2.76.2/gh");
 });
 
@@ -170,7 +170,7 @@ test("validation-only paths mode ignores a newer managed link and returns its em
   symlinkSync("../versions/bun-9.9.9/bun", bunLink);
   const result = await runFixture(f, {}, ["--paths"]);
   expect(result.exitCode).toBe(0);
-  expect(result.stdout.trim()).toBe(`${tools}/versions/bun-1.2.22/bun\t${tools}/versions/gh-2.76.2/gh`);
+  expect(result.stdout.trim()).toBe(`${tools}/versions/bun-1.3.14/bun\t${tools}/versions/gh-2.76.2/gh`);
   expect(result.stderr).toBe("");
   for (const path of result.stdout.trim().split("\t")) {
     expect(lstatSync(path).isFile()).toBe(true);
@@ -182,7 +182,7 @@ test("validation-only paths mode ignores a newer managed link and returns its em
 test("validation-only paths mode fails without mutation when an embedded pin is missing", async () => {
   const f = await fixture();
   const tools = join(f.dataHome, "pr-cockpit-tools");
-  rmSync(join(tools, "versions/bun-1.2.22"), { recursive: true });
+  rmSync(join(tools, "versions/bun-1.3.14"), { recursive: true });
   const sentinel = join(tools, "sentinel");
   writeFileSync(sentinel, "keep");
   const downloadsBefore = readFileSync(f.log);
@@ -219,13 +219,13 @@ test.each(["missing", "symlink", "mode"] as const)(
 test("atomically repoints an exact prior managed pin and retains the old version", async () => {
   const f = await fixture();
   const tools = join(f.dataHome, "pr-cockpit-tools");
-  const prior = join(tools, "versions/bun-1.2.21");
+  const prior = join(tools, "versions/bun-1.2.22");
   mkdirSync(prior, { recursive: true, mode: 0o700 });
   executable(join(prior, "bun"), "exit 0");
-  writeFileSync(join(prior, ".pr-cockpit-tool"), `archive=594f454d51ce57199d4320c85cbd495be9c054ef17aaebca5e6c908abfda6179\nbinary=${"a".repeat(64)}\n`, { mode: 0o600 });
+  writeFileSync(join(prior, ".pr-cockpit-tool"), `archive=4c446af1a01d7b40e1e11baebc352f9b2bfd12887e51b97dd3b59879cee2743a\nbinary=${"a".repeat(64)}\n`, { mode: 0o600 });
   const link = join(tools, "bin/bun");
   rmSync(link);
-  symlinkSync("../versions/bun-1.2.21/bun", link);
+  symlinkSync("../versions/bun-1.2.22/bun", link);
   const proc = Bun.spawn([f.script], {
     env: { ...process.env, HOME: f.home, XDG_DATA_HOME: f.dataHome, PATH: `${tools}/bin:${f.bin}:/usr/bin:/bin` },
     stdout: "pipe",
@@ -234,8 +234,8 @@ test("atomically repoints an exact prior managed pin and retains the old version
   const stderr = await new Response(proc.stderr).text();
   expect(await proc.exited).toBe(0);
   expect(stderr).toBe("");
-  expect(readlinkSync(link)).toBe("../versions/bun-1.2.22/bun");
-  expect(readFileSync(join(prior, ".pr-cockpit-tool"), "utf8")).toContain("archive=594f454");
+  expect(readlinkSync(link)).toBe("../versions/bun-1.3.14/bun");
+  expect(readFileSync(join(prior, ".pr-cockpit-tool"), "utf8")).toContain("archive=4c446af");
 });
 
 (process.getuid?.() === 0 ? test : test.skip)("rejects UID zero before network or filesystem mutation", async () => {
@@ -268,7 +268,7 @@ test("rejects a duplicated exact archive member without publishing Bun", async (
   expect(f.exitCode).toBe(1);
   expect(f.stderr).toContain("does not contain exactly one bun-linux-x64/bun");
   expect(await Bun.file(join(f.dataHome, "pr-cockpit-tools/bin/bun")).exists()).toBe(false);
-  expect(await Bun.file(join(f.dataHome, "pr-cockpit-tools/versions/bun-1.2.22")).exists()).toBe(false);
+  expect(await Bun.file(join(f.dataHome, "pr-cockpit-tools/versions/bun-1.3.14")).exists()).toBe(false);
 });
 
 
@@ -309,7 +309,7 @@ test("rejects a self-declared marker for an unrecognized prior pin", async () =>
 
 test("refuses a changed owned tool version", async () => {
   const f = await fixture();
-  const binary = join(f.dataHome, "pr-cockpit-tools/versions/bun-1.2.22/bun");
+  const binary = join(f.dataHome, "pr-cockpit-tools/versions/bun-1.3.14/bun");
   writeFileSync(binary, "#!/usr/bin/env bash\nchanged\n");
   chmodSync(binary, 0o755);
   const proc = Bun.spawn([f.script], {
@@ -364,7 +364,7 @@ test("serializes concurrent installers and leaves exact managed links", async ()
   const results = await Promise.all([first, second]);
   expect(results.map((result) => result.exitCode)).toEqual([0, 0]);
   const bin = join(f.dataHome, "pr-cockpit-tools/bin");
-  expect(readlinkSync(join(bin, "bun"))).toBe("../versions/bun-1.2.22/bun");
+  expect(readlinkSync(join(bin, "bun"))).toBe("../versions/bun-1.3.14/bun");
   expect(readlinkSync(join(bin, "gh"))).toBe("../versions/gh-2.76.2/gh");
   expect(() => lstatSync(join(f.dataHome, ".pr-cockpit-tools.lock"))).toThrow();
 });
@@ -412,12 +412,12 @@ test("rolls both managed links back when the second atomic replacement fails", a
   const gh = join(tools, "bin/gh");
   rmSync(bun);
   rmSync(gh);
-  symlinkSync("../versions/bun-1.2.21/bun", bun);
+  symlinkSync("../versions/bun-1.2.22/bun", bun);
   symlinkSync("../versions/gh-2.75.0/gh", gh);
   const failedOnce = join(f.root, "failed-once");
   executable(join(f.bin, "mv"), `if [[ "\${1:-}" == "-Tf" && "\${3:-}" == */gh && ! -e ${JSON.stringify(failedOnce)} ]]; then touch ${JSON.stringify(failedOnce)}; exit 1; fi; if [[ "\${1:-}" == "-T" || "\${1:-}" == "-Tn" || "\${1:-}" == "-Tf" ]]; then /bin/mv "$2" "$3"; else /bin/mv "$@"; fi`);
   const result = await runFixture(f);
   expect(result.exitCode).toBe(1);
-  expect(readlinkSync(bun)).toBe("../versions/bun-1.2.21/bun");
+  expect(readlinkSync(bun)).toBe("../versions/bun-1.2.22/bun");
   expect(readlinkSync(gh)).toBe("../versions/gh-2.75.0/gh");
 });

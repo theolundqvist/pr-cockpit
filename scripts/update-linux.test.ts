@@ -33,7 +33,7 @@ async function invoke(gui: boolean, fail: "pull" | "stage" | "activate" | null =
   mkdirSync(join(manifest, ".."), { recursive: true });
   const currentScripts = join(home, ".local/share/pr-cockpit-runtime/current/scripts");
   mkdirSync(currentScripts, { recursive: true });
-  const activeBun = join(home, ".local/share/pr-cockpit-tools/versions/bun-1.2.22/bun");
+  const activeBun = join(home, ".local/share/pr-cockpit-tools/versions/bun-1.3.14/bun");
   const activeGh = join(home, ".local/share/pr-cockpit-tools/versions/gh-2.76.2/gh");
   executable(join(currentScripts, "install-linux-tools"), `printf 'verify\n' >> ${JSON.stringify(calls)}; [[ "\${1:-}" == "--paths" ]] && printf '%s\t%s\n' ${JSON.stringify(activeBun)} ${JSON.stringify(activeGh)}`);
   writeFileSync(join(currentScripts, "linux-lifecycle.ts"), "// invoked through the fake bun");

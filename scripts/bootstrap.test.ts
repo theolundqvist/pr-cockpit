@@ -141,7 +141,7 @@ test("Linux dry run names pinned user-tool downloads without network", async () 
     rmSync(join(root, "bin/gh"));
     const result = await runBootstrap({ home, target: join(root, "checkout"), path, dryRun: true });
     expect(result.exitCode).toBe(0);
-    expect(result.output).toContain("would download pinned Bun 1.2.22");
+    expect(result.output).toContain("would download pinned Bun 1.3.14");
     expect(result.output).toContain("bun-linux-x64.zip");
     expect(result.output).toContain("would download pinned GitHub CLI 2.76.2");
     expect(result.output).toContain("gh_2.76.2_linux_amd64.tar.gz");

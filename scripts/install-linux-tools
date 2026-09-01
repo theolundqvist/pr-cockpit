@@ -20,21 +20,21 @@ elif [[ "${1:-}" == "--paths" ]]; then
   paths_mode=1
 fi
 
-bun_version="1.2.22"
+bun_version="1.3.14"
 gh_version="2.76.2"
 case "$(/usr/bin/uname -m)" in
   x86_64)
     bun_asset="bun-linux-x64.zip"
-    bun_sha="4c446af1a01d7b40e1e11baebc352f9b2bfd12887e51b97dd3b59879cee2743a"
-    bun_prior_sha="594f454d51ce57199d4320c85cbd495be9c054ef17aaebca5e6c908abfda6179"
+    bun_sha="951ee2aee855f08595aeec6225226a298d3fea83a3dcd6465c09cbccdf7e848f"
+    bun_prior_sha="4c446af1a01d7b40e1e11baebc352f9b2bfd12887e51b97dd3b59879cee2743a"
     gh_arch="amd64"
     gh_sha="62544b0f3759bbf1155c0ac3d75838b5fe23d66dfb75cf8368f84fff8f82b93e"
     gh_prior_sha="18367ca38b4462889ae38fba6a18c53a4c2818b6af309bbe53d0810bb06036e9"
     ;;
   aarch64|arm64)
     bun_asset="bun-linux-aarch64.zip"
-    bun_sha="a97c687fb5e54de4e2fb0869a7ac9a2d9c3af75ac182e2b68138c1dd8f98131b"
-    bun_prior_sha="0e4c9e54876a160e91812ae3c62d36cfbd68f20e158cb732f63a0d6b7594287b"
+    bun_sha="a27ffb63a8310375836e0d6f668ae17fa8d8d18b88c37c821c65331973a19a3b"
+    bun_prior_sha="a97c687fb5e54de4e2fb0869a7ac9a2d9c3af75ac182e2b68138c1dd8f98131b"
     gh_arch="arm64"
     gh_sha="a77f6d709c5100cda8e9bbb8d8b7143120121233d9102ba2f2bc254134db18dc"
     gh_prior_sha="fc6352cd6a710fb34e92f4771801a2f0a9e14b4e354645fb74e7453ef766e462"
@@ -264,7 +264,7 @@ trusted_archive() {
   local leaf="$1" version="$2"
   case "$leaf:$version" in
     "bun:$bun_version") printf '%s' "$bun_sha" ;;
-    "bun:1.2.21") printf '%s' "$bun_prior_sha" ;;
+    "bun:1.2.22") printf '%s' "$bun_prior_sha" ;;
     "gh:$gh_version") printf '%s' "$gh_sha" ;;
     "gh:2.76.1") printf '%s' "$gh_prior_sha" ;;
     *) echo "pr-cockpit: refusing unrecognized managed tool pin: $leaf-$version" >&2; exit 1 ;;
