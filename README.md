@@ -93,7 +93,7 @@ pr-cockpit listen owner/repo#123
 - **The relay carries markers, not pull-request payloads.** It also carries compact Actions run and job state, including runner assignment, but never full pull-request payloads or job logs.
 - **Writes stay authenticated.** Comments, reviews, edits, thread resolution, and merges use the existing GitHub CLI login.
 - **Humans and agents share one cache.** The app uses WebSocket invalidations; the CLI and API expose the same refreshed state.
-- **Self-hosting is one Worker.** Deploy the relay to Cloudflare, create a GitHub App, and connect its URL—no separate database, server, or tunnel. [Complete self-hosting guide](docs/self-host-relay.md).
+- **Team sync is on by default.** New installs stream events over WebSocket from the hosted relay; point the relay URL at your own deployment to opt out. [Self-hosting guide](docs/self-host-relay.md).
 
 ## Install
 

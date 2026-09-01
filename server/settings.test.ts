@@ -280,3 +280,36 @@ test("shortcut defaults migrate once to an empty platform sentinel", async () =>
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test("relay URL defaults to the hosted relay and migrates the legacy worker URL", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-relay-settings-"));
+  const settingsModuleUrl = new URL("./settings.ts", import.meta.url).href;
+  const scenario = `
+    const { readSettings, seedSettings, writeSettings } = await import(${JSON.stringify(settingsModuleUrl)});
+    seedSettings();
+    const initial = readSettings().relay_url;
+    const legacy = writeSettings({ relay_url: "https://pr-cockpit-relay.theodor-lundqvist.workers.dev/" }).relay_url;
+    const custom = writeSettings({ relay_url: "https://relay.example.com" }).relay_url;
+    const off = writeSettings({ relay_url: "" }).relay_url;
+    console.log(JSON.stringify({ initial, legacy, custom, off }));
+  `;
+
+  const env = { ...Bun.env, COCKPIT_DATA_DIR: dataDir };
+  delete env.COCKPIT_RELAY_URL;
+  try {
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], { env, stdout: "pipe", stderr: "pipe" });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      process.exited,
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(stderr);
+    const result = JSON.parse(stdout);
+    expect(result.initial).toBe("https://relay.prcockpit.com");
+    expect(result.legacy).toBe("https://relay.prcockpit.com");
+    expect(result.custom).toBe("https://relay.example.com");
+    expect(result.off).toBe("");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});

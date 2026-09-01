@@ -174,15 +174,15 @@ export function cockpitWebhooksEnabled(): boolean {
   return getSetting("cockpit_webhooks") === "true";
 }
 
-const DEFAULT_RELAY_URL = "https://pr-cockpit-relay.theodor-lundqvist.workers.dev";
+const DEFAULT_RELAY_URL = "https://relay.prcockpit.com";
+const LEGACY_RELAY_URL = "https://pr-cockpit-relay.theodor-lundqvist.workers.dev";
 export const RELAY_APP_SLUG = "pr-cockpit-relay";
 export const RELAY_APP_INSTALL_URL = `https://github.com/apps/${RELAY_APP_SLUG}/installations/new`;
 
 // explicit empty-string setting means relay off — only null falls through to env/default
 export function relayConfig(): { url: string } {
-  return {
-    url: (getSetting("relay_url") ?? Bun.env.COCKPIT_RELAY_URL ?? DEFAULT_RELAY_URL).replace(/\/+$/, ""),
-  };
+  const url = (getSetting("relay_url") ?? Bun.env.COCKPIT_RELAY_URL ?? DEFAULT_RELAY_URL).replace(/\/+$/, "");
+  return { url: url === LEGACY_RELAY_URL ? DEFAULT_RELAY_URL : url };
 }
 
 export function forceMergeEnabled(repo: string): boolean {
