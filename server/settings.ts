@@ -176,7 +176,7 @@ export function cockpitWebhooksEnabled(): boolean {
 
 const DEFAULT_RELAY_URL = "https://relay.prcockpit.com";
 const LEGACY_RELAY_URL = "https://pr-cockpit-relay.theodor-lundqvist.workers.dev";
-export const RELAY_APP_SLUG = "pr-cockpit-relay";
+export const RELAY_APP_SLUG = "pr-cockpit-webhook-relay";
 export const RELAY_APP_INSTALL_URL = `https://github.com/apps/${RELAY_APP_SLUG}/installations/new`;
 
 // explicit empty-string setting means relay off — only null falls through to env/default

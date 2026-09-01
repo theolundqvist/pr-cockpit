@@ -8,7 +8,7 @@ const { finishEditorSession, runEditorSession } = require("./editorLaunch");
 const { launchSetupTerminal } = require("./setupLaunch");
 const { getNativePalette } = require("./nativePalette");
 const { configuredShortcuts, platformPolicy } = require("./platformPolicy");
-const { deepLinkHash, deepLinkParts, protocolArgFromArgv, protocolUrlFromArgv } = require("./protocolArgv");
+const { deepLinkHash, protocolAction, protocolArgFromArgv } = require("./protocolArgv");
 const { createShellProcessOwnership } = require("./shellProcessOwnership");
 app.setName("PR Cockpit");
 const desktopPolicy = platformPolicy();
@@ -227,9 +227,11 @@ if (!app.requestSingleInstanceLock()) {
   let boundsSaveTimer = null;
   let isQuitting = false;
   let pendingMainUrl = null;
-  let pendingMainShow = false;
+  const initialProtocolArg = process.platform === "linux" && isManaged ? protocolArgFromArgv(process.argv) : null;
+  const initialProtocolAction = initialProtocolArg ? protocolAction(initialProtocolArg) : null;
+  let pendingMainShow = initialProtocolAction?.type === "focus-main";
   let mainWindowReadyToShow = false;
-  let pendingDeepLink = process.platform === "linux" && isManaged ? deepLinkHash(protocolUrlFromArgv(process.argv)) : null;
+  let pendingDeepLink = initialProtocolAction?.type === "open-pr" ? deepLinkHash(initialProtocolArg) : null;
   let mainRetryTimer = null;
   let mainReady = false;
   let pendingFlashMessage = null;
@@ -405,13 +407,14 @@ if (!app.requestSingleInstanceLock()) {
 
     app.on("open-url", (event, url) => {
       event.preventDefault();
-      if (!deepLinkHash(url)) return;
+      const action = protocolAction(url);
+      if (!action) return;
       if (isManaged) {
-        openDeepLink(url);
+        if (action.type === "focus-main") showMainWindow();
+        else openDeepLink(url);
         return;
       }
       handingOff = true;
-      const parts = deepLinkParts(url);
       const installedLauncher = path.join(os.homedir(), "Library", "Application Support", "PR Cockpit", "launch");
       const usesInstalledLauncher = !process.env.COCKPIT_LAUNCHER && fs.existsSync(installedLauncher);
       const cockpit =
@@ -419,7 +422,8 @@ if (!app.requestSingleInstanceLock()) {
       const env = usesInstalledLauncher
         ? { ...process.env, COCKPIT_ROOT: path.join(__dirname, ".."), COCKPIT_LAUNCHER: cockpit, COCKPIT_NO_BUILD: "1" }
         : process.env;
-      spawn(cockpit, parts ? [`${parts[0]}/${parts[1]}#${parts[2]}`] : [], { detached: true, stdio: "ignore", env }).unref();
+      const args = action.type === "open-pr" ? [`${action.owner}/${action.repo}#${action.number}`] : [];
+      spawn(cockpit, args, { detached: true, stdio: "ignore", env }).unref();
       quitPrCockpit();
     });
   }
@@ -517,10 +521,12 @@ if (!app.requestSingleInstanceLock()) {
     if (argv.includes("--cockpit-hidden")) return;
     const protocolArg = protocolArgFromArgv(argv);
     if (protocolArg) {
-      const protocolUrl = protocolUrlFromArgv(argv);
-      if (protocolUrl) {
+      const action = protocolAction(protocolArg);
+      if (action?.type === "focus-main") {
+        showMainWindow();
+      } else if (action?.type === "open-pr") {
         pendingMainShow = true;
-        openDeepLink(protocolUrl);
+        openDeepLink(protocolArg);
       }
       return;
     }

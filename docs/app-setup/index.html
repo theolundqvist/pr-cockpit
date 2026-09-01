@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>GitHub connected — PR Cockpit</title>
+  <link rel="canonical" href="https://prcockpit.com/app-setup/">
+  <meta name="theme-color" content="#111110">
+  <link rel="icon" type="image/png" href="/assets/icon.png">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #111110;
+      --text: #f4f4f1;
+      --text-dim: #b9b9b4;
+      --text-faint: #82827d;
+      --green: #5ed28d;
+      --sans: "SF Pro Display", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      display: grid;
+      min-height: 100svh;
+      margin: 0;
+      padding: 24px;
+      place-items: center;
+      background:
+        radial-gradient(circle at 50% -8%, rgba(94, 210, 141, 0.08), transparent 28rem),
+        var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 15px;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    main {
+      max-width: 460px;
+      text-align: center;
+    }
+
+    .icon {
+      margin: 0 auto 22px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(30px, 7vw, 40px);
+      font-weight: 650;
+      letter-spacing: -0.04em;
+      line-height: 1.05;
+    }
+
+    .lede {
+      margin: 14px 0 0;
+      color: var(--text-dim);
+    }
+
+    .open-app {
+      display: inline-block;
+      margin-top: 28px;
+      padding: 12px 26px;
+      border-radius: 8px;
+      background: var(--green);
+      color: #111110;
+      font-weight: 600;
+      text-decoration: none;
+    }
+
+    .open-app:hover {
+      filter: brightness(1.08);
+    }
+
+    .open-app:focus-visible {
+      outline: 2px solid var(--text);
+      outline-offset: 3px;
+    }
+
+    .fallback {
+      margin: 22px 0 0;
+      color: var(--text-faint);
+      font-size: 13px;
+    }
+
+    .fallback a {
+      color: var(--text-dim);
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+
+    .fallback a:hover {
+      color: var(--text);
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <img class="icon" src="/assets/icon.png" alt="" width="56" height="56">
+    <h1>GitHub connected</h1>
+    <p class="lede">The webhook app is installed. PR Cockpit now refreshes your pull requests as GitHub events arrive.</p>
+    <a class="open-app" href="prcockpit://main">Open PR Cockpit</a>
+    <p class="fallback">Nothing opened? Launch PR Cockpit directly, or return to the <a href="/">homepage</a>.</p>
+  </main>
+  <script>
+    addEventListener("load", function () {
+      location.href = "prcockpit://main";
+    }, { once: true });
+  </script>
+</body>
+</html>

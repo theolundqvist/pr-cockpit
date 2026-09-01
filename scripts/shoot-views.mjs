@@ -924,7 +924,7 @@ async function onboardingFixtureRoutes(page, { relayCovered = true } = {}) {
     return route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ repos: Object.fromEntries(repos.map((repo) => [repo, relayCovered])), installUrl: "https://github.com/apps/pr-cockpit" }),
+      body: JSON.stringify({ repos: Object.fromEntries(repos.map((repo) => [repo, relayCovered])), installUrl: "https://github.com/apps/pr-cockpit-webhook-relay/installations/new" }),
     });
   });
   await page.route("**/api/refresh", (route) => route.fulfill({

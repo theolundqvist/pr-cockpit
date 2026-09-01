@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   AGENT_DEFAULTS,
+  RELAY_APP_INSTALL_URL,
   mergeAgents,
   normalizeCodeTheme,
   normalizeDiffLayout,
@@ -279,6 +280,10 @@ test("shortcut defaults migrate once to an empty platform sentinel", async () =>
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }
+});
+
+test("hosted relay install URL uses the current GitHub App", () => {
+  expect(RELAY_APP_INSTALL_URL).toBe("https://github.com/apps/pr-cockpit-webhook-relay/installations/new");
 });
 
 test("relay URL defaults to the hosted relay and migrates the legacy worker URL", async () => {
