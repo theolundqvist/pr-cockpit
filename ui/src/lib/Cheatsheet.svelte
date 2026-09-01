@@ -49,7 +49,7 @@
         { key: "e", label: "inline editor / archive" },
         { key: "⇧E", label: "external editor" },
         { key: "v", label: "review" },
-        { key: "s", label: "assign" },
+        { key: "s", label: "assign / pin from inbox" },
         { key: "q", label: "request review" },
         { key: "p", label: "prompt agent" },
         { key: "m", label: "merge" },

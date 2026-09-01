@@ -1,8 +1,8 @@
 <script>
-  let { label = "current" } = $props();
+  let { label = "checked out" } = $props();
 </script>
 
-<span class="current-branch-badge" title="This PR branch is checked out locally" aria-label="This PR branch is checked out locally">
+<span class="current-branch-badge" title="This is the branch checked out in your local repository" aria-label="This is the branch checked out in your local repository">
   <span class="dot" aria-hidden="true"></span>
   {label}
 </span>

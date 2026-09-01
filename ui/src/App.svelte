@@ -109,7 +109,11 @@
   );
 
   $effect(() => {
-    const onHash = () => (route = parseRoute(location.hash));
+    const onHash = () => {
+      const next = parseRoute(location.hash);
+      if (next.name === "inbox" && route.name !== "inbox") inboxRevision++;
+      route = next;
+    };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   });
@@ -331,12 +335,16 @@
         <ActionsRunPage repo={route.repo} runId={route.runId} />
       {:else if reposConfigured === false}
         <Onboarding onDone={finishSetup} />
-      {:else if reposConfigured}
-        <Inbox refreshRevision={inboxRevision} {pollCompletedAt} onFindPr={openPalette} />
-      {:else}
+      {:else if !reposConfigured}
         <div class="app-loading" role="status" aria-live="polite">
           <span class="app-loading-mark" aria-hidden="true"></span>
           <span>Loading your review workspace…</span>
+        </div>
+      {/if}
+
+      {#if reposConfigured && (route.name === "inbox" || route.name === "detail")}
+        <div class="inbox-cache" hidden={route.name !== "inbox"}>
+          <Inbox active={route.name === "inbox"} refreshRevision={inboxRevision} {pollCompletedAt} onFindPr={openPalette} />
         </div>
       {/if}
     </main>
@@ -408,7 +416,6 @@
     padding: 54px 10px 18px;
     border-right: 1px solid var(--border-soft);
     background: color-mix(in srgb, var(--surface) 42%, var(--bg));
-    backdrop-filter: blur(20px) saturate(135%);
   }
 
   .app-nav {
@@ -572,6 +579,11 @@
     min-height: 0;
     overflow: hidden;
     padding-top: 42px;
+  }
+
+  .inbox-cache {
+    width: 100%;
+    height: 100%;
   }
 
   .app-history {

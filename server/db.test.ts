@@ -5,6 +5,44 @@ import { join } from "node:path";
 
 const dbModuleUrl = new URL("./db.ts", import.meta.url).href;
 
+test("pinned PRs stay pinned until they are archived or leave the open inbox", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-pinned-lifecycle-"));
+  const scenario = `
+    const { db, evictStalePrs, getRanks, setArchived, setRank } = await import(${JSON.stringify(dbModuleUrl)});
+    const repo = "test/pinned-lifecycle";
+    setRank(repo, 1, 10);
+    setRank(repo, 2, 20);
+    const before = [...getRanks().keys()].sort();
+    setArchived(repo, 1, true);
+    const afterArchive = [...getRanks().keys()].sort();
+    evictStalePrs(repo, []);
+    const afterEviction = [...getRanks().keys()].sort();
+    console.log(JSON.stringify({ before, afterArchive, afterEviction }));
+    db.close();
+  `;
+
+  try {
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      process.exited,
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(stderr);
+    expect(JSON.parse(stdout)).toEqual({
+      before: [`test/pinned-lifecycle#1`, `test/pinned-lifecycle#2`],
+      afterArchive: [`test/pinned-lifecycle#2`],
+      afterEviction: [],
+    });
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("eviction preserves the newest tracked detail as immediately stale cache", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-eviction-"));
   const scenario = `
