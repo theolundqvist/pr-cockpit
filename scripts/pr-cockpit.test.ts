@@ -408,6 +408,256 @@ test("cache-run requests one Actions run through the trusted local endpoint", as
   }
 });
 
+test("--jobs --run forwards the exact run filter", async () => {
+  const requests: string[] = [];
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const url = new URL(request.url);
+      requests.push(`${request.method} ${url.pathname}${url.search}`);
+      if (url.pathname.endsWith("/actions-lease")) return Response.json({ ok: true });
+      return new Response("selected run\n");
+    },
+  });
+  try {
+    const process = Bun.spawn([
+      join(import.meta.dir, "pr-cockpit"),
+      "owner/repo#17",
+      "--jobs",
+      "--run",
+      "987",
+    ], {
+      env: { ...Bun.env, COCKPIT_PORT: String(server.port) },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [output, error, exitCode] = await Promise.all([
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+      process.exited,
+    ]);
+    expect(exitCode).toBe(0);
+    expect(error).toBe("");
+    expect(output).toBe("selected run\n");
+    expect(requests).toEqual([
+      "POST /api/agent/pr/owner/repo/17/actions-lease",
+      "GET /api/agent/pr/owner/repo/17/jobs?runId=987",
+    ]);
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("listen --run returns immediately when the cached latest attempt is complete", async () => {
+  let statusReads = 0;
+  const requests: string[] = [];
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const url = new URL(request.url);
+      requests.push(`${request.method} ${url.pathname}${url.search}`);
+      if (url.searchParams.get("format") === "json") {
+        statusReads++;
+        return Response.json({ selectedRun: { id: 987, attempt: 2, status: "completed", reconciled: true }, jobs: [] });
+      }
+      return new Response("completed run\n");
+    },
+  });
+  try {
+    const process = Bun.spawn([
+      join(import.meta.dir, "pr-cockpit"),
+      "listen",
+      "owner/repo#17",
+      "--run",
+      "987",
+    ], {
+      env: { ...Bun.env, COCKPIT_PORT: String(server.port), COCKPIT_LISTEN_INTERVAL: "0.01" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [output, error, exitCode] = await Promise.all([
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+      process.exited,
+    ]);
+    expect(exitCode).toBe(0);
+    expect(error).toBe("");
+    expect(output).toBe("completed run\n");
+    expect(statusReads).toBe(1);
+    expect(requests.filter((request) => request.includes("/runs/987/cache"))).toHaveLength(1);
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("listen --run ignores unrelated changes and follows the latest retry until completion", async () => {
+  let statusReads = 0;
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const url = new URL(request.url);
+      if (url.searchParams.get("format") === "json") {
+        statusReads++;
+        if (statusReads < 3) {
+          return Response.json({
+            selectedRun: { id: 987, attempt: 1, status: "in_progress" },
+            jobs: [{ id: statusReads, status: "completed" }],
+          });
+        }
+        if (statusReads === 3) {
+          return Response.json({
+            selectedRun: { id: 987, attempt: 2, status: "in_progress" },
+            jobs: [{ id: 3, status: "in_progress" }],
+          });
+        }
+        return Response.json({
+          selectedRun: { id: 987, attempt: 2, status: "completed", reconciled: true },
+          jobs: [{ id: 3, status: "completed" }],
+        });
+      }
+      return new Response("retry completed\n");
+    },
+  });
+  try {
+    const process = Bun.spawn([
+      join(import.meta.dir, "pr-cockpit"),
+      "listen",
+      "owner/repo#17",
+      "--run",
+      "987",
+    ], {
+      env: { ...Bun.env, COCKPIT_PORT: String(server.port), COCKPIT_LISTEN_INTERVAL: "0.01" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [output, error, exitCode] = await Promise.all([
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+      process.exited,
+    ]);
+    expect(exitCode).toBe(0);
+    expect(error).toBe("");
+    expect(output).toBe("retry completed\n");
+    expect(statusReads).toBe(4);
+  } finally {
+    server.stop(true);
+  }
+});
+
+
+test("listen --run drives one final reconciliation for a terminal unreconciled attempt", async () => {
+  let cacheRequests = 0;
+  let statusReads = 0;
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const url = new URL(request.url);
+      if (url.pathname.endsWith("/cache")) {
+        cacheRequests++;
+        return new Response("cached\n");
+      }
+      if (url.searchParams.get("format") === "json") {
+        statusReads++;
+        return Response.json({
+          selectedRun: {
+            id: 987,
+            attempt: 2,
+            status: "completed",
+            reconciled: cacheRequests >= 2,
+          },
+          jobs: [],
+        });
+      }
+      return new Response("reconciled run\n");
+    },
+  });
+  try {
+    const process = Bun.spawn([
+      join(import.meta.dir, "pr-cockpit"),
+      "listen",
+      "owner/repo#17",
+      "--run",
+      "987",
+    ], {
+      env: { ...Bun.env, COCKPIT_PORT: String(server.port), COCKPIT_LISTEN_INTERVAL: "0.01" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [output, error, exitCode] = await Promise.all([
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+      process.exited,
+    ]);
+    expect(exitCode).toBe(0);
+    expect(error).toBe("");
+    expect(output).toBe("reconciled run\n");
+    expect(cacheRequests).toBe(2);
+    expect(statusReads).toBe(2);
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("listen --run exits nonzero when ownership is lost after the initial lookup", async () => {
+  let statusReads = 0;
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const url = new URL(request.url);
+      if (url.searchParams.get("format") === "json") {
+        statusReads++;
+        if (statusReads === 1) {
+          return Response.json({
+            selectedRun: { id: 987, attempt: 1, status: "in_progress", reconciled: false },
+            jobs: [],
+          });
+        }
+        return Response.json({ error: "Actions run does not belong to this PR branch" }, { status: 404 });
+      }
+      return new Response("cached\n");
+    },
+  });
+  try {
+    const process = Bun.spawn([
+      join(import.meta.dir, "pr-cockpit"),
+      "listen",
+      "owner/repo#17",
+      "--run",
+      "987",
+    ], {
+      env: { ...Bun.env, COCKPIT_PORT: String(server.port), COCKPIT_LISTEN_INTERVAL: "0.01" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [, , exitCode] = await Promise.all([
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+      process.exited,
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(statusReads).toBe(2);
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("--run is rejected outside --jobs or listen", async () => {
+  const process = Bun.spawn([
+    join(import.meta.dir, "pr-cockpit"),
+    "owner/repo#17",
+    "--run",
+    "987",
+  ], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [, exitCode] = await Promise.all([
+    new Response(process.stderr).text(),
+    process.exited,
+  ]);
+  expect(exitCode).toBe(2);
+});
+
 test("update delegates to the running server and waits for the new revision", async () => {
   const root = mkdtempSync(join(tmpdir(), "pr-cockpit-update-"));
   const scripts = join(root, "scripts");

@@ -1775,9 +1775,107 @@ describe("Actions viewer API", () => {
         { method: "POST", headers: { "X-PR-Cockpit-CLI": "1" } },
       ));
       expect(response.status).toBe(200);
-      expect(requested).toEqual([repo, number, head, 987]);
+      expect(requested).toEqual([repo, number, head, "feature", 987]);
       expect(await response.text()).toContain("Actions run 987: fetched");
     } finally {
+      db.run("DELETE FROM prs WHERE repo = ? AND number = ?", [repo, number]);
+    }
+  });
+
+
+  test("trusted jobs route returns recent branch runs across SHAs and filters one latest attempt", async () => {
+    const repo = "http-actions/branch-jobs";
+    const number = 96135;
+    const head = "a".repeat(40);
+    const row = trackedPrRow({ repo, number, fetchedAt: new Date().toISOString() });
+    upsertPr({ ...row, head_sha: head });
+    const now = new Date().toISOString();
+    const runs = [
+      { id: 70, attempt: 1, owner: number, sha: "b".repeat(40), branch: "feature", status: "completed" },
+      { id: 71, attempt: 1, owner: null, sha: head, branch: "feature", status: "completed" },
+      { id: 72, attempt: 1, owner: number, sha: head, branch: "other", status: "completed" },
+      { id: 73, attempt: 1, owner: number + 1, sha: head, branch: "feature", status: "completed" },
+      { id: 74, attempt: 1, owner: number, sha: head, branch: "feature", status: "completed" },
+      { id: 74, attempt: 2, owner: number, sha: head, branch: "feature", status: "in_progress" },
+      { id: 75, attempt: 1, owner: number, sha: "c".repeat(40), branch: "feature", status: "completed" },
+    ];
+    for (const run of runs) {
+      upsertWorkflowRun({
+        repo,
+        run_id: run.id,
+        run_attempt: run.attempt,
+        pr_number: run.owner,
+        head_sha: run.sha,
+        head_branch: run.branch,
+        workflow_name: "Dispatch",
+        event: run.id === 70 ? "workflow_dispatch" : "push",
+        workflow_path: ".github/workflows/dispatch.yml",
+        status: run.status,
+        conclusion: run.status === "completed" ? "success" : null,
+        event_at: now,
+        html_url: null,
+      });
+      upsertRunJob({
+        repo,
+        job_id: run.id * 10 + run.attempt,
+        run_id: run.id,
+        run_attempt: run.attempt,
+        head_sha: run.sha,
+        head_branch: run.branch,
+        workflow_name: "Dispatch",
+        name: `job-${run.id}-${run.attempt}`,
+        status: run.status,
+        conclusion: run.status === "completed" ? "success" : null,
+        started_at: now,
+        completed_at: run.status === "completed" ? now : null,
+        html_url: null,
+        runner_name: null,
+        runner_group_name: null,
+        labels_json: "[]",
+        failed_step: null,
+      });
+    }
+    db.query("UPDATE workflow_runs SET fetched_at = datetime('now', '-73 hours') WHERE repo = ? AND run_id = ?")
+      .run(repo, 75);
+    db.run("UPDATE workflow_runs SET reconciled_at = ? WHERE repo = ? AND run_id = ?", [now, repo, 70]);
+    const fetchHandler = buildFetchHandler(4820);
+
+    try {
+      const all = await fetchHandler(new Request(
+        `http://127.0.0.1:4820/api/agent/pr/http-actions/branch-jobs/${number}/jobs?format=json`,
+      ));
+      expect(all.status).toBe(200);
+      expect(await all.json()).toMatchObject({
+        runs: [
+          { id: 74, attempt: 2, event: "push" },
+          { id: 71, attempt: 1, event: "push", reconciled: false },
+          { id: 70, attempt: 1, event: "workflow_dispatch", reconciled: true },
+        ],
+        jobs: [{ id: 701 }, { id: 711 }, { id: 742 }],
+      });
+
+      const exact = await fetchHandler(new Request(
+        `http://127.0.0.1:4820/api/agent/pr/http-actions/branch-jobs/${number}/jobs?format=json&runId=74`,
+      ));
+      expect(exact.status).toBe(200);
+      expect(await exact.json()).toMatchObject({
+        runs: [{ id: 74, attempt: 2 }],
+        selectedRun: { id: 74, attempt: 2, status: "in_progress", reconciled: false },
+        jobs: [{ id: 742 }],
+      });
+
+      const rejected = await fetchHandler(new Request(
+        `http://127.0.0.1:4820/api/agent/pr/http-actions/branch-jobs/${number}/jobs?format=json&runId=72`,
+      ));
+      const stale = await fetchHandler(new Request(
+        `http://127.0.0.1:4820/api/agent/pr/http-actions/branch-jobs/${number}/jobs?format=json&runId=75`,
+      ));
+      expect(stale.status).toBe(404);
+      expect(rejected.status).toBe(404);
+      expect(await rejected.json()).toEqual({ error: "Actions run does not belong to this PR branch" });
+    } finally {
+      db.run("DELETE FROM run_jobs WHERE repo = ?", [repo]);
+      db.run("DELETE FROM workflow_runs WHERE repo = ?", [repo]);
       db.run("DELETE FROM prs WHERE repo = ? AND number = ?", [repo, number]);
     }
   });

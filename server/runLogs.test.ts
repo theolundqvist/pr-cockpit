@@ -208,7 +208,7 @@ test("concurrent activation bootstraps once and terminal attempts reconcile once
   expect(result.leaseSeconds).toBeLessThanOrEqual(120);
 });
 
-test("an explicit run request caches one current-head run once and rejects another head", async () => {
+test("an explicit run request accepts a historical SHA on the PR branch and rejects other owners", async () => {
   const result = await runScenario("pr-cockpit-actions-requested-run-", `
     const actions = await import(${JSON.stringify(runLogsUrl)});
     const dbm = await import(${JSON.stringify(dbUrl)});
@@ -217,8 +217,8 @@ test("an explicit run request caches one current-head run once and rejects anoth
     let jobFetches = 0;
     let logFetches = 0;
     const rawRun = {
-      id: 55, run_attempt: 1, head_sha: head, head_branch: "feature", name: "CI",
-      path: ".github/workflows/ci.yml", status: "completed", conclusion: "failure",
+      id: 55, run_attempt: 1, head_sha: "b".repeat(40), head_branch: "feature", name: "CI",
+      path: ".github/workflows/ci.yml", event: "workflow_dispatch", status: "completed", conclusion: "failure",
       updated_at: "2026-08-24T10:04:00Z", html_url: "https://github.com/acme/app/actions/runs/55",
     };
     const fetchers = {
@@ -227,7 +227,7 @@ test("an explicit run request caches one current-head run once and rejects anoth
       fetchRunJobs: async () => {
         jobFetches++;
         return [{
-          id: 551, run_id: 55, run_attempt: 1, head_sha: head, head_branch: "feature",
+          id: 551, run_id: 55, run_attempt: 1, head_sha: "b".repeat(40), head_branch: "feature",
           workflow_name: "CI", name: "test", status: "completed", conclusion: "failure",
           started_at: "2026-08-24T10:01:00Z", completed_at: "2026-08-24T10:04:00Z",
           html_url: "https://github.com/acme/app/actions/runs/55/job/551",
@@ -238,20 +238,30 @@ test("an explicit run request caches one current-head run once and rejects anoth
       fetchJobLog: async () => { logFetches++; return "failure evidence"; },
       restRemaining: async () => 5000,
     };
-    const first = await actions.cacheActionsRun("acme/app", 7, head, 55, fetchers);
-    const second = await actions.cacheActionsRun("acme/app", 7, head, 55, fetchers);
-    const mismatch = await actions.cacheActionsRun("acme/app", 7, head, 56, {
+    const first = await actions.cacheActionsRun("acme/app", 7, head, "feature", 55, fetchers);
+    const second = await actions.cacheActionsRun("acme/app", 7, head, "feature", 55, fetchers);
+    const mismatch = await actions.cacheActionsRun("acme/app", 7, head, "feature", 56, {
       ...fetchers,
-      fetchWorkflowRun: async () => ({ ...rawRun, id: 56, head_sha: "b".repeat(40) }),
+      fetchWorkflowRun: async () => ({ ...rawRun, id: 56, head_branch: "other" }),
+    });
+    const otherOwner = await actions.cacheActionsRun("acme/app", 7, head, "feature", 57, {
+      ...fetchers,
+      fetchWorkflowRun: async () => ({ ...rawRun, id: 57, pull_requests: [{ number: 8 }] }),
+    });
+    const emptyBranch = await actions.cacheActionsRun("acme/app", 7, head, "feature", 58, {
+      ...fetchers,
+      fetchWorkflowRun: async () => ({ ...rawRun, id: 58, head_branch: "" }),
     });
     console.log(JSON.stringify({
       first,
       second,
       mismatch,
+      otherOwner,
+      emptyBranch,
       runFetches,
       jobFetches,
       logFetches,
-      runs: dbm.db.query("SELECT run_id, reconciled_at IS NOT NULL AS reconciled FROM workflow_runs ORDER BY run_id").all(),
+      runs: dbm.db.query("SELECT run_id,pr_number,head_sha,reconciled_at IS NOT NULL AS reconciled FROM workflow_runs ORDER BY run_id").all(),
       jobs: dbm.db.query("SELECT job_id, log_gz IS NOT NULL AS logged FROM run_jobs ORDER BY job_id").all(),
       lease: dbm.db.query("SELECT head_sha FROM actions_leases WHERE repo=? AND number=?").get("acme/app", 7),
     }));
@@ -260,14 +270,164 @@ test("an explicit run request caches one current-head run once and rejects anoth
   expect(result).toEqual({
     first: "fetched",
     second: "cached",
-    mismatch: "head-mismatch",
-    runFetches: 1,
+    mismatch: "ownership-mismatch",
+    otherOwner: "ownership-mismatch",
+    emptyBranch: "ownership-mismatch",
+    runFetches: 2,
     jobFetches: 1,
     logFetches: 1,
-    runs: [{ run_id: 55, reconciled: 1 }],
+    runs: [{ run_id: 55, pr_number: 7, head_sha: "b".repeat(40), reconciled: 1 }],
     jobs: [{ job_id: 551, logged: 1 }],
     lease: { head_sha: "a".repeat(40) },
   });
+});
+
+test("requested run ownership validates and claims every attempt atomically", async () => {
+  const result = await runScenario("pr-cockpit-actions-run-owner-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    const stored = {
+      repo: "acme/app", run_id: 60, head_sha: head, head_branch: "feature",
+      workflow_name: "Dispatch", workflow_path: ".github/workflows/dispatch.yml",
+      status: "completed", conclusion: "success", event_at: "2026-08-24T10:04:00Z",
+      html_url: null,
+    };
+    dbm.upsertWorkflowRun({ ...stored, run_attempt: 1, pr_number: 8 });
+    dbm.upsertWorkflowRun({ ...stored, run_attempt: 2, pr_number: null });
+    const mismatch = await actions.cacheActionsRun("acme/app", 7, head, "feature", 60, {
+      fetchWorkflowRun: async () => ({
+        id: 60, run_attempt: 2, head_sha: head, head_branch: "feature", name: "Dispatch",
+        path: ".github/workflows/dispatch.yml", event: "workflow_dispatch",
+        status: "completed", conclusion: "success", updated_at: "2026-08-24T10:05:00Z",
+        html_url: null,
+      }),
+      fetchWorkflowRuns: async () => [],
+      fetchRunJobs: async () => [],
+      fetchJobLog: async () => "",
+      restRemaining: async () => 5000,
+    });
+    dbm.upsertWorkflowRun({ ...stored, run_id: 62, run_attempt: 1, pr_number: 8 });
+    dbm.upsertWorkflowRun({
+      ...stored, run_id: 62, run_attempt: 1, pr_number: 9, event_at: "2026-08-24T10:06:00Z",
+    });
+    dbm.upsertWorkflowRun({
+      ...stored, run_id: 63, run_attempt: 1, pr_number: null, head_branch: "",
+    });
+    dbm.upsertWorkflowRun({
+      ...stored, run_id: 63, run_attempt: 2, pr_number: null,
+    });
+    const branchMismatch = dbm.claimWorkflowRunForPr("acme/app", 63, 7, "feature");
+    console.log(JSON.stringify({
+      mismatch,
+      attempts: dbm.db.query(
+        "SELECT run_attempt,pr_number FROM workflow_runs WHERE repo=? AND run_id=? ORDER BY run_attempt",
+      ).all("acme/app", 60),
+      invariantOwner: dbm.latestWorkflowRunAttempt("acme/app", 62)?.pr_number,
+      branchMismatch,
+      branchOwners: dbm.db.query(
+        "SELECT pr_number FROM workflow_runs WHERE repo=? AND run_id=? ORDER BY run_attempt",
+      ).all("acme/app", 63),
+    }));
+  `);
+
+  expect(result).toEqual({
+    mismatch: "ownership-mismatch",
+    attempts: [
+      { run_attempt: 1, pr_number: 8 },
+      { run_attempt: 2, pr_number: null },
+    ],
+    branchMismatch: false,
+    branchOwners: [{ pr_number: null }, { pr_number: null }],
+    invariantOwner: 8,
+  });
+});
+
+test("a repeated explicit cache discovers and reconciles the latest retry attempt", async () => {
+  const result = await runScenario("pr-cockpit-actions-run-retry-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    let attempt = 0;
+    const fetchers = {
+      fetchWorkflowRun: async () => {
+        attempt++;
+        return {
+          id: 61, run_attempt: attempt, head_sha: head, head_branch: "feature", name: "Dispatch",
+          path: ".github/workflows/dispatch.yml", event: "workflow_dispatch",
+          status: "completed", conclusion: "success", updated_at: \`2026-08-24T10:0\${attempt}:00Z\`,
+          html_url: null,
+        };
+      },
+      fetchWorkflowRuns: async () => [],
+      fetchRunJobs: async (_repo, runId, runAttempt) => {
+        const selectedAttempt = runAttempt ?? 1;
+        return [{
+          id: 610 + selectedAttempt, run_id: runId, run_attempt: selectedAttempt, head_sha: head,
+          head_branch: "feature", workflow_name: "Dispatch", name: \`attempt-\${selectedAttempt}\`,
+          status: "completed", conclusion: "skipped", started_at: null, completed_at: null,
+          html_url: null, runner_name: null, runner_group_name: null, labels: [], steps: [],
+        }];
+      },
+      fetchJobLog: async () => { throw new Error("skipped jobs have no log"); },
+      restRemaining: async () => 5000,
+    };
+    const first = await actions.cacheActionsRun("acme/app", 7, head, "feature", 61, fetchers);
+    const second = await actions.cacheActionsRun("acme/app", 7, head, "feature", 61, fetchers);
+    console.log(JSON.stringify({
+      first,
+      second,
+      attempt,
+      latest: dbm.latestWorkflowRunAttempt("acme/app", 61),
+      jobs: dbm.db.query("SELECT job_id,run_attempt FROM run_jobs WHERE repo=? AND run_id=?").all("acme/app", 61),
+    }));
+  `);
+
+  expect(result.first).toBe("fetched");
+  expect(result.second).toBe("fetched");
+  expect(result.attempt).toBe(2);
+  expect(result.latest).toMatchObject({ run_attempt: 2, reconciled_at: expect.any(String) });
+  expect(result.jobs).toEqual([{ job_id: 612, run_attempt: 2 }]);
+});
+
+
+test("an explicit terminal cache fails when final reconciliation is incomplete", async () => {
+  const result = await runScenario("pr-cockpit-actions-run-reconcile-failure-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    let error = "";
+    try {
+      await actions.cacheActionsRun("acme/app", 7, head, "feature", 64, {
+        fetchWorkflowRun: async () => ({
+          id: 64, run_attempt: 1, head_sha: head, head_branch: "feature", name: "Dispatch",
+          path: ".github/workflows/dispatch.yml", event: "workflow_dispatch",
+          status: "completed", conclusion: "failure", updated_at: "2026-08-24T10:04:00Z",
+          html_url: null,
+        }),
+        fetchWorkflowRuns: async () => [],
+        fetchRunJobs: async () => [{
+          id: 641, run_id: 64, run_attempt: 1, head_sha: head, head_branch: "feature",
+          workflow_name: "Dispatch", name: "failed", status: "completed", conclusion: "failure",
+          started_at: null, completed_at: null, html_url: null, runner_name: null,
+          runner_group_name: null, labels: [], steps: [],
+        }],
+        fetchJobLog: async () => { throw new Error("log unavailable"); },
+        restRemaining: async () => 5000,
+      });
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : String(caught);
+    }
+    console.log(JSON.stringify({
+      error,
+      run: dbm.latestWorkflowRunAttempt("acme/app", 64),
+      job: dbm.db.query("SELECT log_error FROM run_jobs WHERE repo=? AND job_id=?").get("acme/app", 641),
+    }));
+  `);
+
+  expect(result.error).toBe("Actions run 64 reconciliation did not complete");
+  expect(result.run).toMatchObject({ status: "completed", reconciled_at: null });
+  expect(result.job).toEqual({ log_error: "log unavailable" });
 });
 
 test("an explicit activation for a new head queues behind an in-flight activation for the old head", async () => {

@@ -882,7 +882,7 @@ const upsertWorkflowRunStmt = db.prepare(`
     run_started_at, run_number, html_url, fetched_at
   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   ON CONFLICT (repo, run_id, run_attempt) DO UPDATE SET
-    pr_number = COALESCE(excluded.pr_number, workflow_runs.pr_number),
+    pr_number = COALESCE(workflow_runs.pr_number, excluded.pr_number),
     head_sha = excluded.head_sha, head_branch = excluded.head_branch,
     workflow_name = excluded.workflow_name, workflow_path = excluded.workflow_path,
     display_title = excluded.display_title, event = excluded.event, actor_login = excluded.actor_login,
@@ -1080,6 +1080,46 @@ export function workflowRunsForCommit(repo: string, headSha: string): WorkflowRu
     "SELECT * FROM workflow_runs WHERE repo = ? AND head_sha = ? ORDER BY run_id, run_attempt",
   ).all(repo, headSha);
 }
+
+export function workflowRunsForPrBranch(repo: string, number: number, headBranch: string): WorkflowRunRow[] {
+  return db.query<WorkflowRunRow, [string, string, number]>(`
+    SELECT * FROM workflow_runs
+    WHERE repo = ? AND head_branch = ? AND (pr_number IS NULL OR pr_number = ?)
+      AND fetched_at >= datetime('now', '-72 hours')
+    ORDER BY event_at DESC, run_id DESC, run_attempt DESC
+  `).all(repo, headBranch, number);
+}
+
+const claimWorkflowRunForPrTxn = db.transaction((
+  repo: string,
+  runId: number,
+  number: number,
+  headBranch: string,
+): boolean => {
+  const attempts = db.query<{ pr_number: number | null; head_branch: string }, [string, number]>(
+    "SELECT pr_number, head_branch FROM workflow_runs WHERE repo = ? AND run_id = ?",
+  ).all(repo, runId);
+  if (attempts.some((attempt) =>
+    !attempt.head_branch
+    || attempt.head_branch !== headBranch
+    || (attempt.pr_number !== null && attempt.pr_number !== number)
+  )) {
+    return false;
+  }
+  db.prepare("UPDATE workflow_runs SET pr_number = ? WHERE repo = ? AND run_id = ? AND pr_number IS NULL")
+    .run(number, repo, runId);
+  return true;
+});
+
+export function claimWorkflowRunForPr(
+  repo: string,
+  runId: number,
+  number: number,
+  headBranch: string,
+): boolean {
+  return claimWorkflowRunForPrTxn(repo, runId, number, headBranch);
+}
+
 export function listWorkflowRuns(repos: string[], limit = 200, offset = 0): WorkflowRunRow[] {
   if (repos.length === 0) return [];
   const placeholders = repos.map(() => "?").join(", ");
@@ -1130,6 +1170,26 @@ export function listRunJobsForRun(repo: string, runId: number, runAttempt: numbe
      WHERE repo = ? AND run_id = ? AND run_attempt = ?
      ORDER BY COALESCE(started_at, completed_at), job_id`,
   ).all(repo, runId, runAttempt);
+}
+
+export function listRunJobsForPrBranch(repo: string, number: number, headBranch: string): RunJobRow[] {
+  return db.query<RunJobRow, [string, string, number]>(`
+    SELECT j.repo, j.job_id, j.run_id, j.run_attempt, j.head_sha, j.head_branch,
+      j.workflow_name, j.name, j.status, j.conclusion, j.started_at, j.completed_at,
+      j.html_url, j.runner_name, j.runner_group_name, j.labels_json, j.failed_step,
+      j.log_bytes, j.log_truncated, j.log_error, j.log_format_version, j.fetched_at
+    FROM run_jobs j
+    JOIN workflow_runs r
+      ON r.repo = j.repo AND r.run_id = j.run_id AND r.run_attempt = j.run_attempt
+    WHERE r.repo = ? AND r.head_branch = ? AND (r.pr_number IS NULL OR r.pr_number = ?)
+      AND r.fetched_at >= datetime('now', '-72 hours')
+      AND NOT EXISTS (
+        SELECT 1 FROM workflow_runs newer
+        WHERE newer.repo = r.repo AND newer.run_id = r.run_id
+          AND newer.run_attempt > r.run_attempt
+      )
+    ORDER BY COALESCE(j.started_at, j.completed_at), j.job_id
+  `).all(repo, headBranch, number);
 }
 
 export interface ActionsLeaseRow {

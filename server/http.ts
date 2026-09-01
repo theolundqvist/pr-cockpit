@@ -7,6 +7,7 @@ import {
   getDiff,
   getFileContents,
   githubGraphqlUsage,
+  listRunJobsForPrBranch,
   getPr,
   getPrByBranch,
   getRanks,
@@ -22,6 +23,7 @@ import {
   listPrs,
   listRunJobs,
   listRunJobsForRun,
+  workflowRunsForPrBranch,
   listWorkflowRuns,
   workflowRunsForLease,
   saveDiff,
@@ -1451,6 +1453,7 @@ type CachedActionsContext = {
   num: number;
   headSha: string;
   currentHeadSha: string;
+  headBranch: string;
   baseSha: string | null;
   commits: PullRequestCommit[];
 };
@@ -1471,6 +1474,7 @@ function cachedActionsContext(owner: string, repo: string, number: string): Cach
     repoName,
     num,
     headSha: detail.headRefOid,
+    headBranch: detail.headRefName,
     currentHeadSha: detail.headRefOid,
     baseSha: detail.baseRefOid ?? null,
     commits,
@@ -1542,6 +1546,7 @@ function serializeActionRun(run: WorkflowRunRow, workflowName = run.workflow_nam
     actorLogin: run.actor_login,
     status: run.status,
     conclusion: run.conclusion,
+    reconciled: run.reconciled_at !== null,
     eventAt: run.event_at,
     createdAt: run.created_at,
     updatedAt: run.updated_at,
@@ -1855,10 +1860,36 @@ async function handleActionLog(
   }
 }
 
-function handleAgentPrJobs(owner: string, repo: string, number: string): Response {
+function handleAgentPrJobs(owner: string, repo: string, number: string, url: URL): Response {
   const context = cachedActionsContext(owner, repo, number);
   if (context instanceof Response) return context;
-  return new Response(formatRunJobs(context.headSha, listRunJobs(context.repoName, context.headSha)), {
+  const requestedRunId = url.searchParams.get("runId");
+  let runId: number | null = null;
+  if (requestedRunId !== null) {
+    runId = Number(requestedRunId);
+    if (!Number.isSafeInteger(runId) || runId <= 0) {
+      return json({ error: "valid Actions run ID required" }, 400);
+    }
+  }
+
+  const runs = latestActionRunAttempts(
+    workflowRunsForPrBranch(context.repoName, context.num, context.headBranch),
+  );
+  const selectedRun = runId === null ? null : runs.find((run) => run.run_id === runId) ?? null;
+  if (runId !== null && !selectedRun) {
+    return json({ error: "Actions run does not belong to this PR branch" }, 404);
+  }
+  const rows = listRunJobsForPrBranch(context.repoName, context.num, context.headBranch)
+    .filter((job) => selectedRun === null || job.run_id === selectedRun.run_id);
+  if (url.searchParams.get("format") === "json") {
+    return json({
+      headBranch: context.headBranch,
+      runs: (selectedRun ? [selectedRun] : runs).map((run) => serializeActionRun(run)),
+      selectedRun: selectedRun ? serializeActionRun(selectedRun) : null,
+      jobs: rows.map(serializeActionJob),
+    });
+  }
+  return new Response(formatRunJobs(selectedRun?.head_sha ?? context.headSha, rows), {
     headers: { "content-type": "text/plain; charset=utf-8" },
   });
 }
@@ -1876,12 +1907,22 @@ async function handleAgentCacheRun(
   if (!Number.isSafeInteger(id) || id <= 0) return json({ error: "valid Actions run ID required" }, 400);
 
   try {
-    const result = await runtime.cacheActionsRun(context.repoName, context.num, context.headSha, id);
-    if (result === "head-mismatch") {
-      return json({ error: "Actions run does not belong to the current PR head" }, 409);
+    const result = await runtime.cacheActionsRun(
+      context.repoName,
+      context.num,
+      context.headSha,
+      context.headBranch,
+      id,
+    );
+    if (result === "ownership-mismatch") {
+      return json({ error: "Actions run does not belong to this PR branch" }, 409);
     }
-    const jobs = listRunJobs(context.repoName, context.headSha).filter((job) => job.run_id === id);
-    return new Response(`Actions run ${id}: ${result}\n\n${formatRunJobs(context.headSha, jobs)}`, {
+    const selected = workflowRunsForPrBranch(context.repoName, context.num, context.headBranch)
+      .find((run) => run.run_id === id) ?? null;
+    const jobs = selected
+      ? listRunJobsForRun(context.repoName, id, selected.run_attempt)
+      : [];
+    return new Response(`Actions run ${id}: ${result}\n\n${formatRunJobs(selected?.head_sha ?? context.headSha, jobs)}`, {
       headers: { "content-type": "text/plain; charset=utf-8" },
     });
   } catch (error) {
@@ -3041,7 +3082,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       parts[2] === "pr"
     ) {
       if (parts[6] === "diff") return handleAgentPrDiff(parts[3]!, parts[4]!, parts[5]!, url);
-      if (parts[6] === "jobs") return handleAgentPrJobs(parts[3]!, parts[4]!, parts[5]!);
+      if (parts[6] === "jobs") return handleAgentPrJobs(parts[3]!, parts[4]!, parts[5]!, url);
       if (parts[6] === "logs") return handleAgentPrLogs(parts[3]!, parts[4]!, parts[5]!, url);
       if (parts[6] === "file") return handleAgentPrFile(parts[3]!, parts[4]!, parts[5]!, url);
     }

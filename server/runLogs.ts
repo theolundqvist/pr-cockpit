@@ -3,8 +3,10 @@ import { promisify } from "node:util";
 import {
   RUN_JOB_LOG_FORMAT_VERSION,
   actionsLease,
+  claimWorkflowRunForPr,
   getFileContents,
   getRunJobLog,
+  latestWorkflowRunAttempt,
   listRunJobs,
   markActionsLeaseBootstrapped,
   markWorkflowRunJobsFetched,
@@ -147,6 +149,29 @@ function compactRun(run: WorkflowRun): CompactRun {
     updatedAt: run.updated_at ?? null,
     runStartedAt: run.run_started_at ?? null,
     runNumber: run.run_number ?? 0,
+    htmlUrl: run.html_url,
+  };
+}
+
+function compactStoredRun(run: WorkflowRunRow): CompactRun {
+  return {
+    id: run.run_id,
+    attempt: run.run_attempt,
+    headSha: run.head_sha,
+    headBranch: run.head_branch,
+    workflowName: run.workflow_name,
+    workflowPath: run.workflow_path,
+    displayTitle: run.display_title,
+    event: run.event,
+    actorLogin: run.actor_login,
+    prNumber: run.pr_number,
+    status: run.status,
+    conclusion: run.conclusion,
+    eventAt: run.event_at,
+    createdAt: run.created_at,
+    updatedAt: run.updated_at,
+    runStartedAt: run.run_started_at,
+    runNumber: run.run_number,
     htmlUrl: run.html_url,
   };
 }
@@ -469,22 +494,34 @@ export async function cacheActionsRun(
   repo: string,
   number: number,
   headSha: string,
+  headBranch: string,
   runId: number,
   fetchers: RequestedRunFetchers = liveRequestedRunFetchers,
-): Promise<"cached" | "fetched" | "head-mismatch"> {
-  const cached = workflowRunsForLease(repo, number, headSha)
-    .filter((run) => run.run_id === runId)
-    .at(-1);
-  if (cached?.status === "completed" && cached.reconciled_at !== null) {
-    renewActionsLease(repo, number, headSha);
-    return "cached";
+): Promise<"cached" | "fetched" | "ownership-mismatch"> {
+  const run = compactRun(await fetchers.fetchWorkflowRun(repo, runId));
+  if (
+    !run.headBranch
+    || run.headBranch !== headBranch
+    || (run.prNumber !== null && run.prNumber !== number)
+    || !claimWorkflowRunForPr(repo, runId, number, headBranch)
+  ) {
+    return "ownership-mismatch";
   }
 
-  const run = compactRun(await fetchers.fetchWorkflowRun(repo, runId));
-  if (run.headSha !== headSha) return "head-mismatch";
   storeRun(repo, number, run);
+  if (!claimWorkflowRunForPr(repo, runId, number, headBranch)) {
+    return "ownership-mismatch";
+  }
+  const latest = latestWorkflowRunAttempt(repo, runId);
+  if (!latest) throw new Error("Actions run disappeared while caching");
   renewActionsLease(repo, number, headSha);
-  await queueReconciliation(repo, run, fetchers, false);
+  if (latest.status === "completed" && latest.reconciled_at !== null) {
+    return "cached";
+  }
+  const reconciled = await queueReconciliation(repo, compactStoredRun(latest), fetchers, false);
+  if (latest.status === "completed" && !reconciled) {
+    throw new Error(`Actions run ${runId} reconciliation did not complete`);
+  }
   return "fetched";
 }
 

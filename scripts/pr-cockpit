@@ -8,7 +8,7 @@ Read and mutate pull requests through PR Cockpit's cache and mutation queue.
 
 Usage:
   pr-cockpit [REF] [READ_OPTION]
-  pr-cockpit listen [REF]
+  pr-cockpit listen [REF] [--run RUN_ID]
   pr-cockpit resolve REF THREAD
   pr-cockpit comment REF --body-file FILE
   pr-cockpit reply REF THREAD --body-file FILE
@@ -40,6 +40,7 @@ Other commands:
 
 Options:
   --jobs              cached Actions jobs, including queued and running state
+  --run RUN_ID        with --jobs, select one run; with listen, wait for its completion
   --json              machine-readable Cockpit status
   --diff              cached unified diff
   --file PATH         file contents at the PR head
@@ -53,6 +54,7 @@ Options:
 
 Read options:
   --jobs               cached Actions jobs, including queued and running state
+  --run RUN_ID         with --jobs, select one run; with listen, wait for its completion
   --json               machine-readable Cockpit status
   --diff               cached unified diff
   --file PATH          file contents at the PR head
@@ -161,6 +163,7 @@ since=""
 comments="1"
 listen_scope="all"
 body_file=""
+run_id=""
 mutation_method=""
 force="0"
 comment_path=""
@@ -198,6 +201,11 @@ while (($#)); do
       mode="file"
       shift
       file_path="$1"
+      ;;
+    --run)
+      [[ $# -gt 1 && "$2" =~ ^[1-9][0-9]*$ ]] || usage
+      shift
+      run_id="$1"
       ;;
     --new-since)
       [[ $# -gt 1 ]] || usage
@@ -269,6 +277,11 @@ done
 
 [[ -z "$since" || "$mode" = "summary" || "$mode" = "json" ]] || usage
 [[ "$comments" = "1" || "$mode" = "summary" || "$mode" = "json" ]] || usage
+[[ -z "$run_id" || "$mode" = "jobs" || "$command" = "listen" ]] || usage
+if [[ "$command" = "listen" && -n "$run_id" ]]; then
+  [[ "$listen_scope" = "all" && -z "$since" && "$comments" = "1" && ( "$mode" = "summary" || "$mode" = "jobs" ) ]] || usage
+  mode="jobs"
+fi
 if [[ "$command" = "resolve" ]]; then
   [[ -n "$ref" && "$mode" = "summary" && -z "$since" && "$comments" = "1" && "${#positionals[@]}" -eq 1 && "${positionals[0]}" =~ ^[0-9a-f]{10}$ ]] || usage
 elif [[ "$command" = "cache-run" ]]; then
@@ -399,6 +412,19 @@ switch (operation) {
     console.log(argument === "ci" ? Number(failedCi) : argument === "comments" ? Number(openComments) : Number(failedCi || openComments));
     break;
   }
+  case "run-state": {
+    const run = input.selectedRun;
+    if (!run) {
+      console.log("missing");
+    } else if (run.status !== "completed") {
+      console.log("pending");
+    } else if (run.reconciled === true) {
+      console.log("complete");
+    } else {
+      console.log(`reconcile:${run.attempt}`);
+    }
+    break;
+  }
   default:
     process.exit(2);
 }
@@ -492,6 +518,7 @@ esac
 [[ "$command" != "resolve" || -z "$uri_comments" ]] || usage
 [[ "$command" != "cache-run" || -z "$uri_comments" ]] || usage
 [[ "$mutation_command" != "1" || -z "$uri_comments" ]] || usage
+[[ -z "$run_id" || -z "$uri_comments" ]] || usage
 owner=${repo%/*}
 name=${repo#*/}
 base_url="http://127.0.0.1:$port/api/agent/pr/$owner/$name/$number"
@@ -503,6 +530,32 @@ fetch_pr_json() {
     "$base_url"
 }
 
+
+fetch_run_json() {
+  curl --noproxy '*' -sS --fail-with-body --get \
+    --data-urlencode "runId=$run_id" \
+    --data-urlencode "format=json" \
+    "$base_url/jobs"
+}
+wait_for_run_completion() {
+  local interval=$1 payload state reconcile_attempt=""
+  curl --noproxy '*' -sS --fail-with-body -X POST -H "X-PR-Cockpit-CLI: 1" \
+    "$base_url/runs/$run_id/cache" >/dev/null
+  payload=$(fetch_run_json)
+  while true; do
+    state=$(json_transform run-state <<<"$payload")
+    [[ "$state" != "complete" ]] || return 0
+    if [[ "$state" = reconcile:* && "${state#reconcile:}" != "$reconcile_attempt" ]]; then
+      reconcile_attempt=${state#reconcile:}
+      curl --noproxy '*' -sS --fail-with-body -X POST -H "X-PR-Cockpit-CLI: 1" \
+        "$base_url/runs/$run_id/cache" >/dev/null
+      payload=$(fetch_run_json)
+      continue
+    fi
+    sleep "$interval"
+    payload=$(fetch_run_json)
+  done
+}
 wait_for_pr_change() {
   local interval=$1 payload previous current
   payload=$(fetch_pr_json) || return
@@ -529,8 +582,12 @@ if [[ "$mode" = "jobs" || "$mode" = "logs" || ( "$command" = "listen" && "$liste
 fi
 
 if [[ "$command" = "listen" ]]; then
-  [[ -n "$since" ]] || since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  wait_for_pr_change "${COCKPIT_LISTEN_INTERVAL:-1}"
+  if [[ -n "$run_id" ]]; then
+    wait_for_run_completion "${COCKPIT_LISTEN_INTERVAL:-1}"
+  else
+    [[ -n "$since" ]] || since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    wait_for_pr_change "${COCKPIT_LISTEN_INTERVAL:-1}"
+  fi
 fi
 
 if [[ "$command" = "resolve" ]]; then
@@ -761,7 +818,11 @@ case "$mode" in
     curl --noproxy '*' -sS --fail-with-body "${args[@]}" "$base_url"
     ;;
   diff) curl --noproxy '*' -sS --fail-with-body "$base_url/diff" ;;
-  jobs) curl --noproxy '*' -sS --fail-with-body "$base_url/jobs" ;;
+  jobs)
+    args=(--get)
+    [[ -z "$run_id" ]] || args+=(--data-urlencode "runId=$run_id")
+    curl --noproxy '*' -sS --fail-with-body "${args[@]}" "$base_url/jobs"
+    ;;
   file) curl --noproxy '*' -sS --fail-with-body --get --data-urlencode "path=$file_path" "$base_url/file" ;;
   logs) curl --noproxy '*' -sS --fail-with-body --get --data-urlencode "check=$check_name" "$base_url/logs" ;;
 esac
