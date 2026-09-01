@@ -2,6 +2,7 @@
 set -euo pipefail
 
 root="${1:?checkout root}"
+bun="${2:-$(command -v bun)}"
 electron_dir="$root/shell/node_modules/electron"
 plist="$electron_dir/dist/Electron.app/Contents/Info.plist"
 
@@ -20,14 +21,27 @@ if [[ "$arch" != "arm64" ]]; then
   arch="x64"
 fi
 
-zip=""
-while IFS= read -r candidate; do
-  zip="$candidate"
-  break
-done < <(find "${HOME}/Library/Caches/electron" -name "electron-v${version}-darwin-${arch}.zip" -print 2>/dev/null)
+echo "pr-cockpit: downloading Electron archive for bundle repair..."
+zip="$(
+  cd "$electron_dir"
+  ELECTRON_ARCH="$arch" "$bun" -e '
+const path = require("node:path");
+const { downloadArtifact } = require("@electron/get");
+const root = process.cwd();
+const { version } = require(path.join(root, "package.json"));
+const archive = await downloadArtifact({
+  version,
+  artifactName: "electron",
+  platform: "darwin",
+  arch: process.env.ELECTRON_ARCH,
+  checksums: require(path.join(root, "checksums.json")),
+});
+process.stdout.write(archive);
+'
+)"
 
 if [[ -z "$zip" || ! -f "$zip" ]]; then
-  echo "pr-cockpit: couldn't find electron-v${version}-darwin-${arch}.zip under ${HOME}/Library/Caches/electron" >&2
+  echo "pr-cockpit: Electron downloader did not return an archive" >&2
   exit 1
 fi
 

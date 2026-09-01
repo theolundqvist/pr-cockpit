@@ -76,7 +76,7 @@ quiet_in "root dependency install" "$root" "$bun" install
 quiet_in "UI dependency install" "$root/ui" "$bun" install
 if [[ "$platform" == "Darwin" ]]; then
   quiet_in "shell dependency install" "$root/shell" "$bun" install
-  if ! "$root/scripts/ensure-electron-dist.sh" "$root"; then
+  if ! "$root/scripts/ensure-electron-dist.sh" "$root" "$bun"; then
     echo "pr-cockpit: Electron.app repair failed" >&2
     exit 1
   fi

@@ -5,20 +5,20 @@ import { join } from "node:path";
 
 const ensureScript = join(import.meta.dir, "ensure-electron-dist.sh");
 
-test("repairs an extract-zip Electron.app missing Info.plist", async () => {
+test("repairs an incomplete Electron.app when its cache is empty", async () => {
   const root = mkdtempSync(join(tmpdir(), "ensure-electron-"));
   try {
     const electronDir = join(root, "shell/node_modules/electron");
     const version = "1.2.3";
-    const arch = process.arch === "arm64" ? "arm64" : "x64";
-    const cache = join(root, "Library/Caches/electron/test");
+    const zip = join(root, "downloads/electron.zip");
     const bin = join(root, "bin");
     mkdirSync(join(electronDir, "dist/Electron.app/Contents/MacOS"), { recursive: true });
-    mkdirSync(cache, { recursive: true });
+    mkdirSync(join(root, "downloads"));
     mkdirSync(bin);
     writeFileSync(join(electronDir, "package.json"), JSON.stringify({ version }));
     writeFileSync(join(electronDir, "dist/Electron.app/Contents/MacOS/Electron"), "");
-    writeFileSync(join(cache, `electron-v${version}-darwin-${arch}.zip`), "");
+    writeFileSync(zip, "");
+    writeFileSync(join(bin, "bun"), `#!/usr/bin/env bash\nprintf '%s' ${JSON.stringify(zip)}\n`, { mode: 0o755 });
     writeFileSync(
       join(bin, "ditto"),
       `#!/usr/bin/env bash
