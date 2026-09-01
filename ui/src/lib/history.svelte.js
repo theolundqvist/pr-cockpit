@@ -1,3 +1,5 @@
+import { historyBackAction } from "./historyAction.js";
+
 export const history = $state({ canBack: false, canForward: false });
 
 export function goBack() {
@@ -6,6 +8,12 @@ export function goBack() {
 
 export function goForward() {
   if (history.canForward) window.history.forward();
+}
+
+export function goBackOrFallback(fallback) {
+  const action = historyBackAction(history.canBack, fallback);
+  if (action === "back") goBack();
+  else if (action === "fallback") location.hash = fallback;
 }
 
 export function initHistory() {
