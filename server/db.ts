@@ -1408,6 +1408,7 @@ const evictReposNotInTxn = db.transaction((repos: string[]) => {
   const placeholders = repos.map(() => "?").join(",");
   const whereSql = `repo NOT IN (${placeholders})`;
   preservePrDetails(whereSql, repos);
+  db.prepare(`DELETE FROM pr_rank WHERE ${whereSql}`).run(...repos);
   db.prepare(`DELETE FROM prs WHERE ${whereSql}`).run(...repos);
 });
 
@@ -1428,6 +1429,7 @@ const evictStalePrsTxn = db.transaction((repo: string, keepNumbers: number[]) =>
     ? "repo = ?"
     : `repo = ? AND number NOT IN (${keepNumbers.map(() => "?").join(",")})`;
   preservePrDetails(whereSql, params);
+  db.prepare(`DELETE FROM pr_rank WHERE ${whereSql}`).run(...params);
   db.prepare(`DELETE FROM prs WHERE ${whereSql}`).run(...params);
 });
 
@@ -1444,7 +1446,10 @@ const unsetArchivedStmt = db.prepare("DELETE FROM archived_prs WHERE repo = ? AN
 
 export function setArchived(repo: string, number: number, archived: boolean): void {
   if (archived) {
-    setArchivedStmt.run({ $repo: repo, $number: number, $archived_at: new Date().toISOString() });
+    db.transaction(() => {
+      setArchivedStmt.run({ $repo: repo, $number: number, $archived_at: new Date().toISOString() });
+      unsetRankStmt.run(repo, number);
+    })();
   } else {
     unsetArchivedStmt.run(repo, number);
   }

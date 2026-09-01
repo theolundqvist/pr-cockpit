@@ -1,6 +1,7 @@
 import { prKey, prKeyOf } from "./prKey.js";
 
 let records = $state(new Map());
+let revision = $state(0);
 let started = false;
 let loaded = false;
 let resolving = false;
@@ -18,6 +19,7 @@ function mergeRecords(prs, replace = false) {
     exhausted.delete(key);
   }
   records = next;
+  revision += 1;
 }
 
 function scheduleResolve(delay = 0) {
@@ -75,6 +77,10 @@ export function prTitle(repo, number) {
   const title = records.get(prKeyOf(repo, number))?.title ?? null;
   if (!title) rememberMissing(repo, number);
   return title;
+}
+
+export function prIndexRevision() {
+  return revision;
 }
 
 export function prSummary(repo, number) {

@@ -23,7 +23,19 @@ const scenarios = [
     route: "#/",
     description: "Populated inbox with mixed ownership, CI, review, and merge states.",
     ready: ".inbox-layout .queue-group",
-    verify: async (page) => page.locator(".current-branch-badge").getByText("current", { exact: true }).waitFor(),
+    verify: async (page) => {
+      await page.locator(".current-branch-badge").getByText("checked out", { exact: true }).waitFor();
+      await page.locator(".group-label").getByText("Pinned", { exact: true }).waitFor();
+      await page.locator(".pinned-mark").first().waitFor();
+      const scrollSurface = await page.locator(".inbox-cache .page").evaluate((node) => ({
+        scrollbarWidth: getComputedStyle(node).scrollbarWidth,
+        headerBackdrop: getComputedStyle(node.querySelector(".head")).backdropFilter,
+        rowTransitionProperty: getComputedStyle(node.querySelector(".queue-group .row")).transitionProperty,
+      }));
+      if (scrollSurface.scrollbarWidth !== "thin" || scrollSurface.headerBackdrop !== "none" || scrollSurface.rowTransitionProperty !== "none") {
+        throw new Error(`Inbox interaction surface regressed: ${JSON.stringify(scrollSurface)}`);
+      }
+    },
   },
   {
     name: "inbox-palette",
@@ -168,10 +180,35 @@ const scenarios = [
     },
   },
   {
+    name: "inbox-pr-return-cache",
+    route: "#/",
+    description: "Returning from a pull request restores the already-mounted inbox, including its filter and DOM state.",
+    ready: ".inbox-layout .queue-group",
+    interact: async (page) => {
+      await page.keyboard.press("/");
+      await page.locator(".filter-row input").fill("author:octocat");
+      await page.locator(".queue-group .row").first().waitFor();
+      await page.locator(".inbox-cache .page").evaluate((node) => {
+        node.dataset.cacheProbe = "retained";
+      });
+      await page.locator(".queue-group .row").first().click();
+      await page.locator(".detail .pr-head").waitFor();
+      const detailOwnsPrimaryPage = await page.evaluate(() => document.querySelector(".page")?.querySelector(".detail") !== null);
+      if (!detailOwnsPrimaryPage) throw new Error("hidden inbox became the PR detail scroll target");
+      await page.keyboard.press("Escape");
+      await page.waitForFunction(() => location.hash === "#/");
+    },
+    verify: async (page) => {
+      const inbox = page.locator(".inbox-cache .page");
+      if (await inbox.getAttribute("data-cache-probe") !== "retained") throw new Error("inbox DOM was rebuilt after returning from a PR");
+      if (await page.locator(".filter-row input").inputValue() !== "author:octocat") throw new Error("inbox filter state was lost after returning from a PR");
+    },
+  },
+  {
     ...detail("detail-conversation", 101, "Green PR conversation with approvals, threads, comments, and successful checks."),
     verify: async (page) => {
       await page.locator(".approval-summary.approved").getByText("Approved by reviewer-one", { exact: true }).waitFor();
-      await page.locator(".current-branch-badge").getByText("current", { exact: true }).waitFor();
+      await page.locator(".current-branch-badge").getByText("checked out", { exact: true }).waitFor();
       const backArrow = page.locator(".app-history").getByRole("button", { name: /Back/ });
       await backArrow.waitFor();
       if (await backArrow.isDisabled()) throw new Error("PR back arrow should retain an inbox fallback");
@@ -675,6 +712,20 @@ const scenarios = [
   {
     ...detail("detail-long-markdown", 108, "Huge Markdown description with a table, code block, and embedded image."),
     ready: ".body-card .md",
+    verify: async (page) => {
+      const image = page.locator(".body-card .md img").first();
+      await image.waitFor();
+      const attributes = await image.evaluate((node) => ({
+        loading: node.loading,
+        decoding: node.decoding,
+        fetchPriority: node.fetchPriority,
+        draggable: node.draggable,
+        proxied: node.getAttribute("src")?.startsWith("/api/image?url=") ?? false,
+      }));
+      if (JSON.stringify(attributes) !== JSON.stringify({ loading: "lazy", decoding: "async", fetchPriority: "low", draggable: false, proxied: true })) {
+        throw new Error(`markdown image is not deferred safely: ${JSON.stringify(attributes)}`);
+      }
+    },
   },
   {
     ...detail("detail-failed-mutation", 109, "Failed mutation with retry and discard actions."),
@@ -1037,7 +1088,13 @@ async function settle(page, theme) {
   await page.waitForFunction((expected) => document.documentElement.dataset.theme === expected, theme);
   await page.evaluate(async () => {
     await document.fonts.ready;
-    await Promise.all([...document.images].map((image) => image.complete
+    const images = [...document.images].filter((image) => {
+      if (image.loading !== "lazy") return true;
+      if (image.getClientRects().length === 0) return false;
+      const rect = image.getBoundingClientRect();
+      return rect.bottom >= 0 && rect.right >= 0 && rect.top <= innerHeight && rect.left <= innerWidth;
+    });
+    await Promise.all(images.map((image) => image.complete
       ? undefined
       : new Promise((done) => {
           image.addEventListener("load", done, { once: true });

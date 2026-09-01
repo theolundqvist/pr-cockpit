@@ -27,7 +27,7 @@
   --native-focus: #007aff;
   --modal-scrim: rgb(0 0 0 / 0.18);
   --mono-system: "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
-  --sans-system: "SF Pro Display", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --sans-system: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
   --alacritty: "0xProto Nerd Font Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
   /* chrome */
   --mono: var(--mono-system);

@@ -8,6 +8,10 @@
     class="avatar"
     src={url}
     alt={login ?? ""}
+    width={size}
+    height={size}
+    loading="lazy"
+    decoding="async"
     style="width: {size}px; height: {size}px"
     onerror={() => (failed = true)}
   />

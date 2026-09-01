@@ -2185,7 +2185,9 @@
                 <span class="branch-arrow" aria-hidden="true">←</span>
                 <span class="branch-name branch-source" title={pr.headRefName}>{pr.headRefName}</span>
                 {#if onLocalBranch}
-                  <CurrentBranchBadge />
+                  <CurrentBranchBadge label="checked out" />
+                {:else if pr.localBranch}
+                  <span class="local-branch-note" title="Branch currently checked out in your local repository">on {pr.localBranch}</span>
                 {/if}
                 <button
                   type="button"
@@ -4727,6 +4729,21 @@
   .branch-source {
     flex: 0 1 auto;
     max-width: 32ch;
+  }
+  .local-branch-note {
+    flex: none;
+    max-width: 24ch;
+    overflow: hidden;
+    padding: 3px 7px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--text-faint);
+    font-family: var(--mono);
+    font-size: 9.5px;
+    font-weight: 600;
+    line-height: 1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .branch-name {
     min-width: 0;

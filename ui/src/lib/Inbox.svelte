@@ -24,7 +24,7 @@
   import Kbd from "./Kbd.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
 
-  let { refreshRevision = 0, pollCompletedAt = null, onFindPr = () => {} } = $props();
+  let { active = true, refreshRevision = 0, pollCompletedAt = null, onFindPr = () => {} } = $props();
   let handledRefreshRevision = refreshRevision;
 
   let prs = $state([]);
@@ -204,6 +204,8 @@
 
   let now = $state(Date.now());
   $effect(() => {
+    if (!active) return;
+    now = Date.now();
     const timer = setInterval(() => (now = Date.now()), 1000);
     return () => clearInterval(timer);
   });
@@ -393,33 +395,59 @@
   }
 
   let groups = $derived.by(() => {
+    const pinned = filteredPrs.filter((pr) => pr.rank != null);
     const buckets = new Map();
     for (const pr of filteredPrs) {
+      if (pr.rank != null) continue;
       const id = classify(topUnit(pr), viewerLogin).group;
       if (!buckets.has(id)) buckets.set(id, []);
       buckets.get(id).push(pr);
     }
-    return GROUP_ORDER.filter((id) => buckets.has(id)).map((id) => {
+    const statusGroups = GROUP_ORDER.filter((id) => buckets.has(id)).map((id) => {
       const { units, unrankedCount, items } = orderGroup(buckets.get(id));
       return { id, title: GROUP_TITLES[id], units, unrankedCount, items };
     });
+    if (!pinned.length) return statusGroups;
+    const { units, unrankedCount, items } = orderGroup(pinned);
+    return [{ id: "pinned", title: "Pinned", units, unrankedCount, items }, ...statusGroups];
   });
 
   let openOrdered = $derived(groups.flatMap((g) => g.items.filter((i) => i.pr).map((i) => i.pr)));
 
   let dragKey = $state(null);
   let dropHint = $state(null);
+  let rankBusy = new Set();
 
   async function applyRank(pr, position) {
+    const key = prKey(pr);
+    if (rankBusy.has(key)) return;
+    rankBusy.add(key);
     const target = prs.find((p) => prKey(p) === prKey(pr));
     if (target) {
       target.rank = position;
       prs = [...prs];
+      queueMicrotask(() => {
+        const index = ordered.findIndex((candidate) => prKey(candidate) === key);
+        if (index >= 0) selected = index;
+      });
     }
     try {
       await reorderPr(pr.repo, pr.number, position);
-    } catch {}
-    loadInbox();
+    } catch {
+      showFlash(`Couldn't ${position === null ? "unpin" : "pin"} #${pr.number}.`);
+    } finally {
+      await loadInbox();
+      rankBusy.delete(key);
+    }
+  }
+
+  function togglePinned(pr) {
+    if (pr.rank != null) {
+      applyRank(pr, null);
+      return;
+    }
+    const lastPosition = Math.max(-1, ...prs.map((item) => item.rank).filter((rank) => rank != null));
+    applyRank(pr, lastPosition + 1);
   }
 
   function onDragStart(e, pr) {
@@ -468,7 +496,7 @@
     if (!draggedKey) return;
     const r = e.currentTarget.getBoundingClientRect();
     const before = e.clientY - r.top < r.height / 2;
-    const group = groups.find((g) => g.id === classify(topUnit(overPr), viewerLogin).group);
+    const group = groups.find((g) => g.id === (overPr.rank != null ? "pinned" : classify(topUnit(overPr), viewerLogin).group));
     if (!group) return;
     const dragged = group.units.find((p) => prKey(p) === draggedKey);
     if (!dragged) return;
@@ -502,7 +530,7 @@
   let dragGroupId = $derived.by(() => {
     if (!dragKey) return null;
     const pr = prs.find((p) => prKey(p) === dragKey);
-    return pr ? classify(topUnit(pr), viewerLogin).group : null;
+    return pr ? (pr.rank != null ? "pinned" : classify(topUnit(pr), viewerLogin).group) : null;
   });
   let ordered = $derived(view === "closed" ? closedPrs : showArchived ? [...openOrdered, ...archivedPrs] : openOrdered);
   let archivedSet = $derived(new Set(archivedPrs.map((pr) => prKey(pr))));
@@ -523,6 +551,7 @@
       keys.push({ key: "C", label: "back to open" });
       return keys;
     }
+    if (pr) keys.push({ key: "s", label: pr.rank == null ? "pin" : "unpin" });
     if (pr) keys.push({ key: "e", label: isArchived(pr) ? "unarchive" : "archive" });
     keys.push({ key: "A", label: showArchived ? "hide archived" : "archived" });
     keys.push({ key: "C", label: "recently merged" });
@@ -616,6 +645,7 @@
   }
 
   $effect(() => {
+    if (!active) return;
     function onKey(e) {
       if (e.metaKey && e.key === ",") {
         location.hash = "#/settings";
@@ -698,6 +728,8 @@
         }
       } else if (e.key === "o") {
         if (pr) openGithub(pr);
+      } else if (view === "open" && e.key === "s") {
+        if (pr && !isArchived(pr) && pr.state === "OPEN") togglePinned(pr);
       } else if (view === "open" && keybindAgents.some((a) => a.id !== "fixer" && a.keybind === e.key)) {
         const def = keybindAgents.find((a) => a.id !== "fixer" && a.keybind === e.key);
         if (def.id === "autofix") openAutofixConfirm();
@@ -830,7 +862,17 @@
         </span>
         <span class="row-badge-slot"><span class="row-badge badge {status.tone}">{status.label}</span></span>
         <div class="row-main">
-          <div class="row-title">{pr.title}</div>
+          <div class="row-title">
+            <span class="row-title-text">{pr.title}</span>
+            {#if pr.rank != null}
+              <span class="pinned-mark" title="Pinned until merged or archived" aria-label="Pinned">
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="m7 3 6 0-1 4 3 3v1H5v-1l3-3-1-4Z" />
+                  <path d="M10 11v6" />
+                </svg>
+              </span>
+            {/if}
+          </div>
           <div class="row-meta mono">
             <span class="num">#{pr.number}</span>
             <span class="sep">·</span>
@@ -838,7 +880,7 @@
             <span class="sep">·</span>
             <span class="branch">{pr.baseRef} <span class="arrow">←</span> {pr.headRef}</span>
             {#if pr.localBranch === pr.headRef}
-              <CurrentBranchBadge />
+              <CurrentBranchBadge label="checked out" />
             {/if}
             <span class="sep">·</span>
             <span class="add" title={statsDiffer ? `+${pr.rawAdditions} including tests` : undefined}>+{pr.additions}</span>
@@ -862,7 +904,7 @@
           </span>
         {/if}
         <span class="row-age mono">{relativeTime(pr.updatedAt)}</span>
-        {#if index === selected}<Kbd keys="enter" />{/if}
+        {#if index === selected}<Kbd keys="s" label={pr.rank == null ? "Pin" : "Unpin"} /><Kbd keys="enter" />{/if}
       </a>
     {/snippet}
 
@@ -884,20 +926,22 @@
       {/if}
       {#each group.items as item (item.divider ? group.id + ":div" : prKey(item.pr))}
         {#if item.divider}
-          <div
-            class="rank-divider"
-            class:drop-active={dropHint?.key === "div:" + group.id}
-            role="separator"
-            ondragover={(e) => {
-              if (dragKey) {
-                e.preventDefault();
-                dropHint = { key: "div:" + group.id, before: false };
-              }
-            }}
-            ondrop={(e) => onDropDivider(e, group)}
-          >
-            <span class="rank-divider-label">Pinned</span>
-          </div>
+          {#if group.id !== "pinned"}
+            <div
+              class="rank-divider"
+              class:drop-active={dropHint?.key === "div:" + group.id}
+              role="separator"
+              ondragover={(e) => {
+                if (dragKey) {
+                  e.preventDefault();
+                  dropHint = { key: "div:" + group.id, before: false };
+                }
+              }}
+              ondrop={(e) => onDropDivider(e, group)}
+            >
+              <span class="rank-divider-label">Pinned</span>
+            </div>
+          {/if}
         {:else}
           {@render row(item.pr)}
         {/if}
@@ -1320,7 +1364,6 @@
     text-decoration: none;
     color: inherit;
     border-left: 2px solid transparent;
-    transition: background 0.08s ease;
   }
   .row.stack-child {
     margin-left: 26px;
@@ -1502,6 +1545,9 @@
   .page {
     height: 100%;
     overflow-y: auto;
+    /* Keep the Inbox on Chromium's accelerated native scroll path. */
+    scrollbar-width: thin;
+    scrollbar-color: var(--scroll) transparent;
     display: block;
     padding: 20px 32px 76px;
   }
@@ -1519,9 +1565,8 @@
     min-height: 70px;
     padding: 20px 2px 14px;
     margin: -20px 0 18px;
-    background: var(--overlay-bg);
+    background: var(--bg);
     border-bottom: 1px solid var(--border-soft);
-    backdrop-filter: blur(18px) saturate(160%);
   }
   .head-title {
     font-family: var(--sans);
@@ -1773,7 +1818,7 @@
     border: 0;
     border-bottom: 1px solid var(--border-soft);
     border-radius: 0;
-    transition: background-color 140ms ease, color 140ms ease;
+    transition: none;
   }
   .group-body > .row:last-child { border-bottom: none; }
   .row.stack-child {
@@ -1907,8 +1952,7 @@
     padding: 18px 0 14px;
     margin: -18px 0 8px;
     border-bottom-color: var(--border-soft);
-    background: linear-gradient(to bottom, var(--bg) 74%, color-mix(in srgb, var(--bg) 84%, transparent));
-    backdrop-filter: blur(14px);
+    background: var(--bg);
   }
   .head-title {
     font-size: 24px;
@@ -2168,6 +2212,31 @@
     }
   }
 
+  .row-title {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .row-title-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pinned-mark {
+    display: inline-flex;
+    width: 16px;
+    height: 16px;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    color: var(--link);
+  }
+  .pinned-mark svg {
+    width: 14px;
+    height: 14px;
+  }
+
   /* Phone: rows stack instead of holding desktop columns, and keyboard
      affordances give way to touch targets. */
   @media (max-width: 700px), (pointer: coarse) and (max-height: 500px) {
@@ -2259,6 +2328,13 @@
       -webkit-line-clamp: 2;
       white-space: normal;
       overflow: hidden;
+    }
+    .row-title-text {
+      display: contents;
+      white-space: normal;
+    }
+    .pinned-mark {
+      display: none;
     }
     .row-meta {
       flex-wrap: wrap;

@@ -1,6 +1,6 @@
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-import { prTitle } from "./prIndex.svelte.js";
+import { prIndexRevision, prTitle } from "./prIndex.svelte.js";
 import { linkifyBareRefs } from "./prRefs.js";
 import { theme } from "./theme.svelte.js";
 import { viewer } from "./viewer.svelte.js";
@@ -45,6 +45,10 @@ const GH_IMAGE_HOSTS = new Set(["github.com", "private-user-images.githubusercon
 
 function proxyImages(doc) {
   for (const img of doc.querySelectorAll("img")) {
+    img.setAttribute("loading", "lazy");
+    img.setAttribute("decoding", "async");
+    img.setAttribute("fetchpriority", "low");
+    img.setAttribute("draggable", "false");
     const src = img.getAttribute("src") ?? "";
     let host;
     try {
@@ -56,6 +60,23 @@ function proxyImages(doc) {
     img.setAttribute("data-original-src", src);
     img.setAttribute("src", `/api/image?url=${encodeURIComponent(src)}`);
   }
+}
+
+const MARKDOWN_CACHE_MAX = 400;
+const markdownCache = new Map();
+
+function cachedMarkdown(source, context) {
+  const cached = markdownCache.get(source);
+  if (!cached || cached.context !== context) return null;
+  markdownCache.delete(source);
+  markdownCache.set(source, cached);
+  return cached.html;
+}
+
+function storeMarkdown(source, context, html) {
+  markdownCache.set(source, { context, html });
+  if (markdownCache.size > MARKDOWN_CACHE_MAX) markdownCache.delete(markdownCache.keys().next().value);
+  return html;
 }
 
 const REF_RE = /^https?:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/(pull|issues)\/(\d+)(?:[#?].*)?$/;
@@ -139,6 +160,9 @@ function highlightCodeBlocks(doc) {
 
 export function renderMarkdown(source) {
   if (!source) return "";
+  const context = `${theme.shiki}\u0000${viewer.login ?? ""}\u0000${currentRepo() ?? ""}\u0000${prIndexRevision()}`;
+  const cached = cachedMarkdown(source, context);
+  if (cached !== null) return cached;
   const clean = DOMPurify.sanitize(marked.parse(source));
   const doc = new DOMParser().parseFromString(clean, "text/html");
   styleAlerts(doc);
@@ -147,7 +171,7 @@ export function renderMarkdown(source) {
   linkifyBareRefs(doc, currentRepo(), prTitle);
   highlightMentions(doc);
   highlightCodeBlocks(doc);
-  return doc.body.innerHTML;
+  return storeMarkdown(source, context, doc.body.innerHTML);
 }
 
 export function summarize(source) {

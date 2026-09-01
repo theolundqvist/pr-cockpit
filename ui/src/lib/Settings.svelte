@@ -80,7 +80,7 @@
   let keybindClash = $derived(shortcutsClash(keybindOpenApp, keybindOpenPalette, shortcutDefaults));
 
   // single-char keys the PR-detail and inbox handlers already own
-  const RESERVED_KEYS = new Set([..."123456789", ..."gGdJKjkxcvremMusqopT", ..."ez", "A", "C", "/"]);
+  const RESERVED_KEYS = new Set([..."123456789", ..."gGdJKjkxcvremMusqopT", ..."esz", "A", "C", "/"]);
   const isCustom = (a) => a.id.startsWith("custom-");
 
   let agentKeybindIssues = $derived.by(() => {
