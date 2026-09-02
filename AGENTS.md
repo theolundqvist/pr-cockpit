@@ -32,7 +32,7 @@ This repository is worked on by humans and coding agents alike. Leave it easier 
 ## Pull requests
 
 - Bug fixes may be repaired and landed autonomously. Feature requests, themes, and new functionality require Theo's explicit current-conversation approval before merge.
-- New functionality defaults off. Styling is opt-in unless it is minor polish that preserves the default appearance.
+- New functionality is behaviorally inert and invisible until explicitly enabled, including no background work. Styling is opt-in unless it is minor polish that preserves the default appearance.
 - Every pull request includes before-and-after screenshots showing its effect in the app.
 
 ## Restarting the local server
