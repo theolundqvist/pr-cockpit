@@ -193,6 +193,17 @@ describe("transactional Linux lifecycle", () => {
     }
     expect(existsSync(join(f.dataHome, "pr-cockpit-runtime"))).toBe(false);
   });
+  test("persists an opt-in Tailscale Serve environment", async () => {
+    const f = fixture();
+    const result = await f.lifecycle(["install", f.source], {
+      COCKPIT_TAILSCALE_SERVE: "1",
+      COCKPIT_TAILSCALE_HTTPS_PORT: "8443",
+    });
+    expect(result.exitCode).toBe(0);
+    expect(readFileSync(join(f.configHome, "pr-cockpit/server.env"), "utf8")).toContain(
+      "COCKPIT_TAILSCALE_SERVE=1\nCOCKPIT_TAILSCALE_HTTPS_PORT=\"8443\"\n",
+    );
+  }, 20_000);
   test("installs an immutable XDG release, exact desktop integration, and an ownership manifest without gh auth", async () => {
     const f = fixture();
     writeFileSync(join(f.source, "shared/desktopShortcuts.json"), "dirty worktree bytes");

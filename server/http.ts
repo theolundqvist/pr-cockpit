@@ -84,6 +84,7 @@ import {
   replicaStatus,
   replicaViewerLogin,
 } from "./replica.ts";
+import { tailscaleServeStatus } from "./tailscaleServe.ts";
 import type { GithubUsageSource } from "./githubUsage.ts";
 import type { GithubAuthStatus } from "./githubAuth.ts";
 import { commitsFromMirror, commitStatsFromMirror, conflictFilesFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError, summarizeCommitStats, type PullRequestCommit } from "./mirror.ts";
@@ -2452,11 +2453,13 @@ const AGENT_PROMPT_DEFAULTS: Record<string, () => string> = {
 };
 
 function withAgentPromptDefaults(settings: Settings) {
+  const serve = tailscaleServeStatus();
   return {
     ...settings,
     agents: settings.agents.map((a) => ({ ...a, prompt_default: AGENT_PROMPT_DEFAULTS[a.id]?.() ?? "" })),
     agent_defaults: AGENT_DEFAULTS,
     harness_available: { claude: claudeBinPath() !== null, omp: ompBinPath() !== null, codex: codexBinPath() !== null },
+    ...(serve.enabled ? { tailscale_serve: serve } : {}),
   };
 }
 
@@ -2575,7 +2578,14 @@ async function handleGithubAppCallback(url: URL): Promise<Response> {
 }
 
 function handleHealthz(): Response {
-  return json({ root: cockpitRoot, lastPollAt, prCount: countPrs(), replica: replicaEnabled() ? replicaStatus() : null });
+  const serve = tailscaleServeStatus();
+  return json({
+    root: cockpitRoot,
+    lastPollAt,
+    prCount: countPrs(),
+    replica: replicaEnabled() ? replicaStatus() : null,
+    ...(serve.enabled ? { tailscaleServe: serve } : {}),
+  });
 }
 
 function handleShutdown(): Response {

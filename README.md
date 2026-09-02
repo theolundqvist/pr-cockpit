@@ -142,6 +142,8 @@ Settings live in the app. Optional shell overrides live in `~/.config/pr-cockpit
 | `COCKPIT_DEFAULT_REPO` | Repository assumed when a PR number is passed alone |
 | `COCKPIT_REPO_ROOTS` | Paths containing local checkouts |
 | `COCKPIT_RELAY_URL` | [Self-hosted webhook relay](docs/self-host-relay.md) |
+| `COCKPIT_TAILSCALE_SERVE` | Set to `1` to publish Cockpit privately through Tailscale Serve |
+| `COCKPIT_TAILSCALE_HTTPS_PORT` | Tailscale HTTPS port; defaults to `443` |
 
 </details>
 

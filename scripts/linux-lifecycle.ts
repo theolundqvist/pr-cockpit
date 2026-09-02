@@ -620,6 +620,8 @@ function installConfig(): void {
   const lines = [`COCKPIT_DATA_DIR=${quoteEnv(persistentData)}`, `COCKPIT_PORT=${configuredPort}`];
   if (process.env.COCKPIT_REPOS) lines.push(`COCKPIT_REPOS=${quoteEnv(process.env.COCKPIT_REPOS)}`);
   if (process.env.COCKPIT_ALLOWED_ORIGINS) lines.push(`COCKPIT_ALLOWED_ORIGINS=${quoteEnv(process.env.COCKPIT_ALLOWED_ORIGINS)}`);
+  if (process.env.COCKPIT_TAILSCALE_SERVE === "1") lines.push("COCKPIT_TAILSCALE_SERVE=1");
+  if (process.env.COCKPIT_TAILSCALE_HTTPS_PORT) lines.push(`COCKPIT_TAILSCALE_HTTPS_PORT=${quoteEnv(process.env.COCKPIT_TAILSCALE_HTTPS_PORT)}`);
   atomicFile(envFile, `${lines.join("\n")}\n`, 0o600);
 }
 function queryMime(): string | null {

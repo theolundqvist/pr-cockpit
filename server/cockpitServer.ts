@@ -27,6 +27,15 @@ function parseAllowedOrigins(configured: string | undefined): Set<string> {
   return origins;
 }
 
+export function mergeRendererOrigins(...entries: Array<string | undefined | null>): string | undefined {
+  const origins = new Set<string>();
+  for (const entry of entries) {
+    if (!entry) continue;
+    for (const origin of parseAllowedOrigins(entry)) origins.add(origin);
+  }
+  return origins.size === 0 ? undefined : [...origins].join(",");
+}
+
 function buildOriginPolicy(configured: string | undefined): (request: Request) => boolean {
   const allowedOrigins = parseAllowedOrigins(configured);
   return (request) => {

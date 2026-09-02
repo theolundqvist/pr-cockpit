@@ -64,7 +64,7 @@ exit 0`,
 
 async function install(
   loadedRoot: string | null,
-  options: { platform?: "Darwin" | "Linux"; proxy?: string; healthRoot?: string } = {},
+  options: { platform?: "Darwin" | "Linux"; proxy?: string; healthRoot?: string; tailscalePort?: string } = {},
 ) {
   const home = mkdtempSync(join(tmpdir(), "cockpit-install-"));
   try {
@@ -76,6 +76,10 @@ async function install(
         HOME: installHome,
         COCKPIT_PORT: "4820",
         ...(options.proxy ? { COCKPIT_PROXY: options.proxy } : {}),
+        ...(options.tailscalePort ? {
+          COCKPIT_TAILSCALE_SERVE: "1",
+          COCKPIT_TAILSCALE_HTTPS_PORT: options.tailscalePort,
+        } : {}),
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -120,7 +124,15 @@ test("new config is a commented inert example", async () => {
   expect(result.config).toContain('# COCKPIT_PROXY="build-server"');
   expect(result.config).not.toContain("Agents mutate existing PRs");
   expect(result.config).not.toMatch(/^[^#\n]*COCKPIT_PROXY=/m);
+  expect(result.serverPlist).not.toContain("COCKPIT_TAILSCALE");
 });
+
+test("a Tailscale Serve install persists the opt-in launch environment", async () => {
+  const result = await install(null, { tailscalePort: "8443" });
+  expect(result.exitCode).toBe(0);
+  expect(result.serverPlist).toContain("<string>COCKPIT_TAILSCALE_SERVE=1</string>");
+  expect(result.serverPlist).toContain("<string>COCKPIT_TAILSCALE_HTTPS_PORT=8443</string>");
+}, 10_000);
 
 test("an app registration left behind by another root is replaced", async () => {
   const result = await install("/tmp/some-other-checkout");
