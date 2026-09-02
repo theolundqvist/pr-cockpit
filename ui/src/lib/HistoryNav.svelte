@@ -1,12 +1,7 @@
 <script>
-  import { history, goBack, goForward } from "./history.svelte.js";
+  import { history, goBackOrFallback, goForward } from "./history.svelte.js";
 
   let { backFallback = null } = $props();
-
-  function navigateBack() {
-    if (backFallback) location.hash = backFallback;
-    else if (history.canBack) goBack();
-  }
 
 </script>
 
@@ -14,7 +9,7 @@
   <button
     class="arrow"
     disabled={!history.canBack && !backFallback}
-    onclick={navigateBack}
+    onclick={() => goBackOrFallback(backFallback)}
     title={backFallback ? "Back to inbox" : "Back"}
     aria-label={backFallback ? "Back to inbox" : "Back"}
   >

@@ -33,8 +33,8 @@ import {
   fetchRecentWorkflowRuns,
   fetchWorkflowRuns,
   fetchWorkflowRun,
-  fetchWorkflowRunsForWorkflow,
   type RunJob,
+  type RunJobStep,
   type WorkflowRun,
 } from "./github.ts";
 
@@ -66,6 +66,15 @@ export interface CompactRun {
   htmlUrl: string | null;
 }
 
+export interface CompactStep {
+  name: string;
+  number: number;
+  status: string;
+  conclusion: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
 export interface CompactJob {
   id: number;
   runId: number;
@@ -83,6 +92,18 @@ export interface CompactJob {
   runnerGroupName: string | null;
   labels: string[];
   failedStep: string | null;
+  steps?: CompactStep[];
+}
+
+function compactSteps(steps: RunJobStep[] | undefined): CompactStep[] {
+  return (steps ?? []).map((step) => ({
+    name: step.name,
+    number: step.number,
+    status: step.status,
+    conclusion: step.conclusion ?? null,
+    startedAt: step.started_at ?? null,
+    completedAt: step.completed_at ?? null,
+  }));
 }
 
 export interface ActionsFetchers {
@@ -195,6 +216,7 @@ function compactJob(job: RunJob, run?: CompactRun): CompactJob {
     runnerGroupName: job.runner_group_name ?? null,
     labels: job.labels ?? [],
     failedStep: job.steps?.find((step) => step.conclusion === "failure")?.name ?? null,
+    steps: compactSteps(job.steps),
   };
 }
 export interface WorkflowGraphJob {
@@ -369,6 +391,7 @@ export function compactActionsPayload(event: string, payload: any): { run?: Comp
         runnerGroupName: raw.runner_group_name ?? null,
         labels: raw.labels ?? [],
         failedStep: raw.steps?.find((step: any) => step.conclusion === "failure")?.name ?? null,
+        steps: compactSteps(raw.steps),
       },
     };
   }
@@ -438,6 +461,7 @@ function storeJob(repo: string, job: CompactJob): boolean {
     conclusion: job.conclusion, started_at: job.startedAt, completed_at: job.completedAt,
     html_url: job.htmlUrl, runner_name: job.runnerName, runner_group_name: job.runnerGroupName,
     labels_json: JSON.stringify(job.labels), failed_step: job.failedStep,
+    steps_json: JSON.stringify(job.steps ?? []),
   });
 }
 

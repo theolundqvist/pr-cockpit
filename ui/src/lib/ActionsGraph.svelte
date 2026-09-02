@@ -19,6 +19,9 @@
     return (runGroupFor(workflow)?.jobs ?? []).filter((job) => {
       const actual = normalizedName(job.name);
       return names.some((name) => actual === name || actual.startsWith(`${name} (`) || actual.startsWith(`${name} /`));
+    }).sort((left, right) => {
+      if (!left.startedAt || !right.startedAt) return (left.startedAt ? 0 : 1) - (right.startedAt ? 0 : 1) || left.id - right.id;
+      return Date.parse(left.startedAt) - Date.parse(right.startedAt);
     });
   }
 
@@ -37,13 +40,31 @@
   }
 
   function nodeMeta(definition, state) {
-    if (state.jobs.length > 1) return `${state.jobs.length} matrix jobs`;
     const job = state.jobs[0];
     if (job?.runnerName) return job.runnerName;
     if (job?.conclusion) return job.conclusion.replaceAll("_", " ");
     if (job?.status === "in_progress") return "Running";
     if (job) return "Waiting";
     return definition.uses ? "Reusable workflow" : "Not started";
+  }
+
+  // Matrix legs and reusable-workflow jobs share the definition's name as a prefix;
+  // the remainder ("(ubuntu)", "Deploy schema") is what tells them apart.
+  function jobLabel(definition, job) {
+    const actual = normalizedName(job.name);
+    for (const name of [definition.name, definition.id].map(normalizedName)) {
+      if (actual.startsWith(name) && actual.length > name.length) {
+        return job.name.slice(name.length).replace(/^\s*\/\s*/, "").trim() || job.name;
+      }
+    }
+    return job.name;
+  }
+
+  function jobMeta(job) {
+    if (job.startedAt && job.completedAt) return durationText(job.startedAt, job.completedAt);
+    if (job.status === "in_progress") return "running";
+    if (job.status !== "completed") return "waiting";
+    return (job.conclusion ?? "").replaceAll("_", " ");
   }
 
   function selectDefinition(definition, workflow) {
@@ -61,14 +82,20 @@
     return parents.length === 0 ? 0 : Math.max(...parents.map((parent) => jobStage(parent, byId, next))) + 1;
   }
 
+  const NODE_HEIGHT = 68;
+  const JOB_ROW_HEIGHT = 24;
+  const NODE_GAP = 30;
+
   function graphFor(workflow) {
     const byId = new Map(workflow.jobs.map((job) => [job.id, job]));
-    const stageCounts = new Map();
+    const stageBottoms = new Map();
     const nodes = workflow.jobs.map((job) => {
       const stage = jobStage(job, byId);
-      const row = stageCounts.get(stage) ?? 0;
-      stageCounts.set(stage, row + 1);
-      return { job, stage, x: 24 + stage * 292, y: 24 + row * 98 };
+      const state = stateFor(job, workflow);
+      const height = state.jobs.length > 1 ? NODE_HEIGHT + state.jobs.length * JOB_ROW_HEIGHT : NODE_HEIGHT;
+      const y = stageBottoms.get(stage) ?? 24;
+      stageBottoms.set(stage, y + height + NODE_GAP);
+      return { job, state, stage, height, x: 24 + stage * 292, y };
     });
     const positions = new Map(nodes.map((node) => [node.job.id, node]));
     const edges = nodes.flatMap((node) =>
@@ -78,7 +105,7 @@
       nodes,
       edges,
       width: Math.max(316, (Math.max(0, ...nodes.map((node) => node.stage)) + 1) * 292 + 24),
-      height: Math.max(116, Math.max(0, ...nodes.map((node) => node.y)) + 92),
+      height: Math.max(116, Math.max(0, ...nodes.map((node) => node.y + node.height)) + 24),
     };
   }
 
@@ -148,21 +175,42 @@
                   {/each}
                 </svg>
                 {#each graph.nodes as node (node.job.id)}
-                  {@const state = stateFor(node.job, workflow)}
-                  <button
-                    class="graph-node"
-                    class:clickable={state.jobs.length > 0}
-                    style={`left:${node.x}px;top:${node.y}px`}
-                    onclick={() => selectDefinition(node.job, workflow)}
-                    disabled={state.jobs.length === 0}
-                    title={node.job.name}
-                  >
-                    {@render statusIcon(state.status, state.conclusion)}
-                    <span class="node-copy">
-                      <strong>{node.job.name}</strong>
-                      <span>{nodeMeta(node.job, state)}</span>
-                    </span>
-                  </button>
+                  {@const state = node.state}
+                  {#if state.jobs.length > 1}
+                    <div class="graph-node matrix" style={`left:${node.x}px;top:${node.y}px;height:${node.height}px`} title={node.job.name}>
+                      {@render statusIcon(state.status, state.conclusion)}
+                      <span class="node-copy">
+                        <strong>{node.job.name}</strong>
+                        <span>{state.jobs.length} jobs</span>
+                      </span>
+                      <ul class="matrix-jobs">
+                        {#each state.jobs as job (job.id)}
+                          <li>
+                            <button class="matrix-job" onclick={() => onselect(job)} title={job.name}>
+                              {@render statusIcon(job.status, job.conclusion)}
+                              <span class="matrix-job-name">{jobLabel(node.job, job)}</span>
+                              <span class="matrix-job-meta">{jobMeta(job)}</span>
+                            </button>
+                          </li>
+                        {/each}
+                      </ul>
+                    </div>
+                  {:else}
+                    <button
+                      class="graph-node"
+                      class:clickable={state.jobs.length > 0}
+                      style={`left:${node.x}px;top:${node.y}px`}
+                      onclick={() => selectDefinition(node.job, workflow)}
+                      disabled={state.jobs.length === 0}
+                      title={node.job.name}
+                    >
+                      {@render statusIcon(state.status, state.conclusion)}
+                      <span class="node-copy">
+                        <strong>{node.job.name}</strong>
+                        <span>{nodeMeta(node.job, state)}</span>
+                      </span>
+                    </button>
+                  {/if}
                 {/each}
               </div>
             </div>
@@ -302,6 +350,59 @@
   .graph-node.clickable:hover {
     border-color: var(--text-faint);
     background: var(--panel-raised);
+  }
+  .graph-node.matrix {
+    grid-template-rows: auto 1fr;
+    align-content: start;
+    row-gap: 6px;
+  }
+  .matrix-jobs {
+    grid-column: 1 / -1;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .matrix-job {
+    display: grid;
+    grid-template-columns: 14px minmax(0, 1fr) auto;
+    gap: 6px;
+    width: 100%;
+    height: 24px;
+    align-items: center;
+    padding: 0 4px;
+    border: 0;
+    border-radius: 5px;
+    color: inherit;
+    background: none;
+    text-align: left;
+    cursor: pointer;
+  }
+  .matrix-job:hover {
+    background: var(--surface-hover);
+  }
+  .matrix-job :global(.status-icon) {
+    width: 14px;
+    height: 14px;
+    margin-top: 0;
+  }
+  .matrix-job :global(.status-icon svg) {
+    width: 14px;
+    height: 14px;
+  }
+  .matrix-job-name,
+  .matrix-job-meta {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .matrix-job-name {
+    color: var(--text);
+    font-size: 11px;
+  }
+  .matrix-job-meta {
+    color: var(--text-faint);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
   }
   .graph-node:disabled {
     opacity: 0.72;

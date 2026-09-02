@@ -41,7 +41,7 @@ function styleAlerts(doc) {
   }
 }
 
-const GH_IMAGE_HOSTS = new Set(["github.com", "private-user-images.githubusercontent.com"]);
+const GH_IMAGE_HOSTS = new Set(["github.com", "private-user-images.githubusercontent.com", "raw.githubusercontent.com"]);
 
 function proxyImages(doc) {
   for (const img of doc.querySelectorAll("img")) {

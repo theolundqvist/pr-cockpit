@@ -2507,6 +2507,9 @@
                 onSelect={selectRange}
                 bind:open={rangeOpen}
               />
+              {#if rangeKey !== "all"}
+                <button class="toolbar-btn" onclick={() => selectRange("all")}>All changes</button>
+              {/if}
             </div>
             {#if testFiles.length && diffState === "ready"}
               <button class="toolbar-btn shortcut-action" onclick={toggleTests}>
