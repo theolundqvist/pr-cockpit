@@ -125,7 +125,7 @@ import { createTmuxFocusHandler } from "./tmuxFocus.ts";
 import type { TmuxFocusHandler } from "./tmuxFocus.ts";
 import { needsMeRank } from "./rank.ts";
 import { invalidateInbox, invalidatePr } from "./rendererInvalidation.ts";
-import { actionJobLog, actionWorkflowGraphs, activateActionsLease, cacheActionsRun, cacheGithubActionsForCommit, cacheRepoActionsRunJobs, cachedJobLogs, formatJobLogs, formatRunJobs, refreshWorkflowRuns, repoActionWorkflowGraphs } from "./runLogs.ts";
+import { actionJobLog, actionWorkflowGraphs, activateActionsLease, cacheActionsRun, cacheGithubActionsForCommit, cacheRepoActionsRunJobs, cachedJobLogs, formatJobLogs, formatRunJobs, refreshWorkflowRuns, repoActionWorkflowGraphs, type CompactStep } from "./runLogs.ts";
 const cockpitRoot = process.cwd();
 
 function json(data: unknown, status = 200): Response {
@@ -1582,6 +1582,7 @@ interface SerializedActionJob {
   runnerGroupName: string | null;
   labels: string[];
   failedStep: string | null;
+  steps: CompactStep[];
   logBytes: number | null;
   logError: string | null;
 }
@@ -1603,6 +1604,7 @@ function serializeActionJob(job: RunJobRow): SerializedActionJob {
     runnerGroupName: job.runner_group_name,
     labels,
     failedStep: job.failed_step,
+    steps: JSON.parse(job.steps_json) as CompactStep[],
     logBytes: job.log_bytes,
     logError: job.log_error,
   };
