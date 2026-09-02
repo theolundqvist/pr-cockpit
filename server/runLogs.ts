@@ -33,6 +33,7 @@ import {
   fetchRecentWorkflowRuns,
   fetchWorkflowRuns,
   fetchWorkflowRun,
+  fetchWorkflowRunsForWorkflow,
   type RunJob,
   type WorkflowRun,
 } from "./github.ts";
@@ -394,6 +395,33 @@ export async function refreshRecentActions(
   let changed = 0;
   for (const raw of runs) {
     if (storeRun(repo, null, compactRun(raw))) changed++;
+  }
+  return changed;
+}
+
+const WORKFLOW_REFRESH_INTERVAL_MS = 60_000;
+const workflowRefreshedAt = new Map<string, number>();
+
+// Selected workflows are fetched through their own endpoint: the repo-wide recent-runs
+// window covers only a day or so in busy repositories and misses quieter workflows entirely.
+export async function refreshWorkflowRuns(
+  repo: string,
+  workflowId: number,
+  runFetcher: typeof fetchWorkflowRunsForWorkflow = fetchWorkflowRunsForWorkflow,
+): Promise<number> {
+  const key = `${repo}\n${workflowId}`;
+  const now = Date.now();
+  const last = workflowRefreshedAt.get(key);
+  if (last !== undefined && now - last < WORKFLOW_REFRESH_INTERVAL_MS) return 0;
+  workflowRefreshedAt.set(key, now);
+  let changed = 0;
+  try {
+    for (const raw of await runFetcher(repo, workflowId)) {
+      if (storeRun(repo, null, compactRun(raw))) changed++;
+    }
+  } catch (error) {
+    workflowRefreshedAt.delete(key);
+    throw error;
   }
   return changed;
 }

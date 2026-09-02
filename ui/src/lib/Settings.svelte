@@ -35,7 +35,7 @@
   let diffLayout = $state("split");
   let forceMergeRepos = $state([]);
   let agentHarness = $state("claude");
-  let harnessAvailable = $state({ claude: true, omp: true });
+  let harnessAvailable = $state({ claude: true, omp: true, codex: true });
   let agents = $state([]);
   let keybindOpenApp = $state("");
   let keybindOpenPalette = $state("");
@@ -532,6 +532,7 @@
           <select class="input narrow" bind:value={agentHarness}>
             <option value="claude">Claude Code{harnessAvailable.claude ? "" : " (not installed)"}</option>
             <option value="omp">omp{harnessAvailable.omp ? "" : " (not installed)"}</option>
+            <option value="codex">Codex{harnessAvailable.codex ? "" : " (not installed)"}</option>
           </select>
         </label>
 
@@ -579,10 +580,10 @@
               {#if agent.trigger === "keybind"}
                 <input class="input mono keybind-input" maxlength="1" bind:value={agent.keybind} spellcheck="false" autocomplete="off" />
               {/if}
-              <span class="trigger-kind">model</span>
+              <span class="trigger-kind">{agentHarness === "codex" ? "effort" : "model"}</span>
               <select class="input narrow" bind:value={agent.model}>
-                <option value="opus">opus</option>
-                <option value="sonnet">sonnet</option>
+                <option value="opus">{agentHarness === "codex" ? "high" : "opus"}</option>
+                <option value="sonnet">{agentHarness === "codex" ? "medium" : "sonnet"}</option>
               </select>
               <span class="hint trigger-hint">{agent.trigger === "keybind" ? "Press its key on a PR or inbox selection" : "Runs automatically when new commits land on your own PRs"}</span>
             </div>
