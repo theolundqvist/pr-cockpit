@@ -5,6 +5,7 @@ import { mockScreenshotSvg } from "./mockImages.ts";
 const ALLOWED_HOSTS = new Set([
   "github.com",
   "private-user-images.githubusercontent.com",
+  "raw.githubusercontent.com",
 ]);
 
 const IMAGE_CACHE_BYTES = 256 * 1024 * 1024;
@@ -47,12 +48,35 @@ function ghImgAvailable(): boolean {
   }
 }
 
+export async function fetchAllowedImage(raw: string, fetcher: typeof fetch = fetch): Promise<Uint8Array | null> {
+  let target: URL;
+  try {
+    target = new URL(raw);
+  } catch {
+    return null;
+  }
+  for (let redirect = 0; redirect < 4; redirect++) {
+    if (target.protocol !== "https:" || !ALLOWED_HOSTS.has(target.host)) return null;
+    const response = await fetcher(target, { redirect: "manual", headers: { accept: "image/*" } });
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get("location");
+      if (!location) return null;
+      target = new URL(location, target);
+      continue;
+    }
+    if (!response.ok) return null;
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    return sniffContentType(bytes) === "application/octet-stream" ? null : bytes;
+  }
+  return null;
+}
+
 function serveBytes(bytes: Uint8Array): Response {
   return new Response(bytes, {
     headers: {
       "content-type": sniffContentType(bytes),
       "cache-control": "public, max-age=31536000, immutable",
-      "content-disposition": "attachment",
+      "content-disposition": "inline",
       "content-security-policy": "default-src 'none'; sandbox",
     },
   });
@@ -104,6 +128,14 @@ async function getImage(raw: string): Promise<ImageResult> {
   const cached = Bun.file(cachePath);
   if (await cached.exists()) {
     return { bytes: new Uint8Array(await cached.arrayBuffer()) };
+  }
+
+  const fetched = await fetchAllowedImage(raw).catch(() => null);
+  if (fetched) {
+    mkdirSync(cacheDir, { recursive: true });
+    await Bun.write(cachePath, fetched);
+    evictOverCap();
+    return { bytes: fetched };
   }
 
   if (!ghImgAvailable()) {
