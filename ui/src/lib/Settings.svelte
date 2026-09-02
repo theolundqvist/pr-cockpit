@@ -1,5 +1,5 @@
 <script>
-  import { fetchHealth, fetchRelayCoverage, fetchRelayStatus, fetchSettings, saveSettings } from "./api.js";
+  import { fetchRelayCoverage, fetchRelayStatus, fetchSettings, saveSettings } from "./api.js";
   import { setCodeTheme, setFonts, setScales, setTheme } from "./theme.svelte.js";
   import { setPrefs } from "./prefs.svelte.js";
   import { BUILTIN_TEST_PATH } from "./testPath.js";
@@ -145,6 +145,7 @@
     keybindOpenPalette = s.keybind_open_palette;
     relayUrl = s.relay_url;
     testPathRegex = s.test_path_regex || BUILTIN_TEST_PATH.source;
+    health = s.tailscale_serve ? { tailscaleServe: s.tailscale_serve } : null;
   }
 
   let relayOrg = $derived(configuredRepos[0]?.split("/")[0] ?? "");
@@ -195,9 +196,6 @@
       .catch(() => {});
     fetchRelayCoverage()
       .then((c) => (relayCoverage = c))
-      .catch(() => {});
-    fetchHealth()
-      .then((value) => (health = value))
       .catch(() => {});
   });
 
@@ -326,17 +324,17 @@
         <button class="btn setup-again" type="button" onclick={onRunSetup}>Run setup again</button>
 
         <div class="settings-grid">
-          <div class="field field-wide private-access" class:private-access-live={privateAccess.state === "live"}>
-            <span class="label">Private access</span>
-            {#if privateAccess.state === "live"}
-              <span class="hint">Live through {privateAccess.kind}. The local server remains private on loopback.</span>
-              <a class="private-origin mono" href={privateAccess.origin}>{privateAccess.origin}</a>
-            {:else if privateAccess.state === "error"}
-              <span class="hint invalid-hint">Tailscale could not publish Cockpit: {privateAccess.error}</span>
-            {:else}
-              <span class="hint">Local only. Enable Tailscale Serve during installation to open Cockpit securely from your tailnet.</span>
-            {/if}
-          </div>
+          {#if privateAccess}
+            <div class="field field-wide private-access" class:private-access-live={privateAccess.state === "live"}>
+              <span class="label">Private access</span>
+              {#if privateAccess.state === "live"}
+                <span class="hint">Live through {privateAccess.kind}. The local server remains private on loopback.</span>
+                <a class="private-origin mono" href={privateAccess.origin}>{privateAccess.origin}</a>
+              {:else}
+                <span class="hint invalid-hint">Tailscale could not publish Cockpit: {privateAccess.error}</span>
+              {/if}
+            </div>
+          {/if}
 
           <label class="field field-wide">
             <span class="label">Repositories</span>

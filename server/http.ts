@@ -2442,11 +2442,13 @@ const AGENT_PROMPT_DEFAULTS: Record<string, () => string> = {
 };
 
 function withAgentPromptDefaults(settings: Settings) {
+  const serve = tailscaleServeStatus();
   return {
     ...settings,
     agents: settings.agents.map((a) => ({ ...a, prompt_default: AGENT_PROMPT_DEFAULTS[a.id]?.() ?? "" })),
     agent_defaults: AGENT_DEFAULTS,
     harness_available: { claude: claudeBinPath() !== null, omp: ompBinPath() !== null, codex: codexBinPath() !== null },
+    ...(serve.enabled ? { tailscale_serve: serve } : {}),
   };
 }
 

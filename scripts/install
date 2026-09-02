@@ -191,6 +191,14 @@ install_proxy="${install_proxy_env:-${COCKPIT_PROXY:-}}"
 install_proxy_port="${install_proxy_port_env:-${COCKPIT_PROXY_PORT:-4820}}"
 install_tailscale_serve="${install_tailscale_serve_env:-${COCKPIT_TAILSCALE_SERVE:-}}"
 install_tailscale_https_port="${install_tailscale_https_port_env:-${COCKPIT_TAILSCALE_HTTPS_PORT:-}}"
+install_tailscale_plist_args=""
+if [[ "$install_tailscale_serve" == "1" ]]; then
+  install_tailscale_plist_args="    <string>COCKPIT_TAILSCALE_SERVE=1</string>"
+  if [[ -n "$install_tailscale_https_port" ]]; then
+    install_tailscale_plist_args="$install_tailscale_plist_args
+    <string>COCKPIT_TAILSCALE_HTTPS_PORT=$install_tailscale_https_port</string>"
+  fi
+fi
 install_proxy="${install_proxy#ssh://}"
 install_proxy="${install_proxy%/}"
 
@@ -242,8 +250,7 @@ cat > "$server_agent_plist" <<PLIST
     <string>COCKPIT_TMUX_HOSTS=$install_tmux_hosts</string>
     <string>COCKPIT_REPLICA_SSH_HOST=$install_proxy</string>
     <string>COCKPIT_PROXY_PORT=$install_proxy_port</string>
-    <string>COCKPIT_TAILSCALE_SERVE=$install_tailscale_serve</string>
-    <string>COCKPIT_TAILSCALE_HTTPS_PORT=$install_tailscale_https_port</string>
+$install_tailscale_plist_args
     <string>COCKPIT_NO_BUILD=1</string>
     <string>COCKPIT_LAUNCHER=$runtime_launcher</string>
     <string>XDG_DATA_HOME=$xdg_data_home</string>

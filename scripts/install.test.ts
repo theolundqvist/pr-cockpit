@@ -124,6 +124,7 @@ test("new config is a commented inert example", async () => {
   expect(result.config).toContain('# COCKPIT_PROXY="build-server"');
   expect(result.config).not.toContain("Agents mutate existing PRs");
   expect(result.config).not.toMatch(/^[^#\n]*COCKPIT_PROXY=/m);
+  expect(result.serverPlist).not.toContain("COCKPIT_TAILSCALE");
 });
 
 test("a Tailscale Serve install persists the opt-in launch environment", async () => {

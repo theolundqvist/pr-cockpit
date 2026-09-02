@@ -1,5 +1,5 @@
 <script>
-  import { fetchAuthStatus, fetchHealth, fetchOnboardingRepos, fetchRelayCoverage, fetchSettings, refreshInbox, saveSettings } from "./api.js";
+  import { fetchAuthStatus, fetchOnboardingRepos, fetchRelayCoverage, fetchSettings, refreshInbox, saveSettings } from "./api.js";
   import { relativeTime } from "./time.js";
   import Kbd from "./Kbd.svelte";
   import GithubSetupModal from "./GithubSetupModal.svelte";
@@ -36,7 +36,10 @@
   let privateAccess = $derived(tailscaleAccess(health));
 
   const configuredRepos = fetchSettings()
-    .then((settings) => settings.repos.split(",").map((repo) => repo.trim()).filter(Boolean))
+    .then((settings) => {
+      health = settings.tailscale_serve ? { tailscaleServe: settings.tailscale_serve } : null;
+      return settings.repos.split(",").map((repo) => repo.trim()).filter(Boolean);
+    })
     .catch(() => []);
 
   let chosen = $derived([...new Set([...manual, ...repos.filter((repo) => selected.has(repo.nameWithOwner)).map((repo) => repo.nameWithOwner)])]);
@@ -47,7 +50,6 @@
 
   $effect(() => {
     checkAuth();
-    fetchHealth().then((value) => (health = value)).catch(() => {});
   });
 
   $effect(() => () => clearTimeout(coverageTimer));
@@ -409,12 +411,12 @@
         </div>
       {:else if syncState === "complete"}
         <p class="ready-copy">Your inbox is ready.</p>
-        {#if privateAccess.state === "live"}
+        {#if privateAccess?.state === "live"}
           <div class="status-card">
             <span class="status-mark success" aria-hidden="true">✓</span>
             <span>Private on your tailnet at <a href={privateAccess.origin}>{privateAccess.origin}</a></span>
           </div>
-        {:else if privateAccess.state === "error"}
+        {:else if privateAccess?.state === "error"}
           <div class="notice failure-notice"><strong>Tailscale needs attention.</strong><span>{privateAccess.error}</span></div>
         {/if}
       {/if}
