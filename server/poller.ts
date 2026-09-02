@@ -40,6 +40,7 @@ let quotaPauseResetAt: string | null = null;
 let openInboxKeys = new Set<string>();
 
 export function backgroundQuotaAvailable(quota: GithubQuotaResource, now = Date.now()): boolean {
+  if (quota.remaining >= quota.limit) return true;
   const resetIn = Math.max(0, Date.parse(quota.resetAt) - now);
   const pacedReserve = Math.ceil(quota.limit * Math.min(resetIn, GRAPHQL_WINDOW_MS) / GRAPHQL_WINDOW_MS);
   return quota.remaining > Math.max(GRAPHQL_BACKGROUND_RESERVE, pacedReserve);

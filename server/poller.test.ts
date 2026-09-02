@@ -59,6 +59,12 @@ test("paces background GraphQL work across the quota window", () => {
   expect(backgroundQuotaAvailable({ limit: 5000, used: 4990, remaining: 10, resetAt }, now)).toBe(false);
 });
 
+test("allows the first refresh when GitHub reports a full unused window", () => {
+  const now = Date.parse("2026-09-01T08:55:16.000Z");
+  const resetAt = "2026-09-01T09:55:16.000Z";
+  expect(backgroundQuotaAvailable({ limit: 5000, used: 0, remaining: 5000, resetAt }, now)).toBe(true);
+});
+
 function registration(repo: string, number: number): WebhookRegistrationRow {
   return { window_id: "@1", repo, number, last_webhook_at: null };
 }
