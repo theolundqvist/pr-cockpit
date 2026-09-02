@@ -90,7 +90,7 @@ import { checkState, type CheckState } from "./checkState.ts";
 import { currentBaseRef, discardMutation, enqueueMutation, mutationsForPr, retryMutation, type MutationPayload } from "./mutations.ts";
 import { isMergeMethod, mergeMethodFor, mergeMethodSourceFor, setMergeMethodPreference } from "./mergeMethod.ts";
 import { AGENT_DEFAULTS, readSettings, relayConfig, RELAY_APP_INSTALL_URL, RELAY_APP_SLUG, settingsRepos, writeSettings, type AgentSetting, type Settings } from "./settings.ts";
-import { claudeBinPath, ompBinPath } from "./harness.ts";
+import { claudeBinPath, codexBinPath, ompBinPath } from "./harness.ts";
 import { CommitMessageError, generateCommitMessage } from "./commitMessage.ts";
 import { relayStatus } from "./relayClient.ts";
 import { relayCoverage } from "./relayCoverage.ts";
@@ -2427,7 +2427,7 @@ function withAgentPromptDefaults(settings: Settings) {
     ...settings,
     agents: settings.agents.map((a) => ({ ...a, prompt_default: AGENT_PROMPT_DEFAULTS[a.id]?.() ?? "" })),
     agent_defaults: AGENT_DEFAULTS,
-    harness_available: { claude: claudeBinPath() !== null, omp: ompBinPath() !== null },
+    harness_available: { claude: claudeBinPath() !== null, omp: ompBinPath() !== null, codex: codexBinPath() !== null },
   };
 }
 
