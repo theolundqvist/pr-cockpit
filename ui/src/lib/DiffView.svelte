@@ -2074,7 +2074,9 @@
     font-family: var(--code-font);
     font-size: var(--diff-font-size);
     line-height: 1.6;
-    overflow-x: auto;
+    /* horizontal only: a scroller that can also move vertically by a subpixel
+       latches touch pans on iOS and the page stops scrolling */
+    overflow: auto hidden;
     overscroll-behavior-x: contain;
   }
   .hunk-head {

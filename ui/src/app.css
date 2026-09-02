@@ -259,6 +259,9 @@ body {
 
 html {
   color-scheme: light;
+  /* iOS Safari otherwise inflates individual long lines of scaled-down code */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 body {
@@ -589,7 +592,7 @@ kbd {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 12px 14px;
-  overflow-x: auto;
+  overflow: auto hidden;
 }
 .md pre code {
   background: none;
@@ -605,7 +608,7 @@ kbd {
   border-radius: 8px;
   padding: 16px;
   margin: 0 0 12px;
-  overflow-x: auto;
+  overflow: auto hidden;
 }
 .md .mermaid-diagram svg {
   max-width: 100%;
