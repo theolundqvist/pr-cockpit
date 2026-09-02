@@ -18,7 +18,7 @@
 <style>
   .keybar {
     position: fixed;
-    left: 0;
+    left: var(--app-rail-width, 0px);
     right: 0;
     bottom: 0;
     height: 38px;
