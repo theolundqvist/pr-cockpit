@@ -9,6 +9,7 @@
   import { prefetchRepoRun, rememberActionRun } from "./actionPrefetch.js";
   import { fetchRepoActions, fetchSettings } from "./api.js";
   import { durationText, relativeTime } from "./time.js";
+  import { isTypingTarget } from "./dom.js";
 
   let {
     repos: routeRepos = [],
@@ -30,6 +31,7 @@
   const validStatuses = new Set(statusOptions.map((option) => option.id));
 
   let selectedRepos = $state([]);
+  let repoPickerOpen = $state(false);
   let selectedWorkflows = $state([]);
   let selectedStatus = $state("all");
   let initialized = $state(false);
@@ -74,12 +76,27 @@
   }
 
   function updateFilters(next) {
-    syncSelection({
+    const selection = {
       repos: next.repos ?? selectedRepos,
       workflows: next.workflows ?? selectedWorkflows,
       status: next.status ?? selectedStatus,
-    });
+    };
+    syncSelection(selection);
+    if (next.repos !== undefined) {
+      if (selection.repos.length) localStorage.setItem("cockpit:repository-scope", JSON.stringify(selection.repos));
+      else localStorage.removeItem("cockpit:repository-scope");
+    }
   }
+
+  $effect(() => {
+    const onKey = (event) => {
+      if (event.metaKey || event.ctrlKey || event.altKey || isTypingTarget(event.target) || event.key.toLowerCase() !== "r") return;
+      repoPickerOpen = !repoPickerOpen;
+      event.preventDefault();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   function runDuration(run) {
     if (run.runStartedAt && run.updatedAt) return durationText(run.runStartedAt, run.updatedAt);
@@ -215,7 +232,7 @@
       {/each}
     </div>
     <div class="filter-pickers">
-      <MultiSelectDropdown label="Repository" options={snapshot?.repos ?? []} selected={selectedRepos} plural="repositories" onchange={(repos) => updateFilters({ repos })} />
+      <MultiSelectDropdown label="Repository" options={snapshot?.repos ?? []} selected={selectedRepos} plural="repositories" keybind="r" bind:open={repoPickerOpen} onchange={(repos) => updateFilters({ repos })} />
       <MultiSelectDropdown label="Workflow" options={workflowOptions} selected={selectedWorkflows} plural="workflows" onchange={(workflows) => updateFilters({ workflows })} />
     </div>
   </section>

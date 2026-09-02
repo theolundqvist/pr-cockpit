@@ -19,10 +19,12 @@
   import UpdateButton from "./UpdateButton.svelte";
   import { timedFlag } from "./timedFlag.svelte.js";
   import { prKey } from "./prKey.js";
+  import { availableRepositories, filterByRepositories } from "./repoFilter.js";
   import { showFlash } from "./flash.svelte.js";
   import CurrentBranchBadge from "./CurrentBranchBadge.svelte";
   import Kbd from "./Kbd.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
+  import MultiSelectDropdown from "./MultiSelectDropdown.svelte";
 
   let { active = true, refreshRevision = 0, pollCompletedAt = null, onFindPr = () => {} } = $props();
   let handledRefreshRevision = refreshRevision;
@@ -69,7 +71,19 @@
   let closedSeq = 0;
   let undo = $state(null);
   const archiveFlash = timedFlag(4000, () => (undo = null));
+  function storedRepositories() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem("cockpit:repository-scope") ?? "[]");
+      return Array.isArray(parsed) ? parsed.filter((repo) => typeof repo === "string" && repo) : [];
+    } catch {
+      return [];
+    }
+  }
+
   let savedViews = $state([]);
+  let configuredRepos = $state([]);
+  let selectedRepos = $state(storedRepositories());
+  let repoPickerOpen = $state(false);
   let pollIntervalS = $state(180);
   const inboxMountedAt = Date.now();
 
@@ -77,10 +91,19 @@
     try {
       const settings = await fetchSettings();
       savedViews = JSON.parse(settings.saved_views || "[]");
+      configuredRepos = settings.repos.split(",").map((repo) => repo.trim()).filter(Boolean);
       pollIntervalS = Number.isFinite(settings.poll_interval_s) ? settings.poll_interval_s : 180;
     } catch {
       savedViews = [];
+      configuredRepos = [];
     }
+  }
+
+  function selectRepositories(repos) {
+    selectedRepos = [...repos];
+    if (repos.length) localStorage.setItem("cockpit:repository-scope", JSON.stringify(repos));
+    else localStorage.removeItem("cockpit:repository-scope");
+    selected = 0;
   }
 
   async function persistViews(views) {
@@ -271,7 +294,7 @@
       const selectedKey = view === "closed" && ordered[selected] ? prKey(ordered[selected]) : null;
       closedPrs = res.prs;
       if (selectedKey !== null) {
-        const idx = closedPrs.findIndex((pr) => prKey(pr) === selectedKey);
+        const idx = filterByRepositories(closedPrs, selectedRepos).findIndex((pr) => prKey(pr) === selectedKey);
         if (idx >= 0) selected = idx;
       }
     } catch {
@@ -320,7 +343,16 @@
   });
 
   let historyActive = $derived(wantsHistory(filterQuery) && historyQuery === filterQuery.trim() && !historyLoading);
-  let filteredPrs = $derived(wantsHistory(filterQuery) ? (historyQuery === filterQuery.trim() ? historyPrs : []) : filterPrs(prs, filterQuery, showArchived));
+  let queryFilteredPrs = $derived(wantsHistory(filterQuery) ? (historyQuery === filterQuery.trim() ? historyPrs : []) : filterPrs(prs, filterQuery, showArchived));
+  let availableRepos = $derived(availableRepositories(configuredRepos, prs, archivedPrs, closedPrs));
+  let filteredPrs = $derived(filterByRepositories(queryFilteredPrs, selectedRepos));
+  let filteredClosedPrs = $derived(filterByRepositories(closedPrs, selectedRepos));
+  let actionsHref = $derived.by(() => {
+    const params = new URLSearchParams();
+    if (selectedRepos.length === 0) params.append("repo", "");
+    else for (const repo of selectedRepos) params.append("repo", repo);
+    return `#/actions?${params}`;
+  });
   let activeView = $derived(savedViews.find((v) => v.query === filterQuery.trim())?.name ?? null);
 
   // history views can't be counted from the open inbox; show the live count only while applied, else a placeholder
@@ -532,7 +564,7 @@
     const pr = prs.find((p) => prKey(p) === dragKey);
     return pr ? (pr.rank != null ? "pinned" : classify(topUnit(pr), viewerLogin).group) : null;
   });
-  let ordered = $derived(view === "closed" ? closedPrs : showArchived ? [...openOrdered, ...archivedPrs] : openOrdered);
+  let ordered = $derived(view === "closed" ? filteredClosedPrs : showArchived ? [...openOrdered, ...archivedPrs] : openOrdered);
   let archivedSet = $derived(new Set(archivedPrs.map((pr) => prKey(pr))));
   const isArchived = (pr) => archivedSet.has(prKey(pr));
 
@@ -665,6 +697,11 @@
         e.preventDefault();
         return;
       }
+      if (e.key === "Escape" && repoPickerOpen) {
+        repoPickerOpen = false;
+        e.preventDefault();
+        return;
+      }
       if (e.key === "Escape" && filterOpen) {
         closeFilter();
         e.preventDefault();
@@ -677,6 +714,11 @@
       }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (isTypingTarget(e.target)) return;
+      if (e.key === "r") {
+        repoPickerOpen = !repoPickerOpen;
+        e.preventDefault();
+        return;
+      }
       if (e.key === "/") {
         openFilter();
         e.preventDefault();
@@ -796,16 +838,29 @@
     </header>
 
 
-    <div class="view-tabs" role="tablist" aria-label="List view">
-      <button class="view-tab" role="tab" aria-selected={view === "open"} class:active={view === "open"} onclick={() => showView("open")}>
-        Open
-        <span class="view-tab-count">{prs.length}</span>
-        {#if view === "closed"}<Kbd keys="tab" />{/if}
-      </button>
-      <button class="view-tab" role="tab" aria-selected={view === "closed"} class:active={view === "closed"} onclick={() => showView("closed")}>
-        Recently merged {#if view === "open"}<Kbd keys="tab" />{/if}
-      </button>
-      <a class="view-tab" role="tab" aria-selected="false" href="#/actions">Actions</a>
+    <div class="queue-toolbar">
+      <div class="view-tabs" role="tablist" aria-label="List view">
+        <button class="view-tab" role="tab" aria-selected={view === "open"} class:active={view === "open"} onclick={() => showView("open")}>
+          Open
+          <span class="view-tab-count">{filterByRepositories(prs, selectedRepos).length}</span>
+          {#if view === "closed"}<Kbd keys="tab" />{/if}
+        </button>
+        <button class="view-tab" role="tab" aria-selected={view === "closed"} class:active={view === "closed"} onclick={() => showView("closed")}>
+          Recently merged {#if view === "open"}<Kbd keys="tab" />{/if}
+        </button>
+        <a class="view-tab" role="tab" aria-selected="false" href={actionsHref}>Actions</a>
+      </div>
+      <div class="repo-filter">
+        <MultiSelectDropdown
+          label="Repository"
+          options={availableRepos}
+          selected={selectedRepos}
+          plural="repositories"
+          keybind="r"
+          bind:open={repoPickerOpen}
+          onchange={selectRepositories}
+        />
+      </div>
     </div>
 
     {#if filterOpen && view === "open"}
@@ -983,10 +1038,12 @@
             <div class="empty">Loading recent merges…</div>
           {:else if closedPrs.length === 0}
             <div class="empty">Nothing merged or closed yet</div>
+          {:else if filteredClosedPrs.length === 0}
+            <div class="empty">Nothing merged or closed in the selected repositories</div>
           {/if}
           <section class="queue-group">
             <div class="group-body">
-              {#each closedPrs as pr (prKey(pr))}{@render closedRow(pr)}{/each}
+              {#each filteredClosedPrs as pr (prKey(pr))}{@render closedRow(pr)}{/each}
             </div>
           </section>
         {:else}
@@ -996,6 +1053,8 @@
             <div class="empty">Syncing with GitHub…</div>
           {:else if loaded && prs.length === 0}
             <div class="empty">No open pull requests</div>
+          {:else if selectedRepos.length && filteredPrs.length === 0}
+            <div class="empty">No open pull requests in the selected repositories</div>
           {:else if wantsHistory(filterQuery) && !historyActive}
             <div class="empty">Searching history…</div>
           {:else if filterQuery && filteredPrs.length === 0}
@@ -1582,12 +1641,21 @@
   .view-tabs {
     display: flex;
     gap: 4px;
-    margin: 0 0 16px;
+    margin: 0;
     padding: 3px;
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
     box-shadow: var(--shadow-xs);
+  }
+  .queue-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .repo-filter {
+    margin-left: auto;
   }
   .view-tab {
     display: flex;
@@ -1971,6 +2039,13 @@
     background: transparent;
     box-shadow: none;
   }
+  .queue-toolbar .view-tabs {
+    margin: 0;
+  }
+  .queue-toolbar {
+    gap: 10px;
+    margin-bottom: 20px;
+  }
   .view-tab {
     min-height: 32px;
     padding: 0 12px;
@@ -2277,6 +2352,14 @@
     }
     .view-tab :global(.kbd) {
       display: none;
+    }
+    .queue-toolbar {
+      align-items: stretch;
+      flex-direction: column;
+    }
+    .repo-filter {
+      width: 100%;
+      margin-left: 0;
     }
     .row {
       display: grid;
