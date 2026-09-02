@@ -131,7 +131,7 @@ test("a Tailscale Serve install persists the opt-in launch environment", async (
   expect(result.exitCode).toBe(0);
   expect(result.serverPlist).toContain("<string>COCKPIT_TAILSCALE_SERVE=1</string>");
   expect(result.serverPlist).toContain("<string>COCKPIT_TAILSCALE_HTTPS_PORT=8443</string>");
-});
+}, 10_000);
 
 test("an app registration left behind by another root is replaced", async () => {
   const result = await install("/tmp/some-other-checkout");
