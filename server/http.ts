@@ -126,7 +126,7 @@ import { createTmuxFocusHandler } from "./tmuxFocus.ts";
 import type { TmuxFocusHandler } from "./tmuxFocus.ts";
 import { needsMeRank } from "./rank.ts";
 import { invalidateInbox, invalidatePr } from "./rendererInvalidation.ts";
-import { actionJobLog, actionWorkflowGraphs, activateActionsLease, cacheActionsRun, cacheGithubActionsForCommit, cacheRepoActionsRunJobs, cachedJobLogs, formatJobLogs, formatRunJobs, refreshWorkflowRuns, repoActionWorkflowGraphs } from "./runLogs.ts";
+import { actionJobLog, actionWorkflowGraphs, activateActionsLease, cacheActionsRun, cacheGithubActionsForCommit, cacheRepoActionsRunJobs, cachedJobLogs, formatJobLogs, formatRunJobs, refreshWorkflowRuns, repoActionWorkflowGraphs, type CompactStep } from "./runLogs.ts";
 const cockpitRoot = process.cwd();
 
 function json(data: unknown, status = 200): Response {
@@ -1583,6 +1583,7 @@ interface SerializedActionJob {
   runnerGroupName: string | null;
   labels: string[];
   failedStep: string | null;
+  steps: CompactStep[];
   logBytes: number | null;
   logError: string | null;
 }
@@ -1604,6 +1605,7 @@ function serializeActionJob(job: RunJobRow): SerializedActionJob {
     runnerGroupName: job.runner_group_name,
     labels,
     failedStep: job.failed_step,
+    steps: JSON.parse(job.steps_json) as CompactStep[],
     logBytes: job.log_bytes,
     logError: job.log_error,
   };
@@ -1684,18 +1686,27 @@ async function handleRepoActions(url: URL): Promise<Response> {
       if (workflow.name.toLocaleLowerCase() === lowered) selectedWorkflowPaths.add(workflow.path);
     }
   }
-  if (selectedWorkflowPaths.size > 0) {
-    const targets = catalog.filter((workflow) => selectedWorkflowPaths.has(workflow.path));
-    const results = await Promise.allSettled(targets.map((workflow) => refreshWorkflowRuns(workflow.repo, workflow.workflow_id)));
-    results.forEach((result, index) => {
-      if (result.status === "rejected") {
-        console.error(`Workflow runs refresh failed for ${targets[index].repo} ${targets[index].path}:`, result.reason);
-      }
-    });
-  }
-  const allRuns = selectedWorkflowPaths.size > 0
+  let allRuns = selectedWorkflowPaths.size > 0
     ? listWorkflowRunsForPaths(repos, [...selectedWorkflowPaths], 1000)
     : recentRuns;
+  if (selectedWorkflowPaths.size > 0) {
+    // Cached rows answer immediately; the per-workflow fetch only blocks the response
+    // when a selected workflow has nothing cached yet.
+    const targets = catalog.filter((workflow) => selectedWorkflowPaths.has(workflow.path));
+    const cachedPaths = new Set(allRuns.map((run) => `${run.repo}\n${staticWorkflowPath(run.workflow_path)}`));
+    const refresh = Promise.allSettled(targets.map((workflow) => refreshWorkflowRuns(workflow.repo, workflow.workflow_id)))
+      .then((results) => {
+        results.forEach((result, index) => {
+          if (result.status === "rejected") {
+            console.error(`Workflow runs refresh failed for ${targets[index].repo} ${targets[index].path}:`, result.reason);
+          }
+        });
+      });
+    if (targets.some((workflow) => !cachedPaths.has(`${workflow.repo}\n${workflow.path}`))) {
+      await refresh;
+      allRuns = listWorkflowRunsForPaths(repos, [...selectedWorkflowPaths], 1000);
+    }
+  }
   const latestRuns = latestActionRunAttempts(allRuns);
   const commitRuns = headSha ? latestRuns.filter((run) => run.head_sha === headSha) : latestRuns;
   const workflowRuns = requestedWorkflows.length > 0

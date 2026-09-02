@@ -83,6 +83,21 @@
     return job.labels.join(", ");
   }
 
+  // GitHub only publishes a job's log archive after the job completes, so a running
+  // job shows its step progress live instead; the log loads itself on completion.
+  let stepClock = $state(Date.now());
+  $effect(() => {
+    if (!selectedJob || selectedJob.status === "completed") return;
+    const timer = setInterval(() => { stepClock = Date.now(); }, 1_000);
+    return () => clearInterval(timer);
+  });
+  function stepTime(step) {
+    if (step.startedAt && step.completedAt) return durationText(step.startedAt, step.completedAt);
+    if (!step.startedAt) return "";
+    const seconds = Math.max(0, Math.floor((stepClock - Date.parse(step.startedAt)) / 1000));
+    return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  }
+
   let groups = $derived.by(() => {
     const byRun = new Map();
     for (const run of snapshot?.runs ?? []) {
@@ -515,7 +530,20 @@
         </header>
 
         {#if selectedJob.status !== "completed"}
-          <div class="empty log-empty">The log will appear when this job completes.</div>
+          {#if selectedJob.steps?.length}
+            <ol class="steps" aria-label="Job steps">
+              {#each selectedJob.steps as step (step.number)}
+                <li class="step-row" class:current={step.status === "in_progress"}>
+                  {@render statusIcon(step.status === "in_progress" || step.status === "completed" ? step.status : "not_started", step.conclusion)}
+                  <span class="step-name">{step.name}</span>
+                  <span class="step-time">{stepTime(step)}</span>
+                </li>
+              {/each}
+            </ol>
+            <div class="log-footer step-footer">The full log appears when this job completes.</div>
+          {:else}
+            <div class="empty log-empty">Waiting for a runner. The log will appear when this job completes.</div>
+          {/if}
         {:else if logLoadingId === selectedJob.id && !selectedLog}
           <div class="empty log-empty">Loading log…</div>
         {:else if selectedLogError}
@@ -836,6 +864,37 @@
   }
   .log-empty {
     min-height: 380px;
+  }
+  .steps {
+    margin: 0;
+    padding: 6px;
+    list-style: none;
+  }
+  .step-row {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr) auto;
+    gap: 7px;
+    align-items: center;
+    padding: 6px 8px;
+    border-radius: 7px;
+  }
+  .step-row.current {
+    background: var(--panel-raised);
+  }
+  .step-name {
+    overflow: hidden;
+    color: var(--text);
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .step-time {
+    color: var(--text-faint);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+  .step-footer {
+    padding: 8px 14px 12px;
   }
   .error {
     color: var(--fail);

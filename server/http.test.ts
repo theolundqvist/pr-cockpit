@@ -1670,6 +1670,7 @@ describe("Actions viewer API", () => {
           runnerGroupName: "hosted",
           labels: ["arm64"],
           failedStep: "Compile",
+          steps: [],
           logBytes: null,
           logError: null,
         }],
