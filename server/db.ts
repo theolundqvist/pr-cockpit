@@ -1131,6 +1131,20 @@ export function listWorkflowRuns(repos: string[], limit = 200, offset = 0): Work
   ).all(...repos, limit, offset);
 }
 
+// Matches both static paths and reusable-workflow paths carrying an `@refs/...` suffix.
+export function listWorkflowRunsForPaths(repos: string[], paths: string[], limit = 200): WorkflowRunRow[] {
+  if (repos.length === 0 || paths.length === 0) return [];
+  const repoPlaceholders = repos.map(() => "?").join(", ");
+  const pathPlaceholders = paths.map(() => "?").join(", ");
+  return db.query<WorkflowRunRow, [...string[], number]>(
+    `SELECT * FROM workflow_runs
+     WHERE repo IN (${repoPlaceholders})
+       AND substr(workflow_path, 1, instr(workflow_path || '@refs/', '@refs/') - 1) IN (${pathPlaceholders})
+     ORDER BY event_at DESC, run_id DESC, run_attempt DESC
+     LIMIT ?`,
+  ).all(...repos, ...paths, limit);
+}
+
 const deleteActionWorkflowsStmt = db.prepare("DELETE FROM action_workflows WHERE repo = ?");
 const insertActionWorkflowStmt = db.prepare(
   "INSERT INTO action_workflows (repo, workflow_id, name, path, state, fetched_at) VALUES (?, ?, ?, ?, ?, ?)",

@@ -33,6 +33,7 @@ import {
   setAutoMergeArmed,
   setRank,
   unsetRank,
+  listWorkflowRunsForPaths,
   upsertPr,
   upsertCachedPrDetail,
   upsertPrIndex,
@@ -90,7 +91,7 @@ import { checkState, type CheckState } from "./checkState.ts";
 import { currentBaseRef, discardMutation, enqueueMutation, mutationsForPr, retryMutation, type MutationPayload } from "./mutations.ts";
 import { isMergeMethod, mergeMethodFor, mergeMethodSourceFor, setMergeMethodPreference } from "./mergeMethod.ts";
 import { AGENT_DEFAULTS, readSettings, relayConfig, RELAY_APP_INSTALL_URL, RELAY_APP_SLUG, settingsRepos, writeSettings, type AgentSetting, type Settings } from "./settings.ts";
-import { claudeBinPath, ompBinPath } from "./harness.ts";
+import { claudeBinPath, codexBinPath, ompBinPath } from "./harness.ts";
 import { CommitMessageError, generateCommitMessage } from "./commitMessage.ts";
 import { relayStatus } from "./relayClient.ts";
 import { relayCoverage } from "./relayCoverage.ts";
@@ -124,7 +125,7 @@ import { createTmuxFocusHandler } from "./tmuxFocus.ts";
 import type { TmuxFocusHandler } from "./tmuxFocus.ts";
 import { needsMeRank } from "./rank.ts";
 import { invalidateInbox, invalidatePr } from "./rendererInvalidation.ts";
-import { actionJobLog, actionWorkflowGraphs, activateActionsLease, cacheActionsRun, cacheGithubActionsForCommit, cacheRepoActionsRunJobs, cachedJobLogs, formatJobLogs, formatRunJobs, repoActionWorkflowGraphs } from "./runLogs.ts";
+import { actionJobLog, actionWorkflowGraphs, activateActionsLease, cacheActionsRun, cacheGithubActionsForCommit, cacheRepoActionsRunJobs, cachedJobLogs, formatJobLogs, formatRunJobs, refreshWorkflowRuns, repoActionWorkflowGraphs } from "./runLogs.ts";
 const cockpitRoot = process.cwd();
 
 function json(data: unknown, status = 200): Response {
@@ -1653,15 +1654,19 @@ async function handleRepoActions(url: URL): Promise<Response> {
   const backgroundPrefetch = url.searchParams.get("prefetch") === "1";
   if (headSha && !/^[0-9a-f]{40}$/i.test(headSha)) return json({ error: "invalid head sha" }, 400);
   const page = Math.max(1, Number.parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
-  const allRuns = listWorkflowRuns(repos, 1000);
-  const latestRuns = latestActionRunAttempts(allRuns);
   const catalog = listActionWorkflows(repos);
   const catalogByRepoPath = new Map(catalog.map((workflow) => [`${workflow.repo}\n${workflow.path}`, workflow]));
   const workflowNameFor = (run: WorkflowRunRow): string =>
     catalogByRepoPath.get(`${run.repo}\n${staticWorkflowPath(run.workflow_path)}`)?.name
       ?? workflowPathLabel(run.workflow_path);
+  // The facet unions the catalog with observed runs so quiet workflows outside the
+  // recent-runs window remain selectable, and dynamic-only paths remain listed.
+  const recentRuns = listWorkflowRuns(repos, 1000);
   const facetByPath = new Map<string, string>();
-  for (const run of allRuns) {
+  for (const workflow of catalog) {
+    if (workflow.state === "active") facetByPath.set(workflow.path, workflow.name);
+  }
+  for (const run of recentRuns) {
     const path = staticWorkflowPath(run.workflow_path);
     if (path && !facetByPath.has(path)) facetByPath.set(path, workflowNameFor(run));
   }
@@ -1678,6 +1683,19 @@ async function handleRepoActions(url: URL): Promise<Response> {
       if (workflow.name.toLocaleLowerCase() === lowered) selectedWorkflowPaths.add(workflow.path);
     }
   }
+  if (selectedWorkflowPaths.size > 0) {
+    const targets = catalog.filter((workflow) => selectedWorkflowPaths.has(workflow.path));
+    const results = await Promise.allSettled(targets.map((workflow) => refreshWorkflowRuns(workflow.repo, workflow.workflow_id)));
+    results.forEach((result, index) => {
+      if (result.status === "rejected") {
+        console.error(`Workflow runs refresh failed for ${targets[index].repo} ${targets[index].path}:`, result.reason);
+      }
+    });
+  }
+  const allRuns = selectedWorkflowPaths.size > 0
+    ? listWorkflowRunsForPaths(repos, [...selectedWorkflowPaths], 1000)
+    : recentRuns;
+  const latestRuns = latestActionRunAttempts(allRuns);
   const commitRuns = headSha ? latestRuns.filter((run) => run.head_sha === headSha) : latestRuns;
   const workflowRuns = requestedWorkflows.length > 0
     ? commitRuns.filter((run) => selectedWorkflowPaths.has(staticWorkflowPath(run.workflow_path)))
@@ -2427,7 +2445,7 @@ function withAgentPromptDefaults(settings: Settings) {
     ...settings,
     agents: settings.agents.map((a) => ({ ...a, prompt_default: AGENT_PROMPT_DEFAULTS[a.id]?.() ?? "" })),
     agent_defaults: AGENT_DEFAULTS,
-    harness_available: { claude: claudeBinPath() !== null, omp: ompBinPath() !== null },
+    harness_available: { claude: claudeBinPath() !== null, omp: ompBinPath() !== null, codex: codexBinPath() !== null },
   };
 }
 
