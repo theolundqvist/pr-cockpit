@@ -19,6 +19,7 @@
   import UpdateButton from "./UpdateButton.svelte";
   import { timedFlag } from "./timedFlag.svelte.js";
   import { prKey } from "./prKey.js";
+  import { availableRepositories, filterByRepository } from "./repoFilter.js";
   import { showFlash } from "./flash.svelte.js";
   import CurrentBranchBadge from "./CurrentBranchBadge.svelte";
   import Kbd from "./Kbd.svelte";
@@ -70,6 +71,8 @@
   let undo = $state(null);
   const archiveFlash = timedFlag(4000, () => (undo = null));
   let savedViews = $state([]);
+  let configuredRepos = $state([]);
+  let repoFilter = $state("");
   let pollIntervalS = $state(180);
   const inboxMountedAt = Date.now();
 
@@ -77,9 +80,11 @@
     try {
       const settings = await fetchSettings();
       savedViews = JSON.parse(settings.saved_views || "[]");
+      configuredRepos = settings.repos.split(",").map((repo) => repo.trim()).filter(Boolean);
       pollIntervalS = Number.isFinite(settings.poll_interval_s) ? settings.poll_interval_s : 180;
     } catch {
       savedViews = [];
+      configuredRepos = [];
     }
   }
 
@@ -271,7 +276,7 @@
       const selectedKey = view === "closed" && ordered[selected] ? prKey(ordered[selected]) : null;
       closedPrs = res.prs;
       if (selectedKey !== null) {
-        const idx = closedPrs.findIndex((pr) => prKey(pr) === selectedKey);
+        const idx = filterByRepository(closedPrs, repoFilter).findIndex((pr) => prKey(pr) === selectedKey);
         if (idx >= 0) selected = idx;
       }
     } catch {
@@ -320,7 +325,11 @@
   });
 
   let historyActive = $derived(wantsHistory(filterQuery) && historyQuery === filterQuery.trim() && !historyLoading);
-  let filteredPrs = $derived(wantsHistory(filterQuery) ? (historyQuery === filterQuery.trim() ? historyPrs : []) : filterPrs(prs, filterQuery, showArchived));
+  let queryFilteredPrs = $derived(wantsHistory(filterQuery) ? (historyQuery === filterQuery.trim() ? historyPrs : []) : filterPrs(prs, filterQuery, showArchived));
+  let availableRepos = $derived(availableRepositories(configuredRepos, prs, archivedPrs, closedPrs));
+  let filteredPrs = $derived(filterByRepository(queryFilteredPrs, repoFilter));
+  let filteredClosedPrs = $derived(filterByRepository(closedPrs, repoFilter));
+  let actionsHref = $derived(`#/actions?repo=${encodeURIComponent(repoFilter)}`);
   let activeView = $derived(savedViews.find((v) => v.query === filterQuery.trim())?.name ?? null);
 
   // history views can't be counted from the open inbox; show the live count only while applied, else a placeholder
@@ -532,7 +541,7 @@
     const pr = prs.find((p) => prKey(p) === dragKey);
     return pr ? (pr.rank != null ? "pinned" : classify(topUnit(pr), viewerLogin).group) : null;
   });
-  let ordered = $derived(view === "closed" ? closedPrs : showArchived ? [...openOrdered, ...archivedPrs] : openOrdered);
+  let ordered = $derived(view === "closed" ? filteredClosedPrs : showArchived ? [...openOrdered, ...archivedPrs] : openOrdered);
   let archivedSet = $derived(new Set(archivedPrs.map((pr) => prKey(pr))));
   const isArchived = (pr) => archivedSet.has(prKey(pr));
 
@@ -796,16 +805,27 @@
     </header>
 
 
-    <div class="view-tabs" role="tablist" aria-label="List view">
-      <button class="view-tab" role="tab" aria-selected={view === "open"} class:active={view === "open"} onclick={() => showView("open")}>
-        Open
-        <span class="view-tab-count">{prs.length}</span>
-        {#if view === "closed"}<Kbd keys="tab" />{/if}
-      </button>
-      <button class="view-tab" role="tab" aria-selected={view === "closed"} class:active={view === "closed"} onclick={() => showView("closed")}>
-        Recently merged {#if view === "open"}<Kbd keys="tab" />{/if}
-      </button>
-      <a class="view-tab" role="tab" aria-selected="false" href="#/actions">Actions</a>
+    <div class="queue-toolbar">
+      <div class="view-tabs" role="tablist" aria-label="List view">
+        <button class="view-tab" role="tab" aria-selected={view === "open"} class:active={view === "open"} onclick={() => showView("open")}>
+          Open
+          <span class="view-tab-count">{filterByRepository(prs, repoFilter).length}</span>
+          {#if view === "closed"}<Kbd keys="tab" />{/if}
+        </button>
+        <button class="view-tab" role="tab" aria-selected={view === "closed"} class:active={view === "closed"} onclick={() => showView("closed")}>
+          Recently merged {#if view === "open"}<Kbd keys="tab" />{/if}
+        </button>
+        <a class="view-tab" role="tab" aria-selected="false" href={actionsHref}>Actions</a>
+      </div>
+      <label class="repo-filter">
+        <span>Repository</span>
+        <select bind:value={repoFilter} onchange={() => (selected = 0)} aria-label="Filter by repository">
+          <option value="">All repositories</option>
+          {#each availableRepos as repo}
+            <option value={repo}>{repo}</option>
+          {/each}
+        </select>
+      </label>
     </div>
 
     {#if filterOpen && view === "open"}
@@ -983,10 +1003,12 @@
             <div class="empty">Loading recent merges…</div>
           {:else if closedPrs.length === 0}
             <div class="empty">Nothing merged or closed yet</div>
+          {:else if filteredClosedPrs.length === 0}
+            <div class="empty">Nothing merged or closed in {repoFilter}</div>
           {/if}
           <section class="queue-group">
             <div class="group-body">
-              {#each closedPrs as pr (prKey(pr))}{@render closedRow(pr)}{/each}
+              {#each filteredClosedPrs as pr (prKey(pr))}{@render closedRow(pr)}{/each}
             </div>
           </section>
         {:else}
@@ -996,6 +1018,8 @@
             <div class="empty">Syncing with GitHub…</div>
           {:else if loaded && prs.length === 0}
             <div class="empty">No open pull requests</div>
+          {:else if repoFilter && filteredPrs.length === 0}
+            <div class="empty">No open pull requests in {repoFilter}</div>
           {:else if wantsHistory(filterQuery) && !historyActive}
             <div class="empty">Searching history…</div>
           {:else if filterQuery && filteredPrs.length === 0}
@@ -1582,12 +1606,36 @@
   .view-tabs {
     display: flex;
     gap: 4px;
-    margin: 0 0 16px;
+    margin: 0;
     padding: 3px;
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
     box-shadow: var(--shadow-xs);
+  }
+  .queue-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .repo-filter {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+    color: var(--text-dim);
+    font-size: 12px;
+  }
+  .repo-filter select {
+    min-height: 36px;
+    max-width: 280px;
+    padding: 0 34px 0 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--panel);
+    color: var(--text);
+    font: 12px var(--sans);
   }
   .view-tab {
     display: flex;
@@ -1971,6 +2019,28 @@
     background: transparent;
     box-shadow: none;
   }
+  .queue-toolbar .view-tabs {
+    margin: 0;
+  }
+  .queue-toolbar {
+    gap: 10px;
+    margin-bottom: 20px;
+  }
+  .repo-filter {
+    margin-left: auto;
+    font-size: 14px;
+  }
+  .repo-filter select {
+    min-height: 32px;
+    max-width: 260px;
+    padding: 0 32px 0 12px;
+    border: 0;
+    border-radius: 999px;
+    background-color: var(--panel);
+    box-shadow: var(--shadow-control-outlined);
+    color: var(--text);
+    font: 500 14px var(--sans);
+  }
   .view-tab {
     min-height: 32px;
     padding: 0 12px;
@@ -2277,6 +2347,19 @@
     }
     .view-tab :global(.kbd) {
       display: none;
+    }
+    .queue-toolbar {
+      align-items: stretch;
+      flex-direction: column;
+    }
+    .repo-filter {
+      align-items: stretch;
+      flex-direction: column;
+      margin-left: 0;
+    }
+    .repo-filter select {
+      width: 100%;
+      max-width: none;
     }
     .row {
       display: grid;
