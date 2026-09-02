@@ -73,13 +73,27 @@ export function setFonts(interfaceFont, ui, code, comments) {
   root.setAttribute("data-font-comments", normalizeFont(comments));
 }
 
+// Mobile WebKit mis-tracks touch scrolling inside a `zoom`ed subtree (the
+// scroll position snaps back toward the top), so phones render at scale 1
+// and keep only the diff/general ratio.
+const phoneQuery = "(max-width: 700px), (pointer: coarse) and (max-height: 500px)";
+let phoneMedia = null;
+let lastGeneralValue = 100;
+let lastDiffValue = 100;
+
 export function setScales(generalValue, diffValue) {
   const generalScale = normalizeScale(generalValue);
   const diffScale = normalizeScale(diffValue);
   theme.generalScale = generalScale;
   theme.diffScale = diffScale;
+  lastGeneralValue = generalValue;
+  lastDiffValue = diffValue;
   if (typeof document !== "undefined") {
-    const generalFactor = generalScale / 100;
+    if (!phoneMedia && typeof window !== "undefined" && window.matchMedia) {
+      phoneMedia = window.matchMedia(phoneQuery);
+      phoneMedia.addEventListener?.("change", () => setScales(lastGeneralValue, lastDiffValue));
+    }
+    const generalFactor = phoneMedia?.matches ? 1 : generalScale / 100;
     const diffRelativeScale = diffScale / generalScale;
     const root = document.documentElement;
     root.style.setProperty("--general-scale", String(generalFactor));
