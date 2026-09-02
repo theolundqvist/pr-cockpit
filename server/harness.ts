@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
 import { getSetting } from "./db.ts";
 
-// which headless coding CLI the agents drive; both are spawned print-mode with a JSON event stream on stdout
-export type Harness = "claude" | "omp";
+// which headless coding CLI the agents drive; each emits a JSON event stream on stdout
+export type Harness = "claude" | "omp" | "codex";
 
 export function claudeBinPath(): string | null {
   return Bun.which("claude") ?? [`${process.env.HOME}/.local/bin/claude`, `${process.env.HOME}/.claude/local/claude`].find(existsSync) ?? null;
@@ -12,13 +12,19 @@ export function ompBinPath(): string | null {
   return Bun.which("omp") ?? [`${process.env.HOME}/.bun/bin/omp`, `${process.env.HOME}/.local/bin/omp`].find(existsSync) ?? null;
 }
 
-// first launch picks omp when it is installed, otherwise Claude Code
+export function codexBinPath(): string | null {
+  return Bun.which("codex") ?? [`${process.env.HOME}/.local/bin/codex`, `${process.env.HOME}/.bun/bin/codex`].find(existsSync) ?? null;
+}
+
+// preserve the existing default, but use Codex when it is the only installed harness
 export function detectHarness(): Harness {
-  return ompBinPath() ? "omp" : "claude";
+  if (ompBinPath()) return "omp";
+  if (claudeBinPath()) return "claude";
+  return codexBinPath() ? "codex" : "claude";
 }
 
 export function normalizeHarness(value: unknown): Harness {
-  return value === "omp" ? "omp" : "claude";
+  return value === "omp" || value === "codex" ? value : "claude";
 }
 
 export function agentHarness(): Harness {
@@ -26,7 +32,7 @@ export function agentHarness(): Harness {
 }
 
 export function harnessBin(harness: Harness = agentHarness()): string {
-  const found = harness === "omp" ? ompBinPath() : claudeBinPath();
+  const found = harness === "omp" ? ompBinPath() : harness === "codex" ? codexBinPath() : claudeBinPath();
   if (!found) throw new Error(`${harness} binary not found - install it or switch the agent harness in Settings`);
   return found;
 }
@@ -38,6 +44,17 @@ function ompModel(model: string): string {
 }
 
 export function harnessFlags(prompt: string, model: string, useContinue: boolean, harness: Harness): string[] {
+  if (harness === "codex") {
+    const args = useContinue ? ["exec", "resume", "--last"] : ["exec"];
+    args.push(
+      "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "-c",
+      `model_reasoning_effort="${model === "sonnet" ? "medium" : "high"}"`,
+      prompt,
+    );
+    return args;
+  }
   if (harness === "omp") {
     const args = ["--print", "--mode", "json", "--model", ompModel(model), "--auto-approve", "--no-title"];
     if (useContinue) args.push("--continue");
