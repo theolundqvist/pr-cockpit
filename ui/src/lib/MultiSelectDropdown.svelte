@@ -1,10 +1,10 @@
 <script>
   import { tick } from "svelte";
   import { fuzzyMatch } from "./fuzzy.js";
+  import Kbd from "./Kbd.svelte";
 
-  let { label, options = [], selected = [], plural, onchange } = $props();
+  let { label, options = [], selected = [], plural, onchange, keybind = null, open = $bindable(false) } = $props();
 
-  let open = $state(false);
   let root = $state(null);
   let menu = $state(null);
   let input = $state(null);
@@ -139,8 +139,11 @@
       }
     }}
   >
-    <span>{buttonLabel}</span>
-    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"></path></svg>
+    <span class="trigger-label">{buttonLabel}</span>
+    <span class="trigger-tail">
+      {#if keybind}<Kbd keys={keybind} />{/if}
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"></path></svg>
+    </span>
   </button>
 
   {#if open}
@@ -192,7 +195,8 @@
   .field-label { color: var(--text-faint); font-size: 11px; }
   .trigger { display: flex; width: 176px; height: 30px; min-width: 0; padding: 0 8px 0 10px; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: var(--panel); font: 500 12px var(--sans); cursor: pointer; }
   .trigger:hover, .trigger[aria-expanded="true"] { border-color: var(--border-strong); background: var(--panel-raised); }
-  .trigger > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .trigger-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .trigger-tail { display: flex; flex: none; align-items: center; gap: 6px; }
   .trigger svg { width: 14px; height: 14px; flex: none; fill: none; stroke: var(--text-faint); stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.5; }
   .menu { position: absolute; z-index: 40; top: calc(100% + 6px); right: 0; width: 260px; max-height: 340px; overflow-y: auto; padding: 5px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-raised); box-shadow: var(--shadow-lg); }
   .search-wrap { display: flex; min-width: 0; padding: 2px 2px 5px; align-items: center; gap: 6px; }

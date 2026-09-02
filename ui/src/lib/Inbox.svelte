@@ -19,11 +19,12 @@
   import UpdateButton from "./UpdateButton.svelte";
   import { timedFlag } from "./timedFlag.svelte.js";
   import { prKey } from "./prKey.js";
-  import { availableRepositories, filterByRepository } from "./repoFilter.js";
+  import { availableRepositories, filterByRepositories } from "./repoFilter.js";
   import { showFlash } from "./flash.svelte.js";
   import CurrentBranchBadge from "./CurrentBranchBadge.svelte";
   import Kbd from "./Kbd.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
+  import MultiSelectDropdown from "./MultiSelectDropdown.svelte";
 
   let { active = true, refreshRevision = 0, pollCompletedAt = null, onFindPr = () => {} } = $props();
   let handledRefreshRevision = refreshRevision;
@@ -70,9 +71,19 @@
   let closedSeq = 0;
   let undo = $state(null);
   const archiveFlash = timedFlag(4000, () => (undo = null));
+  function storedRepositories() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem("cockpit:repository-scope") ?? "[]");
+      return Array.isArray(parsed) ? parsed.filter((repo) => typeof repo === "string" && repo) : [];
+    } catch {
+      return [];
+    }
+  }
+
   let savedViews = $state([]);
   let configuredRepos = $state([]);
-  let repoFilter = $state("");
+  let selectedRepos = $state(storedRepositories());
+  let repoPickerOpen = $state(false);
   let pollIntervalS = $state(180);
   const inboxMountedAt = Date.now();
 
@@ -86,6 +97,13 @@
       savedViews = [];
       configuredRepos = [];
     }
+  }
+
+  function selectRepositories(repos) {
+    selectedRepos = [...repos];
+    if (repos.length) localStorage.setItem("cockpit:repository-scope", JSON.stringify(repos));
+    else localStorage.removeItem("cockpit:repository-scope");
+    selected = 0;
   }
 
   async function persistViews(views) {
@@ -276,7 +294,7 @@
       const selectedKey = view === "closed" && ordered[selected] ? prKey(ordered[selected]) : null;
       closedPrs = res.prs;
       if (selectedKey !== null) {
-        const idx = filterByRepository(closedPrs, repoFilter).findIndex((pr) => prKey(pr) === selectedKey);
+        const idx = filterByRepositories(closedPrs, selectedRepos).findIndex((pr) => prKey(pr) === selectedKey);
         if (idx >= 0) selected = idx;
       }
     } catch {
@@ -327,9 +345,14 @@
   let historyActive = $derived(wantsHistory(filterQuery) && historyQuery === filterQuery.trim() && !historyLoading);
   let queryFilteredPrs = $derived(wantsHistory(filterQuery) ? (historyQuery === filterQuery.trim() ? historyPrs : []) : filterPrs(prs, filterQuery, showArchived));
   let availableRepos = $derived(availableRepositories(configuredRepos, prs, archivedPrs, closedPrs));
-  let filteredPrs = $derived(filterByRepository(queryFilteredPrs, repoFilter));
-  let filteredClosedPrs = $derived(filterByRepository(closedPrs, repoFilter));
-  let actionsHref = $derived(`#/actions?repo=${encodeURIComponent(repoFilter)}`);
+  let filteredPrs = $derived(filterByRepositories(queryFilteredPrs, selectedRepos));
+  let filteredClosedPrs = $derived(filterByRepositories(closedPrs, selectedRepos));
+  let actionsHref = $derived.by(() => {
+    const params = new URLSearchParams();
+    if (selectedRepos.length === 0) params.append("repo", "");
+    else for (const repo of selectedRepos) params.append("repo", repo);
+    return `#/actions?${params}`;
+  });
   let activeView = $derived(savedViews.find((v) => v.query === filterQuery.trim())?.name ?? null);
 
   // history views can't be counted from the open inbox; show the live count only while applied, else a placeholder
@@ -674,6 +697,11 @@
         e.preventDefault();
         return;
       }
+      if (e.key === "Escape" && repoPickerOpen) {
+        repoPickerOpen = false;
+        e.preventDefault();
+        return;
+      }
       if (e.key === "Escape" && filterOpen) {
         closeFilter();
         e.preventDefault();
@@ -686,6 +714,11 @@
       }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (isTypingTarget(e.target)) return;
+      if (e.key === "r") {
+        repoPickerOpen = !repoPickerOpen;
+        e.preventDefault();
+        return;
+      }
       if (e.key === "/") {
         openFilter();
         e.preventDefault();
@@ -809,7 +842,7 @@
       <div class="view-tabs" role="tablist" aria-label="List view">
         <button class="view-tab" role="tab" aria-selected={view === "open"} class:active={view === "open"} onclick={() => showView("open")}>
           Open
-          <span class="view-tab-count">{filterByRepository(prs, repoFilter).length}</span>
+          <span class="view-tab-count">{filterByRepositories(prs, selectedRepos).length}</span>
           {#if view === "closed"}<Kbd keys="tab" />{/if}
         </button>
         <button class="view-tab" role="tab" aria-selected={view === "closed"} class:active={view === "closed"} onclick={() => showView("closed")}>
@@ -817,15 +850,17 @@
         </button>
         <a class="view-tab" role="tab" aria-selected="false" href={actionsHref}>Actions</a>
       </div>
-      <label class="repo-filter">
-        <span>Repository</span>
-        <select bind:value={repoFilter} onchange={() => (selected = 0)} aria-label="Filter by repository">
-          <option value="">All repositories</option>
-          {#each availableRepos as repo}
-            <option value={repo}>{repo}</option>
-          {/each}
-        </select>
-      </label>
+      <div class="repo-filter">
+        <MultiSelectDropdown
+          label="Repository"
+          options={availableRepos}
+          selected={selectedRepos}
+          plural="repositories"
+          keybind="r"
+          bind:open={repoPickerOpen}
+          onchange={selectRepositories}
+        />
+      </div>
     </div>
 
     {#if filterOpen && view === "open"}
@@ -1004,7 +1039,7 @@
           {:else if closedPrs.length === 0}
             <div class="empty">Nothing merged or closed yet</div>
           {:else if filteredClosedPrs.length === 0}
-            <div class="empty">Nothing merged or closed in {repoFilter}</div>
+            <div class="empty">Nothing merged or closed in the selected repositories</div>
           {/if}
           <section class="queue-group">
             <div class="group-body">
@@ -1018,8 +1053,8 @@
             <div class="empty">Syncing with GitHub…</div>
           {:else if loaded && prs.length === 0}
             <div class="empty">No open pull requests</div>
-          {:else if repoFilter && filteredPrs.length === 0}
-            <div class="empty">No open pull requests in {repoFilter}</div>
+          {:else if selectedRepos.length && filteredPrs.length === 0}
+            <div class="empty">No open pull requests in the selected repositories</div>
           {:else if wantsHistory(filterQuery) && !historyActive}
             <div class="empty">Searching history…</div>
           {:else if filterQuery && filteredPrs.length === 0}
@@ -1620,22 +1655,7 @@
     margin-bottom: 16px;
   }
   .repo-filter {
-    display: flex;
-    align-items: center;
-    gap: 8px;
     margin-left: auto;
-    color: var(--text-dim);
-    font-size: 12px;
-  }
-  .repo-filter select {
-    min-height: 36px;
-    max-width: 280px;
-    padding: 0 34px 0 12px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    background: var(--panel);
-    color: var(--text);
-    font: 12px var(--sans);
   }
   .view-tab {
     display: flex;
@@ -2026,21 +2046,6 @@
     gap: 10px;
     margin-bottom: 20px;
   }
-  .repo-filter {
-    margin-left: auto;
-    font-size: 14px;
-  }
-  .repo-filter select {
-    min-height: 32px;
-    max-width: 260px;
-    padding: 0 32px 0 12px;
-    border: 0;
-    border-radius: 999px;
-    background-color: var(--panel);
-    box-shadow: var(--shadow-control-outlined);
-    color: var(--text);
-    font: 500 14px var(--sans);
-  }
   .view-tab {
     min-height: 32px;
     padding: 0 12px;
@@ -2353,13 +2358,8 @@
       flex-direction: column;
     }
     .repo-filter {
-      align-items: stretch;
-      flex-direction: column;
-      margin-left: 0;
-    }
-    .repo-filter select {
       width: 100%;
-      max-width: none;
+      margin-left: 0;
     }
     .row {
       display: grid;

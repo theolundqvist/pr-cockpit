@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { availableRepositories, filterByRepository } from "./repoFilter.js";
+import { availableRepositories, filterByRepositories } from "./repoFilter.js";
 
 test("repository choices include configured and cached repositories", () => {
   const prs = [{ repo: "example/app" }, { repo: "example/api" }];
@@ -8,6 +8,7 @@ test("repository choices include configured and cached repositories", () => {
     "example/app",
     "example/empty",
   ]);
-  expect(filterByRepository(prs, "example/app")).toEqual([{ repo: "example/app" }]);
-  expect(filterByRepository(prs, "")).toBe(prs);
+  expect(filterByRepositories(prs, ["example/app"])).toEqual([{ repo: "example/app" }]);
+  expect(filterByRepositories(prs, ["example/app", "example/api"])).toEqual(prs);
+  expect(filterByRepositories(prs, [])).toBe(prs);
 });
