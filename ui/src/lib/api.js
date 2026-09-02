@@ -327,6 +327,12 @@ export async function fetchSettings() {
   return settingsInFlight;
 }
 
+export async function fetchHealth() {
+  const res = await fetch("/healthz");
+  if (!res.ok) throw new Error(`health ${res.status}`);
+  return res.json();
+}
+
 export async function saveSettings(patch) {
   const res = await fetch("/api/settings", {
     method: "PUT",

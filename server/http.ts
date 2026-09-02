@@ -83,6 +83,7 @@ import {
   replicaStatus,
   replicaViewerLogin,
 } from "./replica.ts";
+import { tailscaleServeStatus } from "./tailscaleServe.ts";
 import type { GithubUsageSource } from "./githubUsage.ts";
 import type { GithubAuthStatus } from "./githubAuth.ts";
 import { commitsFromMirror, commitStatsFromMirror, conflictFilesFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError, summarizeCommitStats, type PullRequestCommit } from "./mirror.ts";
@@ -2546,7 +2547,14 @@ async function handleGithubAppCallback(url: URL): Promise<Response> {
 }
 
 function handleHealthz(): Response {
-  return json({ root: cockpitRoot, lastPollAt, prCount: countPrs(), replica: replicaEnabled() ? replicaStatus() : null });
+  const serve = tailscaleServeStatus();
+  return json({
+    root: cockpitRoot,
+    lastPollAt,
+    prCount: countPrs(),
+    replica: replicaEnabled() ? replicaStatus() : null,
+    ...(serve.enabled ? { tailscaleServe: serve } : {}),
+  });
 }
 
 function handleShutdown(): Response {

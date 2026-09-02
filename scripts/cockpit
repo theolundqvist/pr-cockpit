@@ -47,6 +47,8 @@ env_relay_url="${COCKPIT_RELAY_URL:-}"
 env_review_bots="${COCKPIT_REVIEW_BOTS:-}"
 env_proxy="${COCKPIT_PROXY:-}"
 env_proxy_port="${COCKPIT_PROXY_PORT:-}"
+env_tailscale_serve="${COCKPIT_TAILSCALE_SERVE:-}"
+env_tailscale_https_port="${COCKPIT_TAILSCALE_HTTPS_PORT:-}"
 
 if [[ "$platform" == "Linux" ]]; then
   config_file="${XDG_CONFIG_HOME:-$HOME/.config}/pr-cockpit/config"
@@ -61,6 +63,14 @@ fi
 port="${env_port:-${COCKPIT_PORT:-4820}}"
 url="http://127.0.0.1:$port"
 proxy_port="${env_proxy_port:-${COCKPIT_PROXY_PORT:-4820}}"
+tailscale_serve="${env_tailscale_serve:-${COCKPIT_TAILSCALE_SERVE:-}}"
+if [[ -n "$tailscale_serve" ]]; then
+  export COCKPIT_TAILSCALE_SERVE="$tailscale_serve"
+fi
+tailscale_https_port="${env_tailscale_https_port:-${COCKPIT_TAILSCALE_HTTPS_PORT:-}}"
+if [[ -n "$tailscale_https_port" ]]; then
+  export COCKPIT_TAILSCALE_HTTPS_PORT="$tailscale_https_port"
+fi
 if [[ "$platform" == "Linux" ]]; then
   data_dir="${env_data_dir:-${COCKPIT_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/pr-cockpit}}"
 else

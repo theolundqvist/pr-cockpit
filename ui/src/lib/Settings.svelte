@@ -1,5 +1,5 @@
 <script>
-  import { fetchRelayCoverage, fetchRelayStatus, fetchSettings, saveSettings } from "./api.js";
+  import { fetchHealth, fetchRelayCoverage, fetchRelayStatus, fetchSettings, saveSettings } from "./api.js";
   import { setCodeTheme, setFonts, setScales, setTheme } from "./theme.svelte.js";
   import { setPrefs } from "./prefs.svelte.js";
   import { BUILTIN_TEST_PATH } from "./testPath.js";
@@ -11,6 +11,7 @@
   import SettingsAnalytics from "./SettingsAnalytics.svelte";
   import { SETTINGS_SECTION_KEY, SETTINGS_SECTIONS, normalizeSettingsSection } from "./settingsSections.js";
   import { desktopShortcutDefaults, shortcutsClash } from "./shortcutPlatform.js";
+  import { tailscaleAccess } from "./tailscaleAccess.js";
   let { onRunSetup, section = "general" } = $props();
 
 
@@ -43,6 +44,7 @@
   let replicaSshHost = $state("");
   let relayInfo = $state(null);
   let relayCoverage = $state(null);
+  let health = $state(null);
   let loaded = $state(false);
   let saving = $state(false);
   let saved = $state(false);
@@ -50,6 +52,7 @@
 
   let activeTab = $derived(normalizeSettingsSection(section));
   let activeSection = $derived(SETTINGS_SECTIONS.find((item) => item.id === activeTab));
+  let privateAccess = $derived(tailscaleAccess(health));
 
   $effect(() => localStorage.setItem(SETTINGS_SECTION_KEY, activeTab));
 
@@ -193,6 +196,9 @@
     fetchRelayCoverage()
       .then((c) => (relayCoverage = c))
       .catch(() => {});
+    fetchHealth()
+      .then((value) => (health = value))
+      .catch(() => {});
   });
 
   async function save() {
@@ -320,6 +326,18 @@
         <button class="btn setup-again" type="button" onclick={onRunSetup}>Run setup again</button>
 
         <div class="settings-grid">
+          <div class="field field-wide private-access" class:private-access-live={privateAccess.state === "live"}>
+            <span class="label">Private access</span>
+            {#if privateAccess.state === "live"}
+              <span class="hint">Live through {privateAccess.kind}. The local server remains private on loopback.</span>
+              <a class="private-origin mono" href={privateAccess.origin}>{privateAccess.origin}</a>
+            {:else if privateAccess.state === "error"}
+              <span class="hint invalid-hint">Tailscale could not publish Cockpit: {privateAccess.error}</span>
+            {:else}
+              <span class="hint">Local only. Enable Tailscale Serve during installation to open Cockpit securely from your tailnet.</span>
+            {/if}
+          </div>
+
           <label class="field field-wide">
             <span class="label">Repositories</span>
             <span class="hint">One owner/name per line — watched for PRs involving you</span>
@@ -705,6 +723,19 @@
     border-radius: 8px;
     background: var(--fail-bg);
     margin-bottom: 22px;
+  }
+  .private-access {
+    padding: 14px;
+    border-radius: var(--radius-md);
+    background: var(--surface);
+  }
+  .private-access-live {
+    box-shadow: inset 3px 0 0 var(--ready);
+  }
+  .private-origin {
+    width: fit-content;
+    color: var(--link);
+    font-size: 12px;
   }
   .reset-link {
     display: block;
