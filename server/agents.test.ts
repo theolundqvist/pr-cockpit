@@ -175,6 +175,25 @@ describe("turnsFromLines", () => {
       { ts: new Date(1786256591000).toISOString(), kind: "result", text: "tests pass", isError: false },
     ]);
   });
+
+  test("reads Codex command, final-message, and failure events", () => {
+    const command = { id: "item_1", type: "command_execution", command: "bun test", status: "in_progress" };
+    const lines = [
+      JSON.stringify({ type: "thread.started", thread_id: "thread-1" }),
+      JSON.stringify({ type: "turn.started" }),
+      JSON.stringify({ type: "item.started", item: command }),
+      JSON.stringify({ type: "item.completed", item: { id: "item_2", type: "agent_message", text: "tests pass" } }),
+      JSON.stringify({ type: "turn.completed", usage: { input_tokens: 10, output_tokens: 2 } }),
+      JSON.stringify({ type: "error", message: "connection failed" }),
+      JSON.stringify({ type: "turn.failed", error: { message: "authentication failed" } }),
+    ];
+    expect(turnsFromLines(lines)).toEqual([
+      { ts: "", kind: "tool", toolName: "command_execution", toolInput: command },
+      { ts: "", kind: "text", text: "tests pass" },
+      { ts: "", kind: "result", text: "connection failed", isError: true },
+      { ts: "", kind: "result", text: "authentication failed", isError: true },
+    ]);
+  });
 });
 
 describe("runWindowTurns", () => {
