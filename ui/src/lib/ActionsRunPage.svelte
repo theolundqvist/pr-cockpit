@@ -3,6 +3,7 @@
   import ActionsView from "./ActionsView.svelte";
   import { prefetchRepoRun, rememberedActionRun, rememberActionRun } from "./actionPrefetch.js";
   import { fetchRepoActions, rerunFailedActionJobs } from "./api.js";
+  import { isTypingTarget } from "./dom.js";
 
   let { repo, runId } = $props();
 
@@ -61,6 +62,18 @@
     });
     return () => controller.abort();
   });
+
+  $effect(() => {
+    function onKey(event) {
+      if (event.metaKey || event.ctrlKey || event.altKey || isTypingTarget(event.target)) return;
+      if (event.key === "o" && run?.htmlUrl) {
+        window.open(run.htmlUrl, "_blank", "noopener");
+        event.preventDefault();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 </script>
 
 <div class="page">
@@ -90,7 +103,7 @@
       </div>
       <div class="run-links">
         {#if run.prNumber}<a href={`#/pr/${run.repo}/${run.prNumber}`}>Open PR #{run.prNumber}</a>{/if}
-        {#if run.htmlUrl}<a href={run.htmlUrl}>Open run on GitHub</a>{/if}
+        {#if run.htmlUrl}<a href={run.htmlUrl} target="_blank" rel="noopener noreferrer">Open run on GitHub</a>{/if}
         {#if canRerunFailed && run.status === "completed"}
           <button class="rerun-button" type="button" disabled={rerunPending} onclick={() => rerunFailed(run)}>
             {rerunPending ? "Re-running…" : "Re-run failed jobs"}
