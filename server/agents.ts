@@ -276,7 +276,7 @@ async function runIteration(repo: string, number: number, workdir: string, logPa
   rmSync(`${workdir}/${FIXER_STATUS_FILE}`, { force: true });
   const logFd = openSync(logPath, "a");
   // strip inherited API keys so the agent authenticates via the harness's own login
-  const { ANTHROPIC_API_KEY: _key, ...env } = process.env;
+  const { ANTHROPIC_API_KEY: _anthropicKey, OPENAI_API_KEY: _openaiKey, CODEX_API_KEY: _codexKey, ...env } = process.env;
   const args = harnessArgs(prompt, agentModel("fixer"), useContinue);
   const proc = Bun.spawn(args, { cwd: workdir, env, stdout: logFd, stderr: logFd, stdin: "ignore" });
   updatePidStmt.run({ $pid: proc.pid, $pid_started: psStart(proc.pid) ?? "", $repo: repo, $number: number });
@@ -452,7 +452,7 @@ async function runPromptOnce(repo: string, number: number, workdir: string, logP
   rmSync(`${workdir}/${PROMPT_STATUS_FILE}`, { force: true });
   const logFd = openSync(logPath, "a");
   // strip inherited API keys so the agent authenticates via the harness's own login
-  const { ANTHROPIC_API_KEY: _key, ...env } = process.env;
+  const { ANTHROPIC_API_KEY: _anthropicKey, OPENAI_API_KEY: _openaiKey, CODEX_API_KEY: _codexKey, ...env } = process.env;
   const args = harnessArgs(prompt, model);
   const proc = Bun.spawn(args, { cwd: workdir, env, stdout: logFd, stderr: logFd, stdin: "ignore" });
   updatePidStmt.run({ $pid: proc.pid, $pid_started: psStart(proc.pid) ?? "", $repo: repo, $number: number });
@@ -573,7 +573,7 @@ async function runAutofixIteration(repo: string, number: number, workdir: string
   rmSync(`${workdir}/${AUTOFIX_STATUS_FILE}`, { force: true });
   const logFd = openSync(logPath, "a");
   // strip inherited API keys so the agent authenticates via the harness's own login
-  const { ANTHROPIC_API_KEY: _key, ...env } = process.env;
+  const { ANTHROPIC_API_KEY: _anthropicKey, OPENAI_API_KEY: _openaiKey, CODEX_API_KEY: _codexKey, ...env } = process.env;
   const args = harnessArgs(prompt, agentModel("autofix"), useContinue);
   const proc = Bun.spawn(args, { cwd: workdir, env, stdout: logFd, stderr: logFd, stdin: "ignore" });
   updatePidStmt.run({ $pid: proc.pid, $pid_started: psStart(proc.pid) ?? "", $repo: repo, $number: number });
@@ -727,7 +727,7 @@ async function runCustomIteration(repo: string, number: number, agentId: string,
   rmSync(`${workdir}/${CUSTOM_STATUS_FILE}`, { force: true });
   const logFd = openSync(logPath, "a");
   // strip inherited API keys so the agent authenticates via the harness's own login
-  const { ANTHROPIC_API_KEY: _key, ...env } = process.env;
+  const { ANTHROPIC_API_KEY: _anthropicKey, OPENAI_API_KEY: _openaiKey, CODEX_API_KEY: _codexKey, ...env } = process.env;
   const args = harnessArgs(prompt, agentModel(agentId), useContinue);
   const proc = Bun.spawn(args, { cwd: workdir, env, stdout: logFd, stderr: logFd, stdin: "ignore" });
   updatePidStmt.run({ $pid: proc.pid, $pid_started: psStart(proc.pid) ?? "", $repo: repo, $number: number });
@@ -955,13 +955,30 @@ export interface AgentTurn {
   isError?: boolean;
 }
 
-const TURN_EVENT_TYPES: Record<string, true> = { assistant: true, message_end: true, result: true, agent_end: true };
-// omp emits thousands of streaming-delta events per run, so match the leading type before parsing the line
-const EVENT_TYPE_PREFIX = /^\{"type":"([a-z_]+)"/;
+const TURN_EVENT_TYPES: Record<string, true> = {
+  assistant: true,
+  message_end: true,
+  result: true,
+  agent_end: true,
+  "item.started": true,
+  "item.completed": true,
+  "turn.failed": true,
+  error: true,
+};
+const CODEX_TOOL_ITEM_TYPES: Record<string, true> = {
+  command_execution: true,
+  file_change: true,
+  mcp_tool_call: true,
+  web_search: true,
+  plan_update: true,
+};
 
-// both harnesses stream one JSON event per line; only assistant output and the final result carry signal.
-// claude emits "assistant"/"result" with an ISO top-level timestamp, omp emits "message_end"/"agent_end"
-// with an epoch-ms timestamp on the message. null means the line was not JSON at all (raw CLI noise).
+// OMP emits thousands of streaming-delta events per run, so match the leading type before parsing the line
+const EVENT_TYPE_PREFIX = /^\{"type":"([a-z_.]+)"/;
+
+// Every harness streams one JSON event per line; only assistant output, tool starts, and final results carry signal.
+// Claude emits "assistant"/"result" with an ISO top-level timestamp, OMP emits "message_end"/"agent_end"
+// with an epoch-ms timestamp on the message, and Codex emits undated item/turn events.
 function eventTurns(line: string, lastTs: { value: string }): AgentTurn[] | null {
   if (!line.startsWith("{")) return null;
   const typed = EVENT_TYPE_PREFIX.exec(line)?.[1];
@@ -969,8 +986,10 @@ function eventTurns(line: string, lastTs: { value: string }): AgentTurn[] | null
   let event: {
     type?: string;
     timestamp?: string;
-    message?: { role?: string; content?: unknown; timestamp?: number };
+    message?: unknown;
     messages?: unknown;
+    item?: Record<string, unknown>;
+    error?: { message?: unknown };
     is_error?: boolean;
     result?: unknown;
   };
@@ -979,17 +998,32 @@ function eventTurns(line: string, lastTs: { value: string }): AgentTurn[] | null
   } catch {
     return null;
   }
+  const message = event.message && typeof event.message === "object"
+    ? event.message as { role?: string; content?: unknown; timestamp?: number }
+    : undefined;
   if (typeof event.timestamp === "string") lastTs.value = event.timestamp;
-  if (typeof event.message?.timestamp === "number") lastTs.value = new Date(event.message.timestamp).toISOString();
+  if (typeof message?.timestamp === "number") lastTs.value = new Date(message.timestamp).toISOString();
   const ts = lastTs.value;
-  if (event.type === "assistant" || (event.type === "message_end" && event.message?.role === "assistant")) {
+  if (event.type === "assistant" || (event.type === "message_end" && message?.role === "assistant")) {
     const turns: AgentTurn[] = [];
-    for (const block of (Array.isArray(event.message?.content) ? event.message.content : []) as Array<Record<string, unknown>>) {
+    for (const block of (Array.isArray(message?.content) ? message.content : []) as Array<Record<string, unknown>>) {
       if (block.type === "text" && typeof block.text === "string") turns.push({ ts, kind: "text", text: block.text });
       else if (block.type === "tool_use") turns.push({ ts, kind: "tool", toolName: block.name as string, toolInput: block.input });
       else if (block.type === "toolCall") turns.push({ ts, kind: "tool", toolName: block.name as string, toolInput: block.arguments });
     }
     return turns;
+  }
+  if (event.type === "item.started" && typeof event.item?.type === "string" && CODEX_TOOL_ITEM_TYPES[event.item.type]) {
+    return [{ ts, kind: "tool", toolName: event.item.type, toolInput: event.item }];
+  }
+  if (event.type === "item.completed" && event.item?.type === "agent_message" && typeof event.item.text === "string") {
+    return [{ ts, kind: "text", text: event.item.text }];
+  }
+  if (event.type === "error") {
+    return [{ ts, kind: "result", text: typeof event.message === "string" ? event.message : "Codex error", isError: true }];
+  }
+  if (event.type === "turn.failed") {
+    return [{ ts, kind: "result", text: String(event.error?.message ?? "Codex turn failed"), isError: true }];
   }
   if (event.type === "result") return [{ ts, kind: "result", text: String(event.result ?? ""), isError: !!event.is_error }];
   if (event.type === "agent_end") {

@@ -1646,6 +1646,23 @@ export async function fetchRecentWorkflowRuns(repo: string, maxPages = 2): Promi
   return runs;
 }
 
+export async function fetchWorkflowRunsForWorkflow(repo: string, workflowId: number, maxPages = 1): Promise<WorkflowRun[]> {
+  if (mockGithub) return [];
+  const token = await ghToken();
+  const runs: WorkflowRun[] = [];
+  for (let page = 1; page <= maxPages; page++) {
+    const res = await fetch(`https://api.github.com/repos/${repo}/actions/workflows/${workflowId}/runs?per_page=100&page=${page}`, {
+      headers: { Authorization: `bearer ${token}`, Accept: "application/vnd.github+json" },
+    });
+    if (!res.ok) throw new Error(`workflow runs fetch failed: ${res.status} ${await res.text()}`);
+    const payload = (await res.json()) as { workflow_runs?: WorkflowRun[] };
+    const batch = payload.workflow_runs ?? [];
+    runs.push(...batch);
+    if (batch.length < 100) break;
+  }
+  return runs;
+}
+
 
 export async function fetchRunJobs(repo: string, runId: number, attempt?: number): Promise<RunJob[]> {
   if (mockGithub) return mockGithub.runJobs(repo, runId);
