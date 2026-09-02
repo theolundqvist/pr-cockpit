@@ -252,6 +252,9 @@ html,
 body {
   margin: 0;
   height: 100%;
+  /* every view owns its own scroller; a document scroller competing with it
+     makes touch scrolling jump on phones */
+  overflow: hidden;
 }
 
 html {
