@@ -2,10 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { harnessFlags, normalizeHarness } from "./harness.ts";
 
 describe("normalizeHarness", () => {
-  test("only omp opts out of the claude default", () => {
+  test("accepts the supported harnesses and preserves the claude default", () => {
     expect(normalizeHarness("omp")).toBe("omp");
     expect(normalizeHarness("claude")).toBe("claude");
-    expect(normalizeHarness("codex")).toBe("claude");
+    expect(normalizeHarness("codex")).toBe("codex");
     expect(normalizeHarness(null)).toBe("claude");
   });
 });
@@ -39,6 +39,27 @@ describe("harnessFlags", () => {
 
   test("omp expands logical agent models to current exact Anthropic IDs", () => {
     expect(harnessFlags("next", "sonnet", false, "omp")).toContain("anthropic/claude-sonnet-5");
+  });
+
+  test("codex uses JSONL, configured effort, and cwd-scoped resume", () => {
+    expect(harnessFlags("fix it", "opus", false, "codex")).toEqual([
+      "exec",
+      "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "-c",
+      'model_reasoning_effort="high"',
+      "fix it",
+    ]);
+    expect(harnessFlags("next", "sonnet", true, "codex")).toEqual([
+      "exec",
+      "resume",
+      "--last",
+      "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "-c",
+      'model_reasoning_effort="medium"',
+      "next",
+    ]);
   });
 
   test("resuming keeps --continue ahead of omp's positional prompt", () => {
