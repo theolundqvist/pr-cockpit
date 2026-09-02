@@ -278,6 +278,18 @@ body {
   zoom: var(--general-scale);
 }
 
+/* Mobile WebKit mis-tracks touch scrolling inside a `zoom`ed subtree (the
+   scroll offset snaps back toward the top), so phones apply the same scale
+   as a compositor transform over a viewport-sized layout box instead. */
+@media (max-width: 700px), (pointer: coarse) and (max-height: 500px) {
+  #app {
+    zoom: 1;
+    width: var(--general-width);
+    transform: scale(var(--general-scale));
+    transform-origin: 0 0;
+  }
+}
+
 /* Older desktop-shell instances injected a fixed drag surface over this exact
    area. Keep the renderer controls usable while those instances are reloaded. */
 body::before {
