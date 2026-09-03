@@ -606,10 +606,29 @@ function unitAbsolutePath(value: string): string {
   }
   return encoded;
 }
+function stopUnmanagedServer(): void {
+  const curl = command("curl");
+  const url = `http://127.0.0.1:${port()}`;
+  const health = Bun.spawnSync([curl, "--noproxy", "*", "--max-time", "2", "-fsS", `${url}/healthz`], { stdout: "pipe", stderr: "ignore" });
+  if (health.exitCode !== 0) return;
+  let status: { root?: unknown; supervisor?: unknown };
+  try {
+    status = JSON.parse(health.stdout.toString());
+  } catch {
+    return;
+  }
+  if (typeof status.root !== "string" || status.supervisor === "systemd-system" || status.supervisor === "systemd-user") return;
+  const stopped = Bun.spawnSync([curl, "--noproxy", "*", "--max-time", "2", "-fsS", "-X", "POST", `${url}/api/shutdown`], { stdout: "ignore", stderr: "pipe" });
+  if (stopped.exitCode !== 0) {
+    throw new Error(stopped.stderr.toString().trim() || `unmanaged server on port ${port()} could not be stopped`);
+  }
+  Bun.sleepSync(200);
+}
+
 function service(bun: string, gh: string, linker: string, source: string, revision: string): string {
   const path = [dirname(bun), dirname(gh), "/usr/local/bin", "/usr/bin", "/bin"].join(":");
   const launcher = `${currentLink}/scripts/cockpit`;
-  return `[Unit]\nDescription=PR Cockpit\nWants=network-online.target\nAfter=network-online.target\n\n[Service]\nType=simple\nRuntimeDirectory=pr-cockpit\nRuntimeDirectoryMode=0700\nWorkingDirectory=${unitAbsolutePath(currentLink)}\nEnvironmentFile=${unitAbsolutePath(envFile)}\nEnvironment=${unitQuote(`COCKPIT_ROOT=${currentLink}`)}\nEnvironment=${unitQuote(`COCKPIT_SOURCE_ROOT=${source}`)}\nEnvironment=${unitQuote(`COCKPIT_RELEASE_REVISION=${revision}`)}\nEnvironment=${unitQuote(`COCKPIT_GH_BIN=${gh}`)}\nEnvironment=${unitQuote(`PATH=${path}`)}\nEnvironment=${unitQuote(`XDG_DATA_HOME=${dataHome}`)}\nEnvironment=${unitQuote(`XDG_CONFIG_HOME=${configHome}`)}\nEnvironment=${unitQuote(`XDG_STATE_HOME=${stateHome}`)}\nExecStartPre=${unitQuote(linker)} -sfnT ${unitQuote(launcher)} ${unitQuote(runtimeLauncher)}\nExecStart=${unitQuote(bun)} ${unitQuote(`${currentLink}/server/main.ts`)}\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=default.target\n`;
+  return `[Unit]\nDescription=PR Cockpit\nWants=network-online.target\nAfter=network-online.target\n\n[Service]\nType=simple\nRuntimeDirectory=pr-cockpit\nRuntimeDirectoryMode=0700\nWorkingDirectory=${unitAbsolutePath(currentLink)}\nEnvironmentFile=${unitAbsolutePath(envFile)}\nEnvironment=${unitQuote("COCKPIT_SUPERVISOR=systemd-user")}\nEnvironment=${unitQuote(`COCKPIT_ROOT=${currentLink}`)}\nEnvironment=${unitQuote(`COCKPIT_SOURCE_ROOT=${source}`)}\nEnvironment=${unitQuote(`COCKPIT_RELEASE_REVISION=${revision}`)}\nEnvironment=${unitQuote(`COCKPIT_GH_BIN=${gh}`)}\nEnvironment=${unitQuote(`PATH=${path}`)}\nEnvironment=${unitQuote(`XDG_DATA_HOME=${dataHome}`)}\nEnvironment=${unitQuote(`XDG_CONFIG_HOME=${configHome}`)}\nEnvironment=${unitQuote(`XDG_STATE_HOME=${stateHome}`)}\nExecStartPre=${unitQuote(linker)} -sfnT ${unitQuote(launcher)} ${unitQuote(runtimeLauncher)}\nExecStart=${unitQuote(bun)} ${unitQuote(`${currentLink}/server/main.ts`)}\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=default.target\n`;
 }
 function installConfig(): void {
   if (existsSync(envFile)) {
@@ -780,6 +799,7 @@ function activate(release: string, source: string, launchGui: boolean, actor: st
       throw new Error(`systemd enablement link does not target owned unit: ${wantsLink}`);
     }
     generated.push(enabledLink);
+    stopUnmanagedServer();
     run([systemctl, "--user", "restart", "pr-cockpit.service"]);
     failAt("unit");
     const fragment = run([systemctl, "--user", "show", "pr-cockpit.service", "--property=FragmentPath", "--value"]);

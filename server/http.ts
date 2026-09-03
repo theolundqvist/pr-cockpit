@@ -85,6 +85,7 @@ import {
   replicaViewerLogin,
 } from "./replica.ts";
 import { tailscaleServeStatus } from "./tailscaleServe.ts";
+import { runtimeSupervisor } from "./supervisor.ts";
 import type { GithubUsageSource } from "./githubUsage.ts";
 import type { GithubAuthStatus } from "./githubAuth.ts";
 import { commitsFromMirror, commitStatsFromMirror, conflictFilesFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError, summarizeCommitStats, type PullRequestCommit } from "./mirror.ts";
@@ -2581,6 +2582,8 @@ function handleHealthz(): Response {
   const serve = tailscaleServeStatus();
   return json({
     root: cockpitRoot,
+    supervisor: runtimeSupervisor(),
+    pid: process.pid,
     lastPollAt,
     prCount: countPrs(),
     replica: replicaEnabled() ? replicaStatus() : null,

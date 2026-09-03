@@ -38,6 +38,7 @@ function fixture() {
   const mimeState = join(base, "mime");
   const runtimeHome = join(base, "run");
   const systemctlLog = join(base, "systemctl.log");
+  const curlLog = join(base, "curl.log");
   const guiLog = join(base, "gui.log");
   const actorLog = join(base, "actor.log");
   const electronInstallLog = join(base, "electron-install.log");
@@ -100,6 +101,7 @@ elif [[ "$*" == *" archive "* ]]; then
 fi`);
   executable(join(bin, "mv"), `if [[ "\${1:-}" == "-Tn" ]]; then /bin/mv "$2" "$3"; else /bin/mv "$@"; fi`);
   executable(join(bin, "curl"), `
+printf '%s\n' "$*" >> ${JSON.stringify(curlLog)}
 current=${JSON.stringify(join(dataHome, "pr-cockpit-runtime/current"))}
 root="$(readlink -f "$current")"
 revision="$(basename "$root")"
@@ -160,7 +162,7 @@ fi`);
     ]);
     return { stdout, stderr, exitCode };
   }
-  return { base, home, source, revisionFile, mimeState, mimeOpsLog, systemctlLog, guiLog, actorLog, electronInstallLog, dataHome, configHome, stateHome, runtimeHome, lifecycle };
+  return { base, home, source, revisionFile, mimeState, mimeOpsLog, systemctlLog, curlLog, guiLog, actorLog, electronInstallLog, dataHome, configHome, stateHome, runtimeHome, lifecycle };
 }
 function makeWritable(path: string): void {
   if (!existsSync(path)) return;
@@ -261,6 +263,8 @@ describe("transactional Linux lifecycle", () => {
     const unit = readFileSync(join(f.configHome, "systemd/user/pr-cockpit.service"), "utf8");
     expect(unit).toContain(`WorkingDirectory=${systemdScalar(join(f.dataHome, "pr-cockpit-runtime/current"))}\n`);
     expect(unit).toContain(`EnvironmentFile=${systemdScalar(join(f.configHome, "pr-cockpit/server.env"))}\n`);
+    expect(unit).toContain('Environment="COCKPIT_SUPERVISOR=systemd-user"\n');
+    expect(readFileSync(f.curlLog, "utf8")).toContain("-X POST http://127.0.0.1:4820/api/shutdown");
     expect(unit).not.toContain('WorkingDirectory="');
     expect(unit).not.toContain('EnvironmentFile="');
     expect(unit).toContain("\\x20");

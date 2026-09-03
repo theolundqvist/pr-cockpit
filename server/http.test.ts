@@ -180,10 +180,10 @@ describe("mergeabilityNeedsRefresh", () => {
 describe("health", () => {
   test("identifies the checkout serving the port", async () => {
     const response = await buildFetchHandler(4820)(new Request("http://127.0.0.1:4820/healthz"));
-    const body = (await response.json()) as { root?: string };
+    const body = (await response.json()) as { root?: string; supervisor?: string; pid?: number };
 
     expect(response.status).toBe(200);
-    expect(body.root).toBe(process.cwd());
+    expect(body).toMatchObject({ root: process.cwd(), supervisor: "unmanaged", pid: process.pid });
   });
 });
 

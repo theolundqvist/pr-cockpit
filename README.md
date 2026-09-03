@@ -103,7 +103,7 @@ The same bootstrap command installs the native desktop app and `pr-cockpit` CLI 
 curl -fsSL https://raw.githubusercontent.com/theolundqvist/pr-cockpit/main/scripts/bootstrap | bash
 ```
 
-It detects the platform, checks prerequisites, asks before installing anything, shows each stage, and opens the four-step setup. On Linux it installs an immutable release, a user service, desktop entry, tray integration, and the `prcockpit://` handler; X11 is supported directly and Wayland sessions run through XWayland, where global shortcuts are compositor-dependent. Run `pr-cockpit update` to upgrade. On Linux, `$HOME/.pr-cockpit/scripts/uninstall` removes the app and `--purge` also removes local data.
+It detects the platform, checks prerequisites, asks before installing anything, shows each stage, and opens the four-step setup. On Linux it installs an immutable release, a user service, desktop entry, tray integration, and the `prcockpit://` handler; X11 is supported directly and Wayland sessions run through XWayland, where global shortcuts are compositor-dependent. Run `pr-cockpit update` to upgrade and `pr-cockpit status` to identify the process supervising the local port. On Linux, `$HOME/.pr-cockpit/scripts/uninstall` removes the app and `--purge` also removes local data.
 
 ## Start in four steps
 

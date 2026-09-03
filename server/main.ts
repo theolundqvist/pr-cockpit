@@ -15,8 +15,14 @@ import { ensureOmpInstalled } from "./commitMessage.ts";
 import { replicaEnabled, startReplicaSync } from "./replica.ts";
 import { captureFatal, startSentry } from "./sentry.ts";
 import { startTailscaleServe } from "./tailscaleServe.ts";
+import { conflictingSupervisor } from "./supervisor.ts";
 
 const port = Number(Bun.env.COCKPIT_PORT ?? 4820);
+const supervisorConflict = conflictingSupervisor(port);
+if (supervisorConflict) {
+  console.log(`pr-cockpit: ${supervisorConflict} owns port ${port}; unmanaged server will not start`);
+  process.exit(0);
+}
 
 try {
   installMockNetworkGuard();

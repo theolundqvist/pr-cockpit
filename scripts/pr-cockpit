@@ -15,6 +15,7 @@ Usage:
   pr-cockpit merge REF [--method squash|merge|rebase] [--force]
   pr-cockpit COMMAND REF [COMMAND_OPTIONS]
   pr-cockpit update
+  pr-cockpit status
 
 Mutation commands:
   comment              post a PR comment from --body-file
@@ -37,6 +38,7 @@ Other commands:
   listen [REF]         wait for substantive cached state to change, print it, then exit
   cache-run REF RUN_ID fetch one Actions run and retain its unsuccessful logs
   update               update and reconcile the installed app
+  status               report the process supervising the local server
 
 Options:
   --jobs              cached Actions jobs, including queued and running state
@@ -100,6 +102,22 @@ while [[ -L "$source_path" ]]; do
 done
 root="$(cd "$(dirname "$source_path")/.." && pwd -P)"
 
+
+if [[ "${1:-}" = "status" ]]; then
+  [[ "$#" -eq 1 ]] || usage
+  bun_bin=$(command -v bun || true)
+  [[ -n "$bun_bin" ]] || { echo "pr-cockpit: bun is required" >&2; exit 1; }
+  port=$(cockpit_port)
+  health=$(curl --noproxy '*' --max-time 2 -fsS "http://127.0.0.1:$port/healthz" 2>/dev/null) || {
+    echo "pr-cockpit: no server is listening on port $port" >&2
+    exit 1
+  }
+  printf '%s' "$health" | "$bun_bin" -e '
+const health = await Bun.stdin.json();
+console.log(`pr-cockpit: port ${process.argv[1]} is served by ${health.supervisor ?? "unknown"} (pid ${health.pid ?? "unknown"}) from ${health.root ?? "unknown"}`);
+' "$port"
+  exit 0
+fi
 
 if [[ "${1:-}" = "update" ]]; then
   [[ "$#" -eq 1 ]] || usage

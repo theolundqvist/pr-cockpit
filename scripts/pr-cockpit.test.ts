@@ -3,6 +3,34 @@ import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+test("status identifies the process supervising the local port", async () => {
+  const server = Bun.serve({
+    port: 0,
+    fetch() {
+      return Response.json({ root: "/srv/pr-cockpit", supervisor: "systemd-system", pid: 421 });
+    },
+  });
+  const child = Bun.spawn([join(import.meta.dir, "pr-cockpit"), "status"], {
+    env: { ...Bun.env, COCKPIT_PORT: String(server.port) },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  try {
+    const [output, error, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect(exitCode).toBe(0);
+    expect(error).toBe("");
+    expect(output).toBe(`pr-cockpit: port ${server.port} is served by systemd-system (pid 421) from /srv/pr-cockpit\n`);
+  } finally {
+    server.stop(true);
+  }
+});
+
+
 test("listen ignores volatile metadata and transient failures, then exits on a cached PR update", async () => {
   let version = 1;
   let reads = 0;
