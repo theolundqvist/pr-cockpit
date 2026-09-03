@@ -59,7 +59,7 @@ Before pushing replica or server-topology changes, verify the installed Electron
 
 Runbook:
 
-The installed backend runs from the `app.pr-cockpit.server` launch agent. Check with `launchctl list | grep cockpit`; the separate `app.pr-cockpit` entry is the renderer and must be left alone.
+The installed backend runs from the `app.pr-cockpit.server` launch agent on macOS and from the `pr-cockpit.service` systemd unit on Linux hosts. Check with `launchctl list | grep cockpit` or `systemctl status pr-cockpit.service`; the separate `app.pr-cockpit` entry is the renderer and must be left alone. Exactly one supervisor owns the port: never start the server as an OMP hub daemon or shell background job on a host that has the unit, because the two crash-loop against each other on `EADDRINUSE` and a unit restart then deploys nothing. Deploy on Linux with `systemctl restart pr-cockpit.service`.
 
 1. Launch-agent managed: `launchctl kickstart -k gui/$(id -u)/app.pr-cockpit.server`. This restarts it under launchd with the plist's own environment, which a hand-rolled `bun server/main.ts` will not reproduce. The kickstart call can take a minute, so run it in the background rather than assuming it hung.
 2. Not managed (no `launchctl` entry): identify the listener with `lsof -nP -iTCP:<port> -sTCP:LISTEN`, because some agent sandboxes make `pgrep` fail even when the process exists. Stop only that PID with `kill -TERM <pid>`, then start `bun server/main.ts` with the environment above. In an agent terminal, keep the server's exec session alive; a detached `nohup` child from a one-shot tool shell may be cleaned up when that shell exits. The managed backend restarts after failures but not after a deliberate clean shutdown.
