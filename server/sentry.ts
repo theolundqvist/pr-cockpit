@@ -6,7 +6,11 @@ import { runningRev } from "./version.ts";
 export function startSentry(): void {
   const dsn = Bun.env.COCKPIT_SENTRY_DSN ?? DEFAULT_SENTRY_DSN;
   if (dsn === "") return;
-  Sentry.init({ dsn, release: runningRev() || undefined });
+  Sentry.init({
+    dsn,
+    release: runningRev() || undefined,
+    integrations: [Sentry.captureConsoleIntegration({ levels: ["error"] }), Sentry.dedupeIntegration()],
+  });
 }
 
 export async function captureFatal(error: unknown): Promise<void> {
