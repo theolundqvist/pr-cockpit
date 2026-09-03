@@ -2,6 +2,20 @@
 import { chmodSync, constants, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
+import { reportInstallFailure } from "./installFailure.ts";
+async function exitLifecycleFailure(error: unknown): Promise<never> {
+  const messages = errorMessages(error);
+  for (const message of messages) console.error(`pr-cockpit: ${message}`);
+  if (Bun.env.COCKPIT_INSTALL_REPORT_CHILD !== "1") {
+    await reportInstallFailure({
+      stage: process.argv[2] ?? "Initialize",
+      status: 1,
+      platform: process.platform,
+    });
+  }
+  process.exit(1);
+}
+if (import.meta.main) process.once("uncaughtException", (error) => void exitLifecycleFailure(error));
 if (process.getuid?.() === 0) throw new Error("Linux lifecycle must not run as root");
 process.umask(0o077);
 
@@ -1048,7 +1062,12 @@ export function runLifecycle(argv: string[], options: { platform?: NodeJS.Platfo
     });
     const childArgs = [command("bun"), join(transaction.release, "scripts/linux-lifecycle.ts"), "activate", transaction.release, source, transaction.generation, transaction.revision];
     if (args.includes("--gui")) childArgs.push("--gui");
-    const activated = Bun.spawnSync(childArgs, { env: process.env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+    const activated = Bun.spawnSync(childArgs, {
+      env: { ...process.env, COCKPIT_INSTALL_REPORT_CHILD: "1" },
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+    });
     if (activated.exitCode !== 0) throw new Error("immutable release activation failed");
   }
   else if (action === "uninstall") withLifecycleLock(() => uninstall(args.includes("--purge")));
@@ -1063,7 +1082,6 @@ if (import.meta.main) {
   try {
     runLifecycle(process.argv.slice(2));
   } catch (error) {
-    for (const message of errorMessages(error)) console.error(`pr-cockpit: ${message}`);
-    process.exit(1);
+    await exitLifecycleFailure(error);
   }
 }

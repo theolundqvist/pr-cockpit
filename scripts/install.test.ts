@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { reportInstallFailure } from "./installFailure.ts";
 
 const uid = process.getuid?.() ?? 0;
 
@@ -19,6 +20,8 @@ function fakeInstall(
   writeFileSync(calls, "");
   const curlCalls = join(home, "curl-calls");
   writeFileSync(curlCalls, "");
+  const reportCalls = join(home, "sentry-report-calls");
+  writeFileSync(reportCalls, "");
   mkdirSync(join(root, "scripts"), { recursive: true });
   mkdirSync(join(root, "ui"), { recursive: true });
   mkdirSync(join(root, "shell"), { recursive: true });
@@ -36,7 +39,9 @@ function fakeInstall(
     ? "exit 1"
     : `printf 'gui/${uid}/app.pr-cockpit = {\\n\\tstate = running\\n\\targuments = {\\n\\t\\tCOCKPIT_ROOT=${resolved}\\n\\t}\\n}\\n'`;
   for (const [name, body] of [
-    ["bun", "exit 0"],
+    ["bun", `if [[ "\${1:-}" == */scripts/installFailure.ts ]]; then printf '%s\\n' "$*" >> ${JSON.stringify(reportCalls)}; [[ "\${COCKPIT_TEST_HANG_SENTRY_REPORTER:-0}" != "1" ]] || sleep 60; exit 0; fi
+if [[ "\${COCKPIT_TEST_FAIL_BUN_INSTALL:-0}" == "1" && "\${1:-}" == "install" ]]; then exit 7; fi
+exit 0`],
     ["uname", `printf '${platform}\\n'`],
     ["gh", "exit 0"],
     // the readiness probe needs the server agent to own the listening port
@@ -59,12 +64,12 @@ exit 0`,
     writeFileSync(path, `#!/usr/bin/env bash\n${body}\n`);
     chmodSync(path, 0o755);
   }
-  return { root, calls, curlCalls, path: `${bin}:/usr/bin:/bin:/usr/sbin` };
+  return { root, calls, curlCalls, reportCalls, path: `${bin}:/usr/bin:/bin:/usr/sbin` };
 }
 
 async function install(
   loadedRoot: string | null,
-  options: { platform?: "Darwin" | "Linux"; proxy?: string; healthRoot?: string; tailscalePort?: string } = {},
+  options: { platform?: "Darwin" | "Linux"; proxy?: string; healthRoot?: string; tailscalePort?: string; failInstall?: boolean; hangReporter?: boolean } = {},
 ) {
   const home = mkdtempSync(join(tmpdir(), "cockpit-install-"));
   try {
@@ -80,6 +85,8 @@ async function install(
           COCKPIT_TAILSCALE_SERVE: "1",
           COCKPIT_TAILSCALE_HTTPS_PORT: options.tailscalePort,
         } : {}),
+        ...(options.failInstall ? { COCKPIT_TEST_FAIL_BUN_INSTALL: "1" } : {}),
+        ...(options.hangReporter ? { COCKPIT_TEST_HANG_SENTRY_REPORTER: "1" } : {}),
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -91,6 +98,7 @@ async function install(
     ]);
     const calls = readFileSync(fake.calls, "utf8");
     const curlCalls = readFileSync(fake.curlCalls, "utf8");
+    const reportCalls = readFileSync(fake.reportCalls, "utf8");
     const serverPlistPath = join(installHome, "Library/LaunchAgents/app.pr-cockpit.server.plist");
     const serverPlist = existsSync(serverPlistPath) ? readFileSync(serverPlistPath, "utf8") : "";
     const configPath = join(installHome, ".config/pr-cockpit/config");
@@ -101,6 +109,7 @@ async function install(
       exitCode,
       calls,
       curlCalls,
+      reportCalls,
       root: fake.root,
       serverPlist,
       config,
@@ -125,6 +134,81 @@ test("new config is a commented inert example", async () => {
   expect(result.config).not.toContain("Agents mutate existing PRs");
   expect(result.config).not.toMatch(/^[^#\n]*COCKPIT_PROXY=/m);
   expect(result.serverPlist).not.toContain("COCKPIT_TAILSCALE");
+});
+
+test("a failed macOS installation reports its stage without delaying exit", async () => {
+  const startedAt = performance.now();
+  const result = await install(null, { failInstall: true, hangReporter: true });
+  expect(result.exitCode).toBe(7);
+  expect(result.reportCalls).toContain("scripts/installFailure.ts Install dependencies 7 Darwin");
+  expect(performance.now() - startedAt).toBeLessThan(3_000);
+}, 10_000);
+
+test("installer failure reporting sends one Sentry envelope unless disabled", async () => {
+  let endpoint = "";
+  let envelope = "";
+  const server = Bun.serve({
+    port: 0,
+    async fetch(request) {
+      endpoint = new URL(request.url).pathname;
+      envelope = await request.text();
+      return new Response(null, { status: 200 });
+    },
+  });
+  try {
+    await reportInstallFailure({ stage: "Build UI", status: 7, platform: "Darwin" }, "");
+    expect(envelope).toBe("");
+    await reportInstallFailure(
+      { stage: "Build UI", status: 7, platform: "Darwin" },
+      `http://public@127.0.0.1:${server.port}/42`,
+    );
+    const [header, item, event] = envelope.split("\n").map((line) => JSON.parse(line));
+    expect(endpoint).toBe("/api/42/envelope/");
+    expect(header.dsn).toBe(`http://public@127.0.0.1:${server.port}/42`);
+    expect(item).toEqual({ type: "event" });
+    expect(event.message).toBe("Installation failed during Build UI (exit 7)");
+    expect(event.tags).toEqual({
+      component: "installer",
+      install_stage: "Build UI",
+      install_status: "7",
+      install_platform: "Darwin",
+    });
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("Linux lifecycle reports initialization failures without their raw error", async () => {
+  let envelope = "";
+  const server = Bun.serve({
+    port: 0,
+    async fetch(request) {
+      envelope = await request.text();
+      return new Response(null, { status: 200 });
+    },
+  });
+  try {
+    const proc = Bun.spawn([process.execPath, join(import.meta.dir, "linux-lifecycle.ts"), "install", "/tmp/source"], {
+      env: {
+        ...process.env,
+        HOME: "",
+        COCKPIT_SENTRY_DSN: `http://public@127.0.0.1:${server.port}/42`,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stderr, exitCode] = await Promise.all([
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    const event = JSON.parse(envelope.split("\n")[2]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toMatch(/Linux lifecycle must not run as root|HOME must name a non-root absolute user home/);
+    expect(event.message).toBe("Installation failed during install (exit 1)");
+    expect(event.message).not.toContain("HOME");
+  } finally {
+    server.stop(true);
+  }
 });
 
 test("a Tailscale Serve install persists the opt-in launch environment", async () => {

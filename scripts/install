@@ -20,13 +20,35 @@ else
   reset=""
 fi
 
-stage() { printf '\n%b[%s]%b %s\n' "$accent" "$1" "$reset" "$2"; }
+install_stage="Initialize"
+stage() {
+  install_stage="$2"
+  printf '\n%b[%s]%b %s\n' "$accent" "$1" "$reset" "$2"
+}
 
 quiet_log=""
 cleanup_quiet_log() {
   [[ -z "$quiet_log" ]] || rm -f "$quiet_log"
 }
-trap cleanup_quiet_log EXIT
+finish_install() {
+  local status=$?
+  local reporter_bun reporter_pid watchdog_pid
+  set +e
+  cleanup_quiet_log
+  if [[ "$status" -ne 0 ]]; then
+    reporter_bun="$(command -v bun 2>/dev/null)"
+    if [[ -n "$reporter_bun" ]]; then
+      "$reporter_bun" "$root/scripts/installFailure.ts" "$install_stage" "$status" "$platform" >/dev/null 2>&1 &
+      reporter_pid=$!
+      (sleep 2; kill -KILL "$reporter_pid" 2>/dev/null) &
+      watchdog_pid=$!
+      wait "$reporter_pid" 2>/dev/null
+      kill -TERM "$watchdog_pid" 2>/dev/null
+      wait "$watchdog_pid" 2>/dev/null
+    fi
+  fi
+}
+trap finish_install EXIT
 
 quiet_in() {
   local label="$1"

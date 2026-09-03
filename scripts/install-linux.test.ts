@@ -58,10 +58,12 @@ function fixture() {
     "server/main.ts",
     "scripts/cockpit",
     "scripts/linux-lifecycle.ts",
+    "scripts/installFailure.ts",
     "scripts/linux-lifecycle-test.ts",
     "scripts/pr-cockpit",
     "shell/main.js",
     "shared/desktopShortcuts.json",
+    "shared/sentry.ts",
     "ui/package.json",
   ];
   const archived = tracked.filter((relative) => !exportIgnored.has(relative));
@@ -72,6 +74,7 @@ function fixture() {
     mkdirSync(dirname(join(source, relative)), { recursive: true });
     if (relative === "scripts/linux-lifecycle.ts") copyFileSync(LIFECYCLE, join(source, relative));
     else if (relative === "scripts/linux-lifecycle-test.ts") copyFileSync(TEST_LIFECYCLE, join(source, relative));
+    else if (relative === "scripts/installFailure.ts" || relative === "shared/sentry.ts") copyFileSync(join(import.meta.dir, "..", relative), join(source, relative));
     else if (relative === ".gitattributes") writeFileSync(join(source, relative), attributes);
     else writeFileSync(join(source, relative), relative === "scripts/cockpit" ? `#!/usr/bin/env bash\necho gui >> ${JSON.stringify(guiLog)}\n` : relative);
     if (relative.includes("scripts/") || relative.endsWith("/electron")) chmodSync(join(source, relative), 0o755);
