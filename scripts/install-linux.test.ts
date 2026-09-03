@@ -246,7 +246,7 @@ describe("transactional Linux lifecycle", () => {
     expect(autostartEntry).toContain("X-KDE-autostart-after=panel");
     const systemdUnit = readFileSync(join(f.configHome, "systemd/user/pr-cockpit.service"), "utf8");
     expect(systemdUnit).toContain("RuntimeDirectory=pr-cockpit\nRuntimeDirectoryMode=0700");
-    expect(systemdUnit).toContain(`ExecStartPre=\"/bin/ln\" -sfnT \"${join(f.dataHome, "pr-cockpit-runtime/current/scripts/cockpit").replaceAll("%", "%%")}\" \"${join(f.runtimeHome, "pr-cockpit/launch")}\"`);
+    expect(systemdUnit).toContain(`ExecStartPre=\"${Bun.which("ln", { PATH: "/usr/bin:/bin" })}\" -sfnT \"${join(f.dataHome, "pr-cockpit-runtime/current/scripts/cockpit").replaceAll("%", "%%")}\" \"${join(f.runtimeHome, "pr-cockpit/launch")}\"`);
     expect(autostartEntry).toContain("NoDisplay=true");
     expect(autostartEntry).toContain("StartupWMClass=app.pr-cockpit");
     expect(autostartEntry).not.toContain("%u");
