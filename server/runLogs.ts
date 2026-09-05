@@ -798,7 +798,7 @@ export function formatRunJobs(headSha: string, jobs: RunJobRow[]): string {
     const scheduling = job.runner_name
       ? ` · runner ${job.runner_group_name ? `${job.runner_group_name}/` : ""}${job.runner_name}`
       : labels ? ` · requested ${labels}` : "";
-    return `- ${job.workflow_name ? `${job.workflow_name} / ` : ""}${job.name}: ${job.conclusion ?? job.status}${scheduling}`;
+    return `- ${job.workflow_name ? `${job.workflow_name} / ` : ""}${job.name} · run ${job.run_id}, attempt ${job.run_attempt}: ${job.conclusion ?? job.status}${scheduling}`;
   });
   return `Cached Actions jobs for ${headSha}\n\n${rows.join("\n")}\n`;
 }

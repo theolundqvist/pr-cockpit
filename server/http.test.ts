@@ -1757,7 +1757,7 @@ describe("Actions viewer API", () => {
   });
 
 
-  test("trusted jobs route returns recent branch runs across SHAs and filters one latest attempt", async () => {
+  test("trusted jobs route defaults to current-head runs and keeps historical runs explicit", async () => {
     const repo = "http-actions/branch-jobs";
     const number = 96135;
     const head = "a".repeat(40);
@@ -1821,11 +1821,10 @@ describe("Actions viewer API", () => {
       expect(all.status).toBe(200);
       expect(await all.json()).toMatchObject({
         runs: [
-          { id: 74, attempt: 2, event: "push" },
-          { id: 71, attempt: 1, event: "push", reconciled: false },
-          { id: 70, attempt: 1, event: "workflow_dispatch", reconciled: true },
+          { id: 74, attempt: 2, event: "push", headSha: head },
+          { id: 71, attempt: 1, event: "push", headSha: head, reconciled: false },
         ],
-        jobs: [{ id: 701 }, { id: 711 }, { id: 742 }],
+        jobs: [{ id: 711, headSha: head }, { id: 742, headSha: head }],
       });
 
       const exact = await fetchHandler(new Request(
@@ -1836,6 +1835,16 @@ describe("Actions viewer API", () => {
         runs: [{ id: 74, attempt: 2 }],
         selectedRun: { id: 74, attempt: 2, status: "in_progress", reconciled: false },
         jobs: [{ id: 742 }],
+      });
+
+      const historical = await fetchHandler(new Request(
+        `http://127.0.0.1:4820/api/agent/pr/http-actions/branch-jobs/${number}/jobs?format=json&runId=70`,
+      ));
+      expect(historical.status).toBe(200);
+      expect(await historical.json()).toMatchObject({
+        runs: [{ id: 70, headSha: "b".repeat(40) }],
+        selectedRun: { id: 70, headSha: "b".repeat(40) },
+        jobs: [{ id: 701, runId: 70, headSha: "b".repeat(40) }],
       });
 
       const rejected = await fetchHandler(new Request(

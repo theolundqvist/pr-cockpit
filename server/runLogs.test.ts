@@ -103,6 +103,7 @@ test("event ingestion is monotonic, runner-complete, REST-free without a lease, 
   expect(result.scopedJobIds).toEqual([31, 40]);
   expect(result.scopedRuns).toEqual([{ status: "completed", conclusion: "failure" }]);
   expect(result.jobsOutput).toContain("runner hosted/runner-4");
+  expect(result.jobsOutput).toContain("run 20, attempt 1");
 });
 
 test("a terminal job event normalizes stale status and caches a rerun log", async () => {

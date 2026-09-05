@@ -1573,6 +1573,8 @@ interface SerializedActionJob {
   id: number;
   runId: number;
   attempt: number;
+  headSha: string;
+  headBranch: string;
   workflowName: string;
   name: string;
   status: string;
@@ -1595,6 +1597,8 @@ function serializeActionJob(job: RunJobRow): SerializedActionJob {
     id: job.job_id,
     runId: job.run_id,
     attempt: job.run_attempt,
+    headSha: job.head_sha,
+    headBranch: job.head_branch,
     workflowName: job.workflow_name,
     name: job.name,
     status: job.status,
@@ -1903,19 +1907,20 @@ function handleAgentPrJobs(owner: string, repo: string, number: string, url: URL
     }
   }
 
-  const runs = latestActionRunAttempts(
+  const branchRuns = latestActionRunAttempts(
     workflowRunsForPrBranch(context.repoName, context.num, context.headBranch),
   );
-  const selectedRun = runId === null ? null : runs.find((run) => run.run_id === runId) ?? null;
+  const selectedRun = runId === null ? null : branchRuns.find((run) => run.run_id === runId) ?? null;
   if (runId !== null && !selectedRun) {
     return json({ error: "Actions run does not belong to this PR branch" }, 404);
   }
+  const runs = selectedRun ? [selectedRun] : branchRuns.filter((run) => run.head_sha === context.headSha);
   const rows = listRunJobsForPrBranch(context.repoName, context.num, context.headBranch)
-    .filter((job) => selectedRun === null || job.run_id === selectedRun.run_id);
+    .filter((job) => selectedRun ? job.run_id === selectedRun.run_id : job.head_sha === context.headSha);
   if (url.searchParams.get("format") === "json") {
     return json({
       headBranch: context.headBranch,
-      runs: (selectedRun ? [selectedRun] : runs).map((run) => serializeActionRun(run)),
+      runs: runs.map((run) => serializeActionRun(run)),
       selectedRun: selectedRun ? serializeActionRun(selectedRun) : null,
       jobs: rows.map(serializeActionJob),
     });
