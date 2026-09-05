@@ -103,6 +103,76 @@ test("eviction preserves the newest tracked detail as immediately stale cache", 
   }
 });
 
+test("older refreshes cannot replace newer pull request snapshots", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-monotonic-snapshot-"));
+  const scenario = `
+    // Dynamic import is required so the isolated child sets COCKPIT_DATA_DIR before db.ts opens SQLite.
+    const { db, evictStalePrs, getCachedPrDetail, getPr, upsertCachedPrDetail, upsertPr } = await import(${JSON.stringify(dbModuleUrl)});
+    const repo = "test/monotonic-snapshot";
+    const base = {
+      repo,
+      number: 1,
+      state: "OPEN",
+      is_draft: 0,
+      title: "new",
+      author: "theo",
+      base_ref: "main",
+      head_ref: "fix",
+      head_sha: "new-head",
+      updated_at: "2026-09-05T12:50:00.000Z",
+      additions: 1,
+      deletions: 0,
+      changed_files: 1,
+      commit_count: 1,
+      mergeable: "MERGEABLE",
+      merge_state_status: "CLEAN",
+      auto_merge_enabled: 0,
+      viewer_is_author: 1,
+      viewer_review_requested: 0,
+      viewer_review_state: null,
+      ci_status: "SUCCESS",
+      review_decision: null,
+      unresolved_count: 0,
+      needs_me_rank: 0,
+      greptile_confidence: null,
+      greptile_reviewed_sha: null,
+      greptile_unresolved_count: 0,
+      detail_json: JSON.stringify({ title: "new" }),
+      fetched_at: "2026-09-05T12:50:15.868Z",
+    };
+    upsertPr(base);
+    upsertPr({ ...base, title: "old", head_sha: "old-head", detail_json: JSON.stringify({ title: "old" }), fetched_at: "2026-09-04T12:51:31.191Z" });
+    upsertCachedPrDetail({ repo, number: 2, head_sha: "new-head", detail_json: JSON.stringify({ title: "new" }), fetched_at: "2026-09-05T12:50:15.868Z" });
+    upsertCachedPrDetail({ repo, number: 2, head_sha: "old-head", detail_json: JSON.stringify({ title: "old" }), fetched_at: "2026-09-04T12:51:31.191Z" });
+    const freshCacheAt = new Date().toISOString();
+    upsertPr({ ...base, number: 3, title: "tracked", detail_json: JSON.stringify({ title: "tracked" }), fetched_at: freshCacheAt });
+    upsertCachedPrDetail({ repo, number: 3, head_sha: "new-head", detail_json: JSON.stringify({ title: "new cache" }), fetched_at: freshCacheAt });
+    evictStalePrs(repo, [1]);
+    console.log(JSON.stringify({ tracked: getPr(repo, 1), cached: getCachedPrDetail(repo, 2), evictedCache: getCachedPrDetail(repo, 3), freshCacheAt }));
+    db.close();
+  `;
+
+  try {
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      process.exited,
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(stderr);
+    const result = JSON.parse(stdout);
+    expect(result.tracked).toMatchObject({ title: "new", head_sha: "new-head", fetched_at: "2026-09-05T12:50:15.868Z" });
+    expect(result.cached).toMatchObject({ head_sha: "new-head", fetched_at: "2026-09-05T12:50:15.868Z" });
+    expect(result.evictedCache).toMatchObject({ head_sha: "new-head", detail_json: JSON.stringify({ title: "new cache" }), fetched_at: result.freshCacheAt });
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("fresh databases include terminal PR index columns", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-fresh-index-"));
   const scenario = `

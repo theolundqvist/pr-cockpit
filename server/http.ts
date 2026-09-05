@@ -567,6 +567,7 @@ async function handleGithubUsage(runtime: HttpRuntime): Promise<Response> {
 
 // Resolved threads bump neither updatedAt nor head SHA, so the poller's change gate misses them.
 const TRACKED_STALE_MS = 60_000;
+const AGENT_SNAPSHOT_RECENT_MS = 5 * 60_000;
 
 export function trackedDetailIsStale(fetchedAt: string, nowMs: number): boolean {
   return nowMs - new Date(fetchedAt).getTime() > TRACKED_STALE_MS;
@@ -666,11 +667,13 @@ type AgentSnapshotStatus = {
   newerActivityAt: string | null;
 };
 
-export function snapshotStatus(fetchedAt: string, lastWebhookAt: string | null): AgentSnapshotStatus {
-  const newerActivityAt = lastWebhookAt && Date.parse(lastWebhookAt) > Date.parse(fetchedAt) ? lastWebhookAt : null;
+export function snapshotStatus(fetchedAt: string, lastWebhookAt: string | null, nowMs = Date.now()): AgentSnapshotStatus {
+  const fetchedAtMs = Date.parse(fetchedAt);
+  const newerActivityAt = lastWebhookAt && Date.parse(lastWebhookAt) > fetchedAtMs ? lastWebhookAt : null;
+  const ageMs = nowMs - fetchedAtMs;
   return {
     fetchedAt,
-    freshness: newerActivityAt ? "outdated" : "recent",
+    freshness: newerActivityAt || !Number.isFinite(ageMs) || ageMs < 0 || ageMs > AGENT_SNAPSHOT_RECENT_MS ? "outdated" : "recent",
     newerActivityAt,
   };
 }

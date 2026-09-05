@@ -572,6 +572,13 @@ describe("agent PR summary", () => {
     expect(output).not.toContain("Cached snapshot is stale");
   });
 
+  test("marks old, invalid, and future-dated snapshots outdated without webhook evidence", () => {
+    const now = Date.parse("2026-09-05T12:51:47.000Z");
+    expect(snapshotStatus("2026-09-04T12:51:31.191Z", null, now).freshness).toBe("outdated");
+    expect(snapshotStatus("not-a-timestamp", null, now).freshness).toBe("outdated");
+    expect(snapshotStatus("2026-09-05T12:52:00.000Z", null, now).freshness).toBe("outdated");
+  });
+
   test("marks a snapshot outdated when a later webhook is known", () => {
     expect(snapshotStatus("2026-07-22T13:45:00Z", "2026-07-22T13:46:00Z")).toEqual({
       fetchedAt: "2026-07-22T13:45:00Z",
@@ -981,7 +988,7 @@ describe("agent PR summary", () => {
       const firstSummary = await first.json() as { title: string; snapshot: { freshness: string } };
       const secondSummary = await second.json() as { title: string };
       expect(firstSummary.title).toBe("stale");
-      expect(firstSummary.snapshot.freshness).toBe("recent");
+      expect(firstSummary.snapshot.freshness).toBe("outdated");
       expect(secondSummary.title).toBe("stale");
       expect(refreshCalls).toBe(1);
 
@@ -1036,7 +1043,7 @@ describe("agent PR summary", () => {
     try {
       upsertPr(trackedPrRow({ repo, number, fetchedAt: new Date(Date.now() - 10 * 60_000).toISOString() }));
       const stale = await fetchHandler(new Request(url));
-      expect((await stale.json() as { snapshot: { freshness: string } }).snapshot.freshness).toBe("recent");
+      expect((await stale.json() as { snapshot: { freshness: string } }).snapshot.freshness).toBe("outdated");
       // Second stale read lands while the first refresh is still in flight.
       await fetchHandler(new Request(url));
       expect(refreshCalls).toBe(1);

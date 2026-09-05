@@ -518,6 +518,7 @@ ON CONFLICT (repo, number) DO UPDATE SET
   greptile_unresolved_count = excluded.greptile_unresolved_count,
   detail_json = excluded.detail_json,
   fetched_at = excluded.fetched_at
+WHERE excluded.fetched_at >= prs.fetched_at
 `);
 
 export function upsertPr(row: PrRow): void {
@@ -1420,6 +1421,7 @@ function preservePrDetails(whereSql: string, params: Array<string | number>): vo
       head_sha = excluded.head_sha,
       detail_json = excluded.detail_json,
       fetched_at = excluded.fetched_at
+    WHERE excluded.fetched_at >= pr_detail_cache.fetched_at
   `).run(...params);
 }
 
@@ -1520,6 +1522,7 @@ ON CONFLICT (repo, number) DO UPDATE SET
   head_sha = excluded.head_sha,
   detail_json = excluded.detail_json,
   fetched_at = excluded.fetched_at
+WHERE excluded.fetched_at >= pr_detail_cache.fetched_at
 `);
 
 export function upsertCachedPrDetail(row: CachedPrDetailRow): void {
