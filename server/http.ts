@@ -57,6 +57,7 @@ import {
   fetchPrCommentsSince,
   fetchGithubQuota,
   fetchMergedPrAnalytics,
+  fetchRepositoryOpenPrs,
   GithubRequestError,
   rerunFailedJobs,
   RestRequestError,
@@ -76,6 +77,7 @@ import {
   type GithubQuota,
   type PrCommentSince,
   type PrDetail,
+  type RepositoryOpenPr,
 } from "./github.ts";
 import {
   proxyReplicaRequest,
@@ -380,6 +382,8 @@ type HttpDependencies = {
   fetchPrDetail: typeof fetchPrDetail;
   fetchGithubQuota: typeof fetchGithubQuota;
   fetchMergedPrAnalytics: typeof fetchMergedPrAnalytics;
+  fetchRepositoryOpenPrs: typeof fetchRepositoryOpenPrs;
+  trackedRepos: typeof trackedRepos;
   fetchPrCommentsSince: typeof fetchPrCommentsSince;
   lookupPrIndexes: typeof lookupPrIndexes;
   commitPrFileEdit: typeof commitPrFileEdit;
@@ -400,12 +404,16 @@ type HttpDependencies = {
 type HttpRuntime = HttpDependencies & {
   revalidateCachedPrDetail: (repo: string, number: number, source: GithubUsageSource) => Promise<void>;
   revalidateTrackedPr: (repo: string, number: number, source: GithubUsageSource) => Promise<void>;
+  allPrsCache: Map<string, { prs: RepositoryOpenPr[]; fetchedAt: number }>;
+  allPrsRefreshes: Map<string, Promise<RepositoryOpenPr[]>>;
 };
 
 const defaultHttpDependencies: HttpDependencies = {
   fetchPrDetail,
   fetchGithubQuota,
   fetchMergedPrAnalytics,
+  fetchRepositoryOpenPrs,
+  trackedRepos,
   fetchPrCommentsSince,
   lookupPrIndexes,
   commitPrFileEdit,
@@ -497,6 +505,49 @@ async function handleMergedPrAnalytics(url: URL, runtime: HttpRuntime): Promise<
   } catch (err) {
     const status = err instanceof GithubRequestError ? err.status : 502;
     return json({ error: status === 404 ? "not found" : "GitHub fetch failed" }, status);
+  }
+}
+
+const ALL_PRS_FRESH_MS = 60_000;
+
+async function handleAllPrs(url: URL, runtime: HttpRuntime): Promise<Response> {
+  try {
+    const tracked = new Set(await runtime.trackedRepos());
+    const requested = url.searchParams.getAll("repo");
+    if (requested.some((repo) => !CANONICAL_REPO_RE.test(repo) || !tracked.has(repo))) {
+      return json({ error: "repo is not tracked" }, 400);
+    }
+    const repos = [...new Set(requested.length ? requested : tracked)].sort();
+    if (!repos.length) return json({ prs: [] });
+    const now = Date.now();
+    for (const [scope, cached] of runtime.allPrsCache) {
+      if (now - cached.fetchedAt >= ALL_PRS_FRESH_MS) runtime.allPrsCache.delete(scope);
+    }
+    const prs: RepositoryOpenPr[] = [];
+    for (const repo of repos) {
+      let rows = runtime.allPrsCache.get(repo)?.prs;
+      if (!rows) {
+        let refresh = runtime.allPrsRefreshes.get(repo);
+        if (!refresh) {
+          refresh = runtime.fetchRepositoryOpenPrs(repo).then((rows) => {
+            runtime.allPrsCache.set(repo, { prs: rows, fetchedAt: Date.now() });
+            return rows;
+          }).finally(() => runtime.allPrsRefreshes.delete(repo));
+          runtime.allPrsRefreshes.set(repo, refresh);
+        }
+        rows = await refresh;
+      }
+      for (const pr of rows) prs.push(pr);
+    }
+    prs.sort((left, right) =>
+      right.updatedAt.localeCompare(left.updatedAt)
+      || left.repo.localeCompare(right.repo)
+      || left.number - right.number
+    );
+    return json({ prs });
+  } catch (err) {
+    const status = err instanceof GithubRequestError ? err.status : 502;
+    return json({ error: status === 404 ? "Repository not found" : "GitHub fetch failed" }, status);
   }
 }
 
@@ -2758,6 +2809,8 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
   const dependencies: HttpDependencies = { ...defaultHttpDependencies, ...dependencyOverrides };
   const runtime: HttpRuntime = {
     ...dependencies,
+    allPrsCache: new Map(),
+    allPrsRefreshes: new Map(),
     revalidateCachedPrDetail: createPrDetailRevalidator((repo, number, source) =>
       revalidateCachedPrDetail(repo, number, dependencies.fetchPrDetail, source)
     ),
@@ -2850,6 +2903,9 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     }
     if (req.method === "GET" && url.pathname === "/api/inbox") {
       return handleInbox(url);
+    }
+    if (req.method === "GET" && url.pathname === "/api/all-prs") {
+      return handleAllPrs(url, runtime);
     }
     if (req.method === "GET" && url.pathname === "/api/closed") {
       return handleClosed(url);

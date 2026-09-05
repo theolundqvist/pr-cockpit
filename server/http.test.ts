@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { buildFetchHandler, buildPrAgentSummary, checkoutTargetFor, formatPrAgentSummary, mergeabilityNeedsRefresh, normalizeAgentMutation, reviewThreadHandle, snapshotStatus, statsExcludingTests, trackedDetailIsStale } from "./http.ts";
 import { GithubRequestError, StalePrHeadError, type PrDetail } from "./github.ts";
 import { db, getCachedPrDetail, getPr, getSetting, listRunJobs, saveDiff, saveFileContents, setSetting, upsertCachedPrDetail, upsertPr, upsertPrIndex, upsertRunJob, upsertWorkflowRun } from "./db.ts";
@@ -184,6 +184,126 @@ describe("health", () => {
 
     expect(response.status).toBe(200);
     expect(body).toMatchObject({ root: process.cwd(), supervisor: "unmanaged", pid: process.pid });
+  });
+});
+
+describe("all PRs", () => {
+  const url = "http://127.0.0.1:4820/api/all-prs";
+  const row = {
+    repo: "acme/widgets", number: 1, title: "Outside my queue", author: "other-contributor",
+    state: "OPEN" as const, isDraft: false, updatedAt: "2026-09-01T00:00:00Z",
+  };
+
+  test("is lazy, restricts scope, sorts all authors, and leaves personal membership untouched", async () => {
+    const calls: string[] = [];
+    let tracked = ["acme/widgets", "acme/api"];
+    const beforePrs = db.query("SELECT repo, number FROM prs ORDER BY repo, number").all();
+    const beforeIndex = db.query("SELECT repo, number FROM pr_index ORDER BY repo, number").all();
+    const handler = buildFetchHandler(4820, {
+      trackedRepos: async () => tracked,
+      fetchRepositoryOpenPrs: async (repo) => {
+        calls.push(repo);
+        return repo === "acme/api"
+          ? [{ ...row, repo, number: 3 }, { ...row, repo, number: 2, isDraft: true }]
+          : [{ ...row, number: 4, updatedAt: "2026-09-02T00:00:00Z" }, row];
+      },
+      fetchPrDetail: async () => { throw new Error("list must not warm details"); },
+    });
+    await handler(new Request("http://127.0.0.1:4820/healthz"));
+    expect(calls).toEqual([]);
+    const response = await handler(new Request(url));
+    expect(response.status).toBe(200);
+    expect((await response.json()).prs).toEqual([
+      { ...row, number: 4, updatedAt: "2026-09-02T00:00:00Z" },
+      { ...row, repo: "acme/api", number: 2, isDraft: true },
+      { ...row, repo: "acme/api", number: 3 },
+      row,
+    ]);
+    expect(calls).toEqual(["acme/api", "acme/widgets"]);
+    expect(db.query("SELECT repo, number FROM prs ORDER BY repo, number").all()).toEqual(beforePrs);
+    expect(db.query("SELECT repo, number FROM pr_index ORDER BY repo, number").all()).toEqual(beforeIndex);
+    const scoped = await handler(new Request(url + "?repo=acme/api"));
+    expect((await scoped.json()).prs.map((pr: { repo: string }) => pr.repo)).toEqual(["acme/api", "acme/api"]);
+    const callsBeforeInvalid = [...calls];
+    for (const query of ["?repo=untracked/repo", "?repo=acme/api&repo=untracked/repo", "?repo="]) {
+      expect((await handler(new Request(url + query))).status).toBe(400);
+    }
+    tracked = [];
+    expect(await (await handler(new Request(url))).json()).toEqual({ prs: [] });
+    expect((await handler(new Request(url + "?repo=acme/api"))).status).toBe(400);
+    expect(calls).toEqual(callsBeforeInvalid);
+  });
+
+  test("shares overlapping repository requests and expires successful results at 60 seconds", async () => {
+    const clock = spyOn(Date, "now").mockReturnValue(1_000_000);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const calls: string[] = [];
+    const handler = buildFetchHandler(4820, {
+      trackedRepos: async () => ["acme/widgets", "acme/api"],
+      fetchRepositoryOpenPrs: async (repo) => {
+        calls.push(repo);
+        await gate;
+        return [{ ...row, repo }];
+      },
+    });
+    try {
+      const responses = [
+        handler(new Request(url)),
+        handler(new Request(url + "?repo=acme/widgets&repo=acme/api&repo=acme/api")),
+      ];
+      const subset = handler(new Request(url + "?repo=acme/api"));
+      release();
+      for (const response of await Promise.all(responses)) {
+        expect(response.status).toBe(200);
+        expect((await response.json()).prs).toEqual([{ ...row, repo: "acme/api" }, row]);
+      }
+      expect(await (await subset).json()).toEqual({ prs: [{ ...row, repo: "acme/api" }] });
+      expect(calls).toEqual(["acme/api", "acme/widgets"]);
+      clock.mockReturnValue(1_059_999);
+      await handler(new Request(url));
+      expect(calls).toEqual(["acme/api", "acme/widgets"]);
+      clock.mockReturnValue(1_060_000);
+      await handler(new Request(url));
+      expect(calls).toEqual(["acme/api", "acme/widgets", "acme/api", "acme/widgets"]);
+    } finally {
+      release();
+      clock.mockRestore();
+    }
+  });
+
+  test("discards partial scopes, clears failed joins, and never serves expired data on failure", async () => {
+    const clock = spyOn(Date, "now").mockReturnValue(2_000_000);
+    let fail = true;
+    const calls: string[] = [];
+    const handler = buildFetchHandler(4820, {
+      trackedRepos: async () => ["acme/api", "acme/widgets"],
+      fetchRepositoryOpenPrs: async (repo) => {
+        calls.push(repo);
+        if (repo === "acme/widgets" && fail) throw new GithubRequestError("quota exhausted", 502);
+        return [{ ...row, repo }];
+      },
+    });
+    try {
+      const failed = await Promise.all([handler(new Request(url)), handler(new Request(url))]);
+      for (const response of failed) {
+        expect(response.status).toBe(502);
+        expect((await response.json()).prs).toBeUndefined();
+      }
+      expect(calls).toEqual(["acme/api", "acme/widgets"]);
+      fail = false;
+      const retried = await handler(new Request(url));
+      expect(retried.status).toBe(200);
+      expect((await retried.json()).prs).toEqual([{ ...row, repo: "acme/api" }, row]);
+      expect(calls).toEqual(["acme/api", "acme/widgets", "acme/widgets"]);
+      fail = true;
+      clock.mockReturnValue(2_060_000);
+      const expired = await handler(new Request(url));
+      expect(expired.status).toBe(502);
+      expect((await expired.json()).prs).toBeUndefined();
+    } finally {
+      clock.mockRestore();
+    }
   });
 });
 

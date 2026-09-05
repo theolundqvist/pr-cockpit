@@ -14,6 +14,17 @@ export async function fetchRecentClosed() {
   return res.json();
 }
 
+export async function fetchAllPrs(repos = []) {
+  const params = new URLSearchParams();
+  for (const repo of repos) params.append("repo", repo);
+  const query = params.toString();
+  const res = await fetch(`/api/all-prs${query ? `?${query}` : ""}`);
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.error || `all PRs ${res.status}`);
+  if (!Array.isArray(body?.prs)) throw new Error("Invalid all PRs response");
+  return body;
+}
+
 export async function setArchived(repo, number, archived) {
   const res = await fetch("/api/archive", {
     method: "POST",

@@ -98,10 +98,19 @@ test("a local server imports inbox state and proxies GitHub-backed APIs through 
       rest: { ...sourceQuota.rest, resetAt: expect.any(String) },
       graphql: { ...sourceQuota.graphql, resetAt: expect.any(String) },
     });
+    const allPrsPath = "/api/all-prs?repo=fixture%2Fcockpit";
+    const sourceAllPrs = await fetch(`http://127.0.0.1:${sourcePort}${allPrsPath}`);
+    const replicaAllPrs = await fetch(`http://127.0.0.1:${replicaPort}${allPrsPath}`);
+    expect(sourceAllPrs.status).toBe(200);
+    expect(replicaAllPrs.status).toBe(200);
+    expect(await replicaAllPrs.json()).toEqual(await sourceAllPrs.json());
     source.kill();
     await source.exited;
     const offlineInbox = await fetch(`http://127.0.0.1:${replicaPort}/api/inbox`).then((response) => response.json());
     expect(offlineInbox).toEqual(replicaInbox);
+    const offlineAllPrs = await fetch(`http://127.0.0.1:${replicaPort}${allPrsPath}`);
+    expect(offlineAllPrs.status).toBe(503);
+    expect((await offlineAllPrs.json()).prs).toBeUndefined();
   } finally {
     replica?.kill();
     source.kill();

@@ -25,11 +25,11 @@ curl -fsSL https://raw.githubusercontent.com/theolundqvist/pr-cockpit/main/scrip
 ### Try it on a PR you already know
 
 - **Connect GitHub in the app.** Cockpit reuses your GitHub CLI (`gh`) login. If you need to sign in or grant additional access, setup opens the GitHub authorization flow in your browser.
-- **Choose a repository you work in.** Start with an open PR you've authored or participated in—the queue follows PRs involving you, not every open PR in the repository. You can enter `owner/repo` if it is not in the suggested list.
+- **Choose a repository you work in.** Start with an open PR you've authored or participated in. **Open** follows PRs involving you; **All PRs** shows every open PR in your selected repositories. You can enter `owner/repo` if it is not in the suggested list.
 - **Enable live updates, or continue with polling.** Live updates use a GitHub App installation with access to your selected repositories. An organization may require an owner's approval; that need not block your first review.
 - **Open the queue and pick that PR.** Read the conversation, press <kbd>d</kbd> to switch to Files, and inspect a change. Press <kbd>?</kbd> whenever you want the shortcut guide.
 
-The first sync fetches PRs involving you from your selected repositories. Subsequent reads use the local cache as it refreshes. You can revisit repository and live-update configuration in Settings.
+The first sync fetches PRs involving you. **All PRs** loads on demand without expanding background polling. Press <kbd>Tab</kbd> to cycle Open, All PRs, and Recently merged. Repository and live-update configuration live in Settings.
 
 ## From finding the PR to finishing the review
 

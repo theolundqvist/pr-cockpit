@@ -372,6 +372,80 @@ export async function searchOpenPrs(repos: string[]): Promise<SearchHit[]> {
   }));
 }
 
+export interface RepositoryOpenPr {
+  repo: string;
+  number: number;
+  title: string;
+  author: string;
+  state: "OPEN";
+  isDraft: boolean;
+  updatedAt: string;
+}
+
+const REPOSITORY_OPEN_PRS_QUERY = `
+query($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(
+      states: OPEN
+      first: 100
+      after: $cursor
+      orderBy: { field: UPDATED_AT, direction: DESC }
+    ) {
+      nodes { number title author { login } isDraft updatedAt }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}`;
+
+export async function fetchRepositoryOpenPrs(repo: string): Promise<RepositoryOpenPr[]> {
+  const [owner, name, extra] = repo.split("/");
+  if (!owner || !name || extra !== undefined) throw new GithubRequestError(`Invalid repository: ${repo}`, 404);
+  if (mockGithub) {
+    return mockGithub.searchRecentPrs(repo)
+      .filter((entry) => entry.state === "OPEN")
+      .map((entry) => ({
+        repo, number: entry.number, title: entry.title, author: entry.author,
+        state: "OPEN", isDraft: entry.isDraft, updatedAt: entry.updatedAt,
+      }));
+  }
+
+  const prs = new Map<number, RepositoryOpenPr>();
+  const seenCursors = new Set<string>();
+  let cursor: string | null = null;
+  while (true) {
+    const data: {
+      repository: {
+        pullRequests: {
+          nodes: Array<{
+            number: number;
+            title: string;
+            author: { login: string } | null;
+            isDraft: boolean;
+            updatedAt: string;
+          }>;
+          pageInfo: { hasNextPage: boolean; endCursor: string | null };
+        };
+      } | null;
+    } = await graphql(REPOSITORY_OPEN_PRS_QUERY, { owner, name, cursor }, "user action", "all PRs");
+    if (!data.repository) throw new GithubRequestError(`Repository not found: ${repo}`, 404);
+    const { nodes, pageInfo } = data.repository.pullRequests;
+    for (const entry of nodes) {
+      const previous = prs.get(entry.number);
+      if (!previous || entry.updatedAt > previous.updatedAt) {
+        prs.set(entry.number, {
+          repo, number: entry.number, title: entry.title, author: entry.author?.login ?? "unknown",
+          state: "OPEN", isDraft: entry.isDraft, updatedAt: entry.updatedAt,
+        });
+      }
+    }
+    if (!pageInfo.hasNextPage) return [...prs.values()];
+    if (!pageInfo.endCursor) throw new GithubRequestError("GraphQL response missing pull request cursor", 502);
+    if (seenCursors.has(pageInfo.endCursor)) throw new GithubRequestError("GraphQL response repeated pull request cursor", 502);
+    seenCursors.add(pageInfo.endCursor);
+    cursor = pageInfo.endCursor;
+  }
+}
+
 export interface PaletteHit {
   repo: string;
   number: number;

@@ -5,7 +5,7 @@
 
 <script>
   import { untrack } from "svelte";
-  import { fetchInbox, fetchRecentClosed, fetchPrDetails, setArchived, saveSettings, reorderPr, fetchSettings, fetchRelayStatus, fetchRelayCoverage, autofixAgent, customAgent, rescoreAgent } from "./api.js";
+  import { fetchInbox, fetchRecentClosed, fetchAllPrs, fetchPrDetails, setArchived, saveSettings, reorderPr, fetchSettings, fetchRelayStatus, fetchRelayCoverage, autofixAgent, customAgent, rescoreAgent } from "./api.js";
   import { cacheDetail, cachedHeadSha } from "./detailCache.js";
   import { filterPrs, countMatches, wantsHistory } from "./prFilter.js";
   import { relativeTime } from "./time.js";
@@ -69,6 +69,13 @@
   let closedPrs = $state([]);
   let closedLoaded = $state(false);
   let closedSeq = 0;
+  let allPrs = $state([]);
+  let allPrsLoading = $state(false);
+  let allPrsError = $state(null);
+  let allPrsSeq = 0;
+  let allPrsScope = null;
+  let allPrsSelectedKey = null;
+  let allPrsRepos = $state([]);
   let undo = $state(null);
   const archiveFlash = timedFlag(4000, () => (undo = null));
   function storedRepositories() {
@@ -169,14 +176,14 @@
       loaded = true;
       error = null;
       // a background poll can reorder the list mid-navigation; keep the same PR selected, not the same index
-      if (restoreKey !== null) {
+      if (view !== "all" && restoreKey !== null) {
         const idx = ordered.findIndex((pr) => prKey(pr) === restoreKey);
         restoreKey = null;
         if (idx >= 0) {
           selected = idx;
           scrollSelectedIntoView();
         }
-      } else if (selectedKey !== null) {
+      } else if (view !== "all" && selectedKey !== null) {
         const idx = ordered.findIndex((pr) => prKey(pr) === selectedKey);
         if (idx >= 0) selected = idx;
       }
@@ -304,10 +311,53 @@
     }
   }
 
+  async function loadAllPrs() {
+    if (!active || view !== "all") return;
+    const repos = [...selectedRepos];
+    const scope = JSON.stringify(repos);
+    const selectedKey = scope === allPrsScope
+      ? restoreKey ?? (allPrs[selected] ? prKey(allPrs[selected]) : allPrsSelectedKey)
+      : null;
+    const seq = ++allPrsSeq;
+    allPrsScope = scope;
+    allPrsSelectedKey = selectedKey;
+    allPrsLoading = true;
+    allPrsError = null;
+    allPrs = [];
+    try {
+      const res = await fetchAllPrs(repos);
+      if (seq !== allPrsSeq || !active || view !== "all" || scope !== JSON.stringify(selectedRepos)) return;
+      allPrs = res.prs;
+      allPrsRepos = [...new Set([...allPrsRepos, ...res.prs.map((pr) => pr.repo)])];
+      restoreKey = null;
+      const index = selectedKey === null ? -1 : allPrs.findIndex((pr) => prKey(pr) === selectedKey);
+      selected = Math.max(0, index);
+      allPrsSelectedKey = allPrs[selected] ? prKey(allPrs[selected]) : null;
+      scrollSelectedIntoView();
+    } catch (e) {
+      if (seq === allPrsSeq && active && view === "all" && scope === JSON.stringify(selectedRepos)) {
+        allPrsError = e instanceof Error ? e.message : String(e);
+      }
+    } finally {
+      if (seq === allPrsSeq) allPrsLoading = false;
+    }
+  }
+
+  $effect(() => {
+    if (!active || view !== "all") return;
+    selectedRepos;
+    refreshRevision;
+    pollCompletedAt;
+    untrack(loadAllPrs);
+    return () => { allPrsSeq++; };
+  });
+
   function showView(next) {
     if (view === next) return;
     view = next;
     selected = 0;
+    restoreKey = null;
+    allPrsSelectedKey = null;
     multiAnchor = null;
     if (next === "closed") loadClosed();
   }
@@ -344,7 +394,7 @@
 
   let historyActive = $derived(wantsHistory(filterQuery) && historyQuery === filterQuery.trim() && !historyLoading);
   let queryFilteredPrs = $derived(wantsHistory(filterQuery) ? (historyQuery === filterQuery.trim() ? historyPrs : []) : filterPrs(prs, filterQuery, showArchived));
-  let availableRepos = $derived(availableRepositories(configuredRepos, prs, archivedPrs, closedPrs));
+  let availableRepos = $derived(availableRepositories(view === "all" ? [...configuredRepos, ...allPrsRepos, ...selectedRepos] : configuredRepos, prs, archivedPrs, closedPrs));
   let filteredPrs = $derived(filterByRepositories(queryFilteredPrs, selectedRepos));
   let filteredClosedPrs = $derived(filterByRepositories(closedPrs, selectedRepos));
   let actionsHref = $derived.by(() => {
@@ -564,7 +614,7 @@
     const pr = prs.find((p) => prKey(p) === dragKey);
     return pr ? (pr.rank != null ? "pinned" : classify(topUnit(pr), viewerLogin).group) : null;
   });
-  let ordered = $derived(view === "closed" ? filteredClosedPrs : showArchived ? [...openOrdered, ...archivedPrs] : openOrdered);
+  let ordered = $derived(view === "all" ? allPrs : view === "closed" ? filteredClosedPrs : showArchived ? [...openOrdered, ...archivedPrs] : openOrdered);
   let archivedSet = $derived(new Set(archivedPrs.map((pr) => prKey(pr))));
   const isArchived = (pr) => archivedSet.has(prKey(pr));
 
@@ -578,15 +628,15 @@
       { key: "j / k", label: "move" },
       { key: "⏎", label: "open" },
     ];
-    if (view === "closed") {
+    if (view === "all" || view === "closed") {
       keys.push({ key: "o", label: "github" });
-      keys.push({ key: "C", label: "back to open" });
+      keys.push({ key: "Tab", label: view === "all" ? "recently merged" : "back to open" });
       return keys;
     }
     if (pr) keys.push({ key: "s", label: pr.rank == null ? "pin" : "unpin" });
     if (pr) keys.push({ key: "e", label: isArchived(pr) ? "unarchive" : "archive" });
     keys.push({ key: "A", label: showArchived ? "hide archived" : "archived" });
-    keys.push({ key: "C", label: "recently merged" });
+    keys.push({ key: "Tab", label: "all PRs" });
     if (pr) {
       for (const a of keybindAgents) {
         if (a.id === "fixer") continue;
@@ -600,9 +650,11 @@
     return keys;
   });
 
-  function scrollSelectedIntoView() {
+  function scrollSelectedIntoView(focusRow = false) {
     requestAnimationFrame(() => {
-      document.querySelector(".inbox .row.selected")?.scrollIntoView({ block: "nearest" });
+      const row = document.querySelector(".inbox .row.selected");
+      if (focusRow) row?.focus({ preventScroll: true });
+      row?.scrollIntoView({ block: "nearest" });
     });
   }
 
@@ -692,7 +744,7 @@
         e.preventDefault();
         return;
       }
-      if (e.metaKey && e.key.toLowerCase() === "f") {
+      if (view !== "all" && e.metaKey && e.key.toLowerCase() === "f") {
         openFilter();
         e.preventDefault();
         return;
@@ -719,12 +771,14 @@
         e.preventDefault();
         return;
       }
-      if (e.key === "/") {
+      if (view === "all" && repoPickerOpen) return;
+      if (e.key === "Enter" && e.target.closest?.("button, a")) return;
+      if (view !== "all" && e.key === "/") {
         openFilter();
         e.preventDefault();
         return;
       }
-      if (e.key >= "1" && e.key <= "9" && savedViews[Number(e.key) - 1]) {
+      if (view !== "all" && e.key >= "1" && e.key <= "9" && savedViews[Number(e.key) - 1]) {
         applyView(savedViews[Number(e.key) - 1].query);
         e.preventDefault();
         return;
@@ -747,22 +801,22 @@
         e.preventDefault();
         return;
       }
-      if (e.key === "J" || (e.shiftKey && e.key === "ArrowDown")) {
+      if (view !== "all" && (e.key === "J" || (e.shiftKey && e.key === "ArrowDown"))) {
         if (multiAnchor === null) multiAnchor = selected;
         selected = Math.min(ordered.length - 1, selected + 1);
-        scrollSelectedIntoView();
-      } else if (e.key === "K" || (e.shiftKey && e.key === "ArrowUp")) {
+        scrollSelectedIntoView(true);
+      } else if (view !== "all" && (e.key === "K" || (e.shiftKey && e.key === "ArrowUp"))) {
         if (multiAnchor === null) multiAnchor = selected;
         selected = Math.max(0, selected - 1);
-        scrollSelectedIntoView();
+        scrollSelectedIntoView(true);
       } else if (e.key === "j" || e.key === "ArrowDown") {
         multiAnchor = null;
         selected = Math.min(ordered.length - 1, selected + 1);
-        scrollSelectedIntoView();
+        scrollSelectedIntoView(true);
       } else if (e.key === "k" || e.key === "ArrowUp") {
         multiAnchor = null;
         selected = Math.max(0, selected - 1);
-        scrollSelectedIntoView();
+        scrollSelectedIntoView(true);
       } else if (e.key === "Enter") {
         if (pr) {
           restoreKey = prKey(pr);
@@ -795,7 +849,8 @@
       } else if (view === "open" && e.key === "A") {
         toggleArchived();
       } else if (e.key === "Tab") {
-        showView(view === "closed" ? "open" : "closed");
+        const tabs = ["open", "all", "closed"];
+        showView(tabs[(tabs.indexOf(view) + (e.shiftKey ? tabs.length - 1 : 1)) % tabs.length]);
       } else {
         return;
       }
@@ -845,8 +900,11 @@
           <span class="view-tab-count">{filterByRepositories(prs, selectedRepos).length}</span>
           {#if view === "closed"}<Kbd keys="tab" />{/if}
         </button>
+        <button class="view-tab" role="tab" aria-selected={view === "all"} class:active={view === "all"} onclick={() => showView("all")}>
+          All PRs {#if view === "open"}<Kbd keys="tab" />{/if}
+        </button>
         <button class="view-tab" role="tab" aria-selected={view === "closed"} class:active={view === "closed"} onclick={() => showView("closed")}>
-          Recently merged {#if view === "open"}<Kbd keys="tab" />{/if}
+          Recently merged {#if view === "all"}<Kbd keys="tab" />{/if}
         </button>
         <a class="view-tab" role="tab" aria-selected="false" href={actionsHref}>Actions</a>
       </div>
@@ -1031,9 +1089,53 @@
       </a>
     {/snippet}
 
+    {#snippet allPrRow(pr, index)}
+      <a
+        class="row wait"
+        class:selected={index === selected}
+        href="#/pr/{pr.repo}/{pr.number}"
+        onmouseenter={(e) => onRowHover(e, index)}
+        onclick={() => (restoreKey = prKey(pr))}
+      >
+        <span class="row-avatar">
+          <Avatar login={pr.author} url={`https://github.com/${pr.author}.png?size=64`} size={30} />
+        </span>
+        <span class="cow-badge-slot"><span class="cow-badge wait">{pr.isDraft ? "Draft" : "Open"}</span></span>
+        <div class="row-main">
+          <div class="row-title">{pr.title}</div>
+          <div class="row-meta mono">
+            <span class="num">#{pr.number}</span>
+            <span class="sep">·</span>
+            <span title={pr.repo}>{repoTail(pr.repo)}</span>
+            <span class="sep">·</span>
+            <span>{pr.author}</span>
+          </div>
+        </div>
+        <span class="row-age mono" title={pr.updatedAt}>{relativeTime(pr.updatedAt)}</span>
+        {#if index === selected}<Kbd keys="enter" />{/if}
+      </a>
+    {/snippet}
+
     <div class="inbox-layout">
       <div class="queue-list">
-        {#if view === "closed"}
+        {#if view === "all"}
+          {#if allPrsError}
+            <div class="empty" role="alert">
+              <div>Couldn't load all PRs: {allPrsError}</div>
+              <button class="view-save" type="button" onclick={loadAllPrs}>Retry</button>
+            </div>
+          {:else if allPrsLoading}
+            <div class="empty" role="status">Loading all PRs…</div>
+          {:else if allPrs.length === 0}
+            <div class="empty">No open pull requests in {selectedRepos.length ? "the selected" : "tracked"} repositories</div>
+          {:else}
+            <section class="queue-group" aria-label="All open pull requests">
+              <div class="group-body">
+                {#each allPrs as pr, index (prKey(pr))}{@render allPrRow(pr, index)}{/each}
+              </div>
+            </section>
+          {/if}
+        {:else if view === "closed"}
           {#if !closedLoaded}
             <div class="empty">Loading recent merges…</div>
           {:else if closedPrs.length === 0}
@@ -1121,7 +1223,7 @@
           {/if}
         </section>
 
-        {#if loaded && prs.length > 0 && savedViews.length > 0}
+        {#if view !== "all" && loaded && prs.length > 0 && savedViews.length > 0}
           <section class="side-panel saved-views">
             <div class="side-panel-head"><span>Saved views</span></div>
             <div class="view-item" class:active={!filterQuery.trim()}>

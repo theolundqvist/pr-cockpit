@@ -38,6 +38,29 @@ const scenarios = [
     },
   },
   {
+    name: "inbox-all-prs",
+    route: "#/",
+    description: "All open pull requests, with native tab activation and keyboard return from detail.",
+    ready: ".inbox-layout .queue-group",
+    interact: async (page) => {
+      await page.getByRole("tab", { name: /^All PRs/ }).focus();
+      await page.keyboard.press("Enter");
+      const rows = page.locator('section[aria-label="All open pull requests"] a.row');
+      await rows.first().waitFor();
+      await page.keyboard.press("j");
+      await page.waitForFunction(() => document.querySelectorAll('section[aria-label="All open pull requests"] a.row')[1]?.classList.contains("selected"));
+      await page.keyboard.press("Enter");
+      await page.locator(".detail .pr-head").waitFor();
+      await page.keyboard.press("Escape");
+      await page.waitForFunction(() => document.querySelectorAll('section[aria-label="All open pull requests"] a.row')[1]?.classList.contains("selected"));
+    },
+    verify: async (page) => {
+      const tab = page.getByRole("tab", { name: /^All PRs/ });
+      if (await tab.getAttribute("aria-selected") !== "true") throw new Error("All PRs view was lost on return");
+      await page.locator('section[aria-label="All open pull requests"] .cow-badge').getByText("Draft", { exact: true }).waitFor();
+    },
+  },
+  {
     name: "inbox-palette",
     route: "#/",
     description: "Inline pull request palette with appearance-aware modal material and scrim.",
