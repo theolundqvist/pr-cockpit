@@ -363,3 +363,43 @@ describe("lazy diff document", () => {
     expect(anchorThreads(hydrated, [thread]).anchored.get("bar.ts:2")).toEqual([thread]);
   });
 });
+
+test("large replacements preserve every row and revert without argument-stack limits", () => {
+  const count = 150_000;
+  const oldLines = Array.from({ length: count }, (_, index) => `old ${index}`);
+  const newLines = Array.from({ length: count }, (_, index) => `new ${index}`);
+  const patch = `diff --git a/large.txt b/large.txt\n@@ -1,${count} +1,${count} @@\n`
+    + oldLines.map((line) => `-${line}\n`).join("")
+    + newLines.map((line) => `+${line}\n`).join("");
+  const [file] = parseDiff(patch);
+  expect(file.hunks[0].rows.filter((row) => row.type === "del").map((row) => row.text)).toEqual(oldLines);
+  expect(file.hunks[0].rows.filter((row) => row.type === "add").map((row) => row.text)).toEqual(newLines);
+  expect(revertFile(`${newLines.join("\n")}\n`, file)).toBe(`${oldLines.join("\n")}\n`);
+});
+
+test("zero-context deletions restore and render after their preceding line", () => {
+  const [file] = parseDiff("diff --git a/file b/file\n@@ -2 +1,0 @@\n-removed\n");
+  expect(revertHunk("before\nafter\n", file.hunks[0])).toBe("before\nremoved\nafter\n");
+  expect(buildWholeFile(file, "before\nafter\n").map(({ text, oldNum, newNum }) => [text, oldNum, newNum])).toEqual([
+    ["before", 1, 1], ["removed", 2, null], ["after", 3, 2],
+  ]);
+  expect(hunkOldOffset(file.hunks[0].range)).toBe(0);
+});
+
+test("zero-context insertions keep preceding whole-file line numbers", () => {
+  const [file] = parseDiff("diff --git a/file b/file\n@@ -1,0 +2 @@\n+inserted\n");
+  expect(buildWholeFile(file, "before\ninserted\nafter\n").map(({ text, oldNum, newNum }) => [text, oldNum, newNum])).toEqual([
+    ["before", 1, 1], ["inserted", null, 2], ["after", 2, 3],
+  ]);
+  expect(hunkOldOffset(file.hunks[0].range)).toBe(0);
+});
+
+test("reverting whole-file additions and deletions preserves empty-file boundaries", () => {
+  const [added] = parseDiff("diff --git a/file b/file\n@@ -0,0 +1 @@\n+added\n");
+  const [deleted] = parseDiff("diff --git a/file b/file\n@@ -1 +0,0 @@\n-deleted\n");
+  expect(revertHunk("added\n", added.hunks[0])).toBe("");
+  expect(revertHunk("", deleted.hunks[0])).toBe("deleted\n");
+  expect(buildWholeFile(deleted, "").map(({ text, oldNum, newNum }) => [text, oldNum, newNum])).toEqual([
+    ["deleted", 1, null],
+  ]);
+});

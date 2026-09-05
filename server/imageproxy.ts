@@ -111,8 +111,17 @@ function evictOverCap(): void {
 }
 
 type ImageResult = { bytes: Uint8Array } | { error: string; status: number };
+const imageRequests = new Map<string, Promise<ImageResult>>();
 
-async function getImage(raw: string): Promise<ImageResult> {
+function getImage(raw: string): Promise<ImageResult> {
+  const pending = imageRequests.get(raw);
+  if (pending) return pending;
+  const request = loadImage(raw).finally(() => imageRequests.delete(raw));
+  imageRequests.set(raw, request);
+  return request;
+}
+
+async function loadImage(raw: string): Promise<ImageResult> {
   let target: URL;
   try {
     target = new URL(raw);
@@ -195,10 +204,10 @@ export function extractGithubImageUrls(text: string): string[] {
 }
 
 export async function prefetchImages(urls: string[]): Promise<void> {
-  if (mockGithub || !ghImgAvailable()) return;
-  const queue = [...urls];
+  if (mockGithub) return;
+  let cursor = 0;
   const worker = async () => {
-    while (queue.length) await getImage(queue.shift()!).catch(() => {});
+    while (cursor < urls.length) await getImage(urls[cursor++]!).catch(() => {});
   };
   await Promise.allSettled([worker(), worker(), worker()]);
 }

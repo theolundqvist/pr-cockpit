@@ -36,6 +36,7 @@ import {
   type RunJob,
   type RunJobStep,
   type WorkflowRun,
+  fetchWorkflowRunsForWorkflow,
 } from "./github.ts";
 
 const gzipAsync = promisify(gzip);
@@ -424,6 +425,7 @@ export async function refreshRecentActions(
 
 const WORKFLOW_REFRESH_INTERVAL_MS = 60_000;
 const workflowRefreshedAt = new Map<string, number>();
+const workflowRefreshes = new Map<string, Promise<number>>();
 
 // Selected workflows are fetched through their own endpoint: the repo-wide recent-runs
 // window covers only a day or so in busy repositories and misses quieter workflows entirely.
@@ -433,20 +435,20 @@ export async function refreshWorkflowRuns(
   runFetcher: typeof fetchWorkflowRunsForWorkflow = fetchWorkflowRunsForWorkflow,
 ): Promise<number> {
   const key = `${repo}\n${workflowId}`;
-  const now = Date.now();
+  const pending = workflowRefreshes.get(key);
+  if (pending) return pending;
   const last = workflowRefreshedAt.get(key);
-  if (last !== undefined && now - last < WORKFLOW_REFRESH_INTERVAL_MS) return 0;
-  workflowRefreshedAt.set(key, now);
-  let changed = 0;
-  try {
+  if (last !== undefined && Date.now() - last < WORKFLOW_REFRESH_INTERVAL_MS) return 0;
+  const request = (async () => {
+    let changed = 0;
     for (const raw of await runFetcher(repo, workflowId)) {
       if (storeRun(repo, null, compactRun(raw))) changed++;
     }
-  } catch (error) {
-    workflowRefreshedAt.delete(key);
-    throw error;
-  }
-  return changed;
+    workflowRefreshedAt.set(key, Date.now());
+    return changed;
+  })().finally(() => workflowRefreshes.delete(key));
+  workflowRefreshes.set(key, request);
+  return request;
 }
 
 function jobIsComplete(job: { status: string; conclusion: string | null }): boolean {

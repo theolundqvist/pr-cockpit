@@ -818,3 +818,51 @@ test("workflow graphs parse dependencies and reuse cached definitions", async ()
     ],
   }]);
 });
+
+test("concurrent cold workflow requests wait for the same persisted runs", async () => {
+  const result = await runScenario("pr-cockpit-workflow-concurrent-", `
+    import * as actions from ${JSON.stringify(runLogsUrl)};
+    import * as dbm from ${JSON.stringify(dbUrl)};
+    const { promise: gate, resolve: release } = Promise.withResolvers();
+    let calls = 0;
+    const fetcher = async () => {
+      calls++;
+      await gate;
+      return [{
+        id: 70, run_attempt: 1, head_sha: "a".repeat(40), head_branch: "main", name: "CI",
+        path: ".github/workflows/ci.yml", status: "completed", conclusion: "success",
+        updated_at: "2026-08-24T10:04:00Z", html_url: null,
+      }];
+    };
+    const first = actions.refreshWorkflowRuns("acme/app", 1, fetcher);
+    let secondFinished = false;
+    const second = actions.refreshWorkflowRuns("acme/app", 1, fetcher).then(() => {
+      secondFinished = true;
+      return dbm.listWorkflowRunsForPaths(["acme/app"], [".github/workflows/ci.yml"], 10).map((run) => run.run_id);
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    const finishedBeforeRelease = secondFinished;
+    release();
+    const [, ids] = await Promise.all([first, second]);
+    await actions.refreshWorkflowRuns("acme/app", 1, fetcher);
+    console.log(JSON.stringify({ calls, finishedBeforeRelease, ids }));
+  `);
+  expect(result).toEqual({ calls: 1, finishedBeforeRelease: false, ids: [70] });
+});
+
+test("workflow refresh failures reach all waiters and allow a later request", async () => {
+  const result = await runScenario("pr-cockpit-workflow-failure-", `
+    import * as actions from ${JSON.stringify(runLogsUrl)};
+    const { promise: gate, reject } = Promise.withResolvers();
+    const first = actions.refreshWorkflowRuns("acme/app", 1, () => gate);
+    const second = actions.refreshWorkflowRuns("acme/app", 1, () => gate);
+    const pending = Promise.allSettled([first, second]);
+    reject(new Error("upstream unavailable"));
+    const statuses = (await pending).map((result) => result.status);
+    let retried = false;
+    await actions.refreshWorkflowRuns("acme/app", 1, async () => { retried = true; return []; });
+    console.log(JSON.stringify({ statuses, retried }));
+  `);
+  expect(result).toEqual({ statuses: ["rejected", "rejected"], retried: true });
+});

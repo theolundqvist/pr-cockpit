@@ -178,28 +178,25 @@ function alignWhitespaceOnly(file, hunk) {
     let addEnd = delEnd;
     while (addEnd < rows.length && rows[addEnd].type === "add") addEnd++;
     const pairCount = Math.min(delEnd - i, addEnd - delEnd);
-    let pendingDels = [];
-    let pendingAdds = [];
-    const flushPending = () => {
-      out.push(...pendingDels, ...pendingAdds);
-      pendingDels = [];
-      pendingAdds = [];
+    let pendingStart = 0;
+    const flushPending = (end) => {
+      for (let k = pendingStart; k < end; k++) out.push(rows[i + k]);
+      for (let k = pendingStart; k < end; k++) out.push(rows[delEnd + k]);
+      pendingStart = end + 1;
     };
     for (let k = 0; k < pairCount; k++) {
       const del = rows[i + k];
       const add = rows[delEnd + k];
       if (isWhitespaceOnlyChange(del.text, add.text)) {
-        flushPending();
+        flushPending(k);
         out.push({ type: "context", oldNum: del.oldNum, newNum: add.newNum, text: add.text, oldText: del.text, wsOnly: true });
         file.additions--;
         file.deletions--;
       } else {
         markIntraline(del, add);
-        pendingDels.push(del);
-        pendingAdds.push(add);
       }
     }
-    flushPending();
+    flushPending(pairCount);
     for (let k = i + pairCount; k < delEnd; k++) out.push(rows[k]);
     for (let k = delEnd + pairCount; k < addEnd; k++) out.push(rows[k]);
     i = addEnd;
@@ -251,10 +248,11 @@ const HUNK_RANGE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 function parseHunkRange(range) {
   const match = HUNK_RANGE.exec(range);
   if (!match) return null;
+  // An empty range points after its preceding line, unlike a nonempty range.
   return {
-    oldStart: Number(match[1]),
+    oldStart: Number(match[1]) + (match[2] === "0" ? 1 : 0),
     oldCount: match[2] === undefined ? 1 : Number(match[2]),
-    newStart: Number(match[3]),
+    newStart: Number(match[3]) + (match[4] === "0" ? 1 : 0),
     newCount: match[4] === undefined ? 1 : Number(match[4]),
   };
 }
@@ -270,7 +268,7 @@ function revertRows(content, hunk, first, last) {
 
   const endsWithNewline = content.endsWith("\n");
   const lines = content.split("\n");
-  if (endsWithNewline) lines.pop();
+  if (lines.at(-1) === "") lines.pop();
 
   const before = hunk.rows.slice(0, first);
   const rows = hunk.rows.slice(first, last);
@@ -290,10 +288,12 @@ function revertRows(content, hunk, first, last) {
   }
 
   const touchesEnd = last === hunk.rows.length && start + current.length === lines.length;
-  lines.splice(start, current.length, ...original);
-  const revertedEndsWithNewline =
-    touchesEnd && (hunk.oldNoNewline || hunk.newNoNewline) ? !hunk.oldNoNewline : endsWithNewline;
-  return `${lines.join("\n")}${revertedEndsWithNewline ? "\n" : ""}`;
+  const reverted = lines.slice(0, start).concat(original, lines.slice(start + current.length));
+  const revertedEndsWithNewline = touchesEnd
+    ? !hunk.oldNoNewline
+    : endsWithNewline;
+  if (reverted.length === 0) return "";
+  return `${reverted.join("\n")}${revertedEndsWithNewline ? "\n" : ""}`;
 }
 
 function isChangedRow(row) {
@@ -328,7 +328,7 @@ export function buildWholeFile(file, content) {
   const deletesAfter = new Map();
   const ranges = file.hunks.map((hunk) => parseHunkRange(hunk.range)).filter(Boolean);
   for (const hunk of file.hunks) {
-    let lastNewNum = Number(/\+(\d+)/.exec(hunk.range)?.[1] ?? 1) - 1;
+    let lastNewNum = parseHunkRange(hunk.range).newStart - 1;
     for (const row of hunk.rows) {
       if (row.type === "del") {
         if (!deletesAfter.has(lastNewNum)) deletesAfter.set(lastNewNum, []);
