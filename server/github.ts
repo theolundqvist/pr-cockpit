@@ -874,7 +874,7 @@ query($owner: String!, $name: String!, $number: Int!) {
           ${REACTION_GROUPS_FIELD}
         }
       }
-      comments(first: 100) {
+      comments(last: 100) {
         pageInfo { hasNextPage endCursor }
         nodes {
           id
@@ -2010,8 +2010,18 @@ async function restJson<T>(path: string): Promise<T> {
   return githubRestJson<T>("GET", path);
 }
 
-export async function postIssueComment(repo: string, number: number, body: string): Promise<void> {
-  await restRequest("POST", `/repos/${repo}/issues/${number}/comments`, { body });
+export async function postIssueComment(repo: string, number: number, body: string): Promise<string> {
+  if (mockGithub) return "mock-comment";
+  const path = `/repos/${repo}/issues/${number}/comments`;
+  const response = await githubRestResponse("POST", path, { body });
+  if (!response.ok) {
+    throw new RestRequestError(`POST ${path} failed: ${response.status} ${await response.text()}`, response.status);
+  }
+  const result: unknown = await response.json();
+  if (!result || typeof result !== "object" || !("node_id" in result) || typeof result.node_id !== "string") {
+    throw new Error(`POST ${path} returned no comment node ID`);
+  }
+  return result.node_id;
 }
 
 export async function postReviewCommentReply(

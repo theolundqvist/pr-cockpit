@@ -862,6 +862,42 @@ test("mutation commands report queued GitHub failures", async () => {
   }
 });
 
+test("mutation commands report accepted writes whose cache refresh failed", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pr-cockpit-refresh-failure-"));
+  const bodyPath = join(root, "body.txt");
+  writeFileSync(bodyPath, "accepted body\n");
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const url = new URL(request.url);
+      if (request.method === "POST") return Response.json({ id: 92 }, { status: 201 });
+      if (url.pathname === "/api/mutations") {
+        return Response.json({ mutations: [{ id: 92, state: "pending", error: "GitHub accepted edit-body, but cache refresh failed" }] });
+      }
+      return new Response("not found", { status: 404 });
+    },
+  });
+  const child = Bun.spawn([join(import.meta.dir, "pr-cockpit"), "edit-body", "owner/repo#17", "--body-file", bodyPath], {
+    env: { ...Bun.env, COCKPIT_PORT: String(server.port) },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  try {
+    const [output, error, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect(exitCode).toBe(1);
+    expect(output).toBe("");
+    expect(error).toBe("pr-cockpit: GitHub accepted edit-body, but cache refresh failed\n");
+  } finally {
+    server.stop(true);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("--use-as-proxy reads through an existing local replica", async () => {
   const home = mkdtempSync(join(tmpdir(), "pr-cockpit-proxy-cli-"));
   const dataDir = join(home, "data");

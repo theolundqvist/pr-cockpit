@@ -7,6 +7,7 @@ import {
   listRefreshingMutations,
   nextPendingMutation,
   setAutoMergeArmed,
+  setMutationRefreshing,
   setMutationState,
   type MutationRow,
 } from "./db.ts";
@@ -27,6 +28,7 @@ import {
   updatePullRequestBody,
   updatePullRequestTitle,
   updatePullRequestBranch,
+  type PrDetail,
 } from "./github.ts";
 import { pollOnce, refreshPr } from "./poller.ts";
 import { killFixerAgent, launchFixerAgent } from "./agents.ts";
@@ -34,7 +36,7 @@ import { refreshRepoUsers } from "./repoUsers.ts";
 import { isMergeMethod, isMergeMethodSource, mergeAllowedNow, MERGEABLE_NOW_STATES, mergeWithLearning, mergeWithSelection, type MergeMethod, type MergeMethodSource } from "./mergeMethod.ts";
 
 export type MutationPayload =
-  | { kind: "comment"; body: string }
+  | { kind: "comment"; body: string; commentNodeId?: string }
   | { kind: "reply-to-thread"; rootCommentId: number; body: string }
   | { kind: "resolve-thread"; threadId: string; resolved: boolean }
   | { kind: "review-verdict"; event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT"; body: string }
@@ -154,9 +156,11 @@ async function executeMutation(row: MutationRow): Promise<boolean> {
   const payload: unknown = JSON.parse(row.payload_json);
   assertMutationPayload(payload);
   switch (payload.kind) {
-    case "comment":
-      await postIssueComment(row.repo, row.number, payload.body);
+    case "comment": {
+      const commentNodeId = await postIssueComment(row.repo, row.number, payload.body);
+      row.payload_json = JSON.stringify({ ...payload, commentNodeId });
       return false;
+    }
     case "reply-to-thread":
       await postReviewCommentReply(row.repo, row.number, payload.rootCommentId, payload.body);
       return false;
@@ -246,6 +250,22 @@ async function executeMutation(row: MutationRow): Promise<boolean> {
   }
 }
 
+function sameGithubText(left: string, right: string): boolean {
+  return left.replaceAll("\r\n", "\n").trimEnd() === right.replaceAll("\r\n", "\n").trimEnd();
+}
+
+function mutationReflected(row: Pick<MutationRow, "repo" | "number" | "payload_json">): boolean {
+  const payload: unknown = JSON.parse(row.payload_json);
+  assertMutationPayload(payload);
+  if (payload.kind !== "comment" && payload.kind !== "edit-body") return true;
+  const cached = getPr(row.repo, row.number)?.detail_json ?? getCachedPrDetail(row.repo, row.number)?.detail_json;
+  if (!cached) return false;
+  const detail = JSON.parse(cached) as PrDetail;
+  if (payload.kind === "edit-body") return sameGithubText(detail.body, payload.body);
+  if (!payload.commentNodeId) return false;
+  return detail.comments.nodes.some((comment) => comment.id === payload.commentNodeId);
+}
+
 type MutationCompletionDependencies = {
   refreshPr: typeof refreshPr;
   pollOnce: typeof pollOnce;
@@ -253,19 +273,27 @@ type MutationCompletionDependencies = {
   setMutationState: typeof setMutationState;
 };
 
-const mutationCompletionDependencies: MutationCompletionDependencies = { refreshPr, pollOnce, deleteMutation, setMutationState };
+const mutationCompletionDependencies: MutationCompletionDependencies = {
+  refreshPr,
+  pollOnce,
+  deleteMutation,
+  setMutationState,
+};
 
 export async function finalizeMutation(
-  row: Pick<MutationRow, "id" | "repo" | "number">,
+  row: Pick<MutationRow, "id" | "repo" | "number" | "kind" | "payload_json">,
   merged: boolean,
   dependencies = mutationCompletionDependencies,
 ): Promise<void> {
-  dependencies.setMutationState(row.id, "refreshing", null);
   try {
     await dependencies.refreshPr(row.repo, row.number, "mutation recovery");
     if (merged) await dependencies.pollOnce();
+    if (!mutationReflected(row)) throw new Error("refreshed cache does not contain the accepted change");
   } catch (err) {
-    console.error("post-mutation refresh failed:", err);
+    const error = `GitHub accepted ${row.kind}, but cache refresh failed: ${err instanceof Error ? err.message : String(err)}`;
+    dependencies.setMutationState(row.id, "refreshing", error);
+    console.error(error);
+    return;
   }
   dependencies.deleteMutation(row.id);
 }
@@ -279,10 +307,12 @@ export async function recoverRefreshingMutations(
 }
 
 type MutationProcessorDependencies = MutationCompletionDependencies & {
+  setMutationRefreshing: typeof setMutationRefreshing;
   executeMutation: typeof executeMutation;
 };
 
 const mutationProcessorDependencies: MutationProcessorDependencies = {
+  setMutationRefreshing,
   ...mutationCompletionDependencies,
   executeMutation,
 };
@@ -295,6 +325,7 @@ export async function processMutation(row: MutationRow, dependencies = mutationP
     dependencies.setMutationState(row.id, "failed", String(err));
     return;
   }
+  dependencies.setMutationRefreshing(row.id, row.payload_json);
   await finalizeMutation(row, merged, dependencies);
 }
 

@@ -10,21 +10,34 @@ test("applied mutations remain pending through refresh without becoming retryabl
     const { processMutation, recoverRefreshingMutations } = await import(${JSON.stringify(new URL("./mutations.ts", import.meta.url).href)});
     const { buildFetchHandler } = await import(${JSON.stringify(new URL("./http.ts", import.meta.url).href)});
     const repo = "fixture/cockpit";
-    const insert = (number) => {
+    const insert = (number, payload = { kind: "resolve-thread", threadId: "thread-1", resolved: true }) => {
       const id = db.insertMutation({
         repo,
         number,
-        kind: "resolve-thread",
-        payload_json: JSON.stringify({ kind: "resolve-thread", threadId: "thread-1", resolved: true }),
+        kind: payload.kind,
+        payload_json: JSON.stringify(payload),
         created_at: new Date().toISOString(),
       });
       return db.listMutationsForPr(repo, number).find((row) => row.id === id);
     };
-    const dependencies = (refreshPr) => ({
-      executeMutation: async () => false,
+    const cache = (number, detail) => db.upsertCachedPrDetail({
+      repo,
+      number,
+      head_sha: "a".repeat(40),
+      detail_json: JSON.stringify(detail),
+      fetched_at: new Date().toISOString(),
+    });
+    const acceptComment = async (row) => {
+      const payload = JSON.parse(row.payload_json);
+      row.payload_json = JSON.stringify({ ...payload, commentNodeId: "mock-comment" });
+      return false;
+    };
+    const dependencies = (refreshPr, executeMutation = async () => false) => ({
+      executeMutation,
       refreshPr,
       pollOnce: async () => {},
       deleteMutation: db.deleteMutation,
+      setMutationRefreshing: db.setMutationRefreshing,
       setMutationState: db.setMutationState,
     });
 
@@ -48,10 +61,28 @@ test("applied mutations remain pending through refresh without becoming retryabl
 
     const refreshFailureRow = insert(103);
     await processMutation(refreshFailureRow, dependencies(async () => { throw new Error("refresh unavailable"); }));
-    const refreshFailureCount = db.listMutationsForPr(repo, 103).length;
+    const refreshFailure = db.listMutationsForPr(repo, 103)[0];
+    cache(106, { body: "old body", comments: { nodes: [] } });
+    const unconfirmedEditRow = insert(106, { kind: "edit-body", body: "new body" });
+    await processMutation(unconfirmedEditRow, dependencies(async () => {}));
+    const unconfirmedEdit = db.listMutationsForPr(repo, 106)[0];
+    cache(107, { body: "body", comments: { nodes: [] } });
+    const confirmedCommentRow = insert(107, { kind: "comment", body: "accepted comment\\r\\n" });
+    await processMutation(confirmedCommentRow, dependencies(async () => {
+      cache(107, { body: "body", comments: { nodes: [{ id: "mock-comment", body: "accepted comment" }] } });
+    }, acceptComment));
+    const confirmedCommentCount = db.listMutationsForPr(repo, 107).length;
+    cache(108, { body: "body", comments: { nodes: [{ id: "older-comment", body: "duplicate body" }] } });
+    const duplicateCommentRow = insert(108, { kind: "comment", body: "duplicate body" });
+    await processMutation(duplicateCommentRow, dependencies(async () => {}, acceptComment));
+    const duplicateComment = db.listMutationsForPr(repo, 108)[0];
 
     const interruptedAppliedRow = insert(104);
     db.setMutationState(interruptedAppliedRow.id, "refreshing", null);
+    cache(109, { body: "body", comments: { nodes: [{ id: "mock-comment", body: "restart comment" }] } });
+    const interruptedCommentRow = insert(109, { kind: "comment", body: "restart comment" });
+    await acceptComment(interruptedCommentRow);
+    db.setMutationRefreshing(interruptedCommentRow.id, interruptedCommentRow.payload_json);
     insert(105);
     db.failInterruptedMutations();
     const recovered = [];
@@ -61,14 +92,25 @@ test("applied mutations remain pending through refresh without becoming retryabl
       deleteMutation: db.deleteMutation,
       setMutationState: db.setMutationState,
     });
+    const unconfirmedAfterRecovery = db.listMutationsForPr(repo, 106).length;
     const interruptedAppliedCount = db.listMutationsForPr(repo, 104).length;
+    const interruptedCommentCount = db.listMutationsForPr(repo, 109).length;
     const interruptedPending = db.listMutationsForPr(repo, 105)[0];
 
     console.log(JSON.stringify({
       persistedWhileRefreshing,
       apiStateWhileRefreshing,
       completedCount,
-      refreshFailureCount,
+      refreshFailure: { state: refreshFailure?.state, error: refreshFailure?.error },
+      unconfirmedEdit: { state: unconfirmedEdit?.state, error: unconfirmedEdit?.error },
+      confirmedCommentCount,
+      duplicateComment: {
+        state: duplicateComment?.state,
+        error: duplicateComment?.error,
+        commentNodeId: JSON.parse(duplicateComment?.payload_json ?? "{}").commentNodeId,
+      },
+      interruptedCommentCount,
+      unconfirmedAfterRecovery,
       interruptedAppliedCount,
       recovered,
       interruptedPending: { state: interruptedPending?.state, error: interruptedPending?.error },
@@ -77,7 +119,7 @@ test("applied mutations remain pending through refresh without becoming retryabl
 
   try {
     const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], {
-      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir },
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_MOCK: "1" },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -91,9 +133,18 @@ test("applied mutations remain pending through refresh without becoming retryabl
     expect(result.persistedWhileRefreshing).toBe("refreshing");
     expect(result.apiStateWhileRefreshing).toBe("pending");
     expect(result.completedCount).toBe(0);
-    expect(result.refreshFailureCount).toBe(0);
+    expect(result.refreshFailure).toEqual({ state: "refreshing", error: "GitHub accepted resolve-thread, but cache refresh failed: refresh unavailable" });
+    expect(result.unconfirmedEdit).toEqual({ state: "refreshing", error: "GitHub accepted edit-body, but cache refresh failed: refreshed cache does not contain the accepted change" });
+    expect(result.confirmedCommentCount).toBe(0);
     expect(result.interruptedAppliedCount).toBe(0);
-    expect(result.recovered).toEqual([104]);
+    expect(result.interruptedCommentCount).toBe(0);
+    expect(result.duplicateComment).toEqual({
+      state: "refreshing",
+      error: "GitHub accepted comment, but cache refresh failed: refreshed cache does not contain the accepted change",
+      commentNodeId: "mock-comment",
+    });
+    expect(result.recovered).toEqual([103, 106, 108, 104, 109]);
+    expect(result.unconfirmedAfterRecovery).toBe(1);
     expect(result.interruptedPending).toEqual({ state: "failed", error: "interrupted" });
   } finally {
     rmSync(dataDir, { recursive: true, force: true });

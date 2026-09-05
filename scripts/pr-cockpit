@@ -812,6 +812,7 @@ try {
       process.exit(0);
     }
     if (mutation.state === "failed") fail(mutation.error || `${payload.kind} failed`);
+    if (mutation.error) fail(mutation.error);
     await Bun.sleep(100);
   }
   fail(`${payload.kind} did not finish within ${timeout}ms`);

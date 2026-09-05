@@ -11,6 +11,7 @@ import {
   searchClosedPrs,
   searchPrs,
   searchRecentPrs,
+  postIssueComment,
   updatePullRequestBody,
   updatePullRequestBranch,
   updatePullRequestTitle,
@@ -245,6 +246,9 @@ describe("REST PR detail parity", () => {
           }],
         });
       }
+      if (url.pathname === "/repos/acme/repo/issues/42/comments") {
+        return Response.json({ node_id: "IC_comment-node" }, { status: 201 });
+      }
       return new Response(null, { status: 204 });
     }) as typeof fetch;
 
@@ -268,6 +272,7 @@ describe("REST PR detail parity", () => {
       }]);
       expect((await searchRecentPrs("acme/repo"))[0]?.state).toBe("MERGED");
       expect((await searchClosedPrs(["acme/repo"]))[0]?.involvesMe).toBe(true);
+      expect(await postIssueComment("acme/repo", 42, "Accepted comment")).toBe("IC_comment-node");
       await addAssignees("acme/repo", 42, ["owner"]);
       await updatePullRequestBranch("acme/repo", 42);
       await closePullRequest("acme/repo", 42);
@@ -285,6 +290,7 @@ describe("REST PR detail parity", () => {
       "GET /search/issues",
       "GET /search/issues",
       "GET /search/issues",
+      "POST /repos/acme/repo/issues/42/comments",
       "POST /repos/acme/repo/issues/42/assignees",
       "PUT /repos/acme/repo/pulls/42/update-branch",
       "PATCH /repos/acme/repo/pulls/42",

@@ -1305,6 +1305,14 @@ export function listRefreshingMutations(): MutationRow[] {
   return listRefreshingMutationsStmt.all();
 }
 
+const setMutationRefreshingStmt = db.prepare(
+  "UPDATE mutations SET payload_json = $payload_json, state = 'refreshing', error = NULL WHERE id = $id",
+);
+
+export function setMutationRefreshing(id: number, payloadJson: string): void {
+  setMutationRefreshingStmt.run({ $id: id, $payload_json: payloadJson });
+}
+
 const setMutationStateStmt = db.prepare(
   "UPDATE mutations SET state = $state, error = $error WHERE id = $id",
 );
