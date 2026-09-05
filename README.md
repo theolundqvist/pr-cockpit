@@ -31,6 +31,8 @@ curl -fsSL https://raw.githubusercontent.com/theolundqvist/pr-cockpit/main/scrip
 
 The first sync fetches PRs involving you. **All PRs** loads on demand without expanding background polling. Press <kbd>Tab</kbd> to cycle Open, All PRs, and Recently merged. Repository and live-update configuration live in Settings.
 
+Press <kbd>r</kbd> to filter repositories. Use arrows to highlight one, <kbd>Enter</kbd> to toggle it, or <kbd>Shift+Enter</kbd> to select only that repository.
+
 ## From finding the PR to finishing the review
 
 ### Bring up a PR without leaving your editor

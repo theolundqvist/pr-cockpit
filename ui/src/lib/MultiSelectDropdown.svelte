@@ -69,7 +69,7 @@
     window.addEventListener("keydown", closeOnEscape);
     void tick().then(() => {
       if (showSearch) input?.focus();
-      else menu?.querySelector('[aria-checked="true"]')?.focus() ?? menu?.querySelector("button")?.focus();
+      else (menu?.querySelector('[aria-checked="true"]') ?? menu?.querySelector("button"))?.focus();
     });
     return () => {
       window.removeEventListener("pointerdown", closeOutside);
@@ -77,9 +77,9 @@
     };
   });
 
-  function toggleOption(option) {
+  function toggleOption(option, exclusive = false) {
     const value = optionValue(option);
-    if (selected.length === 0) {
+    if (exclusive || selected.length === 0) {
       onchange([value]);
       return;
     }
@@ -97,6 +97,7 @@
         : (current + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
     items[next]?.focus();
     event.preventDefault();
+    event.stopPropagation();
   }
 
   function onSearchKey(event) {
@@ -107,7 +108,7 @@
         : (activeIndex + direction + filteredOptions.length) % filteredOptions.length;
     } else if (event.key === "Enter") {
       const option = filteredOptions[activeIndex];
-      if (option) toggleOption(option);
+      if (option) toggleOption(option, event.shiftKey);
     } else if (event.key === "Escape") {
       if (query) {
         query = "";
@@ -179,6 +180,13 @@
           role="menuitemcheckbox"
           aria-checked={selected.includes(value)}
           onclick={() => toggleOption(option)}
+          onkeydown={(event) => {
+            if (event.key === "Enter" && event.shiftKey) {
+              toggleOption(option, true);
+              event.preventDefault();
+              event.stopPropagation();
+            }
+          }}
         >
           <span class="check" aria-hidden="true">{selected.includes(value) ? "✓" : ""}</span>
           <span>{optionLabel(option)}</span>
@@ -194,22 +202,22 @@
   .multi-select { position: relative; display: flex; align-items: center; gap: 6px; }
   .field-label { color: var(--text-faint); font-size: 11px; }
   .trigger { display: flex; width: 176px; height: 30px; min-width: 0; padding: 0 8px 0 10px; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: var(--panel); font: 500 12px var(--sans); cursor: pointer; }
-  .trigger:hover, .trigger[aria-expanded="true"] { border-color: var(--border-strong); background: var(--panel-raised); }
+  .trigger:hover, .trigger[aria-expanded="true"] { border-color: var(--border-hover); background: var(--panel-raised); }
   .trigger-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .trigger-tail { display: flex; flex: none; align-items: center; gap: 6px; }
   .trigger svg { width: 14px; height: 14px; flex: none; fill: none; stroke: var(--text-faint); stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.5; }
-  .menu { position: absolute; z-index: 40; top: calc(100% + 6px); right: 0; width: 260px; max-height: 340px; overflow-y: auto; padding: 5px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-raised); box-shadow: var(--shadow-lg); }
+  .menu { position: absolute; z-index: 40; top: calc(100% + 6px); right: 0; width: 260px; max-height: 340px; overflow-y: auto; padding: 5px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-raised); box-shadow: var(--shadow-dialog); }
   .search-wrap { display: flex; min-width: 0; padding: 2px 2px 5px; align-items: center; gap: 6px; }
   .search-input { width: 100%; min-width: 0; height: 29px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; outline: none; color: var(--text); background: var(--panel); font: 12px var(--sans); }
-  .search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--focus-ring); }
+  .search-input:focus { border-color: var(--link); box-shadow: 0 0 0 2px var(--focus-ring); }
   .search-input::placeholder { color: var(--text-faint); }
   .selected-hint { flex: none; color: var(--text-faint); font: 10px var(--mono); white-space: nowrap; }
   .option { display: grid; width: 100%; min-height: 30px; padding: 5px 7px; grid-template-columns: 17px minmax(0, 1fr); align-items: center; gap: 7px; border: 0; border-radius: 5px; color: var(--text); background: transparent; font: 500 12px var(--sans); text-align: left; cursor: pointer; }
   .option:hover, .option:focus-visible, .option.active { outline: none; background: var(--surface-hover); }
   .option > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .option.all { font-weight: 600; }
-  .check { display: inline-grid; width: 15px; height: 15px; place-items: center; border: 1px solid var(--border-strong); border-radius: 4px; color: var(--native-on-accent); background: transparent; font-size: 10px; line-height: 1; }
-  .option[aria-checked="true"] .check { border-color: var(--accent); background: var(--accent); }
+  .check { display: inline-grid; width: 15px; height: 15px; place-items: center; border: 1px solid var(--border-hover); border-radius: 4px; color: var(--on-brand); background: transparent; font-size: 10px; line-height: 1; }
+  .option[aria-checked="true"] .check { border-color: var(--link); background: var(--link); }
   .separator { height: 1px; margin: 4px 2px; background: var(--border); }
   .empty { padding: 10px; color: var(--text-faint); font-size: 11px; text-align: center; }
   @media (max-width: 900px) { .multi-select { flex: 1; } .trigger { width: 100%; } }

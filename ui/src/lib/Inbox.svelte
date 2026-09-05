@@ -653,7 +653,7 @@
   function scrollSelectedIntoView(focusRow = false) {
     requestAnimationFrame(() => {
       const row = document.querySelector(".inbox .row.selected");
-      if (focusRow) row?.focus({ preventScroll: true });
+      if (focusRow && !repoPickerOpen) row?.focus({ preventScroll: true });
       row?.scrollIntoView({ block: "nearest" });
     });
   }
@@ -731,6 +731,7 @@
   $effect(() => {
     if (!active) return;
     function onKey(e) {
+      if (e.defaultPrevented || (repoPickerOpen && e.key !== "r")) return;
       if (e.metaKey && e.key === ",") {
         location.hash = "#/settings";
         e.preventDefault();
@@ -746,11 +747,6 @@
       }
       if (view !== "all" && e.metaKey && e.key.toLowerCase() === "f") {
         openFilter();
-        e.preventDefault();
-        return;
-      }
-      if (e.key === "Escape" && repoPickerOpen) {
-        repoPickerOpen = false;
         e.preventDefault();
         return;
       }
@@ -771,7 +767,6 @@
         e.preventDefault();
         return;
       }
-      if (view === "all" && repoPickerOpen) return;
       if (e.key === "Enter" && e.target.closest?.("button, a")) return;
       if (view !== "all" && e.key === "/") {
         openFilter();

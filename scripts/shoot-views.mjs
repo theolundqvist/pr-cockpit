@@ -17,7 +17,85 @@ function mockAvatarLogin(url) {
   return url.pathname.match(/^\/([^/]+)\.png$/)?.[1] ?? null;
 }
 
+function repositoryPickerScenario(searchable) {
+  return {
+    name: searchable ? "inbox-repository-search" : "inbox-repository-picker",
+    route: "#/",
+    description: "Repository picker keyboard ownership, exclusive selection, and checkmark contrast.",
+    ready: ".inbox-layout .queue-group",
+    beforeGoto: async (page, { baseURL }) => {
+      await page.addInitScript(() => localStorage.setItem("cockpit:repository-scope", JSON.stringify(["fixture/cockpit"])));
+      if (searchable) {
+        const settings = await requestJson(`${baseURL}/api/settings`);
+        await page.route("**/api/settings", (route) => route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ ...settings, repos: [...settings.repos.split(","), ...Array.from({ length: 9 }, (_, index) => `example/repository-${index}`)].join(",") }),
+        }));
+      }
+    },
+    interact: async (page) => {
+      const selectedRow = () => page.locator(".inbox .row.selected").getAttribute("href");
+      const originalRow = await selectedRow();
+      await page.keyboard.press("r");
+      const menu = page.getByRole("menu", { name: "Repository filters" });
+      await menu.waitFor();
+      if (searchable) {
+        await page.locator(".search-input:focus").waitFor();
+        await page.locator(".search-input").fill("example/repository");
+      } else {
+        await menu.locator('[aria-checked="true"]:focus').waitFor();
+        await page.keyboard.press("Home");
+      }
+      await page.keyboard.press("ArrowDown");
+      if (await selectedRow() !== originalRow) throw new Error("Repository navigation moved the main list");
+      if (!await page.evaluate(() => !!document.activeElement.closest('[role="menu"]'))) throw new Error("Focus escaped the repository picker");
+      await page.keyboard.press("Enter");
+      if (searchable) await menu.getByText("2 selected", { exact: true }).waitFor();
+      else await page.waitForFunction(() => document.querySelectorAll('[role="menu"] [aria-checked="true"]').length === 2);
+      await page.keyboard.press("ArrowDown");
+      const highlighted = searchable ? menu.locator(".option.active") : menu.locator("button:focus");
+      const repository = await highlighted.locator("span").last().textContent();
+      await page.keyboard.press("Shift+Enter");
+      await page.waitForFunction(() => document.querySelectorAll('[role="menu"] [aria-checked="true"]').length === 1);
+      if (await menu.locator('[aria-checked="true"] span').last().textContent() !== repository) throw new Error("Shift+Enter did not keep only the highlighted repository");
+      if (searchable) {
+        await menu.getByText("1 selected", { exact: true }).waitFor();
+        await page.keyboard.press("Escape");
+        await page.waitForFunction(() => document.querySelector(".search-input")?.value === "");
+      }
+      await page.keyboard.press("Escape");
+      await menu.waitFor({ state: "hidden" });
+      await page.locator('button[aria-label="Repository"]:focus').waitFor();
+      if (!searchable) {
+        const before = await selectedRow();
+        await page.keyboard.press("j");
+        await page.waitForFunction((before) => document.querySelector(".inbox .row.selected")?.getAttribute("href") !== before, before);
+      }
+      await page.keyboard.press("r");
+      await menu.waitFor();
+      if (!searchable) await menu.locator('[aria-checked="true"]:focus').waitFor();
+    },
+    verify: async (page) => {
+      const colors = await page.locator('[role="menu"] [aria-checked="true"] .check').evaluate((node) => {
+        const style = getComputedStyle(node);
+        return { foreground: style.color, background: style.backgroundColor };
+      });
+      const luminance = (color) => {
+        const rgb = color.match(/[\d.]+/g).map(Number);
+        if (rgb.length === 4 && rgb[3] !== 1) throw new Error(`Transparent selection indicator: ${color}`);
+        return rgb.slice(0, 3).map((channel) => channel / 255).map((channel) => channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4).reduce((sum, channel, index) => sum + channel * [0.2126, 0.7152, 0.0722][index], 0);
+      };
+      const values = [luminance(colors.foreground), luminance(colors.background)].sort((a, b) => a - b);
+      const contrast = (values[1] + 0.05) / (values[0] + 0.05);
+      if (contrast < 3) throw new Error(`Selected checkmark contrast is ${contrast}: ${JSON.stringify(colors)}`);
+    },
+  };
+}
+
 const scenarios = [
+  repositoryPickerScenario(false),
+  repositoryPickerScenario(true),
   {
     name: "inbox-populated",
     route: "#/",
