@@ -3,7 +3,7 @@ export const SETTINGS_SECTION_KEY = "cockpit:settings-tab";
 export const SETTINGS_SECTIONS = [
   {
     id: "general",
-    label: "General",
+    label: "Workspace",
     iconPaths: ["M4 6h5m4 0h7M4 12h9m4 0h3M4 18h3m4 0h9", "M9 4v4m4 2v4m-6 2v4"],
   },
   {
@@ -13,18 +13,18 @@ export const SETTINGS_SECTIONS = [
   },
   {
     id: "keybinds",
-    label: "Keybinds",
+    label: "Keyboard shortcuts",
     iconPaths: ["M4 7h16v10H4z", "M7 10h.01M10 10h.01M13 10h.01M16 10h.01M7 13h10"],
   },
   {
-    id: "automerge",
-    label: "Agents",
-    iconPaths: ["M7 8.5h10v9H7zM9 5.5h6M12 5.5V3.5", "M9.5 12h.01m4.99 0h.01M10 15h4"],
+    id: "tests",
+    label: "Review preferences",
+    iconPaths: ["m8 7-4 5 4 5m8-10 4 5-4 5M13.5 5l-3 14"],
   },
   {
-    id: "tests",
-    label: "Diff & Tests",
-    iconPaths: ["m8 7-4 5 4 5m8-10 4 5-4 5M13.5 5l-3 14"],
+    id: "automerge",
+    label: "Agents & merging",
+    iconPaths: ["M7 8.5h10v9H7zM9 5.5h6M12 5.5V3.5", "M9.5 12h.01m4.99 0h.01M10 15h4"],
   },
   {
     id: "usage",
@@ -33,7 +33,7 @@ export const SETTINGS_SECTIONS = [
   },
   {
     id: "advanced",
-    label: "Advanced",
+    label: "Connections",
     iconPaths: ["M4 6c0 1.7 3.6 3 8 3s8-1.3 8-3-3.6-3-8-3-8 1.3-8 3Zm0 0v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"],
   },
   {

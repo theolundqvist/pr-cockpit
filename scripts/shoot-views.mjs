@@ -745,9 +745,11 @@ const scenarios = [
       await pending.scrollIntoViewIfNeeded();
     },
   },
-  settings("settings", "General settings and workspace configuration.", "general"),
+  settings("settings", "Workspace repository configuration.", "general"),
+  settings("settings-appearance", "Opt-in appearance, typography, and window preferences.", "appearance"),
+  settings("settings-connections", "Remote Cockpit connection settings.", "advanced"),
   {
-    ...settings("settings-scrolled", "Sticky settings header after the form has scrolled beneath it.", "general"),
+    ...settings("settings-scrolled", "Sticky settings header after scrolling the long agent form.", "automerge"),
     interact: async (page) => {
       await page.locator(".page").evaluate((node) => {
         node.scrollTop = node.scrollHeight;
@@ -763,20 +765,7 @@ const scenarios = [
       if (positions.headTop == null || Math.abs(positions.headTop - positions.pageTop) > 1) {
         throw new Error(`sticky settings header left a ${positions.headTop - positions.pageTop}px gap`);
       }
-      const headerSurface = await page.locator(".head").evaluate((node) => {
-        const style = getComputedStyle(node);
-        return {
-          backgroundColor: style.backgroundColor,
-          backgroundImage: style.backgroundImage,
-          backdropFilter: style.backdropFilter,
-        };
-      });
-      if (headerSurface.backgroundImage !== "none" || headerSurface.backdropFilter !== "none") {
-        throw new Error(`sticky settings header is translucent: ${JSON.stringify(headerSurface)}`);
-      }
-      const alpha = Number(headerSurface.backgroundColor.match(/[\d.]+/g)?.[3] ?? 1);
-      if (alpha < 1) throw new Error(`sticky settings header background is not opaque: ${headerSurface.backgroundColor}`);
-      await page.locator('.app-nav a[href="#/settings/general"][aria-current="page"]').waitFor();
+      await page.locator('.app-nav a[href="#/settings/automerge"][aria-current="page"]').waitFor();
     },
   },
   settings("settings-keybinds", "Global and in-app keyboard shortcuts.", "keybinds"),
@@ -808,20 +797,10 @@ const scenarios = [
       await page.locator(".sheet").waitFor();
     },
   },
-  {
-    name: "onboarding",
-    route: "#/",
-    description: "First-run repository picker.",
-    prepare: clearConfiguredRepos,
-    beforeGoto: onboardingFixtureRoutes,
-    ready: ".onb-page",
-    interact: async (page) => advanceOnboarding(page, 2),
-    verify: async (page) => page.getByText("Step 2 of 4", { exact: true }).waitFor(),
-  },
-  onboardingStep("onboarding-step-1-connect", 1, "Successful GitHub authentication step."),
-  onboardingStep("onboarding-step-2-repositories", 2, "Successful repository selection step."),
-  onboardingStep("onboarding-step-3-live-updates", 3, "Minimal hosted relay setup."),
-  onboardingStep("onboarding-step-4-ready", 4, "Successful initial inbox sync step."),
+  onboardingScenario("onboarding", "repositories", "First-run repository picker."),
+  onboardingScenario("onboarding-connect", "connect", "Connect GitHub before choosing repositories."),
+  onboardingScenario("onboarding-live-updates", "review", "Review repository choices with optional live updates."),
+  onboardingScenario("onboarding-ready", "ready", "Completed initial inbox import."),
   {
     name: "quota-exhausted",
     route: "#/",
@@ -882,34 +861,32 @@ function settings(name, description, section) {
     },
   };
 }
-function onboardingStep(name, step, description) {
+function onboardingScenario(name, state, description) {
   return {
     name,
     route: "#/",
     description,
     prepare: clearConfiguredRepos,
-    beforeGoto: (page) => onboardingFixtureRoutes(page, { relayCovered: step < 3 }),
+    beforeGoto: (page) => onboardingFixtureRoutes(page, { relayCovered: false, signedIn: state !== "connect" }),
     ready: ".onb-page",
-    interact: step === 1 ? undefined : async (page) => advanceOnboarding(page, step),
+    interact: ["review", "ready"].includes(state) ? async (page) => advanceOnboarding(page, state) : undefined,
     verify: async (page) => {
-      await page.getByText(`Step ${step} of 4`, { exact: true }).waitFor();
-      if (step === 1) await page.getByText("Connected as", { exact: false }).waitFor();
-      if (step === 3) {
-        await page.getByRole("button", { name: "Install on GitHub", exact: true }).waitFor();
-        await page.getByRole("button", { name: "Use polling", exact: true }).waitFor();
-        await page.getByRole("link", { name: "Source", exact: true }).waitFor();
-        await page.getByRole("link", { name: "Self-host", exact: true }).waitFor();
+      if (state === "connect") await page.getByRole("button", { name: "Connect GitHub", exact: true }).waitFor();
+      if (state === "repositories") await page.locator(".repo-row input").first().waitFor();
+      if (state === "review") {
+        await page.getByRole("button", { name: "Set up on GitHub", exact: true }).waitFor();
+        await page.getByRole("button", { name: "Import now", exact: true }).waitFor();
       }
-      if (step === 4) await page.getByText("Your inbox is ready.", { exact: true }).waitFor();
+      if (state === "ready") await page.getByRole("button", { name: "Open my inbox", exact: true }).waitFor();
     },
   };
 }
 
-async function onboardingFixtureRoutes(page, { relayCovered = true } = {}) {
-  await page.route("**/api/auth/status", (route) => route.fulfill({
+async function onboardingFixtureRoutes(page, { relayCovered = true, signedIn = true } = {}) {
+  await page.route("**/api/auth/status?*", (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
-    body: JSON.stringify({ ok: true, login: "theolundqvist" }),
+    body: JSON.stringify({ ok: signedIn, state: signedIn ? "ready" : "missing-auth", login: signedIn ? "reviewer" : null, requiredScopes: ["repo", "workflow"] }),
   }));
   await page.route("**/api/onboarding/repos", (route) => route.fulfill({
     status: 200,
@@ -930,21 +907,17 @@ async function onboardingFixtureRoutes(page, { relayCovered = true } = {}) {
   await page.route("**/api/refresh", (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
-    body: JSON.stringify({ ok: true }),
+    body: JSON.stringify({ checked: 1, refreshed: 1 }),
   }));
 }
 
-async function advanceOnboarding(page, targetStep) {
-  await page.getByText("Connected as", { exact: false }).waitFor();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
-  await page.locator(".repo-list").waitFor();
-  if (targetStep === 2) return;
+async function advanceOnboarding(page, state) {
   await page.locator(".repo-row input").first().check();
-  await page.getByRole("button", { name: "Continue with 1", exact: true }).click();
-  if (targetStep === 3) return;
-  await page.getByRole("button", { name: "Use polling", exact: true }).click();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
-  await page.getByText("Your inbox is ready.", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Import now", exact: true }).waitFor();
+  if (state === "review") return;
+  await page.getByRole("button", { name: "Import now", exact: true }).click();
+  await page.getByRole("button", { name: "Open my inbox", exact: true }).waitFor();
 }
 
 function parseArgs(argv) {

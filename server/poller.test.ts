@@ -22,6 +22,7 @@ const publishPollCompleted = mock((_lastPollAt: string) => {});
 const deps: PollDeps = {
   backgroundPollAllowed: async () => true,
   refreshWorktreeScan: async () => {},
+  settingsRepos: () => ["acme/tracked"],
   trackedRepos: async () => ["acme/tracked"],
   listWebhookRegistrations: () => [...registrations],
   searchOpenPrs: async (repos) => {
@@ -101,6 +102,37 @@ describe("poll-loop registration lifecycle", () => {
     expect(result).toEqual({ checked: 0, refreshed: 0 });
     expect(worktreesRefreshed).toBe(true);
     expect(searchedRepos).toEqual([]);
+  });
+
+  test("a refresh after repository edits waits for the new scope and shares its poll", async () => {
+    let selected = ["acme/old"];
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let searches = 0;
+    const poll = createPollOnce({
+      ...deps,
+      settingsRepos: () => selected,
+      trackedRepos: async () => [...selected],
+      searchOpenPrs: async (repos) => {
+        searches++;
+        if (repos.includes("acme/old")) {
+          started.resolve();
+          await release.promise;
+          return [hit("acme/old", 1)];
+        }
+        return [hit("acme/new", 2), hit("acme/new", 3)];
+      },
+    });
+    const oldPoll = poll();
+    await started.promise;
+    selected = ["acme/new"];
+    const firstRefresh = poll();
+    const secondRefresh = poll();
+    release.resolve();
+    expect(await oldPoll).toEqual({ checked: 1, refreshed: 1 });
+    expect(await firstRefresh).toEqual({ checked: 2, refreshed: 2 });
+    expect(await secondRefresh).toEqual({ checked: 2, refreshed: 2 });
+    expect(searches).toBe(2);
   });
 
   test("registered repo joins the search scope even when untracked", async () => {

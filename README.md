@@ -1,124 +1,57 @@
 # PR Cockpit
 
-**GitHub pull requests at local speed.**
+**A review queue, not another row of GitHub tabs.**
 
-PR Cockpit is a keyboard-first macOS and Linux app that keeps pull requests, diffs, threads, checks, and images warm on your machine. Reads feel immediate, while comments, reviews, edits, and merges sync through your existing `gh` login. GitHub remains the source of truth.
+PR Cockpit is a desktop app for GitHub pull requests on **macOS and Linux**. See what needs your attention, read the diff, work through review threads, and merge without piecing the PR together across tabs. A local cache keeps the review close; GitHub stays the source of truth.
 
-[Website](https://prcockpit.com/) · [Install](#install) · [CLI](#agents-listen-dont-poll) · [Self-host relay](docs/self-host-relay.md) · [Shortcuts](#shortcuts)
+[Install](#install) · [See the workflow](#from-finding-the-pr-to-finishing-the-review) · [CLI for humans and agents](#the-same-pr-context-in-your-terminal) · [Website](https://prcockpit.com/)
 
-## GitHub PRs at local speed
+![PR Cockpit showing the review queue for microsoft/vscode, grouped into ready to merge and waiting](docs/screenshots/landing-inbox.png)
 
-The local server serves the queue and open pull request from SQLite instead of rebuilding every screen from GitHub. Webhook markers trigger targeted refreshes, WebSocket invalidations update the UI, and a poller repairs missed events.
-
-Warm-cache opens of a large private pull request with 1,879 changed files:
-
-| Product | p50 | p95 | p99 |
-| --- | ---: | ---: | ---: |
-| PR Cockpit | 0.082 s | 0.112 s | **0.121 s** |
-| Cursor Origin | 1.738 s | 3.702 s | 5.606 s |
-| GitHub | 3.381 s | 4.880 s | 5.678 s |
-
-A separate 12-run comparison of the common interactions, each a cold first open:
-
-| Interaction | PR Cockpit p50 | GitHub p50 | Faster |
-| --- | ---: | ---: | ---: |
-| Open a PR | 0.020 s | 1.421 s | 71.8× |
-| Open a diff | 0.041 s | 1.487 s | 36.2× |
-| Search PRs | 0.049 s | 0.839 s | 17.1× |
-
-At p99, PR Cockpit painted the same pull request **47× faster than GitHub**. [Methodology and reproduction](scripts/benchmark-ui.mjs).
-
-## Search from anywhere
-
-Press <kbd>⌥⌘K</kbd> from any app on macOS. On Linux X11, press <kbd>Super+Alt+K</kbd>; Wayland compositor policy can prevent the global shortcut. The full pull request opens from the local cache.
-
-![Global pull request search opening a cached pull request](docs/screenshots/landing-search.gif)
-
-## One queue. Three lanes.
-
-Ready to merge, your move, and waiting are separate lanes, already sorted by what needs attention. Stacked pull requests stay together. Checks, conflicts, unresolved threads, and review state are available without tab-hopping.
-
-![PR Cockpit review queue with ready, your move, and waiting lanes](docs/screenshots/landing-inbox.png)
-
-## Hide tests. See the change.
-
-Press <kbd>x</kbd> to fold test files out of the diff. In `graphql/graphql-js#4692`, that leaves the one-line fix on screen.
-
-![Pressing x folds the five regression-test diffs, leaving the one-line source change open](docs/screenshots/landing-hide-tests.gif)
-
-## One key from review to change
-
-The review stays in one context:
-
-- <kbd>p</kbd> opens the pull request in the configured coding agent with the current review context.
-- <kbd>e</kbd> edits the open file and commits the patch back to the pull request.
-- **Revert hunk** removes one focused change instead of rewriting the file.
-- <kbd>h</kbd> walks file history without leaving the review.
-
-| Agent | Edit |
-| --- | --- |
-| ![Agent prompt opened from PR Cockpit](docs/screenshots/landing-agent-prompt.png) | ![Editing a pull request file inside PR Cockpit](docs/screenshots/landing-editor.png) |
-
-| Revert hunk | History |
-| --- | --- |
-| ![Revert hunk menu inside a pull request diff](docs/screenshots/landing-revert-menu.png) | ![File history inside PR Cockpit](docs/screenshots/landing-file-history.png) |
-
-## Agents: listen, don't poll.
-
-The installer adds the open-source `pr-cockpit` CLI. It reads the same local cache as the app, returns compact agent-shaped output, and revalidates only when that cache is stale.
-
-```sh
-pr-cockpit owner/repo#123                    # state, checks, unresolved threads
-pr-cockpit owner/repo#123 --diff             # cached diff
-pr-cockpit owner/repo#123 --file src/app.ts  # full file at the PR head
-pr-cockpit owner/repo#123 --jobs             # cached queued, running, and completed jobs
-pr-cockpit owner/repo#123 --logs [check]     # cached failed and cancelled logs
-pr-cockpit resolve owner/repo#123 HANDLE     # resolve a review thread
-pr-cockpit update                            # fast-forward and rebuild
-```
-
-Waiting on CI, review, or a new comment? Block on the local fingerprint instead of polling GitHub:
-
-```sh
-pr-cockpit listen owner/repo#123
-```
-
-`listen` blocks until substantive cached state changes — a push, check result, review, or comment — then prints only what changed. `--ci-only` and `--comments-only` narrow the wake signal.
-
-## Under the hood
-
-![GitHub webhooks reach the local PR Cockpit server through a relay; the server keeps SQLite and the UI warm and serves agents over CLI and API](docs/screenshots/landing-under-the-hood.png)
-
-- **GitHub is authoritative.** The local database is a warm read model, not a fork of pull-request state.
-- **The relay carries markers, not pull-request payloads.** It also carries compact Actions run and job state, including runner assignment, but never full pull-request payloads or job logs.
-- **Writes stay authenticated.** Comments, reviews, edits, thread resolution, and merges use the existing GitHub CLI login.
-- **Humans and agents share one cache.** The app uses WebSocket invalidations; the CLI and API expose the same refreshed state.
-- **Team sync is on by default.** New installs stream events over WebSocket from the hosted relay; point the relay URL at your own deployment to opt out. [Self-hosting guide](docs/self-host-relay.md).
+The queue separates **ready to merge**, **your move**, and **waiting**. Checks, conflicts, unresolved threads, and review state give you the context to decide what to open next. Stacked pull requests stay together.
 
 ## Install
 
-The same bootstrap command installs the native desktop app and `pr-cockpit` CLI on macOS or Linux:
+Run this in your terminal as your normal user, **not with `sudo`**:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/theolundqvist/pr-cockpit/main/scripts/bootstrap | bash
 ```
 
-It detects the platform, checks prerequisites, asks before installing anything, shows each stage, and opens the four-step setup. On Linux it installs an immutable release, a user service, desktop entry, tray integration, and the `prcockpit://` handler; X11 is supported directly and Wayland sessions run through XWayland, where global shortcuts are compositor-dependent. Run `pr-cockpit update` to upgrade and `pr-cockpit status` to identify the process supervising the local port. On Linux, `$HOME/.pr-cockpit/scripts/uninstall` removes the app and `--purge` also removes local data.
+[Read the installer first](scripts/bootstrap). It checks prerequisites, installs the desktop app and `pr-cockpit` CLI, and opens setup. On macOS it offers to install missing tools where supported; on Linux it checks system prerequisites and installs missing Bun and GitHub CLI tools into the managed installation.
 
-## Start in four steps
+**Supported platforms:** macOS and Linux. Linux requires systemd and the desktop libraries listed by the installer; x64 and arm64 are supported. X11 is supported directly; Wayland uses XWayland, and global shortcuts depend on compositor policy. Windows is not supported.
 
-1. Connect your existing GitHub CLI login.
-2. Choose repositories.
-3. Enable live updates.
-4. Open the review queue.
+### Try it on a PR you already know
 
-Run **Settings → Run setup again** whenever you want to change repositories or live updates.
+- **Connect GitHub in the app.** Cockpit reuses your GitHub CLI (`gh`) login. If you need to sign in or grant additional access, setup opens the GitHub authorization flow in your browser.
+- **Choose a repository you work in.** Start with an open PR you've authored or participated in—the queue follows PRs involving you, not every open PR in the repository. You can enter `owner/repo` if it is not in the suggested list.
+- **Enable live updates, or continue with polling.** Live updates use a GitHub App installation with access to your selected repositories. An organization may require an owner's approval; that need not block your first review.
+- **Open the queue and pick that PR.** Read the conversation, press <kbd>d</kbd> to switch to Files, and inspect a change. Press <kbd>?</kbd> whenever you want the shortcut guide.
 
-## Shortcuts
+The first sync fetches PRs involving you from your selected repositories. Subsequent reads use the local cache as it refreshes. You can revisit repository and live-update configuration in Settings.
+
+## From finding the PR to finishing the review
+
+### Bring up a PR without leaving your editor
+
+Press <kbd>⌥⌘K</kbd> on macOS or <kbd>Super+Alt+K</kbd> on Linux X11 to search from another app. Open the result in Cockpit, with the cached PR ready to read.
+
+![Searching for a public rust-lang/rust pull request from the desktop and opening it in PR Cockpit](docs/screenshots/landing-search.gif)
+
+### Read the change, then follow the details
+
+Diffs, threads, checks, and file history live in the same review workspace. Press <kbd>x</kbd> to fold test files when you want to see the implementation first; press it again to bring the tests back.
+
+![Folding five regression-test diffs in graphql/graphql-js#4692 to isolate the one-line implementation change](docs/screenshots/landing-hide-tests.gif)
+
+When the review needs a change, stay in context: <kbd>e</kbd> edits the open file and commits the patch to the PR; <kbd>p</kbd> opens the PR in your configured coding agent with review context. You can also revert a focused hunk or press <kbd>h</kbd> to inspect file history.
+
+<details>
+<summary><strong>Everyday shortcuts</strong></summary>
 
 | Key | Action |
 | --- | --- |
-| <kbd>⌥⌘K</kbd> macOS<br><kbd>Super+Alt+K</kbd> Linux X11 | Search pull requests globally; Wayland depends on compositor policy |
 | <kbd>j</kbd> / <kbd>k</kbd> | Move |
 | <kbd>enter</kbd> / <kbd>esc</kbd> | Open / back |
 | <kbd>d</kbd> | Conversation / Files |
@@ -128,12 +61,56 @@ Run **Settings → Run setup again** whenever you want to change repositories or
 | <kbd>x</kbd> | Hide / show test files |
 | <kbd>h</kbd> | File history |
 | <kbd>m</kbd> | Merge |
-| <kbd>?</kbd> | Full cheatsheet |
+| <kbd>?</kbd> | Full shortcut guide |
+
+</details>
+
+## The same PR context in your terminal
+
+The included `pr-cockpit` CLI reads the same local cache as the app. Use it yourself, or give your coding agent a way to inspect a PR without repeatedly fetching it from GitHub. Set up the app first; the CLI needs the local Cockpit server.
+
+Replace `owner/repo#123` with your pull request:
+
+```sh
+pr-cockpit owner/repo#123                   # state, checks, and review threads
+pr-cockpit owner/repo#123 --diff            # cached unified diff
+pr-cockpit owner/repo#123 --file src/app.ts # file contents at the PR head
+pr-cockpit owner/repo#123 --jobs            # queued, running, and completed jobs
+pr-cockpit owner/repo#123 --logs            # cached failed and cancelled job logs
+```
+
+**Waiting on CI or a review? Listen instead of polling.**
+
+```sh
+pr-cockpit listen owner/repo#123
+```
+
+`listen` waits for substantive cached state changes—a push, check result, review, or comment—then prints what changed and exits. `--ci-only` and `--comments-only` narrow the wake signal.
+
+The CLI also supports comments, reviews, thread resolution, edits, and merges through Cockpit's mutation queue. Run **`pr-cockpit --help`** for commands and options, including `--body-file` for exact multiline text and `--json` for machine-readable status. The installer separately asks before adding Cockpit instructions to supported coding assistants.
+
+## Local reads. GitHub authority.
+
+Cockpit is a client for your existing GitHub workflow, not a second place to maintain pull requests.
+
+- **On your machine:** a Bun server maintains a SQLite cache of PR state and serves the desktop UI and CLI. Diffs, threads, checks, and images are cached locally.
+- **Back to GitHub:** comments, reviews, file edits, thread resolution, and merges use your GitHub CLI authentication. GitHub remains authoritative.
+- **Keeping it current:** the hosted relay is enabled by default. It receives GitHub webhooks and delivers compact change markers and Actions run/job state, including runner assignment—not full PR contents or job logs—to Cockpit. Targeted refreshes update the cache; a direct GitHub poller repairs missed events.
+- **Your relay, if you prefer:** you can configure a different relay URL. See [Self-hosting](docs/self-host-relay.md) for deployment and connection instructions.
+
+Local caching does **not** mean the app makes no external connections. Besides GitHub and the relay, the backend has [Sentry error reporting enabled by default](server/sentry.ts).
 
 <details>
-<summary><strong>Configuration</strong></summary>
+<summary><strong>Updates, diagnostics, and configuration</strong></summary>
 
-Settings live in the app. Optional shell overrides live in `~/.config/pr-cockpit/config`.
+```sh
+pr-cockpit update  # update and reconcile the installed app
+pr-cockpit status  # identify the process supervising the local server
+```
+
+The installer manages the background server and desktop integration. On Linux, `$HOME/.pr-cockpit/scripts/uninstall` removes a default installation; adding `--purge` also removes its local data.
+
+Use Settings for day-to-day configuration. Optional shell overrides live in `~/.config/pr-cockpit/config` (Linux respects `XDG_CONFIG_HOME`).
 
 | Variable | Purpose |
 | --- | --- |
@@ -141,16 +118,16 @@ Settings live in the app. Optional shell overrides live in `~/.config/pr-cockpit
 | `COCKPIT_PORT` | Local HTTP port; defaults to `4820` |
 | `COCKPIT_DEFAULT_REPO` | Repository assumed when a PR number is passed alone |
 | `COCKPIT_REPO_ROOTS` | Paths containing local checkouts |
-| `COCKPIT_RELAY_URL` | [Self-hosted webhook relay](docs/self-host-relay.md) |
+| `COCKPIT_RELAY_URL` | Custom webhook relay URL |
 | `COCKPIT_TAILSCALE_SERVE` | Set to `1` to publish Cockpit privately through Tailscale Serve |
 | `COCKPIT_TAILSCALE_HTTPS_PORT` | Tailscale HTTPS port; defaults to `443` |
 
 </details>
 
-## Contributions welcome
+## Contribute
 
-Functionality, themes, visual polish, and fixes for rough UI edges are all welcome.
+Found friction in a real review? [Open an issue](https://github.com/theolundqvist/pr-cockpit/issues) with what you were trying to do and what got in the way. Keep reports and screenshots free of private repository data.
 
-New functionality must default off. Styling must be opt-in unless it is minor polish that preserves the default appearance.
+Fixes, functionality, themes, and UI polish are welcome. Read the [contributor and agent guide](AGENTS.md) for development setup and repository conventions. New functionality must default off; styling must be opt-in unless it is minor polish that preserves the default appearance. Pull requests must include before-and-after screenshots showing their effect in the app.
 
-Every pull request must attach before-and-after screenshots showing its effect in the app.
+[MIT licensed](LICENSE).

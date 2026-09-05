@@ -1,8 +1,8 @@
-# Self-host the webhook relay
+# Self-host a Cloudflare relay
 
-PR Cockpit's relay is one Cloudflare Worker backed by one Durable Object. It needs no separate database, server, tunnel, or relay account.
+The default hosted relay uses the [WebSocket server](../relay-server/). This guide deploys the optional [Cloudflare relay](../relay/): one Worker backed by one Durable Object, with no separate database, server, tunnel, or relay account.
 
-The relay receives GitHub webhooks and stores at most 1,000 compact change markers. Each local PR Cockpit server polls it over authenticated HTTP every five seconds and can read only repositories its own GitHub token can access. The relay does not store full pull-request payloads or job logs; WebSockets are used only between the local server and UI after a refresh.
+The Cloudflare relay receives GitHub webhooks and stores at most 1,000 compact change markers. Each local PR Cockpit server polls this relay over authenticated HTTP every five seconds and can read only repositories its own GitHub token can access. This relay does not store full pull-request payloads or job logs; unlike the default hosted relay, it does not stream updates over WebSockets.
 
 ## Prerequisites
 
@@ -99,7 +99,7 @@ Organization policy may require an owner to approve the installation. The relay 
 
 ## 4. Connect PR Cockpit
 
-In PR Cockpit, open **Settings → General → Team sync**, enter the Worker URL without `/github`, and save:
+In **Settings → Workspace**, expand **Update frequency & live updates**, enter the Worker URL without `/github` in **Live update relay**, and save:
 
 ```text
 https://pr-cockpit-relay.<your-subdomain>.workers.dev
@@ -117,7 +117,7 @@ COCKPIT_RELAY_URL="https://pr-cockpit-relay.<your-subdomain>.workers.dev"
 
 1. In PR Cockpit settings, confirm each selected repository says **live push ✓**.
 2. Comment on, push to, or change a check on an open pull request.
-3. Confirm **Team sync** changes from “waiting for the first PR event” to a recent event time.
+3. Confirm the relay status below **Live update relay** changes from waiting for the first event to a recent event time.
 4. In the GitHub App's **Advanced → Recent deliveries**, confirm the delivery returned HTTP `200`.
 
 The slower direct GitHub poller remains active as a repair path if the relay is unavailable or an event is missed.
@@ -143,4 +143,4 @@ bun install
 bun run deploy
 ```
 
-Wrangler preserves the webhook secret. To stop using the relay, clear **Team sync** in PR Cockpit, uninstall the GitHub App, then remove the Worker from Cloudflare.
+Wrangler preserves the webhook secret. To stop using the relay, clear **Live update relay** in PR Cockpit, uninstall the GitHub App, then remove the Worker from Cloudflare.

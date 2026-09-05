@@ -198,6 +198,7 @@ export const refreshPr = createPrRefreshScheduler(refreshPrNow);
 export interface PollDeps {
   backgroundPollAllowed: typeof backgroundPollAllowed;
   refreshWorktreeScan: typeof refreshWorktreeScan;
+  settingsRepos: typeof settingsRepos;
   trackedRepos: typeof trackedRepos;
   listWebhookRegistrations: typeof listWebhookRegistrations;
   refreshRecentActions?: typeof refreshRecentActions;
@@ -218,7 +219,10 @@ export interface PollDeps {
 }
 
 export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number; refreshed: number }> {
-  let inFlightPoll: Promise<{ checked: number; refreshed: number }> | null = null;
+  let inFlightPoll: {
+    repos: Set<string>;
+    promise: Promise<{ checked: number; refreshed: number }>;
+  } | null = null;
   let lastIndexSweepAt: number | null = null;
 
   async function pollOnceInner(): Promise<{ checked: number; refreshed: number }> {
@@ -322,18 +326,28 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
     lastIndexSweepAt = Date.now();
   }
 
-  return () => {
-    if (inFlightPoll) return inFlightPoll;
-    inFlightPoll = pollOnceInner().finally(() => {
+  function poll(): Promise<{ checked: number; refreshed: number }> {
+    const repos = deps.settingsRepos();
+    if (inFlightPoll) {
+      const current = inFlightPoll;
+      if (repos.length === current.repos.size && repos.every((repo) => current.repos.has(repo))) {
+        return current.promise;
+      }
+      return current.promise.then(poll);
+    }
+    const promise = pollOnceInner().finally(() => {
       inFlightPoll = null;
     });
-    return inFlightPoll;
-  };
+    inFlightPoll = { repos: new Set(repos), promise };
+    return promise;
+  }
+  return poll;
 }
 
 export const pollOnce = createPollOnce({
   backgroundPollAllowed,
   refreshWorktreeScan,
+  settingsRepos,
   trackedRepos,
   listWebhookRegistrations,
   refreshRecentActions,
