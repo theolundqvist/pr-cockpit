@@ -232,6 +232,33 @@
       line-height: 1.6;
     }
 
+    .faq-list {
+      margin-top: 30px;
+      border-top: 1px solid var(--border);
+    }
+
+    .faq-list details {
+      border-bottom: 1px solid var(--border);
+    }
+
+    .faq-list summary {
+      padding: 20px 0;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .faq-list summary:focus-visible {
+      outline: 2px solid var(--green);
+      outline-offset: 4px;
+    }
+
+    .faq-list p {
+      max-width: 90ch;
+      margin: 0 0 22px;
+      color: var(--text-dim);
+      overflow-wrap: anywhere;
+    }
+
     .cache-more {
       display: inline-block;
       margin-top: 18px;
@@ -763,7 +790,8 @@
     }
 
     .package-list a,
-    .package-note a {
+    .package-note a,
+    .faq-list a {
       color: var(--text);
       font-weight: 600;
       text-decoration: underline;
@@ -771,7 +799,8 @@
     }
 
     .package-list a:hover,
-    .package-note a:hover {
+    .package-note a:hover,
+    .faq-list a:hover {
       color: var(--green);
     }
 
@@ -1555,6 +1584,34 @@
             </div>
             <p class="media-caption">Made with JustShowMe · placed in the PR by gh-img</p>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-rule" id="faq" aria-labelledby="faq-title">
+      <div class="wrap section">
+        <h2 class="section-title" id="faq-title">Frequently asked questions.</h2>
+        <div class="faq-list">
+          <details>
+            <summary>Does this replace GitHub?</summary>
+            <p>No. GitHub remains the source of truth. PR Cockpit is a local workspace for reading and acting on your pull requests. Comments, reviews, edits, and merges are sent back through your authenticated GitHub CLI login.</p>
+          </details>
+          <details>
+            <summary>How does the local cache stay current?</summary>
+            <p>Webhook markers trigger targeted refreshes from GitHub, and a poller repairs missed events. The app reads from the refreshed local cache; it does not need to rebuild each screen from GitHub. Initial sync and uncached data still need to be fetched.</p>
+          </details>
+          <details>
+            <summary>What goes through the live-update relay?</summary>
+            <p>The relay carries change markers and compact Actions run and job state, including runner assignment—not full pull-request payloads or job logs. Hosted team sync is enabled by default on new installs. You can point the app at your own relay; see the <a href="https://github.com/theolundqvist/pr-cockpit/blob/main/docs/self-host-relay.md">self-hosting guide</a>.</p>
+          </details>
+          <details>
+            <summary>What should Linux users know?</summary>
+            <p>The installer sets up the app, a user service, a desktop entry, tray integration, and the <code>prcockpit://</code> handler. X11 is supported directly; Wayland sessions use XWayland, and global shortcuts depend on compositor policy. The installer checks system prerequisites before proceeding.</p>
+          </details>
+          <details>
+            <summary>How do I update or remove it?</summary>
+            <p>Run <code>pr-cockpit update</code> to upgrade. On Linux, run <code>$HOME/.pr-cockpit/scripts/uninstall</code> to remove the app; add <code>--purge</code> to remove local data too. See the <a href="https://github.com/theolundqvist/pr-cockpit#install">installation documentation</a> for current platform details.</p>
+          </details>
         </div>
       </div>
     </section>
