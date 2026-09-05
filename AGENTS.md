@@ -18,7 +18,7 @@ This repository is worked on by humans and coding agents alike. Leave it easier 
 - Screenshot harnesses render at `1600x1200`; keep their default viewport and PNG dimension checks aligned.
 - PR detail headers and tabs use the standard width; Conversation centers its 816px primary column and adjacent sidebar beneath them, and Files alone expands to full width.
 - Verify landing-page search queries against live GitHub results; captured PR titles can disappear from the search index while the fixture remains valid.
-- Match the surrounding style; preserve the homepage's dark, speed-first design when adding content. Comments explain hidden constraints, not obvious behavior.
+- Match existing style. Keep the homepage dark and speed-first, with brief subtext and FAQ answers; link to details. Comments explain hidden constraints.
 - Pull-request actions follow GitHub semantics: merge green, update neutral, and destructive actions red.
 - Workflow jobs use commit-check semantics: green check for success, red cross for failure, orange spinner while active, and gray minus when skipped. Logs preserve ANSI colors and open at the bottom. Commit status icons and failing-check rows open Cockpit’s Actions tab at the exact commit and job; its selector covers the full mirror range, not GraphQL’s last 100 commits.
 - Operational telemetry belongs on a dedicated Usage page in Settings, not among general controls; it keeps three days of hourly context and forecasts the active GitHub quota window.

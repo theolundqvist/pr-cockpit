@@ -1405,10 +1405,10 @@
         <div class="section-intro cli-flow-intro">
           <div>
             <h2 class="section-title">Local GitHub cache. Faster agents. Fewer tokens.</h2>
-            <p class="section-lede"><code>pr-cockpit listen theolundqvist/pr-cockpit#109</code> blocks until the PR changes, then prints only what changed and exits.</p>
+            <p class="section-lede"><code>listen</code> waits for PR changes. No polling.</p>
           </div>
         </div>
-        <p class="visually-hidden">Animated flow: an agent starts pr-cockpit listen and blocks on local cached state. Most of the time passes waiting for a reviewer comment. When it lands, GitHub emits a webhook, the relay forwards a change marker, PR Cockpit refreshes pull request 109 from GitHub, and listen wakes almost instantly, printing a digest of just the new review comment before the agent continues.</p>
+        <p class="visually-hidden">An agent runs pr-cockpit listen. A GitHub webhook refreshes the local cache, then listen returns the change.</p>
         <div class="cli-flow-player" data-cli-flow-player>
           <div class="cli-flow-stage" id="cli-flow-stage" data-cli-flow-state="done" aria-hidden="true">
             <div class="cli-flow-map">
@@ -1594,23 +1594,23 @@
         <div class="faq-list">
           <details>
             <summary>Does this replace GitHub?</summary>
-            <p>No. GitHub remains the source of truth. PR Cockpit is a local workspace for reading and acting on your pull requests. Comments, reviews, edits, and merges are sent back through your authenticated GitHub CLI login.</p>
+            <p>No. Review in Cockpit; your changes go back to GitHub.</p>
           </details>
           <details>
             <summary>How does the local cache stay current?</summary>
-            <p>Webhook markers trigger targeted refreshes from GitHub, and a poller repairs missed events. The app reads from the refreshed local cache; it does not need to rebuild each screen from GitHub. Initial sync and uncached data still need to be fetched.</p>
+            <p>Webhooks refresh changed PRs. Polling catches missed updates.</p>
           </details>
           <details>
             <summary>What goes through the live-update relay?</summary>
-            <p>The relay carries change markers and compact Actions run and job state, including runner assignment—not full pull-request payloads or job logs. Hosted team sync is enabled by default on new installs. You can point the app at your own relay; see the <a href="https://github.com/theolundqvist/pr-cockpit/blob/main/docs/self-host-relay.md">self-hosting guide</a>.</p>
+            <p>Change markers and Actions status—not PR contents or logs. Hosted by default; <a href="https://github.com/theolundqvist/pr-cockpit/blob/main/docs/self-host-relay.md">self-hosting is optional</a>.</p>
           </details>
           <details>
             <summary>What should Linux users know?</summary>
-            <p>The installer sets up the app, a user service, a desktop entry, tray integration, and the <code>prcockpit://</code> handler. X11 is supported directly; Wayland sessions use XWayland, and global shortcuts depend on compositor policy. The installer checks system prerequisites before proceeding.</p>
+            <p>The installer handles setup. Wayland uses XWayland; global shortcuts depend on your compositor.</p>
           </details>
           <details>
             <summary>How do I update or remove it?</summary>
-            <p>Run <code>pr-cockpit update</code> to upgrade. On Linux, run <code>$HOME/.pr-cockpit/scripts/uninstall</code> to remove the app; add <code>--purge</code> to remove local data too. See the <a href="https://github.com/theolundqvist/pr-cockpit#install">installation documentation</a> for current platform details.</p>
+            <p>Update with <code>pr-cockpit update</code>. For removal, see the <a href="https://github.com/theolundqvist/pr-cockpit#install">platform instructions</a>.</p>
           </details>
         </div>
       </div>
