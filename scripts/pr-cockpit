@@ -620,6 +620,24 @@ if [[ "$command" = "cache-run" ]]; then
 fi
 
 if [[ "$mutation_command" = "1" ]]; then
+  mutation_args=(
+    "$base_url"
+    "$repo"
+    "$number"
+    "$command"
+    "$body_file"
+    "$mutation_method"
+    "$force"
+    "$comment_path"
+    "$comment_line"
+    "$comment_side"
+    "$start_line"
+    "$start_side"
+  )
+  # Bash 3.2 treats an empty "${array[@]}" expansion as unbound under `set -u`.
+  if ((${#positionals[@]})); then
+    mutation_args+=("${positionals[@]}")
+  fi
   "$bun_bin" -e '
 const [
   baseUrl,
@@ -820,7 +838,7 @@ try {
   console.error(`pr-cockpit: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
 }
-' "$base_url" "$repo" "$number" "$command" "$body_file" "$mutation_method" "$force" "$comment_path" "$comment_line" "$comment_side" "$start_line" "$start_side" "${positionals[@]}"
+' "${mutation_args[@]}"
   exit $?
 fi
 
