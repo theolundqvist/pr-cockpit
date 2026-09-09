@@ -959,6 +959,9 @@
         <span class="row-badge-slot"><span class="row-badge badge {status.tone}">{status.label}</span></span>
         <div class="row-main">
           <div class="row-title">
+            {#if pr.isDraft && pr.state === "OPEN"}
+              <span class="badge wait row-draft">Draft</span>
+            {/if}
             <span class="row-title-text">{pr.title}</span>
             {#if pr.rank != null}
               <span class="pinned-mark" title="Pinned until merged or archived" aria-label="Pinned">
@@ -2370,6 +2373,9 @@
     display: flex;
     align-items: center;
     gap: 7px;
+  }
+  .row-draft {
+    flex: none;
   }
   .row-title-text {
     min-width: 0;

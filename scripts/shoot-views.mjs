@@ -116,6 +116,29 @@ const scenarios = [
     },
   },
   {
+    name: "inbox-draft-status",
+    route: "#/",
+    description: "Draft state remains visible alongside failing checks.",
+    ready: ".inbox-layout .queue-group",
+    beforeGoto: async (page, { baseURL }) => {
+      const inbox = await requestJson(`${baseURL}/api/inbox`);
+      inbox.prs.find((pr) => pr.number === 104).isDraft = true;
+      await page.route("**/api/inbox", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(inbox),
+      }));
+    },
+    verify: async (page) => {
+      const draft = page.locator('a.row[href="#/pr/fixture/cockpit/104"]');
+      await draft.locator(".row-badge").getByText("failing", { exact: true }).waitFor();
+      await draft.locator(".row-title").getByText("Draft", { exact: true }).waitFor();
+      const open = page.locator('a.row[href="#/pr/fixture/cockpit/103"]');
+      await open.locator(".row-badge").getByText("failing", { exact: true }).waitFor();
+      if (await open.locator(".row-draft").count()) throw new Error("Non-draft PR was marked Draft");
+    },
+  },
+  {
     name: "inbox-all-prs",
     route: "#/",
     description: "All open pull requests, with native tab activation and keyboard return from detail.",
