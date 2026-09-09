@@ -124,6 +124,35 @@ function accountQuota(response: Response, fallback: GithubQuotaResourceName, gen
   }
 }
 
+/*
+ * A recorded block can outlive the condition it describes. Some 403s carry `x-ratelimit-remaining: 0`
+ * and the current window's `x-ratelimit-reset`, so a deadline gets written down — then the window
+ * rolls over and the budget refills long before that deadline, and nothing notices. The result is
+ * every mutation refused for the best part of an hour while `/rate_limit` reports 5000 remaining.
+ *
+ * `/rate_limit` is exempt from rate limiting, so asking is free. Whatever it says has budget is not
+ * blocked, whatever we recorded earlier. One cheap request beats an hour of refusals.
+ */
+async function revalidateQuota(resource: GithubQuotaResourceName): Promise<void> {
+  if (!blockedQuotas.has(resource)) return;
+  try {
+    const response = await fetch("https://api.github.com/rate_limit", {
+      headers: {
+        Authorization: `bearer ${await ghToken()}`,
+        Accept: "application/vnd.github+json",
+      },
+    });
+    if (!response.ok) return;
+    const body = (await response.json()) as {
+      resources?: Record<string, { remaining?: number } | undefined>;
+    };
+    const remaining = body.resources?.[resource]?.remaining;
+    if (typeof remaining === "number" && remaining > 0) blockedQuotas.delete(resource);
+  } catch {
+    // Unreachable or malformed: keep the recorded block and let its deadline govern.
+  }
+}
+
 function assertQuotaAvailable(resource: GithubQuotaResourceName): void {
   const blocked = blockedQuotas.get(resource);
   if (!blocked) return;
@@ -154,6 +183,7 @@ async function githubApiResponse(
   const resource = quotaResource(path);
   const token = options.authentication?.token ?? await ghToken();
   const generation = options.authentication?.generation ?? quotaGeneration(token);
+  await revalidateQuota(resource);
   assertQuotaAvailable(resource);
   let response: Response;
   try {
