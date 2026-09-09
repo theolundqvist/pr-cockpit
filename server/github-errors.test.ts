@@ -326,3 +326,68 @@ test("quota state follows auth changes and ignores late responses from the previ
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test("a secondary rate limit blocks for retry-after, not for the primary window's reset", async () => {
+  // GitHub answers a burst (a secondary limit) with 403 + `retry-after`, and the SAME response still
+  // carries `x-ratelimit-reset` for the primary hourly window — which is untouched and may be most of
+  // an hour away. Combining them turned a one-minute cooldown into a one-hour block: every mutation
+  // refused while `gh api rate_limit` reported the full 5000 remaining.
+  const fakeGhDir = mkdtempSync(join(tmpdir(), "pr-cockpit-secondary-limit-"));
+  const fakeGh = join(fakeGhDir, "gh");
+  writeFileSync(fakeGh, "#!/bin/sh\nprintf 'fixture-token\\n'\n");
+  chmodSync(fakeGh, 0o755);
+  try {
+    const script = `
+      let now = 2_000_000_000_000;
+      Date.now = () => now;
+      const github = await import(${JSON.stringify(githubModuleUrl)});
+      let limited = true;
+      globalThis.fetch = async (input) => {
+        if (limited) {
+          limited = false;
+          // retry-after says 60s. x-ratelimit-reset points an hour out, for a budget that is fine.
+          return Response.json({ message: "You have exceeded a secondary rate limit" }, { status: 403, headers: {
+            "x-ratelimit-resource": "core",
+            "x-ratelimit-remaining": "4999",
+            "x-ratelimit-reset": String((now + 3_600_000) / 1000),
+            "retry-after": "60",
+          } });
+        }
+        return Response.json({ workflows: [] }, { headers: { "x-ratelimit-resource": "core", "x-ratelimit-remaining": "4999" } });
+      };
+      const capture = async (fn) => { try { await fn(); return null; } catch (error) { return error; } };
+
+      const first = await capture(() => github.fetchActionWorkflows("acme/app"));
+      // Still inside the 60s cooldown: blocked.
+      const during = await capture(() => github.fetchActionWorkflows("acme/app"));
+      // Past the cooldown but far short of the hourly reset: must be allowed again.
+      now += 61_000;
+      const after = await capture(() => github.fetchActionWorkflows("acme/app"));
+      console.log(JSON.stringify({
+        firstKind: first?.kind ?? null,
+        blockedDuringCooldown: during?.kind === "quota",
+        blockedAfterCooldown: after?.kind === "quota",
+        blockedUntil: first?.resetAt ?? null,
+      }));
+    `;
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: { ...Bun.env, COCKPIT_GH_BIN: fakeGh, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      process.exited,
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+    ]);
+    expect(exitCode, stderr).toBe(0);
+    const result = JSON.parse(stdout);
+    expect(result.firstKind).toBe("quota");
+    expect(result.blockedDuringCooldown).toBe(true);
+    // The whole point: 61 seconds later the block is gone, rather than lasting the full hour.
+    expect(result.blockedAfterCooldown).toBe(false);
+    expect(result.blockedUntil).toBe(new Date(2_000_000_060_000).toISOString());
+  } finally {
+    rmSync(fakeGhDir, { recursive: true, force: true });
+  }
+});

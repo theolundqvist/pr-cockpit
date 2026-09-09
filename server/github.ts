@@ -74,18 +74,34 @@ function quotaResource(path: string): GithubQuotaResourceName {
 }
 
 function quotaReset(response: Response): { resetAt: string; until: number } | null {
+  // `retry-after` and `x-ratelimit-reset` describe different clocks, so they must never be combined.
+  //
+  // A secondary rate limit (a burst of requests, not an exhausted budget) answers 403/429 with
+  // `retry-after: 60` — wait a minute. That same response still carries `x-ratelimit-reset` for the
+  // PRIMARY hourly window, which may be most of an hour away and has nothing to do with the burst.
+  // Taking the later of the two turned a sixty-second cooldown into a sixty-minute block: every
+  // mutation refused for an hour while `gh api rate_limit` cheerfully reported 5000/5000 remaining.
+  //
+  // So `retry-after` wins whenever it is present. It is GitHub telling us exactly how long to wait.
+  // `x-ratelimit-reset` only applies when the budget itself is spent, which the caller establishes by
+  // checking `x-ratelimit-remaining` before trusting this value.
   const retryAfter = response.headers.get("retry-after");
-  let until = Number.NaN;
   if (retryAfter !== null) {
     const seconds = Number(retryAfter);
-    until = Number.isFinite(seconds) ? Date.now() + Math.max(0, seconds) * 1_000 : Date.parse(retryAfter);
+    const until = Number.isFinite(seconds)
+      ? Date.now() + Math.max(0, seconds) * 1_000
+      : Date.parse(retryAfter);
+    if (Number.isFinite(until)) return { until, resetAt: new Date(until).toISOString() };
   }
   const rawReset = response.headers.get("x-ratelimit-reset");
   if (rawReset !== null) {
     const reset = Number(rawReset);
-    if (Number.isFinite(reset)) until = Math.max(Number.isFinite(until) ? until : 0, reset * 1_000);
+    if (Number.isFinite(reset)) {
+      const until = reset * 1_000;
+      return { until, resetAt: new Date(until).toISOString() };
+    }
   }
-  return Number.isFinite(until) ? { until, resetAt: new Date(until).toISOString() } : null;
+  return null;
 }
 
 function responseQuotaResource(response: Response, fallback: GithubQuotaResourceName): GithubQuotaResourceName {
