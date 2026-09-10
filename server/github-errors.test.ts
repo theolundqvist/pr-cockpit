@@ -127,6 +127,13 @@ test("quota boundaries isolate search, GraphQL, and core while transport and mut
       let coreLimited = false;
       globalThis.fetch = async (input, init) => {
         const url = new URL(String(input));
+        // A blocked resource is revalidated against /rate_limit before being refused. Exhaustion is
+        // genuine here, so report zero and let the recorded block stand.
+        if (url.pathname === "/rate_limit") {
+          return Response.json({
+            resources: { core: { remaining: 0 }, search: { remaining: 0 }, graphql: { remaining: 0 } },
+          });
+        }
         if (url.pathname === "/search/issues") {
           calls.search++;
           if (searchLimited) {
@@ -259,6 +266,12 @@ test("quota state follows auth changes and ignores late responses from the previ
       globalThis.fetch = async (input, init) => {
         const url = new URL(String(input));
         const authorization = new Headers(init?.headers).get("authorization");
+        // Revalidation probe before a refusal. Exhaustion is genuine here, so report zero.
+        if (url.pathname === "/rate_limit") {
+          return Response.json({
+            resources: { core: { remaining: 0 }, search: { remaining: 0 }, graphql: { remaining: 0 } },
+          });
+        }
         if (url.pathname === "/search/issues") {
           searchCalls++;
           if (authorization === "bearer old-token") {
@@ -324,5 +337,141 @@ test("quota state follows auth changes and ignores late responses from the previ
     });
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("a secondary rate limit blocks for retry-after, not for the primary window's reset", async () => {
+  // GitHub answers a burst (a secondary limit) with 403 + `retry-after`, and the SAME response still
+  // carries `x-ratelimit-reset` for the primary hourly window — which is untouched and may be most of
+  // an hour away. Combining them turned a one-minute cooldown into a one-hour block: every mutation
+  // refused while `gh api rate_limit` reported the full 5000 remaining.
+  const fakeGhDir = mkdtempSync(join(tmpdir(), "pr-cockpit-secondary-limit-"));
+  const fakeGh = join(fakeGhDir, "gh");
+  writeFileSync(fakeGh, "#!/bin/sh\nprintf 'fixture-token\\n'\n");
+  chmodSync(fakeGh, 0o755);
+  try {
+    const script = `
+      let now = 2_000_000_000_000;
+      Date.now = () => now;
+      const github = await import(${JSON.stringify(githubModuleUrl)});
+      let limited = true;
+      globalThis.fetch = async (input) => {
+        if (limited) {
+          limited = false;
+          // retry-after says 60s. x-ratelimit-reset points an hour out, for a budget that is fine.
+          return Response.json({ message: "You have exceeded a secondary rate limit" }, { status: 403, headers: {
+            "x-ratelimit-resource": "core",
+            "x-ratelimit-remaining": "4999",
+            "x-ratelimit-reset": String((now + 3_600_000) / 1000),
+            "retry-after": "60",
+          } });
+        }
+        return Response.json({ workflows: [] }, { headers: { "x-ratelimit-resource": "core", "x-ratelimit-remaining": "4999" } });
+      };
+      const capture = async (fn) => { try { await fn(); return null; } catch (error) { return error; } };
+
+      const first = await capture(() => github.fetchActionWorkflows("acme/app"));
+      // Still inside the 60s cooldown: blocked.
+      const during = await capture(() => github.fetchActionWorkflows("acme/app"));
+      // Past the cooldown but far short of the hourly reset: must be allowed again.
+      now += 61_000;
+      const after = await capture(() => github.fetchActionWorkflows("acme/app"));
+      console.log(JSON.stringify({
+        firstKind: first?.kind ?? null,
+        blockedDuringCooldown: during?.kind === "quota",
+        blockedAfterCooldown: after?.kind === "quota",
+        blockedUntil: first?.resetAt ?? null,
+      }));
+    `;
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: { ...Bun.env, COCKPIT_GH_BIN: fakeGh, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      process.exited,
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+    ]);
+    expect(exitCode, stderr).toBe(0);
+    const result = JSON.parse(stdout);
+    expect(result.firstKind).toBe("quota");
+    expect(result.blockedDuringCooldown).toBe(true);
+    // The whole point: 61 seconds later the block is gone, rather than lasting the full hour.
+    expect(result.blockedAfterCooldown).toBe(false);
+    expect(result.blockedUntil).toBe(new Date(2_000_000_060_000).toISOString());
+  } finally {
+    rmSync(fakeGhDir, { recursive: true, force: true });
+  }
+});
+
+test("a recorded block clears as soon as the budget refills, without waiting for its deadline", async () => {
+  // A 403 carrying `x-ratelimit-remaining: 0` records that window's reset as a deadline. The window
+  // then rolls over and the budget refills — but the deadline has not passed, so every later request
+  // is refused against a quota that is no longer exhausted. Revalidating against /rate_limit, which
+  // is exempt from rate limiting, is what stops an hour of refusals.
+  const fakeGhDir = mkdtempSync(join(tmpdir(), "pr-cockpit-quota-revalidate-"));
+  const fakeGh = join(fakeGhDir, "gh");
+  writeFileSync(fakeGh, "#!/bin/sh\nprintf 'fixture-token\\n'\n");
+  chmodSync(fakeGh, 0o755);
+  try {
+    const script = `
+      let now = 2_000_000_000_000;
+      Date.now = () => now;
+      const github = await import(${JSON.stringify(githubModuleUrl)});
+      let refilled = false;
+      let limited = true;
+      let probes = 0;
+      globalThis.fetch = async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/rate_limit") {
+          probes++;
+          return Response.json({ resources: { core: { remaining: refilled ? 5000 : 0 } } });
+        }
+        if (limited) {
+          limited = false;
+          return Response.json({ message: "API rate limit exceeded" }, { status: 403, headers: {
+            "x-ratelimit-resource": "core",
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": String((now + 3_600_000) / 1000),
+          } });
+        }
+        return Response.json({ workflows: [] }, { headers: { "x-ratelimit-resource": "core", "x-ratelimit-remaining": "5000" } });
+      };
+      const capture = async (fn) => { try { await fn(); return null; } catch (error) { return error; } };
+
+      const first = await capture(() => github.fetchActionWorkflows("acme/app"));
+      // Budget still empty: the block stands.
+      const stillBlocked = await capture(() => github.fetchActionWorkflows("acme/app"));
+      // Window rolled over. The recorded deadline is still an hour out, but the budget is back.
+      refilled = true;
+      const afterRefill = await capture(() => github.fetchActionWorkflows("acme/app"));
+      console.log(JSON.stringify({
+        firstKind: first?.kind ?? null,
+        stillBlocked: stillBlocked?.kind === "quota",
+        blockedAfterRefill: afterRefill?.kind === "quota",
+        probes,
+      }));
+    `;
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: { ...Bun.env, COCKPIT_GH_BIN: fakeGh, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      process.exited,
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+    ]);
+    expect(exitCode, stderr).toBe(0);
+    const result = JSON.parse(stdout);
+    expect(result.firstKind).toBe("quota");
+    expect(result.stillBlocked).toBe(true);
+    // The point: the deadline is still an hour away, but the budget came back, so we go again.
+    expect(result.blockedAfterRefill).toBe(false);
+    // And we only probe while something is actually blocked.
+    expect(result.probes).toBeGreaterThan(0);
+  } finally {
+    rmSync(fakeGhDir, { recursive: true, force: true });
   }
 });

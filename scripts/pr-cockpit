@@ -360,7 +360,7 @@ if [[ -n "$proxy" ]] && ! server_ready; then
   launcher_proxy_args=()
   [[ -z "$proxy_arg" ]] || launcher_proxy_args=(--use-as-proxy "$proxy_arg")
   COCKPIT_PORT="$port" COCKPIT_DATA_DIR="$data_dir" COCKPIT_PROXY_PORT="$proxy_port" \
-    nohup "$launcher" --server-only "${launcher_proxy_args[@]}" < /dev/null > "$data_dir/replica.log" 2>&1 &
+    nohup "$launcher" --server-only "${launcher_proxy_args[@]+"${launcher_proxy_args[@]}"}" < /dev/null > "$data_dir/replica.log" 2>&1 &
   disown
   for _ in $(seq 1 100); do
     server_ready && break
@@ -820,7 +820,7 @@ try {
   console.error(`pr-cockpit: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
 }
-' "$base_url" "$repo" "$number" "$command" "$body_file" "$mutation_method" "$force" "$comment_path" "$comment_line" "$comment_side" "$start_line" "$start_side" "${positionals[@]}"
+' "$base_url" "$repo" "$number" "$command" "$body_file" "$mutation_method" "$force" "$comment_path" "$comment_line" "$comment_side" "$start_line" "$start_side" "${positionals[@]+"${positionals[@]}"}"
   exit $?
 fi
 
