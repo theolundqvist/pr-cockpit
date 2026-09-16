@@ -333,7 +333,8 @@ fi
 proxy="${proxy#ssh://}"
 proxy="${proxy%/}"
 proxy_port="${env_proxy_port:-${COCKPIT_PROXY_PORT:-4820}}"
-if [[ -n "$proxy" && ! "$proxy" =~ ^([A-Za-z0-9._-]+@)?[A-Za-z0-9._-]+$ ]]; then
+proxy_pattern='^([A-Za-z0-9._-]+@)?[A-Za-z0-9._-]+$'
+if [[ -n "$proxy" && ! "$proxy" =~ $proxy_pattern ]]; then
   echo "pr-cockpit: proxy must be an SSH host such as build-server or root@host" >&2
   exit 2
 fi
@@ -503,6 +504,9 @@ if [[ -z "$ref" ]]; then
 fi
 
 uri_comments=""
+number_ref_pattern='^([1-9][0-9]*)$'
+repo_path_ref_pattern='^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/([1-9][0-9]*)$'
+repo_hash_ref_pattern='^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([1-9][0-9]*)$'
 case "$ref" in
   pr://*)
     raw=${ref#pr://}
@@ -512,11 +516,11 @@ case "$ref" in
       [[ "$query" = "comments=0" || "$query" = "comments=1" ]] || usage
       uri_comments=${query#comments=}
     fi
-    if [[ "$raw" =~ ^([1-9][0-9]*)$ ]]; then
+    if [[ "$raw" =~ $number_ref_pattern ]]; then
       repo=$(current_repo || true)
       number=${BASH_REMATCH[1]}
       [[ -n "$repo" ]] || { echo "pr-cockpit: current repository is unknown; use pr://owner/repo/N" >&2; exit 2; }
-    elif [[ "$raw" =~ ^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/([1-9][0-9]*)$ ]]; then
+    elif [[ "$raw" =~ $repo_path_ref_pattern ]]; then
       repo=${BASH_REMATCH[1]}
       number=${BASH_REMATCH[2]}
     else
@@ -524,7 +528,7 @@ case "$ref" in
     fi
     ;;
   *)
-    if [[ "$ref" =~ ^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([1-9][0-9]*)$ ]]; then
+    if [[ "$ref" =~ $repo_hash_ref_pattern ]]; then
       repo=${BASH_REMATCH[1]}
       number=${BASH_REMATCH[2]}
     else

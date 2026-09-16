@@ -758,7 +758,7 @@ test("update delegates to the running server and waits for the new revision", as
   }
 });
 
-test("mutation commands enqueue every PR operation and wait for completion", async () => {
+test("mutation commands enqueue every PR operation under the system Bash and wait for completion", async () => {
   const root = mkdtempSync(join(tmpdir(), "pr-cockpit-mutations-"));
   const bodyPath = join(root, "body.txt");
   const body = "first paragraph\n\nsecond paragraph\n";
@@ -809,7 +809,7 @@ test("mutation commands enqueue every PR operation and wait for completion", asy
 
   try {
     for (const scenario of cases) {
-      const process = Bun.spawn([join(import.meta.dir, "pr-cockpit"), ...scenario.args], {
+      const process = Bun.spawn(["/bin/bash", join(import.meta.dir, "pr-cockpit"), ...scenario.args], {
         env: { ...Bun.env, COCKPIT_PORT: String(server.port) },
         stdout: "pipe",
         stderr: "pipe",
@@ -975,7 +975,7 @@ test("a running server's persisted replica source overrides the install seed", a
   }
 });
 
-test("an installed CLI symlink starts the repository launcher", async () => {
+test("an installed CLI symlink starts the repository launcher with a configured proxy under system Bash", async () => {
   const home = mkdtempSync(join(tmpdir(), "pr-cockpit-symlink-launcher-"));
   const root = join(home, "app");
   const scripts = join(root, "scripts");
@@ -1000,12 +1000,13 @@ fi
   symlinkSync(join(scripts, "pr-cockpit"), join(bin, "pr-cockpit"));
 
   try {
-    const child = Bun.spawn([join(bin, "pr-cockpit"), "--use-as-proxy", "build-server", "owner/repo#1"], {
+    const child = Bun.spawn(["/bin/bash", join(bin, "pr-cockpit"), "owner/repo#1"], {
       env: {
         ...Bun.env,
         HOME: home,
         PATH: `${bin}:${Bun.env.PATH}`,
         COCKPIT_DATA_DIR: dataDir,
+        COCKPIT_PROXY: "build-server",
         COCKPIT_PORT: "4895",
       },
       stdout: "pipe",

@@ -34,10 +34,18 @@ export class GithubRequestError extends Error {
   }
 }
 
-type BlockedQuota = { status: number; resetAt: string; until: number };
-const blockedQuotas = new Map<GithubQuotaResourceName, BlockedQuota>();
+type QuotaDeadline = { status: number; resetAt: string; until: number };
+type QuotaBlocks = { primary?: QuotaDeadline; secondary?: QuotaDeadline };
+const blockedQuotas = new Map<GithubQuotaResourceName, QuotaBlocks>();
 const responseQuotaResources = new WeakMap<Response, GithubQuotaResourceName>();
 const responseQuotaGenerations = new WeakMap<Response, number>();
+const quotaProbeInFlight = new Map<GithubQuotaResourceName, {
+  generation: number;
+  primary: QuotaDeadline;
+  promise: Promise<void>;
+}>();
+const lastQuotaProbeAt = new Map<GithubQuotaResourceName, number>();
+const QUOTA_PROBE_INTERVAL_MS = 30_000;
 let activeQuotaToken: string | null = null;
 let activeQuotaGeneration = 0;
 
@@ -46,6 +54,8 @@ function quotaGeneration(token: string): number {
     activeQuotaToken = token;
     activeQuotaGeneration++;
     blockedQuotas.clear();
+    quotaProbeInFlight.clear();
+    lastQuotaProbeAt.clear();
     cachedQuota = null;
   }
   return activeQuotaGeneration;
@@ -54,18 +64,40 @@ function responseHasActiveQuota(response: Response): boolean {
   return responseQuotaGenerations.get(response) === activeQuotaGeneration;
 }
 
-function updateQuotaBlock(
+function quotaState(resource: GithubQuotaResourceName): QuotaBlocks {
+  const existing = blockedQuotas.get(resource);
+  if (existing) return existing;
+  const state: QuotaBlocks = {};
+  blockedQuotas.set(resource, state);
+  return state;
+}
+
+function removeEmptyQuotaState(resource: GithubQuotaResourceName, state: QuotaBlocks): void {
+  if (!state.primary && !state.secondary && blockedQuotas.get(resource) === state) blockedQuotas.delete(resource);
+}
+
+function updatePrimaryQuota(
   resource: GithubQuotaResourceName,
   remaining: number,
   resetAt: string | null,
   status = 403,
 ): void {
   if (remaining > 0) {
-    blockedQuotas.delete(resource);
+    const state = blockedQuotas.get(resource);
+    if (!state) return;
+    delete state.primary;
+    removeEmptyQuotaState(resource, state);
     return;
   }
   const until = resetAt === null ? Number.NaN : Date.parse(resetAt);
-  if (remaining === 0 && resetAt !== null && Number.isFinite(until)) blockedQuotas.set(resource, { status, resetAt, until });
+  if (remaining === 0 && resetAt !== null && Number.isFinite(until)) {
+    quotaState(resource).primary = { status, resetAt, until };
+  }
+}
+
+function updateSecondaryQuota(resource: GithubQuotaResourceName, deadline: QuotaDeadline): void {
+  const state = quotaState(resource);
+  if (!state.secondary || deadline.until > state.secondary.until) state.secondary = deadline;
 }
 
 function quotaResource(path: string): GithubQuotaResourceName {
@@ -73,35 +105,25 @@ function quotaResource(path: string): GithubQuotaResourceName {
   return path.startsWith("/search/") ? "search" : "core";
 }
 
-function quotaReset(response: Response): { resetAt: string; until: number } | null {
-  // `retry-after` and `x-ratelimit-reset` describe different clocks, so they must never be combined.
-  //
-  // A secondary rate limit (a burst of requests, not an exhausted budget) answers 403/429 with
-  // `retry-after: 60` — wait a minute. That same response still carries `x-ratelimit-reset` for the
-  // PRIMARY hourly window, which may be most of an hour away and has nothing to do with the burst.
-  // Taking the later of the two turned a sixty-second cooldown into a sixty-minute block: every
-  // mutation refused for an hour while `gh api rate_limit` cheerfully reported 5000/5000 remaining.
-  //
-  // So `retry-after` wins whenever it is present. It is GitHub telling us exactly how long to wait.
-  // `x-ratelimit-reset` only applies when the budget itself is spent, which the caller establishes by
-  // checking `x-ratelimit-remaining` before trusting this value.
+function retryAfterDeadline(response: Response): QuotaDeadline | null {
   const retryAfter = response.headers.get("retry-after");
-  if (retryAfter !== null) {
-    const seconds = Number(retryAfter);
-    const until = Number.isFinite(seconds)
-      ? Date.now() + Math.max(0, seconds) * 1_000
-      : Date.parse(retryAfter);
-    if (Number.isFinite(until)) return { until, resetAt: new Date(until).toISOString() };
-  }
+  if (retryAfter === null) return null;
+  const seconds = Number(retryAfter);
+  const until = Number.isFinite(seconds)
+    ? Date.now() + Math.max(0, seconds) * 1_000
+    : Date.parse(retryAfter);
+  return Number.isFinite(until)
+    ? { status: response.ok ? 403 : response.status, until, resetAt: new Date(until).toISOString() }
+    : null;
+}
+
+function primaryResetDeadline(response: Response): QuotaDeadline | null {
   const rawReset = response.headers.get("x-ratelimit-reset");
-  if (rawReset !== null) {
-    const reset = Number(rawReset);
-    if (Number.isFinite(reset)) {
-      const until = reset * 1_000;
-      return { until, resetAt: new Date(until).toISOString() };
-    }
-  }
-  return null;
+  if (rawReset === null) return null;
+  const reset = Number(rawReset);
+  if (!Number.isFinite(reset)) return null;
+  const until = reset * 1_000;
+  return { status: response.ok ? 403 : response.status, until, resetAt: new Date(until).toISOString() };
 }
 
 function responseQuotaResource(response: Response, fallback: GithubQuotaResourceName): GithubQuotaResourceName {
@@ -116,50 +138,96 @@ function accountQuota(response: Response, fallback: GithubQuotaResourceName, gen
   const resource = responseQuotaResource(response, fallback);
   const rawRemaining = response.headers.get("x-ratelimit-remaining");
   const remaining = rawRemaining === null ? Number.NaN : Number(rawRemaining);
-  const reset = quotaReset(response);
-  if ((remaining === 0 || ((response.status === 403 || response.status === 429) && response.headers.has("retry-after"))) && reset) {
-    updateQuotaBlock(resource, 0, reset.resetAt, response.ok ? 403 : response.status);
+  const primary = primaryResetDeadline(response);
+  if (remaining === 0 && primary) {
+    updatePrimaryQuota(resource, 0, primary.resetAt, primary.status);
   } else if (Number.isFinite(remaining) && remaining > 0) {
-    updateQuotaBlock(resource, remaining, null);
+    updatePrimaryQuota(resource, remaining, null);
+  }
+  if ((response.status === 403 || response.status === 429) && response.headers.has("retry-after")) {
+    const secondary = retryAfterDeadline(response);
+    if (secondary) updateSecondaryQuota(resource, secondary);
   }
 }
 
-/*
- * A recorded block can outlive the condition it describes. Some 403s carry `x-ratelimit-remaining: 0`
- * and the current window's `x-ratelimit-reset`, so a deadline gets written down — then the window
- * rolls over and the budget refills long before that deadline, and nothing notices. The result is
- * every mutation refused for the best part of an hour while `/rate_limit` reports 5000 remaining.
- *
- * `/rate_limit` is exempt from rate limiting, so asking is free. Whatever it says has budget is not
- * blocked, whatever we recorded earlier. One cheap request beats an hour of refusals.
- */
-async function revalidateQuota(resource: GithubQuotaResourceName): Promise<void> {
-  if (!blockedQuotas.has(resource)) return;
-  try {
-    const response = await fetch("https://api.github.com/rate_limit", {
-      headers: {
-        Authorization: `bearer ${await ghToken()}`,
-        Accept: "application/vnd.github+json",
-      },
-    });
-    if (!response.ok) return;
-    const body = (await response.json()) as {
-      resources?: Record<string, { remaining?: number } | undefined>;
-    };
-    const remaining = body.resources?.[resource]?.remaining;
-    if (typeof remaining === "number" && remaining > 0) blockedQuotas.delete(resource);
-  } catch {
-    // Unreachable or malformed: keep the recorded block and let its deadline govern.
+function activeQuotaBlock(resource: GithubQuotaResourceName): QuotaDeadline | null {
+  const state = blockedQuotas.get(resource);
+  if (!state) return null;
+  const now = Date.now();
+  if (state.primary && now >= state.primary.until) delete state.primary;
+  if (state.secondary && now >= state.secondary.until) delete state.secondary;
+  const blocked = !state.primary
+    ? state.secondary
+    : !state.secondary || state.primary.until >= state.secondary.until
+      ? state.primary
+      : state.secondary;
+  removeEmptyQuotaState(resource, state);
+  return blocked ?? null;
+}
+
+async function revalidateQuota(
+  resource: GithubQuotaResourceName,
+  token: string,
+  generation: number,
+): Promise<void> {
+  activeQuotaBlock(resource);
+  const state = blockedQuotas.get(resource);
+  if (generation !== activeQuotaGeneration || !state?.primary || state.secondary) return;
+  const primary = state.primary;
+  const existing = quotaProbeInFlight.get(resource);
+  if (existing?.generation === generation && existing.primary === primary) {
+    await existing.promise;
+    return;
   }
+  const now = Date.now();
+  if (now - (lastQuotaProbeAt.get(resource) ?? Number.NEGATIVE_INFINITY) < QUOTA_PROBE_INTERVAL_MS) return;
+  lastQuotaProbeAt.set(resource, now);
+  const entry: {
+    generation: number;
+    primary: QuotaDeadline;
+    promise: Promise<void>;
+  } = { generation, primary, promise: Promise.resolve() };
+  entry.promise = (async () => {
+    try {
+      const response = await fetch("https://api.github.com/rate_limit", {
+        headers: {
+          Authorization: `bearer ${token}`,
+          Accept: "application/vnd.github+json",
+        },
+      });
+      if (generation !== activeQuotaGeneration) return;
+      const secondary = retryAfterDeadline(response);
+      if ((response.status === 403 || response.status === 429) && secondary) {
+        updateSecondaryQuota(resource, secondary);
+      }
+      if (!response.ok) return;
+      const body = (await response.json()) as {
+        resources?: Record<string, { remaining?: number } | undefined>;
+      };
+      const remaining = body.resources?.[resource]?.remaining;
+      const current = blockedQuotas.get(resource);
+      if (
+        typeof remaining === "number"
+        && remaining > 0
+        && generation === activeQuotaGeneration
+        && current?.primary === primary
+      ) {
+        delete current.primary;
+        removeEmptyQuotaState(resource, current);
+      }
+    } catch {
+      // Keep the recorded block when the probe is unreachable or malformed.
+    }
+  })().finally(() => {
+    if (quotaProbeInFlight.get(resource) === entry) quotaProbeInFlight.delete(resource);
+  });
+  quotaProbeInFlight.set(resource, entry);
+  await entry.promise;
 }
 
 function assertQuotaAvailable(resource: GithubQuotaResourceName): void {
-  const blocked = blockedQuotas.get(resource);
+  const blocked = activeQuotaBlock(resource);
   if (!blocked) return;
-  if (Date.now() >= blocked.until) {
-    blockedQuotas.delete(resource);
-    return;
-  }
   throw new GithubRequestError(
     `GitHub ${resource} quota exhausted until ${blocked.resetAt}`,
     blocked.status,
@@ -183,7 +251,7 @@ async function githubApiResponse(
   const resource = quotaResource(path);
   const token = options.authentication?.token ?? await ghToken();
   const generation = options.authentication?.generation ?? quotaGeneration(token);
-  await revalidateQuota(resource);
+  await revalidateQuota(resource, token, generation);
   assertQuotaAvailable(resource);
   let response: Response;
   try {
@@ -216,22 +284,23 @@ async function githubApiResponse(
 
 async function githubResponseError(label: string, response: Response): Promise<GithubRequestError> {
   const resource = responseQuotaResource(response, quotaResource(new URL(response.url || "https://api.github.com").pathname));
-  const reset = quotaReset(response);
   const body = await response.text();
   const quota = response.status === 429
-    || ((response.status === 403 || response.status === 429) && (
+    || (response.status === 403 && (
       response.headers.get("x-ratelimit-remaining") === "0"
       || response.headers.has("retry-after")
       || /rate limit/i.test(body)
     ));
-  if (quota && reset && responseHasActiveQuota(response)) updateQuotaBlock(resource, 0, reset.resetAt, response.status);
+  const resetAt = quota && responseHasActiveQuota(response)
+    ? activeQuotaBlock(resource)?.resetAt ?? null
+    : null;
   return new GithubRequestError(
     `${label}: ${response.status}${body ? ` ${body}` : ""}`,
     response.status,
     [],
     quota ? "quota" : "http",
     resource,
-    quota ? reset?.resetAt ?? null : null,
+    resetAt,
   );
 }
 
@@ -349,7 +418,7 @@ async function graphql<T>(
     remaining: number;
     resetAt: string;
   } | undefined;
-  if (rateLimit && responseHasActiveQuota(res)) updateQuotaBlock("graphql", rateLimit.remaining, rateLimit.resetAt);
+  if (rateLimit && responseHasActiveQuota(res)) updatePrimaryQuota("graphql", rateLimit.remaining, rateLimit.resetAt);
   if (body.data) delete body.data[RATE_LIMIT_ALIAS];
   record(rateLimit ?? null, body.errors?.length ? "error" : "ok");
   if (body.errors?.length) {
@@ -357,7 +426,7 @@ async function graphql<T>(
     const exhausted = body.errors.some((error) => error.type === "RATE_LIMIT" || error.type === "RATE_LIMITED");
     const resetAt = rateLimit?.resetAt
       ?? (headerReset === null ? cachedQuota?.graphql.resetAt ?? null : new Date(headerReset * 1_000).toISOString());
-    if (exhausted && responseHasActiveQuota(res)) updateQuotaBlock("graphql", 0, resetAt);
+    if (exhausted && responseHasActiveQuota(res)) updatePrimaryQuota("graphql", 0, resetAt);
     throw new GithubRequestError(
       `GraphQL errors: ${JSON.stringify(body.errors)}`,
       missing ? 404 : exhausted ? 403 : 502,
@@ -534,8 +603,8 @@ export async function fetchGithubQuota(): Promise<GithubQuota> {
   const quota = { rest: resource("core"), graphql: resource("graphql"), fetchedAt: new Date().toISOString() };
   if (responseHasActiveQuota(res)) {
     cachedQuota = quota;
-    updateQuotaBlock("core", quota.rest.remaining, quota.rest.resetAt);
-    updateQuotaBlock("graphql", quota.graphql.remaining, quota.graphql.resetAt);
+    updatePrimaryQuota("core", quota.rest.remaining, quota.rest.resetAt);
+    updatePrimaryQuota("graphql", quota.graphql.remaining, quota.graphql.resetAt);
   }
   return quota;
 }
