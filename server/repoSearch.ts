@@ -1,7 +1,7 @@
 import { posix } from "node:path";
 import { astDefinitions } from "./astResolve.ts";
 import { showFile } from "./gitShow.ts";
-import { fetchMirror, mirrorDir } from "./mirror.ts";
+import { fetchMirror, mirrorDir, withMirrorOperation } from "./mirror.ts";
 
 const MAX_MATCHES = 2000;
 
@@ -70,11 +70,18 @@ export type SearchCtx =
   | { status: "fetch-failed" }
   | { status: "not-found" };
 
-export function searchCtx(repo: string, headRef: string, sha: string): SearchCtx {
-  const checkout = mirrorDir(repo);
-  const local = ensureShaLocal(checkout, repo, headRef, sha);
-  if (local !== "ready") return { status: local };
-  return { status: "ok", checkout };
+export function withSearchCtx<T>(
+  repo: string,
+  headRef: string,
+  sha: string,
+  consume: (ctx: SearchCtx) => T | Promise<T>,
+): Promise<T> {
+  return withMirrorOperation(repo, async () => {
+    const checkout = mirrorDir(repo);
+    const local = ensureShaLocal(checkout, repo, headRef, sha);
+    const ctx: SearchCtx = local === "ready" ? { status: "ok", checkout } : { status: local };
+    return await consume(ctx);
+  });
 }
 
 function parseGrepLine(line: string, prefix: string): GrepMatch | null {

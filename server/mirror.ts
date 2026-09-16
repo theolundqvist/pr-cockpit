@@ -1,4 +1,6 @@
-import { mkdirSync, readdirSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import type { Stats } from "node:fs";
+import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { lstat, readdir, rm, stat } from "node:fs/promises";
 import { ghToken } from "./github.ts";
 
 const dataDir = Bun.env.COCKPIT_DATA_DIR ?? "data";
@@ -11,7 +13,10 @@ function mirrorDirName(repo: string): string {
 }
 
 export function mirrorDir(repo: string): string {
-  return `${mirrorsRoot}/${mirrorDirName(repo)}`;
+  const entry = mirrorDirName(repo);
+  if (deletingMirrors.has(entry)) throw new Error(`mirror cache eviction is in progress for ${repo}`);
+  touch(repo);
+  return `${mirrorsRoot}/${entry}`;
 }
 
 export function prWorktreeDir(repo: string, number: number): string {
@@ -24,8 +29,11 @@ function ensureAskpass(): void {
   chmodSync(askpassPath, 0o700);
 }
 
-async function git(args: string[]): Promise<{ ok: boolean; exitCode: number; stdout: string; stderr: string }> {
-  const proc = Bun.spawn(["git", ...args], { stdout: "pipe", stderr: "pipe" });
+async function git(
+  args: string[],
+  priorityCommand: string[] = [],
+): Promise<{ ok: boolean; exitCode: number; stdout: string; stderr: string }> {
+  const proc = Bun.spawn([...priorityCommand, "git", ...args], { stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
@@ -98,39 +106,155 @@ async function ensureMirror(repo: string, timeoutMs?: number): Promise<void> {
 }
 
 const inFlightFetch = new Map<string, Promise<void>>();
-
-// on-demand mirrors need to survive the poll cycle's prune immediately after being cloned/fetched
+const activeOperations = new Map<string, number>();
+const mutationTails = new Map<string, Promise<void>>();
+const deletingMirrors = new Set<string>();
+const deletionWaits = new Map<string, Promise<void>>();
+const deletionReleases = new Map<string, () => void>();
 const lastUsedAt = new Map<string, number>();
+const lastUsePersistedAt = new Map<string, number>();
 const RECENT_USE_WINDOW_MS = 10 * 60_000;
+const LAST_USED_MARKER = ".cockpit-last-used";
+const LAST_USED_PERSIST_INTERVAL_MS = 60_000;
+const MAX_PACKS_BEFORE_MAINTENANCE = 50;
+const MIRROR_CACHE_TARGET_BYTES = 20 * 1024 * 1024 * 1024;
+
+function missingPath(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
 
 function touch(repo: string): void {
-  lastUsedAt.set(mirrorDirName(repo), Date.now());
+  const entry = mirrorDirName(repo);
+  const now = Date.now();
+  lastUsedAt.set(entry, now);
+  let persistedAt = lastUsePersistedAt.get(entry);
+  if (persistedAt === undefined) {
+    try {
+      persistedAt = statSync(`${mirrorsRoot}/${entry}/${LAST_USED_MARKER}`).mtimeMs;
+      lastUsePersistedAt.set(entry, persistedAt);
+    } catch (error) {
+      if (!missingPath(error)) throw error;
+    }
+  }
+  if (persistedAt !== undefined && now - persistedAt < LAST_USED_PERSIST_INTERVAL_MS) return;
+  try {
+    writeFileSync(`${mirrorsRoot}/${entry}/${LAST_USED_MARKER}`, `${now}\n`);
+    lastUsePersistedAt.set(entry, now);
+  } catch (error) {
+    if (!missingPath(error)) throw error;
+  }
+}
+
+export async function withMirrorOperation<T>(repo: string, operation: () => Promise<T>): Promise<T> {
+  const entry = mirrorDirName(repo);
+  let deletion = deletionWaits.get(entry);
+  while (deletion) {
+    await deletion;
+    deletion = deletionWaits.get(entry);
+  }
+  touch(repo);
+  activeOperations.set(entry, (activeOperations.get(entry) ?? 0) + 1);
+  try {
+    return await operation();
+  } finally {
+    const remaining = (activeOperations.get(entry) ?? 1) - 1;
+    if (remaining === 0) activeOperations.delete(entry);
+    else activeOperations.set(entry, remaining);
+    touch(repo);
+  }
+}
+
+let maintenanceQueue = Promise.resolve();
+
+async function maintainMirror(repo: string): Promise<void> {
+  const dir = mirrorDir(repo);
+  let packs = 0;
+  try {
+    packs = (await readdir(`${dir}/objects/pack`)).filter((name) => name.endsWith(".pack")).length;
+  } catch (error) {
+    if (!missingPath(error)) throw error;
+  }
+  if (packs <= MAX_PACKS_BEFORE_MAINTENANCE) return;
+
+  const previous = maintenanceQueue;
+  const { promise, resolve: release } = Promise.withResolvers<void>();
+  maintenanceQueue = promise;
+  await previous;
+  try {
+    const priorityCommand = [
+      ...(Bun.which("ionice") ? ["ionice", "-c", "3"] : []),
+      ...(Bun.which("nice") ? ["nice", "-n", "10"] : []),
+    ];
+    const result = await git([
+      "-c",
+      "pack.threads=1",
+      "-c",
+      "pack.windowMemory=256m",
+      "-c",
+      "pack.deltaCacheSize=64m",
+      "--git-dir",
+      dir,
+      "maintenance",
+      "run",
+      "--task=gc",
+    ], priorityCommand);
+    if (!result.ok) {
+      throw new MirrorFetchError(`mirror maintenance failed for ${repo}: ${result.stderr.trim() || `git exited ${result.exitCode}`}`, "git");
+    }
+  } finally {
+    release();
+  }
 }
 
 // bound for in-request cache fetches; background ingestion stays unbounded
 export const INCREMENTAL_FETCH_TIMEOUT_MS = 15_000;
 
-function dedupWaitTimeout(ms: number): Promise<never> {
-  return new Promise((_, reject) => {
-    setTimeout(() => reject(new MirrorFetchError(`mirror fetch dedup wait exceeded ${ms}ms`, "deadline")), ms);
-  });
+async function waitForFetch(fetch: Promise<void>, ms: number): Promise<void> {
+  const { promise: timeout, reject } = Promise.withResolvers<never>();
+  const timer = setTimeout(() => reject(new MirrorFetchError(`mirror fetch wait exceeded ${ms}ms`, "deadline")), ms);
+  try {
+    await Promise.race([fetch, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export function fetchMirror(repo: string, timeoutMs?: number): Promise<void> {
   touch(repo);
   const existing = inFlightFetch.get(repo);
   if (existing) {
-    // an in-flight fetch may be unbounded (background/cold-clone) - a bounded caller still needs to give up on time
-    return timeoutMs !== undefined ? Promise.race([existing, dedupWaitTimeout(timeoutMs)]) : existing;
+    return timeoutMs !== undefined ? waitForFetch(existing, timeoutMs) : existing;
   }
-  const promise = (async () => {
+
+  const entry = mirrorDirName(repo);
+  const previousMutation = mutationTails.get(entry) ?? Promise.resolve();
+  const fetched = withMirrorOperation(repo, async () => {
+    await previousMutation;
     await ensureMirror(repo, timeoutMs);
+    touch(repo);
     const dir = mirrorDir(repo);
-    const result = await authedGit(["--git-dir", dir, "fetch", "--prune", "origin", ...FETCH_REFSPECS], timeoutMs);
+    const result = await authedGit(["--git-dir", dir, "fetch", "--no-auto-maintenance", "--prune", "origin", ...FETCH_REFSPECS], timeoutMs);
     if (!result.ok) throw mirrorFetchError("fetch", repo, result);
-  })().finally(() => inFlightFetch.delete(repo));
-  inFlightFetch.set(repo, promise);
-  return promise;
+  });
+  const ready = fetched.finally(() => inFlightFetch.delete(repo));
+  inFlightFetch.set(repo, ready);
+
+  const mutationTail = ready.then(
+    async () => {
+      try {
+        await withMirrorOperation(repo, () => maintainMirror(repo));
+      } catch (error) {
+        console.error(`mirror maintenance failed for ${repo}:`, error);
+      }
+    },
+    () => {},
+  );
+  mutationTails.set(entry, mutationTail);
+  void mutationTail.finally(() => {
+    if (mutationTails.get(entry) === mutationTail) mutationTails.delete(entry);
+  });
+
+  return timeoutMs !== undefined ? waitForFetch(ready, timeoutMs) : ready;
 }
 
 const inFlightWorktrees = new Map<string, Promise<string>>();
@@ -152,7 +276,7 @@ export function materializePrWorktree(repo: string, number: number, sha: string)
       () => materializePrWorktree(repo, number, sha),
     );
   }
-  const promise = (async () => {
+  const promise = withMirrorOperation(repo, async () => {
     const gitDir = mirrorDir(repo);
     if (!(await commitExists(gitDir, sha))) {
       await fetchMirror(repo, INCREMENTAL_FETCH_TIMEOUT_MS);
@@ -197,28 +321,148 @@ export function materializePrWorktree(repo: string, number: number, sha: string)
     if (!added.ok) throw new Error(`PR worktree creation failed for ${repo}#${number}: ${added.stderr.trim()}`);
     recordMaterializedHead(marker, repo, number, sha);
     return dir;
-  })().finally(() => inFlightWorktrees.delete(key));
+  }).finally(() => inFlightWorktrees.delete(key));
   inFlightWorktrees.set(key, promise);
   return promise;
 }
 
-export function pruneMirrors(repos: string[]): void {
+async function directorySize(path: string): Promise<number> {
+  let pathStat: Stats;
+  try {
+    pathStat = await lstat(path);
+  } catch (error) {
+    if (missingPath(error)) return 0;
+    throw error;
+  }
+  if (!pathStat.isDirectory()) return pathStat.size;
+  let size = pathStat.size;
+  let entries: string[];
+  try {
+    entries = await readdir(path);
+  } catch (error) {
+    if (missingPath(error)) return size;
+    throw error;
+  }
+  for (const entry of entries) size += await directorySize(`${path}/${entry}`);
+  return size;
+}
+
+async function mirrorLastUsedAt(entry: string): Promise<number> {
+  const inMemory = lastUsedAt.get(entry);
+  if (inMemory !== undefined) return inMemory;
+  try {
+    return (await stat(`${mirrorsRoot}/${entry}/${LAST_USED_MARKER}`)).mtimeMs;
+  } catch (error) {
+    if (!missingPath(error)) throw error;
+    return (await stat(`${mirrorsRoot}/${entry}`)).mtimeMs;
+  }
+}
+
+async function hasLinkedWorktree(entry: string): Promise<boolean> {
+  try {
+    if ((await readdir(`${worktreesRoot}/${entry}`)).length > 0) return true;
+  } catch (error) {
+    if (!missingPath(error)) throw error;
+  }
+  try {
+    return (await readdir(`${mirrorsRoot}/${entry}/worktrees`)).length > 0;
+  } catch (error) {
+    if (!missingPath(error)) throw error;
+    return false;
+  }
+}
+
+function beginDeletion(entry: string): void {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  deletingMirrors.add(entry);
+  deletionWaits.set(entry, promise);
+  deletionReleases.set(entry, resolve);
+}
+
+function finishDeletion(entry: string): void {
+  deletingMirrors.delete(entry);
+  deletionWaits.delete(entry);
+  deletionReleases.get(entry)?.();
+  deletionReleases.delete(entry);
+}
+
+async function evictMirror(entry: string, usedAt: number): Promise<boolean> {
+  if (
+    deletingMirrors.has(entry)
+    || (activeOperations.get(entry) ?? 0) > 0
+    || Date.now() - (lastUsedAt.get(entry) ?? usedAt) < RECENT_USE_WINDOW_MS
+  ) return false;
+
+  beginDeletion(entry);
+  try {
+    if (await hasLinkedWorktree(entry)) return false;
+    await rm(`${mirrorsRoot}/${entry}`, { recursive: true, force: true });
+    lastUsedAt.delete(entry);
+    lastUsePersistedAt.delete(entry);
+    return true;
+  } finally {
+    finishDeletion(entry);
+  }
+}
+
+export async function pruneMirrors(repos: string[]): Promise<void> {
   const keep = new Set(repos.map(mirrorDirName));
   let entries: string[];
   try {
-    entries = readdirSync(mirrorsRoot);
-  } catch {
-    return;
+    entries = (await readdir(mirrorsRoot)).filter((entry) => !entry.startsWith("."));
+  } catch (error) {
+    if (missingPath(error)) return;
+    throw error;
   }
+
   const now = Date.now();
+  let totalBytes = 0;
+  let protectedBytes = 0;
+  const untracked: Array<{ entry: string; size: number; usedAt: number }> = [];
+  const tracked: Array<{ entry: string; size: number; usedAt: number }> = [];
   for (const entry of entries) {
-    if (entry.startsWith(".") || keep.has(entry)) continue;
+    const size = await directorySize(`${mirrorsRoot}/${entry}`);
+    if (size === 0) continue;
+    totalBytes += size;
+    let usedAt: number;
     try {
-      if (readdirSync(`${worktreesRoot}/${entry}`).some((name) => name.startsWith("pr-") || name.startsWith(".pr-"))) continue;
-    } catch {}
-    const usedAt = lastUsedAt.get(entry);
-    if (usedAt !== undefined && now - usedAt < RECENT_USE_WINDOW_MS) continue;
-    rmSync(`${mirrorsRoot}/${entry}`, { recursive: true, force: true });
+      usedAt = await mirrorLastUsedAt(entry);
+    } catch (error) {
+      if (missingPath(error)) {
+        totalBytes -= size;
+        continue;
+      }
+      throw error;
+    }
+    if (
+      deletingMirrors.has(entry)
+      || (activeOperations.get(entry) ?? 0) > 0
+      || await hasLinkedWorktree(entry)
+      || now - usedAt < RECENT_USE_WINDOW_MS
+    ) {
+      protectedBytes += size;
+      continue;
+    }
+    (keep.has(entry) ? tracked : untracked).push({ entry, size, usedAt });
+  }
+
+  untracked.sort((left, right) => left.usedAt - right.usedAt);
+  tracked.sort((left, right) => left.usedAt - right.usedAt);
+  for (const candidate of untracked) {
+    if (await evictMirror(candidate.entry, candidate.usedAt)) totalBytes -= candidate.size;
+    else protectedBytes += candidate.size;
+  }
+  for (const candidate of tracked) {
+    if (totalBytes <= MIRROR_CACHE_TARGET_BYTES) break;
+    if (await evictMirror(candidate.entry, candidate.usedAt)) totalBytes -= candidate.size;
+    else protectedBytes += candidate.size;
+  }
+
+  if (totalBytes > MIRROR_CACHE_TARGET_BYTES) {
+    console.warn(
+      `mirror cache remains ${totalBytes} bytes, above the ${MIRROR_CACHE_TARGET_BYTES}-byte target; `
+      + `${protectedBytes} bytes are protected by active operations, linked worktrees, or use within the last 10 minutes`,
+    );
   }
 }
 
@@ -323,11 +567,12 @@ export async function conflictFilesFromMirror(
   base: string,
   head: string,
 ): Promise<MirrorConflictResult> {
-  touch(repo);
-  const dir = mirrorDir(repo);
-  if (!(await Bun.file(`${dir}/HEAD`).exists())) return { status: "no-mirror" };
-  if (!(await commitExists(dir, base)) || !(await commitExists(dir, head))) return { status: "missing-commit" };
-  return conflictFilesFromGitDir(dir, base, head);
+  return withMirrorOperation(repo, async () => {
+    const dir = mirrorDir(repo);
+    if (!(await Bun.file(`${dir}/HEAD`).exists())) return { status: "no-mirror" };
+    if (!(await commitExists(dir, base)) || !(await commitExists(dir, head))) return { status: "missing-commit" };
+    return conflictFilesFromGitDir(dir, base, head);
+  });
 }
 
 export async function diffFromGitDir(
@@ -349,10 +594,11 @@ export async function diffFromMirror(
   head: string,
   mode: "two-dot" | "three-dot",
 ): Promise<MirrorDiffResult> {
-  touch(repo);
-  const dir = mirrorDir(repo);
-  if (!(await Bun.file(`${dir}/HEAD`).exists())) return { status: "no-mirror" };
-  return diffFromGitDir(dir, base, head, mode);
+  return withMirrorOperation(repo, async () => {
+    const dir = mirrorDir(repo);
+    if (!(await Bun.file(`${dir}/HEAD`).exists())) return { status: "no-mirror" };
+    return diffFromGitDir(dir, base, head, mode);
+  });
 }
 
 export async function commitsFromGitDir(
@@ -387,10 +633,11 @@ export async function commitsFromMirror(
   base: string,
   head: string,
 ): Promise<MirrorCommitListResult> {
-  touch(repo);
-  const dir = mirrorDir(repo);
-  if (!(await Bun.file(`${dir}/HEAD`).exists())) return { status: "no-mirror" };
-  return commitsFromGitDir(dir, base, head);
+  return withMirrorOperation(repo, async () => {
+    const dir = mirrorDir(repo);
+    if (!(await Bun.file(`${dir}/HEAD`).exists())) return { status: "no-mirror" };
+    return commitsFromGitDir(dir, base, head);
+  });
 }
 
 export async function commitStatsFromGitDir(
@@ -434,10 +681,11 @@ export async function commitStatsFromMirror(
   base: string,
   head: string,
 ): Promise<MirrorCommitStatsResult> {
-  touch(repo);
-  const dir = mirrorDir(repo);
-  if (!(await Bun.file(`${dir}/HEAD`).exists())) return { status: "no-mirror" };
-  return commitStatsFromGitDir(dir, base, head);
+  return withMirrorOperation(repo, async () => {
+    const dir = mirrorDir(repo);
+    if (!(await Bun.file(`${dir}/HEAD`).exists())) return { status: "no-mirror" };
+    return commitStatsFromGitDir(dir, base, head);
+  });
 }
 
 export async function fileFromGitDir(
@@ -455,8 +703,9 @@ export async function fileFromGitDir(
 }
 
 export async function fileFromMirror(repo: string, sha: string, path: string): Promise<MirrorFileResult> {
-  touch(repo);
-  const dir = mirrorDir(repo);
-  if (!(await Bun.file(`${dir}/HEAD`).exists())) return { status: "no-mirror" };
-  return fileFromGitDir(dir, sha, path);
+  return withMirrorOperation(repo, async () => {
+    const dir = mirrorDir(repo);
+    if (!(await Bun.file(`${dir}/HEAD`).exists())) return { status: "no-mirror" };
+    return fileFromGitDir(dir, sha, path);
+  });
 }

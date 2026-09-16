@@ -132,7 +132,7 @@ test("a terminal job event normalizes stale status and caches a rerun log", asyn
     console.log(JSON.stringify({
       logFetches,
       row: dbm.db.query("SELECT status,conclusion,log_gz IS NOT NULL AS logged FROM run_jobs WHERE job_id=41").get(),
-      cachedBody: cached[0]?.body,
+      cachedBody: cached.entries[0]?.body,
       selectedState: selected?.state,
     }));
   `);
@@ -183,9 +183,9 @@ test("concurrent activation bootstraps once and terminal attempts reconcile once
     const first = JSON.parse(JSON.stringify(calls));
     await actions.activateActionsLease("acme/app", 7, head, fetchers);
     const cached = await actions.cachedJobLogs("acme/app", head);
-    const body = cached[0].body;
+    const body = cached.entries[0].body;
     console.log(JSON.stringify({
-      first, after: calls, cachedJobs: cached.map(({ job }) => job.job_id).sort((a, b) => a - b),
+      first, after: calls, cachedJobs: cached.entries.map(({ job }) => job.job_id).sort((a, b) => a - b),
       successfulStored: dbm.db.query("SELECT log_gz IS NOT NULL AS stored FROM run_jobs WHERE job_id=111").get().stored,
       bytes: dbm.db.query("SELECT log_bytes,log_truncated FROM run_jobs WHERE job_id=110").get(),
       returnedBytes: Buffer.byteLength(body),
@@ -380,7 +380,7 @@ test("a repeated explicit cache discovers and reconciles the latest retry attemp
       second,
       attempt,
       latest: dbm.latestWorkflowRunAttempt("acme/app", 61),
-      jobs: dbm.db.query("SELECT job_id,run_attempt FROM run_jobs WHERE repo=? AND run_id=?").all("acme/app", 61),
+      jobs: dbm.listRunJobs("acme/app", head).map(({ job_id, run_attempt }) => ({ job_id, run_attempt })),
     }));
   `);
 
@@ -505,13 +505,12 @@ test("historical commit loading preserves the live head lease and skips eager lo
   expect(result.logCalls).toBe(0);
 });
 
-test("reserve defers background spend, explicit activation repairs, and a newer attempt discards stale logs", async () => {
+test("reserved background work can be repaired without mixing rerun logs", async () => {
   const result = await runScenario("pr-cockpit-actions-repair-", `
     const actions = await import(${JSON.stringify(runLogsUrl)});
     const dbm = await import(${JSON.stringify(dbUrl)});
     ${seed}
     let remaining = actions.REST_BACKGROUND_RESERVE;
-    const calls = { jobs: [], logs: 0 };
     const run = (attempt) => ({
       id: 50, attempt, headSha: head, headBranch: "feature", workflowName: "CI",
       status: "completed", conclusion: "failure", eventAt: \`2026-08-24T10:0\${attempt}:00Z\`, htmlUrl: null,
@@ -519,33 +518,30 @@ test("reserve defers background spend, explicit activation repairs, and a newer 
     const fetchers = {
       fetchWorkflowRuns: async () => [],
       fetchRunJobs: async (_repo, _id, attempt) => {
-        calls.jobs.push(attempt);
-        return [{ id: 500, run_id: 50, run_attempt: attempt, head_sha: head, head_branch: "feature",
+        return [{ id: 500 + attempt, run_id: 50, run_attempt: attempt, head_sha: head, head_branch: "feature",
           workflow_name: "CI", name: "fail", status: "completed", conclusion: "failure",
           started_at: null, completed_at: null, html_url: null, labels: [], steps: [] }];
       },
-      fetchJobLog: async () => { calls.logs++; return "failure evidence"; },
+      fetchJobLog: async () => "failure evidence",
       restRemaining: async () => remaining,
     };
     await actions.activateActionsLease("acme/app", 7, head, fetchers);
     await actions.ingestActionsState("acme/app", { run: run(1) }, fetchers);
-    const deferred = dbm.db.query("SELECT reconciled_at FROM workflow_runs WHERE run_id=50 AND run_attempt=1").get();
+    const deferred = (await actions.cachedJobLogs("acme/app", head)).entries;
     await actions.activateActionsLease("acme/app", 7, head, fetchers);
-    const repaired = dbm.db.query("SELECT reconciled_at IS NOT NULL AS done,log_gz IS NOT NULL AS logged FROM workflow_runs JOIN run_jobs USING(repo,run_id,run_attempt)").get();
+    const repaired = (await actions.cachedJobLogs("acme/app", head)).entries.map(({ job, body }) => ({ id: job.job_id, body }));
     remaining = 5000;
     await actions.ingestActionsState("acme/app", { run: run(2) }, fetchers);
     console.log(JSON.stringify({
-      deferred, repaired, calls,
-      oldJobs: dbm.db.query("SELECT COUNT(*) AS n FROM run_jobs WHERE run_id=50 AND run_attempt=1").get().n,
-      visible: (await actions.cachedJobLogs("acme/app", head)).length,
+      deferred, repaired,
+      oldBodies: (await actions.cachedJobLogs("acme/app", head, undefined, { run_id: 50, run_attempt: 1 })).entries.map(({ body }) => body),
+      visible: (await actions.cachedJobLogs("acme/app", head)).entries.map(({ job }) => job.job_id),
     }));
   `);
-  expect(result.deferred).toEqual({ reconciled_at: null });
-  expect(result.repaired).toEqual({ done: 1, logged: 1 });
-  expect(result.calls.jobs).toEqual([1, 2]);
-  expect(result.calls.logs).toBe(2);
-  expect(result.oldJobs).toBe(0);
-  expect(result.visible).toBe(1);
+  expect(result.deferred).toEqual([]);
+  expect(result.repaired).toEqual([{ id: 501, body: "failure evidence" }]);
+  expect(result.oldBodies).toEqual(["failure evidence"]);
+  expect(result.visible).toEqual([502]);
 });
 
 test("explicit activation retries transient log failures", async () => {

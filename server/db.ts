@@ -444,7 +444,6 @@ db.exec("DELETE FROM pr_webhook_activity WHERE received_at < datetime('now', '-3
 // Diffs are a pure re-fetchable cache and were insert-only until this column existed;
 // legacy rows carry '' and so are swept by the same retention pass.
 db.exec("DELETE FROM diffs WHERE fetched_at < datetime('now', '-30 days')");
-// Job rows and their logs are re-fetchable and only useful while the PR head is current.
 db.exec("DELETE FROM run_jobs WHERE fetched_at < datetime('now', '-30 days')");
 db.exec("DELETE FROM workflow_runs WHERE fetched_at < datetime('now', '-30 days')");
 db.exec("DELETE FROM actions_leases");
@@ -886,8 +885,6 @@ export function upsertWorkflowRun(run: WorkflowRunInput): boolean {
     if (incomingRank < currentRank) return false;
     if (incomingRank === currentRank && Date.parse(run.event_at) < Date.parse(current.event_at)) return false;
   }
-  db.prepare("DELETE FROM run_jobs WHERE repo = ? AND run_id = ? AND run_attempt < ?")
-    .run(run.repo, run.run_id, run.run_attempt);
   upsertWorkflowRunStmt.run(
     run.repo, run.run_id, run.run_attempt, run.pr_number, run.head_sha, run.head_branch,
     run.workflow_name, run.workflow_path, run.display_title ?? run.workflow_name, run.event ?? "",
@@ -895,6 +892,10 @@ export function upsertWorkflowRun(run: WorkflowRunInput): boolean {
     run.updated_at ?? run.event_at, run.run_started_at ?? null, run.run_number ?? 0, run.html_url,
   );
   return true;
+}
+
+export function workflowRunAttempt(repo: string, runId: number, attempt: number): WorkflowRunRow | null {
+  return getWorkflowRunStmt.get(repo, runId, attempt) ?? null;
 }
 
 export function latestWorkflowRunAttempt(repo: string, runId: number): WorkflowRunRow | null {
@@ -988,6 +989,10 @@ const listRunJobsStmt = db.prepare<RunJobRow, [string, string]>(
        SELECT 1 FROM run_jobs newer
        WHERE newer.repo = j.repo AND newer.run_id = j.run_id
          AND newer.head_sha = j.head_sha AND newer.run_attempt > j.run_attempt
+     )
+     AND NOT EXISTS (
+       SELECT 1 FROM workflow_runs newer
+       WHERE newer.repo = j.repo AND newer.run_id = j.run_id AND newer.run_attempt > j.run_attempt
      )
    ORDER BY j.completed_at DESC, j.job_id DESC`,
 );

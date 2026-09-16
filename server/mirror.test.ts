@@ -288,7 +288,7 @@ describe("materializePrWorktree", () => {
       const [, concurrentWorktree] = await Promise.all([firstHead, latestHead]);
       if (git(concurrentWorktree, "rev-parse", "HEAD") !== next) throw new Error("concurrent materialization did not finish at the latest requested head");
 
-      pruneMirrors([]);
+      await pruneMirrors([]);
       if (git(mirror, "rev-parse", "HEAD") !== next) throw new Error("mirror with managed worktrees was pruned");
       if (git(worktree, "rev-parse", "HEAD") !== local) throw new Error("locally committed worktree became unusable after pruning");
     `;
@@ -387,4 +387,134 @@ esac
     "credentials", "network", "deadline", "deadline", "deadline",
   ]);
   expect(failures[1].message).toContain("Network is unreachable");
+});
+
+test("post-fetch maintenance compacts excess packs without losing fetched refs", () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-mirror-maintenance-"));
+  cleanup.push(dataDir);
+  const moduleUrl = pathToFileURL(join(import.meta.dir, "mirror.ts")).href;
+  const scenario = `
+    import { mkdirSync, readdirSync } from "node:fs";
+    import { join } from "node:path";
+    const dataDir = process.env.COCKPIT_DATA_DIR;
+    const source = join(dataDir, "source");
+    const mirror = join(dataDir, "mirrors", "acme__repo");
+    function git(cwd, ...args) {
+      const result = Bun.spawnSync(["git", "-C", cwd, ...args], { stdout: "pipe", stderr: "pipe" });
+      if (!result.success) throw new Error(result.stderr.toString());
+      return result.stdout.toString().trim();
+    }
+    mkdirSync(source, { recursive: true });
+    git(source, "init", "-b", "main");
+    git(source, "config", "user.name", "PR Cockpit Test");
+    git(source, "config", "user.email", "pr-cockpit@example.test");
+    await Bun.write(join(source, "source.ts"), "export const value = 1;\\n");
+    git(source, "add", "source.ts");
+    git(source, "commit", "-m", "base");
+    git(source, "gc");
+    mkdirSync(join(dataDir, "mirrors"), { recursive: true });
+    git(dataDir, "clone", "--bare", source, mirror);
+    const packDir = join(mirror, "objects", "pack");
+    for (let index = 0; index < 51; index++) {
+      const object = Bun.spawnSync(["git", "-C", mirror, "hash-object", "-w", "--stdin"], {
+        stdin: Buffer.from("object " + index + "\\n"),
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (!object.success) throw new Error(object.stderr.toString());
+      const oid = object.stdout.toString().trim();
+      git(mirror, "update-ref", "refs/test/pack-" + index, oid);
+      const packed = Bun.spawnSync(["git", "-C", mirror, "pack-objects", join(packDir, "pack")], {
+        stdin: Buffer.from(oid + "\\n"),
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (!packed.success) throw new Error(packed.stderr.toString());
+    }
+    const before = readdirSync(packDir).filter((name) => name.endsWith(".pack")).length;
+    // The subprocess must bind its isolated data directory before mirror.ts is evaluated.
+    const { fetchMirror } = await import(${JSON.stringify(moduleUrl)});
+    await fetchMirror("acme/repo");
+    // A subsequent fetch waits for the prior mirror mutation before it begins.
+    await fetchMirror("acme/repo");
+    const after = readdirSync(packDir).filter((name) => name.endsWith(".pack")).length;
+    process.stdout.write(JSON.stringify({ before, after, head: git(mirror, "rev-parse", "HEAD") }));
+  `;
+  const result = Bun.spawnSync([process.execPath, "-e", scenario], {
+    env: { ...process.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_MOCK: "1" },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+  const outcome = JSON.parse(result.stdout.toString()) as { before: number; after: number; head: string };
+  expect(outcome.before).toBeGreaterThan(50);
+  expect(outcome.after).toBeLessThan(outcome.before);
+  expect(outcome.head).toMatch(/^[0-9a-f]{40}$/);
+});
+
+test("cache pruning evicts the oldest idle tracked mirror and reports protected overflow", () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-mirror-prune-"));
+  cleanup.push(dataDir);
+  const moduleUrl = pathToFileURL(join(import.meta.dir, "mirror.ts")).href;
+  const scenario = `
+    import { existsSync, mkdirSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
+    import { join } from "node:path";
+    const dataDir = process.env.COCKPIT_DATA_DIR;
+    const mirrors = join(dataDir, "mirrors");
+    const worktrees = join(dataDir, "worktrees");
+    const gib = 1024 * 1024 * 1024;
+    const now = Date.now();
+    function mirror(name, gibibytes, usedAt, worktree = false) {
+      const dir = join(mirrors, name);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "payload"), "");
+      truncateSync(join(dir, "payload"), gibibytes * gib);
+      const marker = join(dir, ".cockpit-last-used");
+      writeFileSync(marker, String(usedAt));
+      utimesSync(marker, usedAt / 1000, usedAt / 1000);
+      if (worktree) mkdirSync(join(worktrees, name, "pr-1"), { recursive: true });
+    }
+    mirror("acme__protected", 9, now - 3 * 60 * 60_000, true);
+    mirror("acme__recent", 8, now);
+    mirror("acme__oldest", 2, now - 3 * 60 * 60_000);
+    mirror("acme__newer", 2, now - 2 * 60 * 60_000);
+    // The subprocess must bind its isolated data directory before mirror.ts is evaluated.
+    const { pruneMirrors } = await import(${JSON.stringify(moduleUrl)});
+    const keep = ["acme/protected", "acme/recent", "acme/oldest", "acme/newer"];
+    await pruneMirrors(keep);
+    const first = {
+      protected: existsSync(join(mirrors, "acme__protected")),
+      recent: existsSync(join(mirrors, "acme__recent")),
+      oldest: existsSync(join(mirrors, "acme__oldest")),
+      newer: existsSync(join(mirrors, "acme__newer")),
+    };
+    mirror("acme__blocked", 5, now - 4 * 60 * 60_000, true);
+    await pruneMirrors([...keep, "acme/blocked"]);
+    process.stdout.write(JSON.stringify({
+      first,
+      protected: existsSync(join(mirrors, "acme__protected")),
+      recent: existsSync(join(mirrors, "acme__recent")),
+      blocked: existsSync(join(mirrors, "acme__blocked")),
+    }));
+  `;
+  const result = Bun.spawnSync([process.execPath, "-e", scenario], {
+    env: { ...process.env, COCKPIT_DATA_DIR: dataDir },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+  const outcome = JSON.parse(result.stdout.toString()) as {
+    first: Record<string, boolean>;
+    protected: boolean;
+    recent: boolean;
+    blocked: boolean;
+  };
+  expect(outcome.first).toEqual({ protected: true, recent: true, oldest: false, newer: true });
+  expect({ protected: outcome.protected, recent: outcome.recent, blocked: outcome.blocked }).toEqual({
+    protected: true,
+    recent: true,
+    blocked: true,
+  });
+  expect(result.stderr.toString()).toContain("above the 21474836480-byte target");
+  expect(result.stderr.toString()).toContain("protected by active operations, linked worktrees, or use within the last 10 minutes");
 });

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { ensureShaLocal, findDefinition, grep, localFileHistoryPatch, parseGrepOutput, symbolMentionHistory } from "./repoSearch.ts";
 import { lsTree, showFile } from "./gitShow.ts";
 
@@ -225,4 +226,67 @@ describe("grep / lsTree / showFile against a real repo", () => {
     expect(showFile(root, sha, "README.md")).toBe("widget docs\n");
     expect(showFile(root, sha, "nope.txt")).toBeNull();
   });
+});
+
+test("withSearchCtx protects active mirrors and releases them when finalization fails", () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "repo-search-lease-"));
+  const moduleUrl = pathToFileURL(join(import.meta.dir, "repoSearch.ts")).href;
+  const mirrorUrl = pathToFileURL(join(import.meta.dir, "mirror.ts")).href;
+  const scenario = `
+    import { existsSync, mkdirSync, rmSync } from "node:fs";
+    import { join } from "node:path";
+    const dataDir = process.env.COCKPIT_DATA_DIR;
+    const source = join(dataDir, "source");
+    const mirror = join(dataDir, "mirrors", "acme__repo");
+    function git(cwd, ...args) {
+      const result = Bun.spawnSync(["git", "-C", cwd, ...args], { stdout: "pipe", stderr: "pipe" });
+      if (!result.success) throw new Error(result.stderr.toString());
+      return result.stdout.toString().trim();
+    }
+    mkdirSync(source, { recursive: true });
+    git(source, "init", "-b", "main");
+    git(source, "config", "user.name", "PR Cockpit Test");
+    git(source, "config", "user.email", "pr-cockpit@example.test");
+    await Bun.write(join(source, "source.ts"), "export const value = 1;\\n");
+    git(source, "add", "source.ts");
+    git(source, "commit", "-m", "base");
+    const sha = git(source, "rev-parse", "HEAD");
+    mkdirSync(join(dataDir, "mirrors"), { recursive: true });
+    git(dataDir, "clone", "--bare", source, mirror);
+    let now = Date.now();
+    Date.now = () => now;
+    // Import only after the subprocess has installed its isolated data directory and clock.
+    const { withSearchCtx } = await import(${JSON.stringify(moduleUrl)});
+    const { pruneMirrors } = await import(${JSON.stringify(mirrorUrl)});
+    const started = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const lease = withSearchCtx("acme/repo", "main", sha, async (ctx) => {
+      if (ctx.status !== "ok") throw new Error("unexpected search status: " + ctx.status);
+      started.resolve();
+      await release.promise;
+      const marker = join(mirror, ".cockpit-last-used");
+      rmSync(marker);
+      mkdirSync(marker);
+      return ctx.status;
+    });
+    await started.promise;
+    now += 11 * 60_000;
+    await pruneMirrors([]);
+    const held = existsSync(mirror);
+    release.resolve();
+    let releaseError;
+    try { await lease; } catch (error) { releaseError = error.code; }
+    rmSync(join(mirror, ".cockpit-last-used"), { recursive: true });
+    now += 11 * 60_000;
+    await pruneMirrors([]);
+    process.stdout.write(JSON.stringify({ held, evicted: !existsSync(mirror), releaseError }));
+  `;
+  const result = Bun.spawnSync([process.execPath, "-e", scenario], {
+    env: { ...process.env, COCKPIT_DATA_DIR: dataDir },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  rmSync(dataDir, { recursive: true, force: true });
+  if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+  expect(JSON.parse(result.stdout.toString())).toEqual({ held: true, evicted: true, releaseError: "EISDIR" });
 });

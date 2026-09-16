@@ -228,12 +228,15 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
 
   async function pollOnceInner(): Promise<{ checked: number; refreshed: number }> {
     await deps.refreshWorktreeScan();
-    if (!await deps.backgroundPollAllowed()) return { checked: 0, refreshed: 0 };
     const repos = await deps.trackedRepos();
     const registrations = deps.listWebhookRegistrations();
+    const keepRepos = [...new Set([...repos, ...registrations.map((registration) => registration.repo)])];
+    deps.evictReposNotIn(keepRepos);
+    await deps.pruneMirrors(keepRepos);
+    if (!await deps.backgroundPollAllowed()) return { checked: 0, refreshed: 0 };
     const tracked = new Set(repos);
     const registered = new Set(registrations.map((r) => prKeyOf(r.repo, r.number)));
-    const searchRepos = [...new Set([...repos, ...registrations.map((r) => r.repo)])];
+    const searchRepos = keepRepos;
     if (searchRepos.length === 0) {
       lastPollAt = new Date().toISOString();
       deps.publishPollCompleted(lastPollAt);
@@ -272,9 +275,6 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
       const keepNumbers = hits.filter((h) => h.repo === repo).map((h) => h.number);
       deps.evictStalePrs(repo, keepNumbers);
     }
-    const keepRepos = [...new Set([...repos, ...deps.listWebhookRegistrations().map((r) => r.repo)])];
-    deps.evictReposNotIn(keepRepos);
-    deps.pruneMirrors(keepRepos);
 
     await sweepPrIndexIfDue(repos);
     lastPollAt = new Date().toISOString();

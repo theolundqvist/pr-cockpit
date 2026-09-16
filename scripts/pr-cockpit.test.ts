@@ -573,6 +573,48 @@ test("listen --run ignores unrelated changes and follows the latest retry until 
 });
 
 
+test("listen --run reconciles completion when no webhook arrives", async () => {
+  let cacheRequests = 0;
+  let cachedComplete = false;
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const url = new URL(request.url);
+      if (url.pathname.endsWith("/cache")) {
+        cachedComplete = ++cacheRequests > 1;
+        return new Response("cached\n");
+      }
+      if (url.searchParams.get("format") === "json") {
+        return Response.json({
+          selectedRun: { id: 987, attempt: 1, status: cachedComplete ? "completed" : "in_progress", reconciled: cachedComplete },
+          jobs: [],
+        });
+      }
+      return new Response(cachedComplete ? "completed without webhook\n" : "still running\n");
+    },
+  });
+  const child = Bun.spawn([join(import.meta.dir, "pr-cockpit"), "listen", "owner/repo#17", "--run", "987"], {
+    env: { ...Bun.env, COCKPIT_PORT: String(server.port), COCKPIT_LISTEN_INTERVAL: "0.01" },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const deadline = setTimeout(() => child.kill(), 3_000);
+  try {
+    const [output, error, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect(exitCode).toBe(0);
+    expect(error).toBe("");
+    expect(output).toBe("completed without webhook\n");
+  } finally {
+    clearTimeout(deadline);
+    child.kill();
+    server.stop(true);
+  }
+});
+
 test("listen --run drives one final reconciliation for a terminal unreconciled attempt", async () => {
   let cacheRequests = 0;
   let statusReads = 0;
@@ -669,7 +711,7 @@ test("listen --run exits nonzero when ownership is lost after the initial lookup
   }
 });
 
-test("--run is rejected outside --jobs or listen", async () => {
+test("--run is rejected outside --jobs, --logs, or listen", async () => {
   const process = Bun.spawn([
     join(import.meta.dir, "pr-cockpit"),
     "owner/repo#17",

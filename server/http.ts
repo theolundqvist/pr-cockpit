@@ -22,6 +22,7 @@ import {
   listPrs,
   listRunJobs,
   listRunJobsForRun,
+  workflowRunAttempt,
   workflowRunsForPrBranch,
   listWorkflowRuns,
   workflowRunsForLease,
@@ -119,7 +120,7 @@ import { spawn } from "node:child_process";
 import { repoUsersCached } from "./repoUsers.ts";
 import { matchesQuery, parseQuery, wantsHistoricalPrs } from "./query.ts";
 import { buildWebhookRoutes } from "./webhooks.ts";
-import { findDefinition, grep, localFileHistoryPatch, searchCtx, symbolMentionHistory } from "./repoSearch.ts";
+import { findDefinition, grep, localFileHistoryPatch, symbolMentionHistory, withSearchCtx } from "./repoSearch.ts";
 import { lsTree, showFile } from "./gitShow.ts";
 import { aggregateReviewScore, aggregateReviewStale, currentReviewerScores, reviewBots } from "./reviewScore.ts";
 import { isMockGithub, mockGithub, MOCK_FIXTURE_CLOCK } from "./mockGithub.ts";
@@ -672,8 +673,11 @@ function withBaseBranchPr(
   };
 }
 
-function trackedPrDetail(repoName: string, num: number, tracked: PrRow): Record<string, unknown> {
-  return withBaseBranchPr(repoName, num, JSON.parse(tracked.detail_json));
+function cachedPrSnapshot(repoName: string, num: number) {
+  const tracked = getPr(repoName, num);
+  const cached = getCachedPrDetail(repoName, num);
+  const row = !tracked ? cached : cached && cached.fetched_at > tracked.fetched_at ? cached : tracked;
+  return row ? { row, tracked: !!tracked } : null;
 }
 
 type AgentSnapshotStatus = {
@@ -704,53 +708,36 @@ async function handlePrDetail(
   const num = Number(number);
   void fetchMirror(repoName).catch(() => {});
 
-  let tracked = getPr(repoName, num);
-  if (agentRead && tracked) {
+  let snapshot = cachedPrSnapshot(repoName, num);
+  if (snapshot) {
+    let detail = JSON.parse(snapshot.row.detail_json);
     const nowMs = Date.now();
-    const agentSnapshot = snapshotStatus(tracked.fetched_at, lastWebhookAtForPr(repoName, num));
-    // Serve without blocking, but converge: thread resolutions reach us no other way.
-    if (
-      agentSnapshot.freshness === "outdated" ||
-      trackedDetailIsStale(tracked.fetched_at, nowMs) ||
-      mergeabilityNeedsRefresh(tracked.fetched_at, trackedMergeabilityDetail(tracked), nowMs)
-    ) runtime.revalidateTrackedPr(repoName, num, "agent read");
-    return json({ ...trackedPrDetail(repoName, num, tracked), agentSnapshot });
-  }
-  if (tracked) {
-    const nowMs = Date.now();
-    if (mergeabilityNeedsRefresh(tracked.fetched_at, trackedMergeabilityDetail(tracked), nowMs)) {
-      runtime.revalidateTrackedPr(repoName, num, "app detail");
-    } else if (trackedDetailIsStale(tracked.fetched_at, nowMs)) {
+    const agentSnapshot = snapshotStatus(snapshot.row.fetched_at, lastWebhookAtForPr(repoName, num));
+    const stale = snapshot.tracked
+      ? trackedDetailIsStale(snapshot.row.fetched_at, nowMs)
+      : nowMs - Date.parse(snapshot.row.fetched_at) > UNTRACKED_STALE_MS;
+    const mergeabilityStale = mergeabilityNeedsRefresh(
+      snapshot.row.fetched_at,
+      "head_ref" in snapshot.row ? trackedMergeabilityDetail(snapshot.row) : detail,
+      nowMs,
+    );
+    const revalidate = snapshot.tracked ? runtime.revalidateTrackedPr : runtime.revalidateCachedPrDetail;
+    if (agentRead) {
+      if (agentSnapshot.freshness === "outdated" || stale || mergeabilityStale) {
+        revalidate(repoName, num, "agent read");
+      }
+      return json({ ...withBaseBranchPr(repoName, num, detail), agentSnapshot });
+    }
+    if (mergeabilityStale || (!snapshot.tracked && stale)) {
+      revalidate(repoName, num, "app detail");
+    } else if (stale) {
       try {
         await runtime.refreshPr(repoName, num, "app detail");
-        tracked = getPr(repoName, num);
+        snapshot = cachedPrSnapshot(repoName, num);
+        if (snapshot) detail = JSON.parse(snapshot.row.detail_json);
       } catch (err) {
         console.error(`stale detail refresh failed for ${repoName}#${num}:`, err);
       }
-    }
-  }
-  if (tracked) return json(trackedPrDetail(repoName, num, tracked));
-
-  const cached = getCachedPrDetail(repoName, num);
-  if (agentRead && cached) {
-    const nowMs = Date.now();
-    const detail = JSON.parse(cached.detail_json);
-    const recent = nowMs - new Date(cached.fetched_at).getTime() <= UNTRACKED_STALE_MS;
-    const agentSnapshot = snapshotStatus(cached.fetched_at, lastWebhookAtForPr(repoName, num));
-    if (agentSnapshot.freshness === "outdated" || !recent || mergeabilityNeedsRefresh(cached.fetched_at, detail, nowMs)) {
-      runtime.revalidateCachedPrDetail(repoName, num, "agent read");
-    }
-    return json({
-      ...withBaseBranchPr(repoName, num, detail),
-      agentSnapshot,
-    });
-  }
-  if (cached) {
-    const nowMs = Date.now();
-    const detail = JSON.parse(cached.detail_json);
-    const stale = nowMs - new Date(cached.fetched_at).getTime() > UNTRACKED_STALE_MS;
-    if (stale || mergeabilityNeedsRefresh(cached.fetched_at, detail, nowMs)) {
-      runtime.revalidateCachedPrDetail(repoName, num, "app detail");
     }
     return json(withBaseBranchPr(repoName, num, detail));
   }
@@ -765,8 +752,9 @@ async function handlePrDetail(
       detail_json: JSON.stringify(detail),
       fetched_at: snapshotCutoffAt,
     });
-    const response = withBaseBranchPr(repoName, num, detail);
-    return json(agentRead ? { ...response, agentSnapshot: snapshotStatus(snapshotCutoffAt, lastWebhookAtForPr(repoName, num)) } : response);
+    const stored = cachedPrSnapshot(repoName, num)!.row;
+    const response = withBaseBranchPr(repoName, num, JSON.parse(stored.detail_json));
+    return json(agentRead ? { ...response, agentSnapshot: snapshotStatus(stored.fetched_at, lastWebhookAtForPr(repoName, num)) } : response);
   } catch (err) {
     console.error(`detail fetch failed for ${repoName}#${num}:`, err);
     return githubErrorResponse(err);
@@ -785,13 +773,8 @@ function handlePrDetails(url: URL): Response {
     if (!match) continue;
     const repoName = match[1]!;
     const num = Number(match[2]);
-    const tracked = getPr(repoName, num);
-    if (tracked) {
-      details[key] = trackedPrDetail(repoName, num, tracked);
-      continue;
-    }
-    const cached = getCachedPrDetail(repoName, num);
-    if (cached) details[key] = withBaseBranchPr(repoName, num, JSON.parse(cached.detail_json));
+    const snapshot = cachedPrSnapshot(repoName, num);
+    if (snapshot) details[key] = withBaseBranchPr(repoName, num, JSON.parse(snapshot.row.detail_json));
   }
   return json({ details });
 }
@@ -1097,16 +1080,15 @@ async function handleAgentPr(
       return githubErrorResponse(err, "GitHub comments fetch failed");
     }
   }
-  const detailResponse = await handlePrDetail(owner, repo, number, runtime, true);
-  if (!detailResponse.ok) return detailResponse;
-  // handlePrDetail serializes the PrDetail and agent cache metadata produced above.
-  const detail = await detailResponse.json() as unknown as PrDetail & { agentSnapshot: AgentSnapshotStatus };
   let quota: GithubQuota | null = null;
   try {
     quota = await runtime.fetchGithubQuota();
   } catch (err) {
     console.error("GitHub quota fetch failed:", err);
   }
+  const detailResponse = await handlePrDetail(owner, repo, number, runtime, true);
+  if (!detailResponse.ok) return detailResponse;
+  const detail = await detailResponse.json() as unknown as PrDetail & { agentSnapshot: AgentSnapshotStatus };
   const summary = buildPrAgentSummary(`${owner}/${repo}#${number}`, detail, quota, newCommentsSince, commentsSince);
   if (format === "json") return json(summary);
   return new Response(formatPrAgentSummary(summary, { comments: includeComments, body: includeBody, digest }), {
@@ -1115,7 +1097,8 @@ async function handleAgentPr(
 }
 
 function markReviewThreadResolved(repo: string, number: number, threadId: string): void {
-  const tracked = getPr(repo, number);
+  const snapshot = cachedPrSnapshot(repo, number);
+  const tracked = snapshot && "head_ref" in snapshot.row ? snapshot.row : null;
   if (tracked) {
     const detail = JSON.parse(tracked.detail_json) as PrDetail;
     const thread = detail.reviewThreads.nodes.find((candidate) => candidate.id === threadId);
@@ -1141,7 +1124,7 @@ function markReviewThreadResolved(repo: string, number: number, threadId: string
     invalidateInbox();
     return;
   }
-  const cached = getCachedPrDetail(repo, number);
+  const cached = snapshot?.row;
   if (!cached) return;
   const detail = JSON.parse(cached.detail_json) as PrDetail;
   const thread = detail.reviewThreads.nodes.find((candidate) => candidate.id === threadId);
@@ -1280,7 +1263,7 @@ async function handleAgentMutation(owner: string, repo: string, number: string, 
   if (!validPrReference(owner, repo, number)) return json({ error: "invalid PR reference" }, 400);
   const repoName = `${owner}/${repo}`;
   const num = Number(number);
-  const stored = getPr(repoName, num) ?? getCachedPrDetail(repoName, num);
+  const stored = cachedPrSnapshot(repoName, num)?.row;
   if (!stored) return json({ error: "PR is not cached yet" }, 404);
   const detail = JSON.parse(stored.detail_json) as PrDetail;
   const requestBody: unknown = await req.json().catch(() => null);
@@ -1307,7 +1290,7 @@ async function handleResolveReviewThread(
   }
   const repoName = `${owner}/${repo}`;
   const num = Number(number);
-  const stored = getPr(repoName, num) ?? getCachedPrDetail(repoName, num);
+  const stored = cachedPrSnapshot(repoName, num)?.row;
   if (!stored) return json({ error: "PR is not cached yet" }, 404);
   const detail = JSON.parse(stored.detail_json) as PrDetail;
   let thread;
@@ -1339,15 +1322,10 @@ async function handleResolveReviewThread(
 const FULL_SHA_RE = /^[0-9a-f]{40}$/i;
 
 function resolvePrContext(repoName: string, num: number): { headSha: string; baseRef: string; baseSha: string | null } | null {
-  const tracked = getPr(repoName, num);
-  if (tracked) {
-    const detail = JSON.parse(tracked.detail_json) as { baseRefOid?: string };
-    return { headSha: tracked.head_sha, baseRef: tracked.base_ref, baseSha: detail.baseRefOid ?? null };
-  }
-  const cached = getCachedPrDetail(repoName, num);
-  if (!cached) return null;
-  const detail = JSON.parse(cached.detail_json) as { baseRefName: string; baseRefOid?: string };
-  return { headSha: cached.head_sha, baseRef: detail.baseRefName, baseSha: detail.baseRefOid ?? null };
+  const stored = cachedPrSnapshot(repoName, num)?.row;
+  if (!stored) return null;
+  const detail = JSON.parse(stored.detail_json) as { baseRefName: string; baseRefOid?: string };
+  return { headSha: stored.head_sha, baseRef: "base_ref" in stored ? stored.base_ref : detail.baseRefName, baseSha: detail.baseRefOid ?? null };
 }
 
 async function handlePrConflicts(owner: string, repo: string, number: string): Promise<Response> {
@@ -1511,7 +1489,7 @@ function cachedActionsContext(owner: string, repo: string, number: string): Cach
   if (!validPrReference(owner, repo, number)) return json({ error: "invalid PR reference" }, 400);
   const repoName = `${owner}/${repo}`;
   const num = Number(number);
-  const cached = getPr(repoName, num) ?? getCachedPrDetail(repoName, num);
+  const cached = cachedPrSnapshot(repoName, num)?.row;
   if (!cached) return json({ error: "PR is not cached yet" }, 404);
   const detail = JSON.parse(cached.detail_json) as PrDetail;
   const commits = (detail.commitList?.nodes ?? []).map(({ commit }) => ({
@@ -1942,28 +1920,35 @@ async function handleActionLog(
   }
 }
 
+function selectedActionsRun(context: CachedActionsContext, url: URL): WorkflowRunRow | Response | null {
+  const rawRunId = url.searchParams.get("runId");
+  const rawAttempt = url.searchParams.get("attempt");
+  if (rawRunId === null) {
+    return rawAttempt === null ? null : json({ error: "runId is required with attempt" }, 400);
+  }
+  const runId = Number(rawRunId);
+  const attempt = rawAttempt === null ? null : Number(rawAttempt);
+  if (!Number.isSafeInteger(runId) || runId <= 0 || (attempt !== null && (!Number.isSafeInteger(attempt) || attempt <= 0))) {
+    return json({ error: "valid Actions run ID and attempt required" }, 400);
+  }
+  const run = attempt === null
+    ? latestWorkflowRunAttempt(context.repoName, runId)
+    : workflowRunAttempt(context.repoName, runId, attempt);
+  return (run?.head_branch === context.headBranch && (run.pr_number === null || run.pr_number === context.num) ? run : null)
+    ?? json({ error: "Actions run or attempt is not cached for this PR branch" }, 404);
+}
+
 function handleAgentPrJobs(owner: string, repo: string, number: string, url: URL): Response {
   const context = cachedActionsContext(owner, repo, number);
   if (context instanceof Response) return context;
-  const requestedRunId = url.searchParams.get("runId");
-  let runId: number | null = null;
-  if (requestedRunId !== null) {
-    runId = Number(requestedRunId);
-    if (!Number.isSafeInteger(runId) || runId <= 0) {
-      return json({ error: "valid Actions run ID required" }, 400);
-    }
-  }
-
-  const branchRuns = latestActionRunAttempts(
+  const selectedRun = selectedActionsRun(context, url);
+  if (selectedRun instanceof Response) return selectedRun;
+  const runs = selectedRun ? [selectedRun] : latestActionRunAttempts(
     workflowRunsForPrBranch(context.repoName, context.num, context.headBranch),
-  );
-  const selectedRun = runId === null ? null : branchRuns.find((run) => run.run_id === runId) ?? null;
-  if (runId !== null && !selectedRun) {
-    return json({ error: "Actions run does not belong to this PR branch" }, 404);
-  }
-  const runs = selectedRun ? [selectedRun] : branchRuns.filter((run) => run.head_sha === context.headSha);
-  const rows = listRunJobsForPrBranch(context.repoName, context.num, context.headBranch)
-    .filter((job) => selectedRun ? job.run_id === selectedRun.run_id : job.head_sha === context.headSha);
+  ).filter((run) => run.head_sha === context.headSha);
+  const rows = selectedRun
+    ? listRunJobsForRun(context.repoName, selectedRun.run_id, selectedRun.run_attempt)
+    : listRunJobsForPrBranch(context.repoName, context.num, context.headBranch).filter((job) => job.head_sha === context.headSha);
   if (url.searchParams.get("format") === "json") {
     return json({
       headBranch: context.headBranch,
@@ -2016,9 +2001,13 @@ async function handleAgentCacheRun(
 async function handleAgentPrLogs(owner: string, repo: string, number: string, url: URL): Promise<Response> {
   const context = cachedActionsContext(owner, repo, number);
   if (context instanceof Response) return context;
+  const selectedRun = selectedActionsRun(context, url);
+  if (selectedRun instanceof Response) return selectedRun;
+  const headSha = selectedRun?.head_sha ?? context.headSha;
   const check = url.searchParams.get("check") ?? undefined;
-  const entries = await cachedJobLogs(context.repoName, context.headSha, check);
-  return new Response(formatJobLogs(context.headSha, entries), {
+  const logs = await cachedJobLogs(context.repoName, headSha, check, selectedRun ?? undefined);
+  const selection = selectedRun ? `Actions run ${selectedRun.run_id}, attempt ${selectedRun.run_attempt} · ${selectedRun.status} · ${headSha}\n\n` : "";
+  return new Response(selection + formatJobLogs(headSha, logs), {
     headers: { "content-type": "text/plain; charset=utf-8" },
   });
 }
@@ -2219,7 +2208,7 @@ async function handleCommitMessage(req: Request, runtime: HttpRuntime): Promise<
     return json({ error: "invalid commit message request" }, 400);
   }
 
-  const stored = getPr(repo, number) ?? getCachedPrDetail(repo, number);
+  const stored = cachedPrSnapshot(repo, number)?.row;
   if (!stored) return json({ error: "PR is not cached yet" }, 404);
   const detail = JSON.parse(stored.detail_json) as { title?: string };
   const title = detail.title ?? ("title" in stored && typeof stored.title === "string" ? stored.title : "");
@@ -2252,9 +2241,10 @@ async function handleRepoSearch(req: Request, url: URL): Promise<Response> {
   const q = url.searchParams.get("q") ?? "";
   if (!REPO_RE.test(repo) || !FULL_SHA_RE.test(sha) || !REF_RE.test(headRef)) return json({ error: "invalid repo/sha/headRef" }, 400);
   if (q.length < MIN_SEARCH_QUERY) return json({ status: "ok", matches: [] });
-  const ctx = searchCtx(repo, headRef, sha);
-  if (ctx.status !== "ok") return json({ status: ctx.status });
-  return json({ status: "ok", matches: await grep(ctx.checkout, sha, q, req.signal) });
+  return withSearchCtx(repo, headRef, sha, async (ctx) => {
+    if (ctx.status !== "ok") return json({ status: ctx.status });
+    return json({ status: "ok", matches: await grep(ctx.checkout, sha, q, req.signal) });
+  });
 }
 async function handleRepoDefinition(req: Request, url: URL): Promise<Response> {
   const repo = url.searchParams.get("repo") ?? "";
@@ -2270,10 +2260,11 @@ async function handleRepoDefinition(req: Request, url: URL): Promise<Response> {
   const query = Number.isInteger(line) && line > 0 && Number.isInteger(character) && character >= 0
     ? { repo, position: { line, character } }
     : undefined;
-  const ctx = searchCtx(repo, headRef, sha);
-  if (ctx.status !== "ok") return json({ status: ctx.status });
-  const result = await findDefinition(ctx.checkout, sha, symbol, fromPath, req.signal, query);
-  return json({ status: "ok", ...result });
+  return withSearchCtx(repo, headRef, sha, async (ctx) => {
+    if (ctx.status !== "ok") return json({ status: ctx.status });
+    const result = await findDefinition(ctx.checkout, sha, symbol, fromPath, req.signal, query);
+    return json({ status: "ok", ...result });
+  });
 }
 
 
@@ -2282,9 +2273,10 @@ async function handleRepoFiles(url: URL): Promise<Response> {
   const sha = url.searchParams.get("sha") ?? "";
   const headRef = url.searchParams.get("headRef") ?? "";
   if (!REPO_RE.test(repo) || !FULL_SHA_RE.test(sha) || !REF_RE.test(headRef)) return json({ error: "invalid repo/sha/headRef" }, 400);
-  const ctx = searchCtx(repo, headRef, sha);
-  if (ctx.status !== "ok") return json({ status: ctx.status });
-  return json({ status: "ok", paths: lsTree(ctx.checkout, repo, sha) });
+  return withSearchCtx(repo, headRef, sha, (ctx) => {
+    if (ctx.status !== "ok") return json({ status: ctx.status });
+    return json({ status: "ok", paths: lsTree(ctx.checkout, repo, sha) });
+  });
 }
 
 async function handleRepoFile(url: URL): Promise<Response> {
@@ -2295,11 +2287,12 @@ async function handleRepoFile(url: URL): Promise<Response> {
   if (!REPO_RE.test(repo) || !FULL_SHA_RE.test(sha) || !REF_RE.test(headRef) || !path) {
     return json({ error: "invalid repo/sha/headRef/path" }, 400);
   }
-  const ctx = searchCtx(repo, headRef, sha);
-  if (ctx.status !== "ok") return json({ status: ctx.status });
-  const content = showFile(ctx.checkout, sha, path);
-  if (content === null) return json({ status: "not-found" });
-  return json({ status: "ok", content });
+  return withSearchCtx(repo, headRef, sha, (ctx) => {
+    if (ctx.status !== "ok") return json({ status: ctx.status });
+    const content = showFile(ctx.checkout, sha, path);
+    if (content === null) return json({ status: "not-found" });
+    return json({ status: "ok", content });
+  });
 }
 
 const FILE_HISTORY_TTL_MS = 5 * 60_000;
@@ -2322,9 +2315,12 @@ async function handleFileHistory(req: Request, url: URL): Promise<Response> {
   try {
     let commits: FileHistoryCommit[];
     if (symbol) {
-      const ctx = searchCtx(repo, base, baseSha);
-      if (ctx.status !== "ok") return json({ error: ctx.status }, 503);
-      commits = await symbolMentionHistory(ctx.checkout, baseSha, path, symbol, req.signal);
+      const result = await withSearchCtx(repo, base, baseSha, async (ctx) => {
+        if (ctx.status !== "ok") return json({ error: ctx.status }, 503);
+        return symbolMentionHistory(ctx.checkout, baseSha, path, symbol, req.signal);
+      });
+      if (result instanceof Response) return result;
+      commits = result;
     } else {
       commits = await fetchFileHistory(repo, path, base);
     }
@@ -2355,9 +2351,11 @@ async function handleFileHistoryDiff(req: Request, url: URL): Promise<Response> 
   try {
     let entry: CachedFileHistoryDiff;
     if (local) {
-      const ctx = searchCtx(repo, "", sha);
-      if (ctx.status !== "ok") return json({ error: ctx.status }, 503);
-      const patch = await localFileHistoryPatch(ctx.checkout, sha, path, req.signal);
+      const patch = await withSearchCtx(repo, "", sha, async (ctx) => {
+        if (ctx.status !== "ok") return json({ error: ctx.status }, 503);
+        return localFileHistoryPatch(ctx.checkout, sha, path, req.signal);
+      });
+      if (patch instanceof Response) return patch;
       entry = patch === null ? null : { localPatch: patch };
     } else {
       entry = await fetchFileHistoryDiff(repo, sha, path);
@@ -3267,10 +3265,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       const repoName = `${parts[2]!}/${parts[3]!}`;
       const num = Number(parts[4]!);
       if (!Number.isInteger(num)) return json({ error: "bad PR number" }, 400);
-      const pr = getPr(repoName, num);
-      const cached = pr ? null : getCachedPrDetail(repoName, num);
-      const cachedDetail = cached ? (JSON.parse(cached.detail_json) as { headRefOid?: string }) : null;
-      const headSha = pr?.head_sha ?? cached?.head_sha ?? cachedDetail?.headRefOid ?? null;
+      const headSha = cachedPrSnapshot(repoName, num)?.row.head_sha;
       if (!headSha || !FULL_SHA_RE.test(headSha)) return json({ error: `no known PR head commit for ${repoName}#${num}` }, 404);
       try {
         const checkout = await materializePrWorktree(repoName, num, headSha);

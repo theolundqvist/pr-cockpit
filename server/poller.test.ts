@@ -45,7 +45,7 @@ const deps: PollDeps = {
   reconcileForwarders: () => {},
   evictStalePrs: () => {},
   evictReposNotIn: () => {},
-  pruneMirrors: () => {},
+  pruneMirrors: async () => {},
   upsertPrIndex: () => {},
   invalidateInbox,
   publishPollCompleted,
@@ -90,17 +90,47 @@ describe("poll-loop registration lifecycle", () => {
     publishPollCompleted.mockClear();
   });
 
-  test("refreshes local worktrees before skipping GitHub work when the quota gate is closed", async () => {
+  test("refreshes and prunes local caches before skipping GitHub work when the quota gate is closed", async () => {
     let worktreesRefreshed = false;
+    const evicted: string[][] = [];
+    const pruned: string[][] = [];
     const result = await createPollOnce({
       ...deps,
       backgroundPollAllowed: async () => false,
       refreshWorktreeScan: async () => {
         worktreesRefreshed = true;
       },
+      evictReposNotIn: (repos) => {
+        evicted.push(repos);
+      },
+      pruneMirrors: async (repos) => {
+        pruned.push(repos);
+      },
     })();
     expect(result).toEqual({ checked: 0, refreshed: 0 });
     expect(worktreesRefreshed).toBe(true);
+    expect(evicted).toEqual([["acme/tracked"]]);
+    expect(pruned).toEqual([["acme/tracked"]]);
+    expect(searchedRepos).toEqual([]);
+  });
+
+  test("prunes all local caches before returning for an empty repository scope", async () => {
+    const evicted: string[][] = [];
+    const pruned: string[][] = [];
+    const result = await createPollOnce({
+      ...deps,
+      settingsRepos: () => [],
+      trackedRepos: async () => [],
+      evictReposNotIn: (repos) => {
+        evicted.push(repos);
+      },
+      pruneMirrors: async (repos) => {
+        pruned.push(repos);
+      },
+    })();
+    expect(result).toEqual({ checked: 0, refreshed: 0 });
+    expect(evicted).toEqual([[]]);
+    expect(pruned).toEqual([[]]);
     expect(searchedRepos).toEqual([]);
   });
 

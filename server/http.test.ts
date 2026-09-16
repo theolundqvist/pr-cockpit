@@ -1,7 +1,7 @@
-import { beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { beforeEach, describe, expect, setSystemTime, spyOn, test } from "bun:test";
 import { buildFetchHandler, buildPrAgentSummary, checkoutTargetFor, formatPrAgentSummary, mergeabilityNeedsRefresh, normalizeAgentMutation, reviewThreadHandle, snapshotStatus, statsExcludingTests, trackedDetailIsStale } from "./http.ts";
 import { GithubRequestError, StalePrHeadError, type PrDetail } from "./github.ts";
-import { db, getCachedPrDetail, getPr, getSetting, listRunJobs, saveDiff, saveFileContents, setSetting, upsertCachedPrDetail, upsertPr, upsertPrIndex, upsertRunJob, upsertWorkflowRun } from "./db.ts";
+import { db, getCachedPrDetail, getPr, getSetting, listRunJobs, saveDiff, saveFileContents, saveRunJobLog, setSetting, upsertCachedPrDetail, upsertPr, upsertPrIndex, upsertRunJob, upsertWorkflowRun } from "./db.ts";
 import { testMatcher } from "../ui/src/lib/testPath.js";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1076,6 +1076,78 @@ describe("agent PR summary", () => {
     }
   });
 
+  test("agent and app reads keep the newest snapshot when a PR becomes tracked", async () => {
+    const repo = "http-snapshots/promotion";
+    const number = 96136;
+    const fetchedAt = new Date().toISOString();
+    const older = trackedPrRow({ repo, number, fetchedAt: new Date(Date.now() - 10_000).toISOString() });
+    const head = "b".repeat(40);
+    const detail = { ...JSON.parse(older.detail_json), headRefOid: head };
+    upsertCachedPrDetail({ repo, number, head_sha: head, detail_json: JSON.stringify(detail), fetched_at: fetchedAt });
+    const handler = buildFetchHandler(4820, {
+      fetchGithubQuota: async () => ({
+        rest: { limit: 5_000, used: 0, remaining: 5_000, resetAt: fetchedAt },
+        graphql: { limit: 5_000, used: 0, remaining: 5_000, resetAt: fetchedAt },
+        fetchedAt,
+      }),
+      revalidateTrackedPr: () => {},
+      revalidateCachedPrDetail: () => {},
+    });
+    const agentUrl = `http://127.0.0.1:4820/api/agent/pr/${repo}/${number}`;
+    try {
+      const first = await (await handler(new Request(`${agentUrl}?format=json`))).json();
+      expect(first).toMatchObject({ headSha: head, snapshot: { fetchedAt } });
+      upsertPr(older);
+      const markdown = await (await handler(new Request(agentUrl))).text();
+      expect(markdown).toContain(head);
+      expect(markdown).toContain(fetchedAt);
+      expect(markdown).not.toContain(older.head_sha);
+      const jsonRead = await (await handler(new Request(`${agentUrl}?format=json`))).json();
+      expect(jsonRead).toMatchObject({ headSha: head, snapshot: { fetchedAt } });
+      const appRead = await (await handler(new Request(`http://127.0.0.1:4820/api/pr/${repo}/${number}`))).json();
+      expect(appRead.headRefOid).toBe(head);
+      const bulk = await (await handler(new Request(`http://127.0.0.1:4820/api/pr-details?keys=${encodeURIComponent(`${repo}#${number}`)}`))).json();
+      expect(bulk.details[`${repo}#${number}`].headRefOid).toBe(head);
+    } finally {
+      db.run("DELETE FROM prs WHERE repo = ? AND number = ?", [repo, number]);
+      db.run("DELETE FROM pr_detail_cache WHERE repo = ? AND number = ?", [repo, number]);
+    }
+  });
+
+  test("a late cold fetch returns the winning persisted snapshot, not its older result", async () => {
+    const repo = "http-snapshots/cold-race";
+    const number = 96137;
+    const older = trackedPrRow({ repo, number, fetchedAt: new Date().toISOString() });
+    const oldDetail = JSON.parse(older.detail_json);
+    let started!: () => void;
+    let finish!: () => void;
+    const entered = new Promise<void>((resolve) => { started = resolve; });
+    const waiting = new Promise<void>((resolve) => { finish = resolve; });
+    const handler = buildFetchHandler(4820, {
+      fetchPrDetail: async () => { started(); await waiting; return oldDetail; },
+    });
+    const startTime = Date.now();
+    setSystemTime(startTime);
+    try {
+      const request = handler(new Request(`http://127.0.0.1:4820/api/pr/${repo}/${number}`));
+      await entered;
+      setSystemTime(startTime + 1_000);
+      const head = "c".repeat(40);
+      const fetchedAt = new Date().toISOString();
+      upsertCachedPrDetail({
+        repo, number, head_sha: head, fetched_at: fetchedAt,
+        detail_json: JSON.stringify({ ...oldDetail, headRefOid: head }),
+      });
+      finish();
+      expect((await (await request).json()).headRefOid).toBe(head);
+      expect(getCachedPrDetail(repo, number)?.fetched_at).toBe(fetchedAt);
+    } finally {
+      finish();
+      setSystemTime();
+      db.run("DELETE FROM pr_detail_cache WHERE repo = ? AND number = ?", [repo, number]);
+    }
+  });
+
   test("an old tracked agent read revalidates in the background; a fresh one does not", async () => {
     const repo = "cockpit-test/tracked-revalidate";
     const number = 987654322;
@@ -1967,7 +2039,7 @@ describe("Actions viewer API", () => {
   });
 
 
-  test("trusted jobs route defaults to current-head runs and keeps historical runs explicit", async () => {
+  test("trusted Actions routes isolate current and historical run attempts", async () => {
     const repo = "http-actions/branch-jobs";
     const number = 96135;
     const head = "a".repeat(40);
@@ -1995,7 +2067,7 @@ describe("Actions viewer API", () => {
         event: run.id === 70 ? "workflow_dispatch" : "push",
         workflow_path: ".github/workflows/dispatch.yml",
         status: run.status,
-        conclusion: run.status === "completed" ? "success" : null,
+        conclusion: run.status === "completed" ? (run.id === 70 || run.id === 74 ? "failure" : "success") : null,
         event_at: now,
         html_url: null,
       });
@@ -2009,7 +2081,7 @@ describe("Actions viewer API", () => {
         workflow_name: "Dispatch",
         name: `job-${run.id}-${run.attempt}`,
         status: run.status,
-        conclusion: run.status === "completed" ? "success" : null,
+        conclusion: run.status === "completed" ? (run.id === 70 || run.id === 74 ? "failure" : "success") : null,
         started_at: now,
         completed_at: run.status === "completed" ? now : null,
         html_url: null,
@@ -2019,8 +2091,10 @@ describe("Actions viewer API", () => {
         failed_step: null,
       });
     }
-    db.query("UPDATE workflow_runs SET fetched_at = datetime('now', '-73 hours') WHERE repo = ? AND run_id = ?")
-      .run(repo, 75);
+    saveRunJobLog(repo, 701, 70, 1, "b".repeat(40), Bun.gzipSync("earlier commit failure"), 22);
+    saveRunJobLog(repo, 741, 74, 1, head, Bun.gzipSync("first attempt failure"), 21);
+    db.query("UPDATE workflow_runs SET fetched_at = datetime('now', '-73 hours') WHERE repo = ? AND run_id IN (70, 75)")
+      .run(repo);
     db.run("UPDATE workflow_runs SET reconciled_at = ? WHERE repo = ? AND run_id = ?", [now, repo, 70]);
     const fetchHandler = buildFetchHandler(4820);
 
@@ -2057,15 +2131,34 @@ describe("Actions viewer API", () => {
         jobs: [{ id: 701, runId: 70, headSha: "b".repeat(40) }],
       });
 
+      const logsUrl = `http://127.0.0.1:4820/api/agent/pr/http-actions/branch-jobs/${number}/logs`;
+      const currentLogs = await (await fetchHandler(new Request(logsUrl))).text();
+      expect(currentLogs).not.toContain("earlier commit failure");
+      expect(currentLogs).not.toContain("first attempt failure");
+      const earlierLogs = await (await fetchHandler(new Request(`${logsUrl}?runId=70`))).text();
+      expect(earlierLogs).toContain("earlier commit failure");
+      expect(earlierLogs).toContain("b".repeat(40));
+      expect(earlierLogs).not.toContain("first attempt failure");
+      const latestAttempt = await (await fetchHandler(new Request(`${logsUrl}?runId=74`))).text();
+      expect(latestAttempt).not.toContain("first attempt failure");
+      const firstAttempt = await (await fetchHandler(new Request(`${logsUrl}?runId=74&attempt=1`))).text();
+      expect(firstAttempt).toContain("first attempt failure");
+      const missingAttempt = await fetchHandler(new Request(`${logsUrl}?runId=74&attempt=3`));
+      expect(missingAttempt.status).toBe(404);
+      const otherBranchLogs = await fetchHandler(new Request(`${logsUrl}?runId=72`));
+      expect(otherBranchLogs.status).toBe(404);
+      const unselectedAttempt = await fetchHandler(new Request(`${logsUrl}?attempt=1`));
+      expect(unselectedAttempt.status).toBe(400);
+
       const rejected = await fetchHandler(new Request(
         `http://127.0.0.1:4820/api/agent/pr/http-actions/branch-jobs/${number}/jobs?format=json&runId=72`,
       ));
       const stale = await fetchHandler(new Request(
         `http://127.0.0.1:4820/api/agent/pr/http-actions/branch-jobs/${number}/jobs?format=json&runId=75`,
       ));
-      expect(stale.status).toBe(404);
+      expect(stale.status).toBe(200);
+      expect(await stale.json()).toMatchObject({ selectedRun: { id: 75 } });
       expect(rejected.status).toBe(404);
-      expect(await rejected.json()).toEqual({ error: "Actions run does not belong to this PR branch" });
     } finally {
       db.run("DELETE FROM run_jobs WHERE repo = ?", [repo]);
       db.run("DELETE FROM workflow_runs WHERE repo = ?", [repo]);

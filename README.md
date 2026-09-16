@@ -83,7 +83,10 @@ pr-cockpit owner/repo#123 --diff            # cached unified diff
 pr-cockpit owner/repo#123 --file src/app.ts # file contents at the PR head
 pr-cockpit owner/repo#123 --jobs            # queued, running, and completed jobs
 pr-cockpit owner/repo#123 --logs            # cached failed and cancelled job logs
+pr-cockpit owner/repo#123 --logs verify --run 987 --attempt 2
 ```
+
+`--run` selects a cached run even after the PR head advances; `--attempt` selects its rerun attempt. Without these selectors, jobs and logs use the current head.
 
 **Waiting on CI or a review? Listen instead of polling.**
 
@@ -93,6 +96,8 @@ pr-cockpit listen owner/repo#123
 
 `listen` waits for substantive cached state changes—a push, check result, review, or comment—then prints what changed and exits. `--ci-only` and `--comments-only` narrow the wake signal.
 
+`pr-cockpit listen owner/repo#123 --run 987` waits for a specific run and reconciles it about every 30 seconds at the default interval, so missed webhooks cannot leave completion unobserved. A failed reconciliation exits with an error.
+
 The CLI also supports comments, reviews, thread resolution, edits, and merges through Cockpit's mutation queue. Run **`pr-cockpit --help`** for commands and options, including `--body-file` for exact multiline text and `--json` for machine-readable status. The installer separately asks before adding Cockpit instructions to supported coding assistants.
 
 ## Local reads. GitHub authority.
@@ -100,6 +105,7 @@ The CLI also supports comments, reviews, thread resolution, edits, and merges th
 Cockpit is a client for your existing GitHub workflow, not a second place to maintain pull requests.
 
 - **On your machine:** a Bun server maintains a SQLite cache of PR state and serves the desktop UI and CLI. Diffs, threads, checks, and images are cached locally.
+- **Mirror storage:** Git mirrors compact automatically and evict the oldest unprotected caches toward a 20 GiB target. Active reads, recent use, and linked worktrees are protected, so the target is not a hard limit.
 - **Back to GitHub:** comments, reviews, file edits, thread resolution, and merges use your GitHub CLI authentication. GitHub remains authoritative.
 - **Keeping it current:** the hosted relay is enabled by default. It receives GitHub webhooks and delivers compact change markers and Actions run/job state, including runner assignment—not full PR contents or job logs—to Cockpit. Targeted refreshes update the cache; a direct GitHub poller repairs missed events.
 - **Your relay, if you prefer:** you can configure a different relay URL. See [Self-hosting](docs/self-host-relay.md) for deployment and connection instructions.

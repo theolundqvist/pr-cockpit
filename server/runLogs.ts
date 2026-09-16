@@ -8,6 +8,7 @@ import {
   getRunJobLog,
   latestWorkflowRunAttempt,
   listRunJobs,
+  listRunJobsForRun,
   markActionsLeaseBootstrapped,
   markWorkflowRunJobsFetched,
   markWorkflowRunReconciled,
@@ -785,17 +786,21 @@ export async function actionJobLog(
 }
 
 
-export async function cachedJobLogs(repo: string, headSha: string, checkName?: string): Promise<CachedJobLog[]> {
-  const jobs = listRunJobs(repo, headSha).filter((job) =>
-    jobIsComplete(job) && job.conclusion !== null && LOG_WORTHY_CONCLUSION.has(job.conclusion)
-  );
-  const matched = checkName ? jobs.filter((job) => job.name.toLowerCase().includes(checkName.toLowerCase())) : jobs;
+export async function cachedJobLogs(
+  repo: string,
+  headSha: string,
+  checkName?: string,
+  run?: Pick<WorkflowRunRow, "run_id" | "run_attempt">,
+): Promise<{ jobs: RunJobRow[]; entries: CachedJobLog[] }> {
+  const rows = run ? listRunJobsForRun(repo, run.run_id, run.run_attempt) : listRunJobs(repo, headSha);
+  const jobs = checkName ? rows.filter((job) => job.name.toLowerCase().includes(checkName.toLowerCase())) : rows;
+  const matched = jobs.filter((job) => jobIsComplete(job) && job.conclusion !== null && LOG_WORTHY_CONCLUSION.has(job.conclusion));
   const entries: CachedJobLog[] = [];
   for (const job of matched) {
     const gz = getRunJobLog(repo, job.job_id);
     entries.push({ job, body: gz ? (await gunzipAsync(gz)).toString() : null });
   }
-  return entries;
+  return { jobs, entries };
 }
 
 export function formatRunJobs(headSha: string, jobs: RunJobRow[]): string {
@@ -810,10 +815,16 @@ export function formatRunJobs(headSha: string, jobs: RunJobRow[]): string {
   return `Cached Actions jobs for ${headSha}\n\n${rows.join("\n")}\n`;
 }
 
-export function formatJobLogs(headSha: string, entries: CachedJobLog[]): string {
-  if (entries.length === 0) return `No cached jobs for ${headSha}. Nothing failed, or the run has not finished.\n`;
+export function formatJobLogs(headSha: string, { jobs, entries }: { jobs: RunJobRow[]; entries: CachedJobLog[] }): string {
+  if (jobs.length === 0) return `No cached jobs match this log selection for ${headSha}.\n`;
+  if (entries.length === 0) {
+    return jobs.some((job) => !jobIsComplete(job))
+      ? `No unsuccessful jobs are cached for ${headSha}; selected jobs are still running.\n`
+      : `No unsuccessful jobs in the cached results for ${headSha}.\n`;
+  }
   const sections = entries.map(({ job, body }) => {
     const facts = [
+      `run ${job.run_id}, attempt ${job.run_attempt}`,
       job.conclusion ?? job.status,
       job.failed_step ? `failed step: ${job.failed_step}` : null,
       job.log_truncated === 1 ? "legacy truncated log" : null,

@@ -42,7 +42,8 @@ Other commands:
 
 Options:
   --jobs              cached Actions jobs, including queued and running state
-  --run RUN_ID        with --jobs, select one run; with listen, wait for its completion
+  --run RUN_ID        with --jobs/--logs, select a run; with listen, wait for completion
+  --attempt NUMBER   with --run and --jobs/--logs, select a cached rerun attempt
   --json              machine-readable Cockpit status
   --diff              cached unified diff
   --file PATH         file contents at the PR head
@@ -56,7 +57,8 @@ Options:
 
 Read options:
   --jobs               cached Actions jobs, including queued and running state
-  --run RUN_ID         with --jobs, select one run; with listen, wait for its completion
+  --run RUN_ID         with --jobs/--logs, select a run; with listen, wait for completion
+  --attempt NUMBER    with --run and --jobs/--logs, select a cached rerun attempt
   --json               machine-readable Cockpit status
   --diff               cached unified diff
   --file PATH          file contents at the PR head
@@ -182,6 +184,7 @@ comments="1"
 listen_scope="all"
 body_file=""
 run_id=""
+run_attempt=""
 mutation_method=""
 force="0"
 comment_path=""
@@ -224,6 +227,11 @@ while (($#)); do
       [[ $# -gt 1 && "$2" =~ ^[1-9][0-9]*$ ]] || usage
       shift
       run_id="$1"
+      ;;
+    --attempt)
+      [[ $# -gt 1 && "$2" =~ ^[1-9][0-9]*$ ]] || usage
+      shift
+      run_attempt="$1"
       ;;
     --new-since)
       [[ $# -gt 1 ]] || usage
@@ -295,7 +303,8 @@ done
 
 [[ -z "$since" || "$mode" = "summary" || "$mode" = "json" ]] || usage
 [[ "$comments" = "1" || "$mode" = "summary" || "$mode" = "json" ]] || usage
-[[ -z "$run_id" || "$mode" = "jobs" || "$command" = "listen" ]] || usage
+[[ -z "$run_id" || "$mode" = "jobs" || "$mode" = "logs" || "$command" = "listen" ]] || usage
+[[ -z "$run_attempt" || ( -n "$run_id" && ( "$mode" = "jobs" || "$mode" = "logs" ) && "$command" != "listen" ) ]] || usage
 if [[ "$command" = "listen" && -n "$run_id" ]]; then
   [[ "$listen_scope" = "all" && -z "$since" && "$comments" = "1" && ( "$mode" = "summary" || "$mode" = "jobs" ) ]] || usage
   mode="jobs"
@@ -560,7 +569,7 @@ fetch_run_json() {
     "$base_url/jobs"
 }
 wait_for_run_completion() {
-  local interval=$1 payload state reconcile_attempt=""
+  local interval=$1 payload state reconcile_attempt="" polls=0
   curl --noproxy '*' -sS --fail-with-body -X POST -H "X-PR-Cockpit-CLI: 1" \
     "$base_url/runs/$run_id/cache" >/dev/null
   payload=$(fetch_run_json)
@@ -569,12 +578,19 @@ wait_for_run_completion() {
     [[ "$state" != "complete" ]] || return 0
     if [[ "$state" = reconcile:* && "${state#reconcile:}" != "$reconcile_attempt" ]]; then
       reconcile_attempt=${state#reconcile:}
+      polls=0
       curl --noproxy '*' -sS --fail-with-body -X POST -H "X-PR-Cockpit-CLI: 1" \
         "$base_url/runs/$run_id/cache" >/dev/null
       payload=$(fetch_run_json)
       continue
     fi
     sleep "$interval"
+    polls=$((polls + 1))
+    if [[ "$polls" -ge 30 ]]; then
+      curl --noproxy '*' -sS --fail-with-body -X POST -H "X-PR-Cockpit-CLI: 1" \
+        "$base_url/runs/$run_id/cache" >/dev/null
+      polls=0
+    fi
     payload=$(fetch_run_json)
   done
 }
@@ -844,8 +860,14 @@ case "$mode" in
   jobs)
     args=(--get)
     [[ -z "$run_id" ]] || args+=(--data-urlencode "runId=$run_id")
+    [[ -z "$run_attempt" ]] || args+=(--data-urlencode "attempt=$run_attempt")
     curl --noproxy '*' -sS --fail-with-body "${args[@]}" "$base_url/jobs"
     ;;
   file) curl --noproxy '*' -sS --fail-with-body --get --data-urlencode "path=$file_path" "$base_url/file" ;;
-  logs) curl --noproxy '*' -sS --fail-with-body --get --data-urlencode "check=$check_name" "$base_url/logs" ;;
+  logs)
+    args=(--get --data-urlencode "check=$check_name")
+    [[ -z "$run_id" ]] || args+=(--data-urlencode "runId=$run_id")
+    [[ -z "$run_attempt" ]] || args+=(--data-urlencode "attempt=$run_attempt")
+    curl --noproxy '*' -sS --fail-with-body "${args[@]}" "$base_url/logs"
+    ;;
 esac
