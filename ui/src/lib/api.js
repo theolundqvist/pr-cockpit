@@ -51,6 +51,13 @@ export async function fetchPrDetail(repo, number) {
   }
   return res.json();
 }
+
+export async function fetchPendingReview(repo, number) {
+  const res = await fetch(`/api/pr/${repo}/${number}/pending-review`);
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.error || `pending review ${res.status}`);
+  return body;
+}
 function actionCommitQuery(sha, prefetch = false) {
   const params = new URLSearchParams();
   if (sha) params.set("sha", sha);
@@ -181,8 +188,9 @@ export async function enqueueMutation(repo, number, payload) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ repo, number, payload }),
   });
-  if (!res.ok) throw new Error(`enqueue mutation ${res.status}`);
-  return res.json();
+  const body = await res.json();
+  if (!res.ok) throw new Error(body?.error || `enqueue mutation ${res.status}`);
+  return body;
 }
 
 export async function retryMutation(id) {

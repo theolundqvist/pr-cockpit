@@ -145,6 +145,7 @@ export function seedSettings(): void {
   if (getSetting("test_path_regex") === null) setSetting("test_path_regex", "");
   if (getSetting("diff_layout") === null) setSetting("diff_layout", "split");
   if (getSetting("force_merge_repos") === null) setSetting("force_merge_repos", "");
+  if (getSetting("pending_reviews_enabled") === null) setSetting("pending_reviews_enabled", "false");
   if (getSetting("review_bots") === null) setSetting("review_bots", envReviewBots);
   // migrate legacy per-agent keys and remove the retired rescorer without rewriting the remaining entries
   const storedAgents = getSetting("agents");
@@ -219,6 +220,10 @@ export function notificationSettings(): NotificationSettings {
   return storedNotificationSettings();
 }
 
+export function pendingReviewsEnabled(): boolean {
+  return getSetting("pending_reviews_enabled") === "true";
+}
+
 export interface Settings {
   desktop_platform: string;
   repos: string;
@@ -248,6 +253,7 @@ export interface Settings {
   saved_views: string;
   repo_roots: string;
   cockpit_webhooks: boolean;
+  pending_reviews_enabled: boolean;
   agent_harness: Harness;
   relay_url: string;
   notifications: NotificationSettings;
@@ -286,6 +292,7 @@ export function readSettings(): Settings {
     saved_views: getSetting("saved_views") ?? "[]",
     repo_roots: getSetting("repo_roots") ?? envRepoRoots,
     cockpit_webhooks: getSetting("cockpit_webhooks") === "true",
+    pending_reviews_enabled: pendingReviewsEnabled(),
     agent_harness: normalizeHarness(getSetting("agent_harness")),
     relay_url: relayConfig().url,
     notifications: notificationSettings(),
@@ -321,6 +328,7 @@ export function writeSettings(
     saved_views: string;
     repo_roots: string;
     cockpit_webhooks: boolean;
+    pending_reviews_enabled: boolean;
     agent_harness: string;
     relay_url: string;
     notifications: NotificationSettings;
@@ -362,6 +370,7 @@ export function writeSettings(
   if (patch.saved_views !== undefined) setSetting("saved_views", patch.saved_views);
   if (patch.repo_roots !== undefined) setSetting("repo_roots", patch.repo_roots);
   if (patch.cockpit_webhooks !== undefined) setSetting("cockpit_webhooks", patch.cockpit_webhooks ? "true" : "false");
+  if (patch.pending_reviews_enabled !== undefined) setSetting("pending_reviews_enabled", patch.pending_reviews_enabled ? "true" : "false");
   if (patch.agent_harness !== undefined) setSetting("agent_harness", normalizeHarness(patch.agent_harness));
   if (patch.relay_url !== undefined) setSetting("relay_url", patch.relay_url.trim());
   if (notifications !== undefined) {

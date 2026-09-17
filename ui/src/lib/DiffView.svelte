@@ -3,9 +3,11 @@
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import Thread from "./Thread.svelte";
   import MutationBadge from "./MutationBadge.svelte";
+  import PendingReviewComment from "./PendingReviewComment.svelte";
   import CodeEditor from "./CodeEditor.svelte";
   import { getHighlighter, ensureTheme, langForPath, tokenizeLine } from "./highlight.js";
   import { renderMarkdown } from "./markdown.js";
+  import { presentMutationError } from "./mutationError.js";
   import { theme } from "./theme.svelte.js";
   import { buildGapPage, buildWholeFile, fileUsesSplitLayout, hunkOldOffset, revertChange, revertFile, splitDiffRows } from "./diff.js";
   import { fetchFileContents } from "./api.js";
@@ -33,6 +35,13 @@
     onInlineComment,
     onRetryMutation,
     onDiscardMutation,
+    pendingReview = null,
+    pendingReviewMutations = [],
+    pendingReviewsEnabled = false,
+    pendingReviewStale = false,
+    onStageInlineComment = null,
+    onEditPendingComment = null,
+    onDeletePendingComment = null,
     commentable = true,
     editable = false,
     onCommitFileEdit = null,
@@ -62,6 +71,7 @@
   let openCtx = $state(null);
   let draft = $state("");
   let submitting = $state(false);
+  let submitError = $state("");
   let copiedPath = $state(null);
   let copiedTimer;
   let fileEditor = $state(null);
@@ -360,6 +370,39 @@
     return map;
   });
 
+  let pendingReviewByLine = $derived.by(() => {
+    const map = new Map();
+    if (pendingReview?.headSha !== headSha) return map;
+    for (const comment of pendingReview.comments ?? []) {
+      const key = `${comment.path}:${comment.side}:${comment.line}`;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(comment);
+    }
+    return map;
+  });
+
+  let stagedByLine = $derived.by(() => {
+    const map = new Map();
+    for (const mutation of pendingReviewMutations.filter(
+      (item) => item.kind === "pending-inline-comment" && item.payload.headSha === headSha,
+    )) {
+      const key = `${mutation.payload.path}:${mutation.payload.side}:${mutation.payload.line}`;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(mutation);
+    }
+    return map;
+  });
+
+  function commentMutations(commentId) {
+    return pendingReviewMutations
+      .filter((mutation) => mutation.payload.commentId === commentId)
+      .map((mutation) => ({
+        ...mutation,
+        onRetry: () => onRetryMutation(mutation.id),
+        onDiscard: () => onDiscardMutation(mutation.id),
+      }));
+  }
+
   function rowTarget(row) {
     if (row.type === "del") return { side: "LEFT", line: row.oldNum };
     return { side: "RIGHT", line: row.newNum };
@@ -443,6 +486,7 @@
       line: target.line,
       ...(start ? { startLine: start.line, startSide: start.side } : {}),
     };
+    submitError = "";
     draft = "";
   }
 
@@ -450,14 +494,19 @@
     openKey = null;
     openCtx = null;
     draft = "";
+    submitError = "";
   }
 
-  async function submitInline() {
-    if (!draft.trim() || submitting) return;
+  async function submitInline(staged = pendingReviewsEnabled) {
+    if (!draft.trim() || submitting || (staged && pendingReviewStale)) return;
     submitting = true;
+    submitError = "";
     try {
-      await onInlineComment({ ...openCtx, body: draft });
+      const submit = staged ? onStageInlineComment : onInlineComment;
+      await submit({ ...openCtx, body: draft });
       cancelInline();
+    } catch (error) {
+      submitError = presentMutationError(staged ? "stage review comment" : "comment", error).message;
     } finally {
       submitting = false;
     }
@@ -1332,8 +1381,26 @@
       {/each}
     </div>
   {/if}
-  {#if key && (openKey === key || pendingByLine.has(key))}
+  {#if key && (openKey === key || pendingByLine.has(key) || pendingReviewByLine.has(key) || stagedByLine.has(key))}
     <div class="inline-compose">
+      {#each pendingReviewByLine.get(key) ?? [] as comment (comment.id)}
+        <PendingReviewComment
+          {comment}
+          mutations={commentMutations(comment.id)}
+          onEdit={onEditPendingComment}
+          onDelete={onDeletePendingComment}
+        />
+      {/each}
+      {#each stagedByLine.get(key) ?? [] as m (m.id)}
+        <div class="ip pending-review-ip">
+          <div class="ip-head">
+            <span class="draft-label">Pending review comment</span>
+            <MutationBadge state={m.state} onRetry={() => onRetryMutation(m.id)} onDiscard={() => onDiscardMutation(m.id)} />
+          </div>
+          {#if m.state === "failed" && m.error}<div class="ip-error">{m.error}</div>{/if}
+          <div class="md">{@html renderMarkdown(m.payload.body)}</div>
+        </div>
+      {/each}
       {#each pendingByLine.get(key) ?? [] as m (m.id)}
         <div class="ip">
           <div class="ip-head">
@@ -1349,14 +1416,22 @@
           <textarea
             placeholder={openCtx?.startLine ? `Comment on lines ${openCtx.startLine}–${target.line}…` : `Comment on line ${target.line}…`}
             bind:value={draft}
+            oninput={() => (submitError = "")}
             onkeydown={composerKey}
             use:focusOnMount
           ></textarea>
+          {#if pendingReviewsEnabled && pendingReviewStale}
+            <div class="stale-draft-note">This pending review targets an older revision. Comment now, or edit/discard the draft before starting another staged comment.</div>
+          {/if}
+          {#if submitError}<div class="ip-error" role="alert">{submitError}</div>{/if}
           <div class="compose-actions">
-            <button class="cbtn primary shortcut-action" disabled={!draft.trim() || submitting} onclick={submitInline}>
-              {submitting ? "Posting…" : "Comment"}
+            <button class="cbtn primary shortcut-action" disabled={!draft.trim() || submitting || (pendingReviewsEnabled && pendingReviewStale)} onclick={() => submitInline()}>
+              {submitting ? "Saving…" : pendingReviewsEnabled ? (pendingReview ? "Add review comment" : "Start a review") : "Comment"}
               {#if draft.trim() && !submitting}<Kbd keys={["cmd", "enter"]} />{/if}
             </button>
+            {#if pendingReviewsEnabled}
+              <button class="cbtn" disabled={!draft.trim() || submitting} onclick={() => submitInline(false)}>Comment now</button>
+            {/if}
             <button class="cbtn ghost shortcut-action" onclick={cancelInline}>Cancel <Kbd keys="esc" /></button>
           </div>
         </div>
@@ -2313,6 +2388,14 @@
     color: var(--fail);
     font-size: 11.5px;
     margin-bottom: 4px;
+  }
+  .draft-label {
+    color: var(--link);
+    font-weight: 600;
+  }
+  .stale-draft-note {
+    color: var(--warn);
+    font-size: 11.5px;
   }
 
   .file {

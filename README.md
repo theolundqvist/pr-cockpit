@@ -51,6 +51,8 @@ When the review needs a change, stay in context: <kbd>e</kbd> edits the open fil
 
 Reviewer badges show scores explicitly posted in reviews or comments, parsed without launching a scoring agent.
 
+Enable **Pending reviews** in **Settings → Workspace** to save inline comments as a native GitHub draft and submit them together as one review. Drafts survive reloads and remain editable; if the PR head changes, submission stops until the stale draft is discarded. **Comment now** still posts a single comment immediately.
+
 Desktop notifications are off by default. In **Settings → Notifications**, choose events and combine rules for human or bot authors, comment text, repositories, and review requests. GitHub bot accounts and configured review bots count as bots; unknown authors match neither human nor bot filters.
 
 <details>

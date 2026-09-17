@@ -1137,6 +1137,7 @@ const THREAD_COMMENT_FIELDS = `
   author { __typename login avatarUrl }
   body
   createdAt
+  pullRequestReview { state }
   ${REACTION_GROUPS_FIELD}
 `;
 
@@ -1245,7 +1246,7 @@ function mapReactions(groups: RawReactionGroup[]): Reaction[] {
 type Author = { __typename?: string; login: string; avatarUrl: string };
 type ReviewNode = { id: string; author: Author | null; state: string; body: string; submittedAt: string };
 type CommentNode = { id: string; author: Author | null; body: string; createdAt: string };
-type ThreadCommentNode = { id: string; databaseId: number | null; diffHunk: string; author: Author | null; body: string; createdAt: string };
+type ThreadCommentNode = { id: string; databaseId: number | null; diffHunk: string; author: Author | null; body: string; createdAt: string; pullRequestReview?: { state: string } | null };
 
 export function reviewHunkTail(hunk: string): string {
   return hunk
@@ -1620,9 +1621,10 @@ function normalizeReviewDetail(
   reviewRequests: RestPrDetailBase["reviewRequests"],
 ) {
   const { reactionGroups, reviews, comments, reviewThreads, ...scalars } = review;
-  const viewerReviews = reviews.nodes
+  const visibleReviews = reviews.nodes.filter((item) => item.state !== "PENDING");
+  const viewerReviews = visibleReviews
     .filter((item) => item.author?.login === viewerLogin && item.submittedAt)
-    .sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
+    .sort((a, b) => b.submittedAt!.localeCompare(a.submittedAt!));
   return {
     ...scalars,
     reactions: mapReactions(reactionGroups),
@@ -1631,7 +1633,7 @@ function normalizeReviewDetail(
     viewerReviewState: viewerReviews[0]?.state ?? null,
     reviews: {
       pageInfo: reviews.pageInfo,
-      nodes: reviews.nodes.map(({ reactionGroups, ...item }) => ({
+      nodes: visibleReviews.map(({ reactionGroups, ...item }) => ({
         ...item,
         reactions: mapReactions(reactionGroups),
       })),
@@ -1645,17 +1647,23 @@ function normalizeReviewDetail(
     },
     reviewThreads: {
       pageInfo: reviewThreads.pageInfo,
-      nodes: reviewThreads.nodes.map((thread) => ({
-        ...thread,
-        comments: {
-          pageInfo: thread.comments.pageInfo,
-          nodes: thread.comments.nodes.map(({ reactionGroups, ...item }) => ({
-            ...item,
-            diffHunk: reviewHunkTail(item.diffHunk),
-            reactions: mapReactions(reactionGroups),
-          })),
-        },
-      })),
+      nodes: reviewThreads.nodes.flatMap((thread) => {
+        const visibleComments = thread.comments.nodes.filter(
+          (comment) => comment.pullRequestReview?.state !== "PENDING",
+        );
+        if (visibleComments.length === 0) return [];
+        return [{
+          ...thread,
+          comments: {
+            pageInfo: thread.comments.pageInfo,
+            nodes: visibleComments.map(({ reactionGroups, pullRequestReview: _review, ...item }) => ({
+              ...item,
+              diffHunk: reviewHunkTail(item.diffHunk),
+              reactions: mapReactions(reactionGroups),
+            })),
+          },
+        }];
+      }),
     },
   };
 }
@@ -1748,7 +1756,7 @@ export interface PrCommentSince {
   url: string | null;
 }
 
-async function fetchRestPages<T>(initialUrl: string): Promise<T[]> {
+async function fetchRestPages<T>(initialUrl: string, label = "GitHub comments request failed"): Promise<T[]> {
   const pages: T[] = [];
   const seen = new Set<string>();
   let url: string | null = initialUrl;
@@ -1757,7 +1765,7 @@ async function fetchRestPages<T>(initialUrl: string): Promise<T[]> {
     seen.add(url);
     const parsed = new URL(url);
     const response = await githubApiResponse("GET", `${parsed.pathname}${parsed.search}`);
-    if (!response.ok) throw await githubResponseError("GitHub comments request failed", response);
+    if (!response.ok) throw await githubResponseError(label, response);
     pages.push(...await response.json() as T[]);
     const next: string | undefined = response.headers
       .get("link")
@@ -1825,8 +1833,10 @@ export async function fetchPrCommentsSince(repo: string, number: number, since: 
       path: string;
       line: number | null;
       original_line: number | null;
+      pull_request_review_id: number | null;
     }>(`${baseUrl}/pulls/${number}/comments?since=${encodedSince}&per_page=100`),
     fetchRestPages<{
+      id: number;
       user: { login: string } | null;
       body: string;
       submitted_at: string | null;
@@ -1834,6 +1844,9 @@ export async function fetchPrCommentsSince(repo: string, number: number, since: 
       html_url: string;
     }>(`${baseUrl}/pulls/${number}/reviews?per_page=100`),
   ]);
+  const pendingReviewIds = new Set(
+    reviews.filter((review) => review.state === "PENDING").map((review) => review.id),
+  );
   const sinceMs = Date.parse(since);
   return [
     ...issueComments.map((comment) => ({
@@ -1846,18 +1859,22 @@ export async function fetchPrCommentsSince(repo: string, number: number, since: 
       state: null,
       url: comment.html_url,
     })),
-    ...reviewComments.map((comment) => ({
-      kind: "review comment" as const,
-      author: comment.user?.login ?? "unknown",
-      body: comment.body,
-      createdAt: comment.created_at,
-      path: comment.path,
-      line: comment.line ?? comment.original_line,
-      state: null,
-      url: comment.html_url,
-    })),
+    ...reviewComments
+      .filter((comment) =>
+        comment.pull_request_review_id === null || !pendingReviewIds.has(comment.pull_request_review_id)
+      )
+      .map((comment) => ({
+        kind: "review comment" as const,
+        author: comment.user?.login ?? "unknown",
+        body: comment.body,
+        createdAt: comment.created_at,
+        path: comment.path,
+        line: comment.line ?? comment.original_line,
+        state: null,
+        url: comment.html_url,
+      })),
     ...reviews
-      .filter((review) => review.submitted_at !== null && review.body.trim())
+      .filter((review) => review.state !== "PENDING" && typeof review.submitted_at === "string" && review.body.trim())
       .map((review) => ({
         kind: "review" as const,
         author: review.user?.login ?? "unknown",
@@ -2291,6 +2308,235 @@ async function restRequest(method: string, path: string, body: unknown): Promise
 
 async function restJson<T>(path: string): Promise<T> {
   return githubRestJson<T>("GET", path);
+}
+
+export interface PendingReviewComment {
+  id: number;
+  path: string;
+  line: number;
+  side: "LEFT" | "RIGHT";
+  startLine?: number;
+  startSide?: "LEFT" | "RIGHT";
+  body: string;
+}
+
+export interface PendingReview {
+  id: number;
+  headSha: string;
+  body: string;
+  comments: PendingReviewComment[];
+}
+
+type RestPendingReview = {
+  id: number;
+  node_id: string;
+  user: { login: string } | null;
+  state: string;
+  body: string | null;
+  commit_id: string;
+};
+
+type RestPendingReviewComment = {
+  id: number;
+  path: string;
+  line?: number | null;
+  original_line?: number | null;
+  side?: string | null;
+  original_side?: string | null;
+  start_line?: number | null;
+  original_start_line?: number | null;
+  start_side?: string | null;
+  original_start_side?: string | null;
+  body: string;
+};
+
+function pendingComment(comment: RestPendingReviewComment): PendingReviewComment {
+  const line = comment.line ?? comment.original_line;
+  const side = comment.side ?? comment.original_side;
+  const startLine = comment.start_line ?? comment.original_start_line;
+  const startSide = comment.start_side ?? comment.original_start_side;
+  if (!Number.isSafeInteger(line) || line! <= 0 || (side !== "LEFT" && side !== "RIGHT")) {
+    throw new GithubRequestError("GitHub returned a pending review comment without a valid diff location", 502);
+  }
+  if (startLine != null && (!Number.isSafeInteger(startLine) || startLine <= 0 || (startSide !== "LEFT" && startSide !== "RIGHT"))) {
+    throw new GithubRequestError("GitHub returned a pending review comment without a valid diff range", 502);
+  }
+  const pending: PendingReviewComment = {
+    id: comment.id,
+    path: comment.path,
+    line: line!,
+    side,
+    body: comment.body,
+  };
+  if (startLine != null) {
+    pending.startLine = startLine;
+    pending.startSide = startSide === "LEFT" ? "LEFT" : "RIGHT";
+  }
+  return pending;
+}
+
+async function viewerPendingReviewRecord(
+  repo: string,
+  number: number,
+  includeComments = true,
+): Promise<(PendingReview & { nodeId: string }) | null> {
+  if (mockGithub) return mockGithub.pendingReview(repo, number);
+  const encoded = encodedRepo(repo);
+  const [viewer, reviews] = await Promise.all([
+    getViewerLogin(),
+    fetchRestPages<RestPendingReview>(
+      `https://api.github.com/repos/${encoded}/pulls/${number}/reviews?per_page=100`,
+      "GitHub pending reviews request failed",
+    ),
+  ]);
+  const review = reviews.find((candidate) =>
+    candidate.state === "PENDING" && candidate.user?.login.toLowerCase() === viewer.toLowerCase()
+  );
+  if (!review) return null;
+  const comments = includeComments
+    ? await fetchRestPages<RestPendingReviewComment>(
+        `https://api.github.com/repos/${encoded}/pulls/${number}/reviews/${review.id}/comments?per_page=100`,
+        "GitHub pending review comments request failed",
+      )
+    : [];
+  return {
+    id: review.id,
+    nodeId: review.node_id,
+    headSha: review.commit_id,
+    body: review.body ?? "",
+    comments: comments.map(pendingComment),
+  };
+}
+
+export async function fetchPendingReview(repo: string, number: number): Promise<PendingReview | null> {
+  const review = await viewerPendingReviewRecord(repo, number);
+  if (!review) return null;
+  const { nodeId: _nodeId, ...pending } = review;
+  return pending;
+}
+
+async function latestPrHead(repo: string, number: number): Promise<string> {
+  if (mockGithub) return mockGithub.detail(repo, number).headRefOid;
+  const pull = await githubRestJson<{ state: string; head?: { sha?: string } }>(
+    "GET",
+    `/repos/${encodedRepo(repo)}/pulls/${number}`,
+  );
+  if (pull.state !== "open" || !pull.head?.sha) throw new StalePrHeadError("PR head is unavailable because the pull request is no longer open");
+  return pull.head.sha;
+}
+
+function stalePendingReview(draftHead: string, currentHead: string): StalePrHeadError {
+  return new StalePrHeadError(
+    `PR head changed from pending review ${draftHead} to current ${currentHead}; edit, remove, or discard the pending review before submitting`,
+  );
+}
+
+type PendingCommentInput = Omit<PendingReviewComment, "id">;
+
+export async function addPendingInlineComment(
+  repo: string,
+  number: number,
+  headSha: string,
+  comment: PendingCommentInput,
+): Promise<void> {
+  const review = await viewerPendingReviewRecord(repo, number, false);
+  const currentHead = await latestPrHead(repo, number);
+  if (currentHead.toLowerCase() !== headSha.toLowerCase()) throw stalePendingReview(headSha, currentHead);
+  if (review && review.headSha.toLowerCase() !== headSha.toLowerCase()) throw stalePendingReview(review.headSha, currentHead);
+  if (mockGithub) {
+    mockGithub.addPendingComment(repo, number, headSha, comment);
+    return;
+  }
+  if (!review) {
+    await restRequest("POST", `/repos/${encodedRepo(repo)}/pulls/${number}/reviews`, {
+      commit_id: headSha,
+      comments: [{
+        body: comment.body,
+        path: comment.path,
+        line: comment.line,
+        side: comment.side,
+        ...(comment.startLine === undefined
+          ? {}
+          : { start_line: comment.startLine, start_side: comment.startSide ?? comment.side }),
+      }],
+    });
+    return;
+  }
+  await graphql(
+    `mutation($input: AddPullRequestReviewThreadInput!) {
+      addPullRequestReviewThread(input: $input) { thread { id } }
+    }`,
+    {
+      input: {
+        pullRequestReviewId: review.nodeId,
+        body: comment.body,
+        path: comment.path,
+        line: comment.line,
+        side: comment.side,
+        ...(comment.startLine === undefined
+          ? {}
+          : { startLine: comment.startLine, startSide: comment.startSide ?? comment.side }),
+      },
+    },
+    "user action",
+    "add pending review thread",
+  );
+}
+
+async function requirePendingReview(
+  repo: string,
+  number: number,
+  reviewId: number,
+  includeComments = false,
+): Promise<PendingReview & { nodeId: string }> {
+  const review = await viewerPendingReviewRecord(repo, number, includeComments);
+  if (!review || review.id !== reviewId) throw new RestRequestError("Pending review not found", 404);
+  return review;
+}
+
+export async function editPendingReviewComment(
+  repo: string,
+  number: number,
+  reviewId: number,
+  commentId: number,
+  body: string,
+): Promise<void> {
+  const review = await requirePendingReview(repo, number, reviewId, true);
+  if (!review.comments.some((comment) => comment.id === commentId)) throw new RestRequestError("Pending review comment not found", 404);
+  if (mockGithub) return mockGithub.editPendingComment(repo, number, reviewId, commentId, body);
+  await restRequest("PATCH", `/repos/${encodedRepo(repo)}/pulls/comments/${commentId}`, { body });
+}
+
+export async function deletePendingReviewComment(
+  repo: string,
+  number: number,
+  reviewId: number,
+  commentId: number,
+): Promise<void> {
+  const review = await requirePendingReview(repo, number, reviewId, true);
+  if (!review.comments.some((comment) => comment.id === commentId)) throw new RestRequestError("Pending review comment not found", 404);
+  if (mockGithub) return mockGithub.deletePendingComment(repo, number, reviewId, commentId);
+  await restRequest("DELETE", `/repos/${encodedRepo(repo)}/pulls/comments/${commentId}`, undefined);
+}
+
+export async function discardPendingReview(repo: string, number: number, reviewId: number): Promise<void> {
+  await requirePendingReview(repo, number, reviewId);
+  if (mockGithub) return mockGithub.discardPendingReview(repo, number, reviewId);
+  await restRequest("DELETE", `/repos/${encodedRepo(repo)}/pulls/${number}/reviews/${reviewId}`, undefined);
+}
+
+export async function submitPendingReview(
+  repo: string,
+  number: number,
+  reviewId: number,
+  event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT",
+  body: string,
+): Promise<void> {
+  const review = await requirePendingReview(repo, number, reviewId);
+  const currentHead = await latestPrHead(repo, number);
+  if (review.headSha.toLowerCase() !== currentHead.toLowerCase()) throw stalePendingReview(review.headSha, currentHead);
+  if (mockGithub) return mockGithub.submitPendingReview(repo, number, reviewId, event, body);
+  await restRequest("POST", `/repos/${encodedRepo(repo)}/pulls/${number}/reviews/${reviewId}/events`, { event, body });
 }
 
 export async function postIssueComment(repo: string, number: number, body: string): Promise<string> {

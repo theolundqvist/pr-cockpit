@@ -13,7 +13,11 @@ import {
 } from "./db.ts";
 import {
   addAssignees,
+  addPendingInlineComment,
   closePullRequest,
+  deletePendingReviewComment,
+  discardPendingReview,
+  editPendingReviewComment,
   getViewerLogin,
   markPullRequestReadyForReview,
   postInlineComment,
@@ -25,6 +29,7 @@ import {
   requestReviewers,
   setGithubAutoMerge,
   setThreadResolved,
+  submitPendingReview,
   updatePullRequestBody,
   updatePullRequestTitle,
   updatePullRequestBranch,
@@ -34,12 +39,13 @@ import { pollOnce, refreshPr } from "./poller.ts";
 import { killFixerAgent, launchFixerAgent } from "./agents.ts";
 import { refreshRepoUsers } from "./repoUsers.ts";
 import { isMergeMethod, isMergeMethodSource, mergeAllowedNow, MERGEABLE_NOW_STATES, mergeWithLearning, mergeWithSelection, type MergeMethod, type MergeMethodSource } from "./mergeMethod.ts";
+import { pendingReviewsEnabled } from "./settings.ts";
 
 export type MutationPayload =
   | { kind: "comment"; body: string; commentNodeId?: string }
   | { kind: "reply-to-thread"; rootCommentId: number; body: string }
   | { kind: "resolve-thread"; threadId: string; resolved: boolean }
-  | { kind: "review-verdict"; event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT"; body: string }
+  | { kind: "review-verdict"; event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT"; body: string; pendingReviewId?: number }
   | { kind: "merge"; force: boolean; baseRef: string; method: MergeMethod; source: MergeMethodSource }
   | { kind: "update-branch" }
   | { kind: "ready-for-review" }
@@ -50,6 +56,10 @@ export type MutationPayload =
   | { kind: "github-auto-merge"; enable: true; method: MergeMethod }
   | { kind: "github-auto-merge"; enable: false }
   | { kind: "inline-comment"; path: string; line: number; side: "LEFT" | "RIGHT"; startLine?: number; startSide?: "LEFT" | "RIGHT"; body: string }
+  | { kind: "pending-inline-comment"; headSha: string; path: string; line: number; side: "LEFT" | "RIGHT"; startLine?: number; startSide?: "LEFT" | "RIGHT"; body: string }
+  | { kind: "edit-pending-comment"; reviewId: number; commentId: number; body: string }
+  | { kind: "delete-pending-comment"; reviewId: number; commentId: number }
+  | { kind: "discard-pending-review"; reviewId: number }
   | { kind: "assign"; logins: string[] }
   | { kind: "unassign"; logins: string[] }
   | { kind: "request-reviewers"; logins: string[] }
@@ -69,11 +79,37 @@ const KNOWN_KINDS: ReadonlySet<string> = new Set([
   "auto-merge",
   "github-auto-merge",
   "inline-comment",
+  "pending-inline-comment",
+  "edit-pending-comment",
+  "delete-pending-comment",
+  "discard-pending-review",
   "assign",
   "unassign",
   "request-reviewers",
   "unrequest-reviewers",
 ]);
+
+const PENDING_KINDS: Record<string, true> = {
+  "pending-inline-comment": true,
+  "edit-pending-comment": true,
+  "delete-pending-comment": true,
+  "discard-pending-review": true,
+};
+function positiveId(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+function validPendingLocation(value: {
+  line?: unknown;
+  side?: unknown;
+  startLine?: unknown;
+  startSide?: unknown;
+}): boolean {
+  if (!positiveId(value.line) || (value.side !== "LEFT" && value.side !== "RIGHT")) return false;
+  if (value.startLine === undefined) return value.startSide === undefined;
+  return positiveId(value.startLine)
+    && (value.startSide === undefined || value.startSide === "LEFT" || value.startSide === "RIGHT");
+}
 
 function assertMutationPayload(value: unknown): asserts value is MutationPayload {
   if (!value || typeof value !== "object" || !("kind" in value) || typeof value.kind !== "string" || !KNOWN_KINDS.has(value.kind)) {
@@ -94,11 +130,47 @@ function assertMutationPayload(value: unknown): asserts value is MutationPayload
     }
     if (!value.enable && "method" in value) throw new Error("disabling GitHub auto-merge must not include a merge method");
   }
+  if (value.kind === "review-verdict" && "pendingReviewId" in value && value.pendingReviewId !== undefined && !positiveId(value.pendingReviewId)) {
+    throw new Error("pending review verdict requires a valid review ID");
+  }
+  if (value.kind === "pending-inline-comment") {
+    if (!("headSha" in value) || typeof value.headSha !== "string" || !/^[0-9a-f]{40}$/i.test(value.headSha)
+      || !("path" in value) || typeof value.path !== "string" || !value.path
+      || !("body" in value) || typeof value.body !== "string" || !value.body.trim()
+      || !validPendingLocation(value)) {
+      throw new Error("pending inline comment requires a head SHA, body, and valid diff location");
+    }
+  }
+  if (value.kind === "edit-pending-comment") {
+    if (!("reviewId" in value) || !positiveId(value.reviewId)
+      || !("commentId" in value) || !positiveId(value.commentId)
+      || !("body" in value) || typeof value.body !== "string" || !value.body.trim()) {
+      throw new Error("editing a pending comment requires valid review and comment IDs and a body");
+    }
+  }
+  if (value.kind === "delete-pending-comment") {
+    if (!("reviewId" in value) || !positiveId(value.reviewId) || !("commentId" in value) || !positiveId(value.commentId)) {
+      throw new Error("deleting a pending comment requires valid review and comment IDs");
+    }
+  }
+  if (value.kind === "discard-pending-review" && (!("reviewId" in value) || !positiveId(value.reviewId))) {
+    throw new Error("discarding a pending review requires a valid review ID");
+  }
 }
 
 
-export function enqueueMutation(params: { repo: string; number: number; payload: MutationPayload }): number {
+export function enqueueMutation(params: {
+  repo: string;
+  number: number;
+  payload: MutationPayload;
+  allowPendingReviews?: boolean;
+}): number {
   assertMutationPayload(params.payload);
+  if ((PENDING_KINDS[params.payload.kind]
+    || (params.payload.kind === "review-verdict" && params.payload.pendingReviewId !== undefined))
+    && !(params.allowPendingReviews || pendingReviewsEnabled())) {
+    throw new Error("pending reviews are disabled");
+  }
   if (!/^[^/]+\/[^/]+$/.test(params.repo)) {
     throw new Error(`invalid repo ${params.repo}`);
   }
@@ -170,13 +242,15 @@ async function executeMutation(row: MutationRow): Promise<boolean> {
     case "review-verdict": {
       const pr = getPr(row.repo, row.number);
       const viewerLogin = await getViewerLogin();
-      if (payload.event !== "COMMENT" && pr?.author === viewerLogin) {
-        const prefix = payload.event === "APPROVE" ? "**APPROVED**" : "**CHANGES REQUESTED**";
-        const body = payload.body ? `${prefix}\n\n${payload.body}` : prefix;
-        await postReview(row.repo, row.number, "COMMENT", body);
-      } else {
-        await postReview(row.repo, row.number, payload.event, payload.body);
+      let event = payload.event;
+      let body = payload.body;
+      if (event !== "COMMENT" && pr?.author === viewerLogin) {
+        const prefix = event === "APPROVE" ? "**APPROVED**" : "**CHANGES REQUESTED**";
+        body = body ? `${prefix}\n\n${body}` : prefix;
+        event = "COMMENT";
       }
+      if (payload.pendingReviewId === undefined) await postReview(row.repo, row.number, event, body);
+      else await submitPendingReview(row.repo, row.number, payload.pendingReviewId, event, body);
       return false;
     }
     case "merge": {
@@ -215,6 +289,26 @@ async function executeMutation(row: MutationRow): Promise<boolean> {
       await postInlineComment(row.repo, row.number, headSha, payload);
       return false;
     }
+    case "pending-inline-comment":
+      await addPendingInlineComment(row.repo, row.number, payload.headSha, {
+        path: payload.path,
+        line: payload.line,
+        side: payload.side,
+        ...(payload.startLine === undefined
+          ? {}
+          : { startLine: payload.startLine, startSide: payload.startSide ?? payload.side }),
+        body: payload.body,
+      });
+      return false;
+    case "edit-pending-comment":
+      await editPendingReviewComment(row.repo, row.number, payload.reviewId, payload.commentId, payload.body);
+      return false;
+    case "delete-pending-comment":
+      await deletePendingReviewComment(row.repo, row.number, payload.reviewId, payload.commentId);
+      return false;
+    case "discard-pending-review":
+      await discardPendingReview(row.repo, row.number, payload.reviewId);
+      return false;
     // Cockpit bot auto-merge: a fixer agent waits/fixes, then the supervisor merges.
     case "auto-merge": {
       const pr = getPr(row.repo, row.number);

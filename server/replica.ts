@@ -3,11 +3,18 @@ import { getPr, readInboxReplica, replaceInboxReplica, type InboxReplica, type P
 import { observePrNotifications } from "./notifications.ts";
 import { setLastPollAt, lastPollAt } from "./poller.ts";
 import { invalidateInbox, publishPollCompleted } from "./rendererInvalidation.ts";
-import { readSettings } from "./settings.ts";
+import { pendingReviewsEnabled, readSettings } from "./settings.ts";
 
 const SOURCE_PORT = Number(Bun.env.COCKPIT_PROXY_PORT ?? 4820);
 const TUNNEL_PORT = Number(Bun.env.COCKPIT_REPLICA_LOCAL_PORT ?? 48203);
 const SYNC_INTERVAL_MS = 5_000;
+const PENDING_REVIEW_PATH_RE = /^\/api\/pr\/[^/]+\/[^/]+\/[1-9][0-9]*\/pending-review$/;
+const PENDING_MUTATION_KINDS: Record<string, true> = {
+  "pending-inline-comment": true,
+  "edit-pending-comment": true,
+  "delete-pending-comment": true,
+  "discard-pending-review": true,
+};
 const LOCAL_API_PATHS = new Set([
   "/api/inbox",
   "/api/closed",
@@ -266,10 +273,21 @@ export function isLocalReplicaRequest(request: Request, url: URL): boolean {
 
 export async function proxyReplicaRequest(request: Request, url: URL): Promise<Response | null> {
   if (!replicaEnabled() || !url.pathname.startsWith("/api/") || isLocalReplicaRequest(request, url)) return null;
+  const pendingEnabled = pendingReviewsEnabled();
+  if (PENDING_REVIEW_PATH_RE.test(url.pathname) && !pendingEnabled) return Response.json({ review: null });
+  if (request.method === "POST" && url.pathname === "/api/mutations" && !pendingEnabled) {
+    const body: unknown = await request.clone().json().catch(() => null);
+    const payload = body && typeof body === "object" && "payload" in body ? body.payload : null;
+    if (payload && typeof payload === "object" && "kind" in payload && typeof payload.kind === "string"
+      && (PENDING_MUTATION_KINDS[payload.kind] || (payload.kind === "review-verdict" && "pendingReviewId" in payload))) {
+      return Response.json({ error: "pending reviews are disabled" }, { status: 400 });
+    }
+  }
   try {
     await ensureTunnel();
     const headers = new Headers(request.headers);
     headers.delete("host");
+    if (pendingEnabled) headers.set("x-pr-cockpit-replica-pending-reviews", "1");
     const upstream = await fetch(sourceUrl(`${url.pathname}${url.search}`), {
       method: request.method,
       headers,

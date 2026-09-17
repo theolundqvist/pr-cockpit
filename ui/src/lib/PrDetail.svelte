@@ -2,6 +2,7 @@
   import { onDestroy, tick, untrack } from "svelte";
   import {
     fetchPrDetail,
+    fetchPendingReview,
     fetchPrDiff,
     commitPrFileEdit,
     generateCommitMessage,
@@ -25,6 +26,7 @@
   import { anchorThreads, fileDiffFingerprint } from "./diff.js";
   import { loadDiffDocument } from "./diffDocument.js";
   import { renderMarkdown } from "./markdown.js";
+  import { presentMutationError } from "./mutationError.js";
   import { loadPrIndex, prSummary } from "./prIndex.svelte.js";
   import { imageFallback, prKeyOwner, shouldCopyPrCockpitUrl, shouldCopyPrUrl } from "./dom.js";
   import { readLastViewed, writeLastViewed } from "./lastViewed.js";
@@ -58,6 +60,7 @@
   import Kbd from "./Kbd.svelte";
   import Thread from "./Thread.svelte";
   import MutationBadge from "./MutationBadge.svelte";
+  import PendingReviewComment from "./PendingReviewComment.svelte";
   import MutationFailure from "./MutationFailure.svelte";
   import KeyBar from "./KeyBar.svelte";
   import Avatar from "./Avatar.svelte";
@@ -88,6 +91,10 @@
   let showLoading = $state(false);
   let loadingSummary = $derived(prSummary(repo, number));
   let mutations = $state([]);
+  let pendingReview = $state(null);
+  let pendingReviewState = $state("idle");
+  let pendingReviewError = $state(null);
+  let pendingReviewActionError = $state("");
   let rangeKey = $state("all");
   let sinceAnchor = $state(null);
   let rewriteFallback = $state(false);
@@ -139,6 +146,11 @@
     diffDocument = null;
     error = null;
     mutations = [];
+    pendingReview = null;
+    pendingReviewState = "idle";
+    pendingReviewError = null;
+    pendingReviewActionError = "";
+    verdictError = "";
     fileIndex = 0;
     collapsedFiles = new Set();
     viewedFiles = new Set();
@@ -194,6 +206,36 @@
     return () => {
       if (loadingTimer) clearTimeout(loadingTimer);
     };
+  });
+
+  async function loadPendingReview(token = activeFetch) {
+    if (!prefs.pendingReviewsEnabled) return;
+    pendingReviewState = "loading";
+    pendingReviewError = null;
+    try {
+      const result = await fetchPendingReview(repo, number);
+      if (token !== activeFetch || !prefs.pendingReviewsEnabled) return;
+      const previousId = pendingReview?.id;
+      pendingReview = result.review;
+      if (pendingReview?.body && pendingReview.id !== previousId && !verdictBody.trim()) verdictBody = pendingReview.body;
+      pendingReviewState = "ready";
+    } catch (reason) {
+      if (token !== activeFetch || !prefs.pendingReviewsEnabled) return;
+      pendingReviewError = String(reason);
+      pendingReviewState = "error";
+    }
+  }
+
+  $effect(() => {
+    if (!prefs.pendingReviewsEnabled) {
+      pendingReview = null;
+      pendingReviewState = "idle";
+      pendingReviewError = null;
+      return;
+    }
+    const key = `${repo}#${number}`;
+    void key;
+    untrack(() => loadPendingReview());
   });
 
   let commits = $derived(
@@ -481,7 +523,10 @@
   $effect(() => {
     if (refreshRevision === handledRefreshRevision) return;
     handledRefreshRevision = refreshRevision;
-    untrack(() => refreshDetail());
+    untrack(() => {
+      refreshDetail();
+      if (prefs.pendingReviewsEnabled) loadPendingReview();
+    });
   });
 
   $effect(() => {
@@ -497,7 +542,10 @@
       const rows = await fetchMutations(repo, number);
       const stillPresent = new Set(rows.map((m) => m.id));
       const anyCompleted = [...pendingBefore].some((id) => !stillPresent.has(id));
-      if (anyCompleted) await reloadPr();
+      if (anyCompleted) {
+        await reloadPr();
+        if (prefs.pendingReviewsEnabled) await loadPendingReview();
+      }
       mutations = rows;
     }, 2000);
     return () => clearTimeout(timer);
@@ -517,10 +565,59 @@
   let commentSubmitting = $state(false);
   let pendingComments = $derived(mutations.filter((m) => m.kind === "comment"));
   let pendingInline = $derived(mutations.filter((m) => m.kind === "inline-comment"));
+  let pendingReviewMutations = $derived(
+    mutations.filter((m) => ["pending-inline-comment", "edit-pending-comment", "delete-pending-comment", "discard-pending-review"].includes(m.kind)),
+  );
+  let pendingReviewStale = $derived(!!pendingReview && !!pr && pendingReview.headSha !== pr.headRefOid);
+  let queuedReviewCommentCount = $derived(
+    pendingReviewMutations.filter((mutation) => mutation.kind === "pending-inline-comment" && mutation.state !== "failed").length,
+  );
+  let stagedReviewCommentCount = $derived((pendingReview?.comments.length ?? 0) + queuedReviewCommentCount);
+  let failedPendingReviewMutations = $derived(pendingReviewMutations.filter((mutation) => mutation.state === "failed"));
+  let hasPendingReviewWork = $derived(!!pendingReview || pendingReviewMutations.length > 0);
+  let pendingReviewMutationBusy = $derived(pendingReviewMutations.some((mutation) => mutation.state === "pending"));
+  let pendingReviewStarting = $derived(!pendingReview && queuedReviewCommentCount > 0);
 
   async function submitInlineComment(comment) {
     await enqueueMutation(repo, number, { kind: "inline-comment", ...comment });
     await refreshMutations();
+  }
+
+  async function stageInlineComment(comment) {
+    await enqueueMutation(repo, number, { kind: "pending-inline-comment", headSha: pr.headRefOid, ...comment });
+    await refreshMutations();
+  }
+
+  async function editPendingComment(commentId, body) {
+    await enqueueMutation(repo, number, { kind: "edit-pending-comment", reviewId: pendingReview.id, commentId, body });
+    await refreshMutations();
+  }
+
+  async function deletePendingComment(commentId) {
+    await enqueueMutation(repo, number, { kind: "delete-pending-comment", reviewId: pendingReview.id, commentId });
+    await refreshMutations();
+  }
+
+  async function discardPendingReview() {
+    if (!pendingReview) return;
+    pendingReviewActionError = "";
+    try {
+      await enqueueMutation(repo, number, { kind: "discard-pending-review", reviewId: pendingReview.id });
+      await refreshMutations();
+    } catch (error) {
+      pendingReviewActionError = presentMutationError("discard pending review", error).message;
+    }
+  }
+
+  function requestDiscardPendingReview() {
+    pendingReviewActionError = "";
+    confirmAction = {
+      title: "Discard pending review?",
+      message: `${pendingReview.comments.length} staged comment${pendingReview.comments.length === 1 ? "" : "s"} will be permanently removed from GitHub.`,
+      confirmLabel: "Discard review",
+      danger: true,
+      run: discardPendingReview,
+    };
   }
 
   async function submitComment() {
@@ -547,16 +644,20 @@
     await refreshMutations();
   }
 
-  async function submitResolve(threadId, currentlyResolved) {
-    await enqueueMutation(repo, number, { kind: "resolve-thread", threadId, resolved: !currentlyResolved });
-    await refreshMutations();
-  }
+  let pendingReviewCommentIds = $derived(new Set((pendingReview?.comments ?? []).map((comment) => comment.id)));
+  let publishedThreads = $derived(
+    prefs.pendingReviewsEnabled && pendingReviewState === "loading"
+      ? []
+      : (pr?.reviewThreads.nodes ?? []).filter(
+          (thread) => !thread.comments.nodes.some((comment) => pendingReviewCommentIds.has(comment.databaseId)),
+        ),
+  );
 
   let mutationsByThread = $derived.by(() => {
     const map = new Map();
     if (!pr) return map;
     const commentIdToThreadId = new Map();
-    for (const t of pr.reviewThreads.nodes) {
+    for (const t of publishedThreads) {
       for (const c of t.comments.nodes) {
         if (c.databaseId) commentIdToThreadId.set(c.databaseId, t.id);
       }
@@ -662,19 +763,34 @@
   let verdictEvent = $state("APPROVE");
   let verdictBody = $state("");
   let verdictSubmitting = $state(false);
+  let verdictError = $state("");
   let verdictBodyFocused = $state(false);
   let reviewMenuOpen = $state(false);
   let verdictMutation = $derived(mutations.find((m) => m.kind === "review-verdict"));
-  let selectedVerdict = $derived(VERDICT_OPTIONS.find((option) => option.value === verdictEvent) ?? VERDICT_OPTIONS[0]);
+  let reviewOptions = $derived(pr?.viewerIsAuthor ? VERDICT_OPTIONS.filter((option) => option.value === "COMMENT") : VERDICT_OPTIONS);
+  let selectedVerdict = $derived(reviewOptions.find((option) => option.value === verdictEvent) ?? reviewOptions[0]);
 
   async function submitVerdict() {
-    if (verdictSubmitting) return;
+    if (
+      verdictSubmitting ||
+      pendingReviewStale ||
+      pendingReviewMutationBusy ||
+      (prefs.pendingReviewsEnabled && pendingReviewState !== "ready")
+    ) return;
     reviewMenuOpen = false;
     verdictSubmitting = true;
+    verdictError = "";
     try {
-      await enqueueMutation(repo, number, { kind: "review-verdict", event: verdictEvent, body: verdictBody });
+      await enqueueMutation(repo, number, {
+        kind: "review-verdict",
+        event: verdictEvent,
+        body: verdictBody,
+        ...(pendingReview ? { pendingReviewId: pendingReview.id } : {}),
+      });
       verdictBody = "";
       await refreshMutations();
+    } catch (error) {
+      verdictError = presentMutationError("submit review", error).message;
     } finally {
       verdictSubmitting = false;
     }
@@ -1494,7 +1610,7 @@
       if (!r.body && r.state === "COMMENTED") continue;
       events.push({ kind: "review", id: `review-${r.id}`, author: r.author?.login, avatarUrl: r.author?.avatarUrl, body: r.body, at: r.submittedAt, state: r.state, reactions: r.reactions });
     }
-    for (const t of pr.reviewThreads.nodes) {
+    for (const t of publishedThreads) {
       const at = t.comments.nodes[0]?.createdAt;
       if (!at) continue;
       events.push({ kind: "thread", id: `thread-${t.id}`, thread: t, at });
@@ -1528,10 +1644,8 @@
     return "No workflow runs";
   }
 
-  let threadSplit = $derived(anchorThreads(files, pr?.reviewThreads.nodes ?? []));
-  let unresolvedTotal = $derived(
-    (pr?.reviewThreads.nodes ?? []).filter((t) => !t.isResolved).length,
-  );
+  let threadSplit = $derived(anchorThreads(files, publishedThreads));
+  let unresolvedTotal = $derived(publishedThreads.filter((t) => !t.isResolved).length);
   let prIsGreen = $derived(mergeGate.action === "merge" && unresolvedTotal === 0);
   let autofixDef = $derived(keybindAgents.find((a) => a.id === "autofix"));
   let fixShortcutTarget = $derived.by(() => {
@@ -1552,9 +1666,7 @@
           : "review";
   const stateLabel = (state) => state.toLowerCase().replace(/_/g, " ");
 
-  let firstUnresolved = $derived(
-    (pr?.reviewThreads.nodes ?? []).find((t) => !t.isResolved) ?? null,
-  );
+  let firstUnresolved = $derived(publishedThreads.find((t) => !t.isResolved) ?? null);
   let fileIndex = $state(0);
   let collapsedFiles = $state(new Set());
   let viewedFiles = $state(new Set());
@@ -2549,8 +2661,15 @@
                 headSha={range?.head ?? pr.headRefOid}
                 diffIdentity={displayedDiffKey}
                 {pendingInline}
+                {pendingReview}
+                {pendingReviewMutations}
+                pendingReviewsEnabled={prefs.pendingReviewsEnabled}
+                {pendingReviewStale}
                 {commentable}
                 onInlineComment={submitInlineComment}
+                onStageInlineComment={stageInlineComment}
+                onEditPendingComment={editPendingComment}
+                onDeletePendingComment={deletePendingComment}
                 onRetryMutation={handleRetry}
                 onDiscardMutation={handleDiscard}
                 base={pr.baseRefName}
@@ -3012,9 +3131,76 @@
               {/if}
             </div>
           {/if}
-          {#if canReview}
+          {#if canReview || (prefs.pendingReviewsEnabled && hasPendingReviewWork)}
             <div class="side-block">
-              <h3 class="side-title">Review</h3>
+              <h3 class="side-title">
+                {prefs.pendingReviewsEnabled && hasPendingReviewWork ? "Finish review" : "Review"}
+                {#if prefs.pendingReviewsEnabled && stagedReviewCommentCount}<span class="review-count">{stagedReviewCommentCount}</span>{/if}
+              </h3>
+              {#if pendingReviewActionError}
+                <div class="pending-review-notice error" role="alert">{pendingReviewActionError}</div>
+              {/if}
+              {#if prefs.pendingReviewsEnabled && pendingReviewState === "error"}
+                <div class="pending-review-notice error">
+                  <span>Couldn’t load your pending review. {pendingReviewError}</span>
+                  <button class="link" onclick={() => loadPendingReview()}>Try again</button>
+                </div>
+              {:else if prefs.pendingReviewsEnabled && pendingReviewStale}
+                <div class="pending-review-notice stale" role="alert">
+                  <strong>The PR changed since this review started.</strong>
+                  <span>Draft {pendingReview.headSha.slice(0, 7)} · current {pr.headRefOid.slice(0, 7)}. Edit, remove, or discard comments; submission stays blocked so line coordinates are not moved.</span>
+                </div>
+                <div class="pending-comment-list">
+                  {#each pendingReview.comments as comment (comment.id)}
+                    <div class="pending-comment-location mono">{comment.path}:{comment.line}</div>
+                    <PendingReviewComment
+                      {comment}
+                      mutations={pendingReviewMutations
+                        .filter((mutation) => mutation.payload.commentId === comment.id)
+                        .map((mutation) => ({
+                          ...mutation,
+                          onRetry: () => handleRetry(mutation.id),
+                          onDiscard: () => handleDiscard(mutation.id),
+                        }))}
+                      onEdit={editPendingComment}
+                      onDelete={deletePendingComment}
+                    />
+                  {/each}
+                </div>
+                <button class="link danger-link" onclick={requestDiscardPendingReview}>Discard review</button>
+              {:else if prefs.pendingReviewsEnabled && pendingReviewStarting}
+                <div class="pending-review-notice"><span>Starting a GitHub pending review with the first staged comment…</span></div>
+              {:else if prefs.pendingReviewsEnabled && pendingReview}
+                <div class="pending-review-notice">
+                  <span>{stagedReviewCommentCount} staged comment{stagedReviewCommentCount === 1 ? "" : "s"} will be published together.</span>
+                  <button class="link danger-link" onclick={requestDiscardPendingReview}>Discard review</button>
+                </div>
+                <div class="pending-comment-list">
+                  {#each pendingReview.comments as comment (comment.id)}
+                    <div class="pending-comment-location mono">{comment.path}:{comment.line}</div>
+                    <PendingReviewComment
+                      {comment}
+                      mutations={pendingReviewMutations
+                        .filter((mutation) => mutation.payload.commentId === comment.id)
+                        .map((mutation) => ({
+                          ...mutation,
+                          onRetry: () => handleRetry(mutation.id),
+                          onDiscard: () => handleDiscard(mutation.id),
+                        }))}
+                      onEdit={editPendingComment}
+                      onDelete={deletePendingComment}
+                    />
+                  {/each}
+                </div>
+              {/if}
+              {#each failedPendingReviewMutations as mutation (mutation.id)}
+                <MutationFailure
+                  action="save pending review"
+                  error={mutation.error}
+                  onRetry={() => handleRetry(mutation.id)}
+                  onDiscard={() => handleDiscard(mutation.id)}
+                />
+              {/each}
               {#if verdictMutation}
                 <div class="verdict-badge">
                   <MutationBadge
@@ -3024,12 +3210,16 @@
                   />
                 </div>
               {/if}
+              {#if verdictError}
+                <div class="pending-review-notice error" role="alert">{verdictError}</div>
+              {/if}
               <div class="verdict-body-wrap">
                 <textarea
                   id="verdict-control"
                   class="verdict-body"
                   placeholder="Optional body…"
                   bind:value={verdictBody}
+                  oninput={() => (verdictError = "")}
                   onkeydown={onVerdictKeydown}
                   onfocus={() => (verdictBodyFocused = true)}
                   onblur={() => (verdictBodyFocused = false)}
@@ -3039,20 +3229,26 @@
               <SplitButton
                 tone={selectedVerdict.tone}
                 open={reviewMenuOpen}
-                mainDisabled={verdictSubmitting}
-                caretDisabled={verdictSubmitting}
+                mainDisabled={verdictSubmitting || pendingReviewStale || pendingReviewMutationBusy || (prefs.pendingReviewsEnabled && pendingReviewState !== "ready")}
+                caretDisabled={verdictSubmitting || pendingReviewStale || pendingReviewMutationBusy || (prefs.pendingReviewsEnabled && pendingReviewState !== "ready")}
                 optionsLabel="Review options"
                 onMain={submitVerdict}
                 onToggle={() => ((mergeMenuOpen = false), (reviewMenuOpen = !reviewMenuOpen))}
               >
                 {#snippet main()}
-                  <span>{verdictSubmitting ? "Submitting…" : selectedVerdict.label}</span>
+                  <span>
+                    {verdictSubmitting
+                      ? "Submitting…"
+                      : prefs.pendingReviewsEnabled && pendingReview
+                        ? `Submit ${selectedVerdict.label.toLowerCase()}`
+                        : selectedVerdict.label}
+                  </span>
                   {#if !verdictSubmitting && verdictBodyFocused}<Kbd keys={["cmd", "enter"]} />{/if}
                 {/snippet}
                 {#snippet menu()}
                   <div class="merge-menu review-menu" role="menu">
-                    {#each VERDICT_OPTIONS as option}
-                      {#if option.value !== verdictEvent}
+                    {#each reviewOptions as option}
+                      {#if option.value !== selectedVerdict.value}
                         <button
                           role="menuitem"
                           class:danger={option.tone === "red"}
@@ -6175,6 +6371,50 @@
     right: 10px;
     display: inline-flex;
     pointer-events: none;
+  }
+  .review-count {
+    min-width: 18px;
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--link) 14%, transparent);
+    color: var(--link);
+    font-size: 11px;
+    text-align: center;
+  }
+  .pending-review-notice {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    margin-bottom: 10px;
+    color: var(--text-dim);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  .pending-review-notice.stale {
+    padding: 8px;
+    border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border));
+    border-radius: var(--radius-sm);
+    color: var(--text);
+  }
+  .pending-review-notice.error {
+    color: var(--fail);
+  }
+  .danger-link {
+    color: var(--fail);
+  }
+  .pending-comment-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+  .pending-comment-location {
+    margin-top: 4px;
+    color: var(--text-faint);
+    font-size: 11px;
+    overflow-wrap: anywhere;
   }
   .review-menu {
     min-width: 180px;

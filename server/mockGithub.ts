@@ -7,6 +7,8 @@ import type {
   FileHistoryCommit,
   FileHistoryDiff,
   PaletteHit,
+  PendingReview,
+  PendingReviewComment,
   PrDetail,
   PrIndexEntry,
   SearchHit,
@@ -565,6 +567,38 @@ function fixtureJobLog(repo: string, jobId: number): string {
 }
 const failedJobReruns: Array<{ repo: string; runId: number }> = [];
 
+type MockPendingReview = PendingReview & { nodeId: string };
+const pendingReviews = new Map<string, MockPendingReview>();
+let nextPendingReviewId = 20_000;
+let nextPendingCommentId = 30_000;
+
+if (isMockGithub && !capturedRepo) {
+  pendingReviews.set(`${REPO}#101`, {
+    id: 19_101,
+    nodeId: "PRR_fixture_pending_101",
+    headSha: sha(101),
+    body: "",
+    comments: [{
+      id: 29_101,
+      path: "src/flight.ts",
+      line: 14,
+      side: "RIGHT",
+      body: "This pending fixture comment stays private until the review is submitted.",
+    }],
+  });
+}
+
+function mockPendingReview(repo: string, number: number): MockPendingReview | null {
+  const review = pendingReviews.get(`${repo}#${number}`);
+  return review ? structuredClone(review) : null;
+}
+
+function requireMockPendingReview(repo: string, number: number, reviewId: number): MockPendingReview {
+  const review = pendingReviews.get(`${repo}#${number}`);
+  if (!review || review.id !== reviewId) throw new Error("Pending review not found");
+  return review;
+}
+
 
 export const mockGithub = isMockGithub ? {
   viewerLogin: snapshot?.viewer ?? VIEWER,
@@ -599,6 +633,81 @@ export const mockGithub = isMockGithub ? {
         { nameWithOwner: ADMIN_REPO, pushedAt: at(60), isPrivate: true },
       ],
   detail: fixtureDetail,
+  pendingReview: mockPendingReview,
+  addPendingComment: (
+    repo: string,
+    number: number,
+    headSha: string,
+    comment: Omit<PendingReviewComment, "id">,
+  ): void => {
+    fixtureDetail(repo, number);
+    const key = `${repo}#${number}`;
+    let review = pendingReviews.get(key);
+    if (!review) {
+      const id = nextPendingReviewId++;
+      review = { id, nodeId: `PRR_fixture_pending_${id}`, headSha, body: "", comments: [] };
+      pendingReviews.set(key, review);
+    }
+    review.comments.push({ id: nextPendingCommentId++, ...comment });
+  },
+  editPendingComment: (repo: string, number: number, reviewId: number, commentId: number, body: string): void => {
+    const review = requireMockPendingReview(repo, number, reviewId);
+    const comment = review.comments.find((candidate) => candidate.id === commentId);
+    if (!comment) throw new Error("Pending review comment not found");
+    comment.body = body;
+  },
+  deletePendingComment: (repo: string, number: number, reviewId: number, commentId: number): void => {
+    const review = requireMockPendingReview(repo, number, reviewId);
+    const index = review.comments.findIndex((candidate) => candidate.id === commentId);
+    if (index < 0) throw new Error("Pending review comment not found");
+    review.comments.splice(index, 1);
+  },
+  discardPendingReview: (repo: string, number: number, reviewId: number): void => {
+    requireMockPendingReview(repo, number, reviewId);
+    pendingReviews.delete(`${repo}#${number}`);
+  },
+  submitPendingReview: (
+    repo: string,
+    number: number,
+    reviewId: number,
+    event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT",
+    body: string,
+  ): void => {
+    const review = requireMockPendingReview(repo, number, reviewId);
+    const detail = details[`${repo}#${number}`];
+    if (!detail) throw new Error(`no mock fixture for ${repo}#${number}`);
+    const submittedAt = new Date().toISOString();
+    detail.reviews.nodes.push({
+      id: review.nodeId,
+      author: author(snapshot?.viewer ?? VIEWER),
+      state: event === "REQUEST_CHANGES" ? "CHANGES_REQUESTED" : event === "APPROVE" ? "APPROVED" : "COMMENTED",
+      body,
+      submittedAt,
+      reactions: [],
+    });
+    for (const comment of review.comments) {
+      detail.reviewThreads.nodes.push({
+        id: `thread-pending-${comment.id}`,
+        isResolved: false,
+        isOutdated: false,
+        path: comment.path,
+        line: comment.line,
+        diffSide: comment.side,
+        comments: {
+          nodes: [{
+            id: `comment-pending-${comment.id}`,
+            databaseId: comment.id,
+            diffHunk: "",
+            author: author(snapshot?.viewer ?? VIEWER),
+            body: comment.body,
+            createdAt: submittedAt,
+            reactions: [],
+          }],
+        },
+      });
+    }
+    pendingReviews.delete(`${repo}#${number}`);
+  },
   setAutoMerge: async (pullRequestId: string, method: string | null): Promise<void> => {
     await Bun.sleep(300);
     const detail = Object.values(details).find((candidate) => candidate.id === pullRequestId);

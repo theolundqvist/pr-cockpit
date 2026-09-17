@@ -55,6 +55,7 @@ import {
   fetchFileHistoryDiff,
   fetchPrDetail,
   fetchPrCommentsSince,
+  fetchPendingReview,
   fetchGithubQuota,
   fetchMergedPrAnalytics,
   fetchRepositoryOpenPrs,
@@ -94,7 +95,7 @@ import { commitsFromMirror, commitStatsFromMirror, conflictFilesFromMirror, diff
 import { checkState, type CheckState } from "./checkState.ts";
 import { currentBaseRef, discardMutation, enqueueMutation, mutationsForPr, retryMutation, type MutationPayload } from "./mutations.ts";
 import { isMergeMethod, mergeMethodFor, mergeMethodSourceFor, setMergeMethodPreference } from "./mergeMethod.ts";
-import { AGENT_DEFAULTS, readSettings, relayConfig, RELAY_APP_INSTALL_URL, RELAY_APP_SLUG, settingsRepos, writeSettings, type AgentSetting, type Settings } from "./settings.ts";
+import { AGENT_DEFAULTS, pendingReviewsEnabled, readSettings, relayConfig, RELAY_APP_INSTALL_URL, RELAY_APP_SLUG, settingsRepos, writeSettings, type AgentSetting, type Settings } from "./settings.ts";
 import { claudeBinPath, codexBinPath, ompBinPath } from "./harness.ts";
 import { CommitMessageError, generateCommitMessage } from "./commitMessage.ts";
 import { relayStatus } from "./relayClient.ts";
@@ -409,6 +410,7 @@ type HttpDependencies = {
   fetchRepositoryOpenPrs: typeof fetchRepositoryOpenPrs;
   trackedRepos: typeof trackedRepos;
   fetchPrCommentsSince: typeof fetchPrCommentsSince;
+  fetchPendingReview: typeof fetchPendingReview;
   lookupPrIndexes: typeof lookupPrIndexes;
   commitPrFileEdit: typeof commitPrFileEdit;
   githubAuthStatus: typeof githubAuthStatus;
@@ -439,6 +441,7 @@ const defaultHttpDependencies: HttpDependencies = {
   fetchRepositoryOpenPrs,
   trackedRepos,
   fetchPrCommentsSince,
+  fetchPendingReview,
   lookupPrIndexes,
   commitPrFileEdit,
   githubAuthStatus,
@@ -2445,6 +2448,23 @@ async function handleRefresh(): Promise<Response> {
   return json(result);
 }
 
+async function handlePendingReview(
+  owner: string,
+  repo: string,
+  number: string,
+  req: Request,
+  runtime: HttpRuntime,
+): Promise<Response> {
+  const enabled = pendingReviewsEnabled() || req.headers.get("x-pr-cockpit-replica-pending-reviews") === "1";
+  if (!enabled) return json({ review: null });
+  if (!validPrReference(owner, repo, number)) return json({ error: "invalid pull request reference" }, 400);
+  try {
+    return json({ review: await runtime.fetchPendingReview(`${owner}/${repo}`, Number(number)) });
+  } catch (error) {
+    return githubErrorResponse(error, "GitHub pending review fetch failed");
+  }
+}
+
 async function handlePutSettings(req: Request): Promise<Response> {
   let body: Partial<{
     repos: string;
@@ -2473,6 +2493,7 @@ async function handlePutSettings(req: Request): Promise<Response> {
     agent_harness: string;
     relay_url: string;
     notifications: NotificationSettings;
+    pending_reviews_enabled: boolean;
   }>;
   try {
     body = (await req.json()) as typeof body;
@@ -2696,7 +2717,12 @@ function serializeMutation(row: MutationRow) {
 async function handleEnqueueMutation(req: Request): Promise<Response> {
   const body = (await req.json()) as { repo: string; number: number; payload: MutationPayload };
   try {
-    const id = enqueueMutation({ repo: body.repo, number: body.number, payload: body.payload });
+    const id = enqueueMutation({
+      repo: body.repo,
+      number: body.number,
+      payload: body.payload,
+      allowPendingReviews: req.headers.get("x-pr-cockpit-replica-pending-reviews") === "1",
+    });
     return json({ id }, 201);
   } catch (err) {
     return json({ error: String(err) }, 400);
@@ -2827,10 +2853,20 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
         );
       if (!allowed && req.method === "POST" && url.pathname === "/api/mutations") {
         const body: unknown = await req.clone().json().catch(() => null);
+        const allowedKinds: Record<string, true> = {
+          "github-auto-merge": true,
+          "pending-inline-comment": true,
+          "edit-pending-comment": true,
+          "delete-pending-comment": true,
+          "discard-pending-review": true,
+        };
         allowed = Boolean(
           body && typeof body === "object" && "payload" in body &&
           body.payload && typeof body.payload === "object" && "kind" in body.payload &&
-          body.payload.kind === "github-auto-merge",
+          typeof body.payload.kind === "string" && (
+            allowedKinds[body.payload.kind]
+            || (body.payload.kind === "review-verdict" && "pendingReviewId" in body.payload)
+          ),
         );
       }
       if (!allowed) return json({ error: "screenshot fixture mode is read-only" }, 405);
@@ -2931,6 +2967,15 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     }
     if (req.method === "GET" && url.pathname === "/api/pr-details") {
       return handlePrDetails(url);
+    }
+    if (
+      req.method === "GET" &&
+      parts.length === 6 &&
+      parts[0] === "api" &&
+      parts[1] === "pr" &&
+      parts[5] === "pending-review"
+    ) {
+      return handlePendingReview(parts[2]!, parts[3]!, parts[4]!, req, runtime);
     }
     if (req.method === "GET" && url.pathname === "/api/file") {
       return handleFile(url);

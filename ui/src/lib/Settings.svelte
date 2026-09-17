@@ -35,6 +35,7 @@
   let hideSidebar = $state(false);
   let hideTestsDefault = $state(false);
   let newestCommentsFirst = $state(false);
+  let pendingReviewsEnabled = $state(false);
   let testPathRegex = $state("");
   let diffLayout = $state("split");
   let forceMergeRepos = $state([]);
@@ -136,6 +137,7 @@
     hideSidebar = s.hide_sidebar;
     hideTestsDefault = s.hide_tests_default;
     newestCommentsFirst = s.newest_comments_first;
+    pendingReviewsEnabled = s.pending_reviews_enabled === true;
     diffLayout = s.diff_layout;
     forceMergeRepos = s.force_merge_repos.split(",").map((r) => r.trim()).filter(Boolean);
     agents = s.agents.map((a) => ({ ...a, promptText: a.prompt_template || a.prompt_default }));
@@ -231,6 +233,7 @@
         hide_sidebar: hideSidebar,
         hide_tests_default: hideTestsDefault,
         newest_comments_first: newestCommentsFirst,
+        pending_reviews_enabled: pendingReviewsEnabled,
         test_path_regex: testPathRegex.trim() === BUILTIN_TEST_PATH.source.trim() ? "" : testPathRegex.trim(),
         diff_layout: diffLayout,
         force_merge_repos: forceMergeRepos.filter((repo) => configuredRepos.includes(repo)).join(","),
@@ -370,6 +373,14 @@
             <input class="input mono" bind:value={defaultRepo} placeholder="owner/name" spellcheck="false" autocomplete="off" />
           </label>
 
+
+          <label class="check-field settings-option field-wide">
+            <input class="check" type="checkbox" bind:checked={pendingReviewsEnabled} />
+            <span class="check-text">
+              <span class="check-label">Pending reviews</span>
+              <span class="hint">Stage inline comments on GitHub, then publish them together as one review.</span>
+            </span>
+          </label>
         </div>
         <details class="disclosure">
           <summary>Update frequency &amp; live updates<span class="summary-hint">How this workspace stays up to date</span></summary>
