@@ -28,7 +28,6 @@
 <div class="page">
   <header class="head">
     <div class="head-title-wrap">
-      <span class="ui-eyebrow">Control center</span>
       <span class="head-title">Usage</span>
     </div>
   </header>
@@ -41,13 +40,13 @@
       <div class="usage-head">
         <div>
           <span class="label">GitHub GraphQL usage</span>
-          <span class="hint">Current hourly GitHub window on {usage.machine}</span>
+          <span class="hint">{usage.machine}</span>
         </div>
         <div class="usage-totals">
           <strong>{percent(quota.used, quota.limit).toFixed(1)}%</strong>
           <span>
             {#if usage.predictedUsed === null}
-              Prediction available after five minutes
+              Forecast needs five minutes
             {:else}
               Predicted {percent(usage.predictedUsed, quota.limit).toFixed(1)}% by {resetTime(quota.resetAt)}
             {/if}
@@ -80,7 +79,7 @@
         </div>
         <div>
           <strong>{usage.otherPoints === null ? "—" : number.format(usage.otherPoints)}</strong>
-          <span>{usage.windowComplete ? "points from other clients" : "other clients after one full tracked window"}</span>
+          <span>{usage.windowComplete ? "points from other clients" : "other clients: awaiting full window"}</span>
         </div>
       </div>
     </section>
@@ -89,7 +88,7 @@
       <div class="section-head">
         <div>
           <span class="label" id="usage-history-title">Hourly usage</span>
-          <span class="hint">Last three days · each bar is one GitHub quota window</span>
+          <span class="hint">Last three days</span>
         </div>
         <div class="legend" aria-hidden="true">
           <span><i class="observed-key"></i>Observed</span>
@@ -133,7 +132,7 @@
             <small>{number.format(item.requests)} calls</small>
           </div>
         {:else}
-          <span class="usage-empty">No GraphQL calls recorded in this window.</span>
+          <span class="usage-empty">No calls this hour.</span>
         {/each}
       </div>
       <div class="usage-breakdown">
@@ -144,12 +143,12 @@
             <strong>{number.format(item.points)} pts</strong>
           </div>
         {:else}
-          <span class="usage-empty">Usage appears here after the next GitHub request.</span>
+          <span class="usage-empty">No calls yet.</span>
         {/each}
       </div>
     </section>
 
-    <span class="usage-window">Resets at {resetTime(quota.resetAt)}. {usage.unknownCostRequests ? `${number.format(usage.unknownCostRequests)} calls have unknown cost.` : "Every recorded call has an exact cost."}</span>
+    <span class="usage-window">Resets at {resetTime(quota.resetAt)}.{#if usage.unknownCostRequests} {number.format(usage.unknownCostRequests)} calls with unknown cost.{/if}</span>
   {:else if error}
     <div class="state error">GitHub usage is unavailable.</div>
   {:else}
@@ -176,7 +175,6 @@
     flex-direction: column;
     gap: 3px;
   }
-  .ui-eyebrow,
   .usage-subhead {
     color: var(--text-faint);
     font-size: 11px;

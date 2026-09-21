@@ -61,15 +61,11 @@
   }
 </script>
 
-<div class="settings-intro">
-  <p>Off by default. When on, activity that reaches Cockpit through its normal refreshes can post a desktop notification if one of your rules matches. Nothing is delivered until you also allow notifications on this device.</p>
-</div>
 
 <label class="check-field settings-option">
   <input class="check" type="checkbox" bind:checked={settings.enabled} />
   <span class="check-text">
     <span class="check-label">Desktop notifications</span>
-    <span class="hint">Only activity after you turn this on counts — older comments and reviews never replay. One notification per event, even when several rules match.</span>
   </span>
 </label>
 
@@ -78,24 +74,22 @@
   {#if permission === "unsupported"}
     <span class="hint">This {isShell ? "app" : "browser"} cannot show desktop notifications.</span>
   {:else if permission === "granted"}
-    <span class="hint status-ok">Allowed — the {isShell ? "desktop app" : "browser"} can show notifications from Cockpit.</span>
+    <span class="hint status-ok">Allowed</span>
     {#if notificationDelivery.error}
-      <span class="hint invalid-hint" role="alert">Last delivery failed: {notificationDelivery.error}. Pending notifications stay queued until a claim succeeds.</span>
+      <span class="hint invalid-hint" role="alert">Delivery failed: {notificationDelivery.error}</span>
       <button class="btn" type="button" onclick={requestDrain}>Retry now</button>
     {/if}
   {:else if permission === "denied"}
-    <span class="hint invalid-hint">Blocked — notifications for this site are turned off in your {isShell ? "system" : "browser"} settings. Allow them there, then reload Cockpit.</span>
+    <span class="hint invalid-hint">Allow notifications in {isShell ? "system" : "browser"} settings, then reload.</span>
   {:else}
-    <span class="hint">Not yet allowed. Cockpit only asks when you click below.</span>
-    <button class="btn" type="button" disabled={requesting} onclick={allowNotifications}>{requesting ? "Waiting for your answer…" : "Allow desktop notifications"}</button>
+    <button class="btn" type="button" disabled={requesting} onclick={allowNotifications}>{requesting ? "Waiting…" : "Allow notifications"}</button>
   {/if}
 </div>
 
 <div class="field">
   <span class="label">Rules</span>
-  <span class="hint">A notification is posted when any enabled rule matches. Each rule picks the events it covers and optional conditions on the author, text, repository or your relationship to the PR. Text matches are case-insensitive and literal.</span>
   {#if settings.rules.length === 0}
-    <span class="hint">No rules yet — nothing is delivered until you add one.</span>
+    <span class="hint">Add a rule to receive notifications.</span>
   {/if}
 </div>
 
@@ -125,7 +119,7 @@
           <option value="all">All must match</option>
           <option value="any">Any may match</option>
         </select>
-        <span class="hint match-hint">{rule.conditions.length === 0 ? "No conditions — every selected event notifies." : rule.conditions.length === 1 ? "Add another condition to choose between all and any." : ""}</span>
+        {#if rule.conditions.length === 0}<span class="hint match-hint">Every selected event.</span>{/if}
       </div>
       {#each rule.conditions as condition, index}
         {@const definition = NOTIFICATION_FIELDS[condition.field]}
@@ -151,11 +145,9 @@
           {/if}
           <button class="reset-link remove-condition" type="button" onclick={() => (rule.conditions = rule.conditions.filter((_, i) => i !== index))}>Remove</button>
           {#if condition.field === "actor" || condition.field === "prAuthor"}
-            <span class="hint condition-hint">Type <code>$me</code> to match your own GitHub login{viewer.login ? ` (${viewer.login})` : ""}.</span>
-          {:else if condition.field === "actorType"}
-            <span class="hint condition-hint">Authors GitHub doesn't classify match neither a person nor a bot.</span>
+            <span class="hint condition-hint"><code>$me</code> = {viewer.login || "your login"}</span>
           {:else if condition.field === "body"}
-            <span class="hint condition-hint">Applies to comment and review events; other events carry no text and never match.</span>
+            <span class="hint condition-hint">Comments and reviews only.</span>
           {/if}
         </div>
       {/each}
@@ -171,16 +163,13 @@
 
 <div class="rule-actions">
   <button class="btn" type="button" onclick={() => addRule()}>Add rule</button>
-  <span class="hint examples-label">or start from an example:</span>
+  <span class="hint examples-label">Examples</span>
   {#each NOTIFICATION_EXAMPLES as example}
     <button class="btn" type="button" title={example.hint} onclick={() => addRule(example.build(viewer.login))}>{example.label}</button>
   {/each}
 </div>
-<span class="hint">Examples are editable and still need Save. Adding one does not turn notifications on.</span>
 
 <style>
-  .settings-intro { max-width: 640px; margin-bottom: 18px; }
-  .settings-intro p { margin: 0; color: var(--text-dim); font-size: 14px; line-height: 1.5; }
   .field, .settings-option {
     display: block;
     min-width: 0;
@@ -214,7 +203,6 @@
   .check-field { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
   .check-label { display: block; color: var(--text); font-size: 14px; line-height: 21px; }
   .check-text { min-width: 0; }
-  .check-field .hint { margin: 3px 0 0; }
   .check {
     appearance: none;
     position: relative;

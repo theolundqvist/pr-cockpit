@@ -66,14 +66,10 @@
   // UI copy for the built-in agents, keyed by agent id; definitions (enabled, trigger, keybind, prompt) come from the server
   const AGENT_META = {
     fixer: {
-      description: "Fixes conflicts, failing checks and bot review threads on an armed PR, then merges it using the base branch’s required method.",
-      offHint: "Turning this off prevents new runs. A running fixer finishes its current pass, then exits. Re-arm the PR after re-enabling.",
-      promptHint: "Placeholders such as {{PR_NUMBER}} are filled in for each run.",
+      description: "Fixes conflicts, checks and review threads, then merges.",
     },
     autofix: {
-      description: "Fixes conflicts, failing checks and review threads, but never merges. You decide when to merge.",
-      offHint: "Turning this off prevents new runs. A running auto-fix finishes its current pass, then exits. Re-arm the PR after re-enabling.",
-      promptHint: "Placeholders such as {{PR_NUMBER}} are filled in for each run.",
+      description: "Fixes conflicts, checks and review threads. Never merges.",
     },
   };
 
@@ -318,7 +314,6 @@
   <div class="settings" class:settings-analytics={activeTab === "analytics"}>
     <header class="head">
       <div class="settings-head-copy">
-        <span class="ui-eyebrow">Settings</span>
         <h1 class="head-title">{activeSection?.label ?? "Workspace"}</h1>
       </div>
     </header>
@@ -328,7 +323,7 @@
         <strong>{loaded ? "Settings could not be saved." : "Settings could not be loaded."}</strong>
         <span>{error}</span>
         {#if loaded}
-          <span>Your edits are still here. Check the error, then try Save changes again.</span>
+          <span>Edits kept. Try saving again.</span>
         {:else}
           <button class="btn" type="button" onclick={loadSettings}>Try again</button>
         {/if}
@@ -340,11 +335,7 @@
       <fieldset class="settings-controls" disabled={saving}>
       <legend class="sr-only">{activeSection?.label ?? "Workspace"} settings</legend>
       {#if activeTab === "general"}
-        <div class="settings-intro">
-          <p>Choose the repositories you want in your review queue.</p>
-        </div>
         <div class="setup-row">
-          <span class="hint">Need to reconnect GitHub or revisit your repository selection? Save any edits here first.</span>
           <button class="btn setup-again" type="button" onclick={onRunSetup}>Run setup again</button>
         </div>
 
@@ -353,7 +344,7 @@
             <div class="field field-wide private-access" class:private-access-live={privateAccess.state === "live"}>
               <span class="label">Private access</span>
               {#if privateAccess.state === "live"}
-                <span class="hint">Live through {privateAccess.kind}. The local server remains private on loopback.</span>
+                <span class="hint">{privateAccess.kind}</span>
                 <a class="private-origin mono" href={privateAccess.origin}>{privateAccess.origin}</a>
               {:else}
                 <span class="hint invalid-hint">Tailscale could not publish Cockpit: {privateAccess.error}</span>
@@ -363,13 +354,13 @@
 
           <label class="field field-wide">
             <span class="label">Repositories</span>
-            <span class="hint">PRs involving you in these repositories. Enter one owner/name per line.</span>
+            <span class="hint">One owner/name per line.</span>
             <textarea class="input mono" rows={Math.max(3, repos.split("\n").length)} bind:value={repos} spellcheck="false"></textarea>
           </label>
 
           <label class="field">
             <span class="label">Default repository</span>
-            <span class="hint">Where to look when you open a PR by number alone, such as #42.</span>
+            <span class="hint">For PR numbers without a repository.</span>
             <input class="input mono" bind:value={defaultRepo} placeholder="owner/name" spellcheck="false" autocomplete="off" />
           </label>
 
@@ -377,17 +368,16 @@
           <label class="check-field settings-option field-wide">
             <input class="check" type="checkbox" bind:checked={pendingReviewsEnabled} />
             <span class="check-text">
-              <span class="check-label">Pending reviews</span>
-              <span class="hint">Stage inline comments on GitHub, then publish them together as one review.</span>
+              <span class="check-label">Stage comments as pending reviews</span>
             </span>
           </label>
         </div>
         <details class="disclosure">
-          <summary>Update frequency &amp; live updates<span class="summary-hint">How this workspace stays up to date</span></summary>
+          <summary>Live updates</summary>
           <div class="settings-grid disclosure-body">
           <label class="field">
             <span class="label">Check GitHub every (seconds)</span>
-            <span class="hint">180 is recommended. A shorter interval uses more GitHub quota; the minimum is 60 seconds.</span>
+            <span class="hint">Minimum 60 seconds.</span>
             <input class="input narrow" type="number" min="60" step="10" bind:value={pollInterval} />
           </label>
 
@@ -395,7 +385,7 @@
 
           <div class="field field-wide">
             <label class="label" for="relay-url">Live update relay</label>
-            <span class="hint" id="relay-url-hint">Receive GitHub events between scheduled checks. Leave empty to use scheduled checks only.</span>
+            <span class="hint" id="relay-url-hint">Empty: scheduled checks only.</span>
             <input id="relay-url" aria-describedby="relay-url-hint" class="input mono" bind:value={relayUrl} spellcheck="false" autocomplete="off" />
             {#if relayStatusText}
               <span class="hint relay-status">{relayStatusText}</span>
@@ -416,13 +406,10 @@
                         <button class="link-btn" type="button" onclick={() => window.open(relayCoverage.installUrl, "_blank", "noopener")}>Install app</button>
                       {/if}
                     {:else}
-                      <span class="coverage-polling">coverage unknown — relay didn't answer</span>
+                      <span class="coverage-polling">coverage unknown</span>
                     {/if}
                   </div>
                 {/each}
-                {#if relayCoverage.appExists && relayCoverage.repos && configuredRepos.some((r) => relayCoverage.repos[r] === false)}
-                  <span class="hint">Org admins install; members can request it from an admin via the same page</span>
-                {/if}
               </div>
             {/if}
           </div>
@@ -437,13 +424,9 @@
       {/if}
 
       {#if activeTab === "appearance"}
-        <div class="settings-intro">
-          <p>Make the cockpit comfortable to read. Changes apply only when you save.</p>
-        </div>
         <div class="settings-grid">
           <label class="field">
             <span class="label">Theme</span>
-            <span class="hint">System follows your device’s light or dark appearance.</span>
             <select class="input narrow" bind:value={themeName}>
               <option value="system">System</option>
               <option value="dark">Dark</option>
@@ -454,7 +437,6 @@
 
           <label class="field">
             <span class="label">Code colors</span>
-            <span class="hint">Catppuccin adds richer TypeScript colors and keeps embedded SQL highlighting</span>
             <select class="input narrow" bind:value={codeTheme}>
               <option value="github">GitHub</option>
               <option value="catppuccin">Catppuccin</option>
@@ -462,24 +444,21 @@
           </label>
 
           <label class="field">
-            <span class="label">General scale (%)</span>
-            <span class="hint">Scales everything except diff text</span>
+            <span class="label">Interface scale (%)</span>
             <input class="input narrow" type="number" min="50" max="200" step="5" bind:value={generalScale} />
           </label>
 
           <label class="field">
             <span class="label">Diff scale (%)</span>
-            <span class="hint">Scales diff text and line numbers independently</span>
             <input class="input narrow" type="number" min="50" max="200" step="5" bind:value={diffScale} />
           </label>
 
         </div>
         <details class="disclosure">
-          <summary>Fonts<span class="summary-hint">Choose fonts separately for the interface, code and comments</span></summary>
+          <summary>Fonts</summary>
           <div class="settings-grid disclosure-body">
           <label class="field">
             <span class="label">Interface font</span>
-            <span class="hint">Titles, labels, buttons and list chrome</span>
             <select class="input narrow" bind:value={fontInterface}>
               <option value="default">Default</option>
               <option value="alacritty">Alacritty — 0xProto</option>
@@ -487,8 +466,7 @@
           </label>
 
           <label class="field">
-            <span class="label">Technical UI font</span>
-            <span class="hint">Branches, paths, commit IDs and logs</span>
+            <span class="label">Paths &amp; logs font</span>
             <select class="input narrow" bind:value={fontUi}>
               <option value="default">Default</option>
               <option value="alacritty">Alacritty — 0xProto</option>
@@ -497,7 +475,6 @@
 
           <label class="field">
             <span class="label">Code font</span>
-            <span class="hint">Diff lines and code blocks</span>
             <select class="input narrow" bind:value={fontCode}>
               <option value="default">Default</option>
               <option value="alacritty">Alacritty — 0xProto</option>
@@ -506,7 +483,6 @@
 
           <label class="field">
             <span class="label">Comment font</span>
-            <span class="hint">Pull request descriptions, comments and reviews</span>
             <select class="input narrow" bind:value={fontComments}>
               <option value="default">Default</option>
               <option value="alacritty">Alacritty — 0xProto</option>
@@ -515,13 +491,12 @@
           </div>
         </details>
         <details class="disclosure">
-          <summary>Sidebar &amp; desktop window<span class="summary-hint">Visibility, remembered size and position</span></summary>
+          <summary>Sidebar &amp; window</summary>
           <div class="settings-grid disclosure-body">
           <label class="check-field settings-option grid-option">
             <input class="check" type="checkbox" bind:checked={hideSidebar} />
             <span class="check-text">
               <span class="check-label">Hide sidebar</span>
-              <span class="hint">Hides the main app rail — Settings keeps its own section navigation</span>
             </span>
           </label>
 
@@ -529,7 +504,6 @@
             <input class="check" type="checkbox" bind:checked={perViewWindowSize} />
             <span class="check-text">
               <span class="check-label">Remember window size per view</span>
-              <span class="hint">Restores the size you last used for the list and PR views</span>
             </span>
           </label>
 
@@ -537,7 +511,6 @@
             <input class="check" type="checkbox" bind:checked={perViewWindowPosition} />
             <span class="check-text">
               <span class="check-label">Remember window position per view</span>
-              <span class="hint">Restores the screen position you last used for the list and PR views</span>
             </span>
           </label>
         </div>
@@ -545,39 +518,29 @@
       {/if}
 
       {#if activeTab === "keybinds"}
-        <div class="settings-intro">
-          <p>Open the desktop app or jump straight to PR search, even while another app has focus.</p>
-        </div>
         <div class="settings-grid">
           <label class="field">
             <span class="label">Open PR Cockpit</span>
-            <span class="hint">Show the main window from anywhere on your desktop.</span>
             <ShortcutInput value={keybindOpenApp} defaultValue={shortcutDefaults.openApp} platform={desktopPlatform} onChange={(a) => (keybindOpenApp = a)} />
           </label>
 
           <label class="field">
             <span class="label">Open PR search</span>
-            <span class="hint">Show the standalone search palette without opening the main window.</span>
             <ShortcutInput value={keybindOpenPalette} defaultValue={shortcutDefaults.openPalette} platform={desktopPlatform} onChange={(a) => (keybindOpenPalette = a)} />
             {#if keybindClash}
-              <span class="hint invalid-hint">Same combo bound twice — pick different shortcuts</span>
+              <span class="hint invalid-hint">Choose different shortcuts.</span>
             {/if}
           </label>
         </div>
       {/if}
 
       {#if activeTab === "automerge"}
-        <div class="settings-intro">
-          <p>Agents can change PR branches. Review each agent’s behavior and trigger before enabling it. Some agents can also merge.</p>
-        </div>
+        <p class="hint">Agents can push changes and merge PRs.</p>
         <label class="field">
           <span class="label">Run agents with</span>
-          <span class="hint">
-            The coding tool used by every agent. It must be installed on the machine running Cockpit.
-            {#if !harnessAvailable[agentHarness]}
-              — <strong>{agentHarness} is not installed</strong>, agents will fail to start
-            {/if}
-          </span>
+          {#if !harnessAvailable[agentHarness]}
+            <span class="hint invalid-hint">Install {agentHarness} on the Cockpit host.</span>
+          {/if}
           <select class="input narrow" bind:value={agentHarness}>
             <option value="claude">Claude Code{harnessAvailable.claude ? "" : " (not installed)"}</option>
             <option value="omp">omp{harnessAvailable.omp ? "" : " (not installed)"}</option>
@@ -596,10 +559,9 @@
               <div class="agent-identity">
                 <input class="input agent-name" bind:value={agent.name} aria-label="Agent name" placeholder="Agent name" spellcheck="false" autocomplete="off" />
                 {#if isCustom(agent)}
-                  <span class="hint">Supervised run on a PR — pushes fixes to the PR branch, never merges</span>
+                  <span class="hint">Pushes fixes; never merges.</span>
                 {:else}
                   <span class="hint">{AGENT_META[agent.id]?.description}</span>
-                  <span class="hint">{AGENT_META[agent.id]?.offHint}</span>
                 {/if}
               </div>
             </div>
@@ -618,18 +580,20 @@
                 <option value="opus">{agentHarness === "codex" ? "high" : "opus"}</option>
                 <option value="sonnet">{agentHarness === "codex" ? "medium" : "sonnet"}</option>
               </select>
-              <span class="hint trigger-hint">{agent.trigger === "keybind" ? "Press its key on a PR or inbox selection" : "Runs automatically when new commits land on your own PRs"}</span>
+              {#if agent.trigger === "activity"}
+                <span class="hint trigger-hint">On new commits to your PRs.</span>
+              {/if}
             </div>
             {#if agentKeybindIssues.has(agent.id)}
               <span class="hint invalid-hint keybind-issue" role="alert">{agentKeybindIssues.get(agent.id)}</span>
             {/if}
 
             <details class="disclosure agent-disclosure">
-              <summary>Instructions &amp; reset<span class="summary-hint">Customize what this agent does</span></summary>
+              <summary>Instructions</summary>
               <div class="disclosure-body">
             <label class="field agent-prompt">
               <span class="label">Prompt</span>
-              <span class="hint">{isCustom(agent) ? "The agent's instruction — {{PR_NUMBER}}, {{BASE_REF}} and {{STATUS_FILE}} are filled in per run" : AGENT_META[agent.id]?.promptHint}</span>
+              <span class="hint">Variables: <code>{"{{PR_NUMBER}}, {{BASE_REF}}, {{STATUS_FILE}}"}</code></span>
               <textarea class="input mono" rows={isCustom(agent) ? 6 : 10} bind:value={agent.promptText} disabled={!agent.enabled} spellcheck="false"></textarea>
               {#if agent.prompt_default && agent.promptText.trim() !== agent.prompt_default.trim()}
                 <button class="reset-link" type="button" onclick={() => (agent.promptText = agent.prompt_default)}>Reset prompt to default</button>
@@ -648,11 +612,10 @@
 
         <button class="btn" type="button" onclick={addAgent}>Add custom agent</button>
         <details class="disclosure merge-disclosure">
-          <summary>Allow merging without required approval<span class="summary-hint">{forceMergeRepos.filter((repo) => configuredRepos.includes(repo)).length} repositories selected · bypasses an approval requirement</span></summary>
+          <summary>Bypass required approval</summary>
           <div class="disclosure-body">
         <div class="field">
-          <span class="label">Repositories allowed to bypass approval</span>
-          <span class="hint">On selected repositories, force-merge may bypass required approval. Failing checks, conflicts and open review threads still block it. Leave repositories unselected to keep the approval requirement.</span>
+          <span class="hint">Failing checks, conflicts and open threads still block merging.</span>
           {#if configuredRepos.length}
             <div class="repo-toggles">
               {#each configuredRepos as repo}
@@ -663,7 +626,7 @@
               {/each}
             </div>
           {:else}
-            <span class="hint">Add repositories in <a href={settingsSectionHref("general")}>Workspace</a> before changing merge permissions.</span>
+            <span class="hint">Add repositories in <a href={settingsSectionHref("general")}>Workspace</a>.</span>
           {/if}
         </div>
           </div>
@@ -671,12 +634,8 @@
       {/if}
 
       {#if activeTab === "tests"}
-        <div class="settings-intro">
-          <p>Set how PR changes and conversations open. You can still change the view while reviewing.</p>
-        </div>
         <label class="field">
           <span class="label">Diff layout</span>
-          <span class="hint">Applies to pull request changes and file history</span>
           <select class="input narrow" bind:value={diffLayout}>
             <option value="split">Side by side</option>
             <option value="unified">Unified</option>
@@ -688,7 +647,6 @@
           <input class="check" type="checkbox" bind:checked={hideTestsDefault} />
           <span class="check-text">
             <span class="check-label">Hide test files by default</span>
-            <span class="hint">Collapses test files when a PR opens — the per-PR toggle still flips them</span>
           </span>
         </label>
 
@@ -696,15 +654,14 @@
           <input class="check" type="checkbox" bind:checked={newestCommentsFirst} />
           <span class="check-text">
             <span class="check-label">Show newest comments first</span>
-            <span class="hint">Keeps the PR description at the top, then shows the composer and newest comments first</span>
           </span>
         </label>
         <details class="disclosure">
-          <summary>Which files count as tests?<span class="summary-hint">Customize test-file detection with a regular expression</span></summary>
+          <summary>Test file detection</summary>
           <div class="disclosure-body">
         <label class="field">
-          <span class="label">Test path pattern</span>
-          <span class="hint" id="test-pattern-hint">Files with a matching path count as tests. Leave empty to use the built-in pattern.</span>
+          <span class="label">Test path regex</span>
+          <span class="hint" id="test-pattern-hint">Empty: built-in pattern.</span>
           <input
             class="input mono"
             class:invalid={testRegexInvalid}
@@ -715,7 +672,7 @@
             autocomplete="off"
           />
           {#if testRegexInvalid}
-            <span id="test-pattern-error" class="hint invalid-hint" role="alert">This is not a valid regular expression. Correct it or clear the field to use the built-in pattern; invalid patterns use the built-in pattern.</span>
+            <span id="test-pattern-error" class="hint invalid-hint" role="alert">Invalid regex. Using built-in pattern.</span>
           {/if}
         </label>
           </div>
@@ -723,12 +680,9 @@
       {/if}
 
       {#if activeTab === "advanced"}
-        <div class="settings-intro">
-          <p>Advanced connection settings. Leave this empty unless another machine already runs the Cockpit you want to use.</p>
-        </div>
         <label class="field">
           <span class="label">Use another Cockpit over SSH</span>
-          <span class="hint">Enter its SSH host to use that machine’s PR data instead of fetching GitHub independently. The other Cockpit must remain reachable. Leave empty to use this machine’s own connection.</span>
+          <span class="hint">Empty: local connection.</span>
           <input class="input mono" bind:value={replicaSshHost} placeholder="user@host" spellcheck="false" autocomplete="off" />
         </label>
       {/if}
@@ -746,17 +700,15 @@
       <div class="actions" aria-busy={saving}>
         <div class="save-copy" aria-live="polite">
           {#if keybindClash}
-            <span class="invalid-hint">Choose different shortcuts in <a href={settingsSectionHref("keybinds")}>Keyboard shortcuts</a> before saving.</span>
+            <span class="invalid-hint">Fix conflicts in <a href={settingsSectionHref("keybinds")}>Keyboard shortcuts</a>.</span>
           {:else if agentKeybindIssues.size}
-            <span class="invalid-hint">Resolve shortcut conflicts in <a href={settingsSectionHref("automerge")}>Agents &amp; merging</a> before saving.</span>
+            <span class="invalid-hint">Fix shortcuts in <a href={settingsSectionHref("automerge")}>Agents &amp; merging</a>.</span>
           {:else if notificationIssues.size}
-            <span class="invalid-hint">Complete or remove incomplete rules in <a href={settingsSectionHref("notifications")}>Notifications</a> before saving.</span>
+            <span class="invalid-hint">Fix rules in <a href={settingsSectionHref("notifications")}>Notifications</a>.</span>
           {:else if error}
-            <span class="invalid-hint">Could not save: {error}. Your edits are kept. Resolve the error and try again.</span>
+            <span class="invalid-hint">Could not save: {error}</span>
           {:else if saved}
             <span class="saved">Changes saved.</span>
-          {:else}
-            <span class="hint">Save applies your changes across Settings.</span>
           {/if}
         </div>
         <button class="btn" type="button" disabled={saving || saveBlocked} onclick={save}>
@@ -800,7 +752,6 @@
     background: var(--bg);
   }
   .settings-head-copy { display: flex; flex-direction: column; }
-  .settings-head-copy .ui-eyebrow { font-size: 12px; }
   .head-title {
     margin: 0;
     font-family: var(--sans);
@@ -823,10 +774,7 @@
     white-space: nowrap;
     border: 0;
   }
-  .settings-intro { max-width: 640px; margin-bottom: 18px; }
-  .settings-intro p { margin: 0; color: var(--text-dim); font-size: 14px; line-height: 1.5; }
   .setup-row { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }
-  .setup-row .hint { flex: 1 1 280px; margin: 0; }
   .settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 32px; align-items: start; }
   .field-wide { grid-column: 1 / -1; }
   .field, .settings-option {
@@ -837,7 +785,7 @@
     border-top: 1px solid var(--border-soft);
   }
   .label { display: block; margin-bottom: 2px; color: var(--text); font-size: 14px; font-weight: 500; line-height: 20px; }
-  .hint, .summary-hint { display: block; margin-bottom: 10px; font-family: var(--sans); font-size: 12px; line-height: 1.5; color: var(--text-dim); }
+  .hint { display: block; margin-bottom: 10px; font-family: var(--sans); font-size: 12px; line-height: 1.5; color: var(--text-dim); }
   .input {
     width: 100%;
     max-width: 100%;
@@ -862,7 +810,6 @@
   .check-field { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
   .check-label { display: block; color: var(--text); font-size: 14px; line-height: 21px; }
   .check-text { min-width: 0; }
-  .check-field .hint { margin: 3px 0 0; }
   .check {
     appearance: none;
     position: relative;
@@ -895,7 +842,6 @@
   }
   .disclosure { border-top: 1px solid var(--border-soft); margin-top: 12px; }
   summary { padding: 18px 0; color: var(--text); font-size: 14px; font-weight: 500; cursor: pointer; }
-  .summary-hint { margin: 4px 0 0 18px; font-weight: 400; }
   .disclosure-body { padding-bottom: 12px; }
   .disclosure-body > .field:first-child { border-top: 0; padding-top: 0; }
   .merge-disclosure { margin-top: 24px; border-top-color: var(--fail); }
@@ -947,7 +893,6 @@
     background: var(--bg);
   }
   .save-copy { flex: 1 1 260px; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
-  .save-copy .hint { margin: 0; }
   .saved { color: var(--ready); }
   .btn {
     display: inline-flex;

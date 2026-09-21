@@ -363,17 +363,8 @@
   });
 </script>
 
-<section class="analytics" aria-labelledby="analytics-title">
-  <div class="intro">
-    <span class="ui-eyebrow">Delivery patterns</span>
-    <div class="title-row">
-      <div>
-        <h2 id="analytics-title">Merged pull request analytics</h2>
-        <p>Explore merge pace and working-day throughput for each configured repository.</p>
-      </div>
-      {#if payload}<time datetime={payload.asOf}>As of {payload.asOf.slice(0, 16).replace("T", " ")} UTC</time>{/if}
-    </div>
-  </div>
+<section class="analytics" aria-label="Merged pull requests">
+  {#if payload}<time datetime={payload.asOf}>As of {payload.asOf.slice(0, 16).replace("T", " ")} UTC</time>{/if}
 
   <div class="controls" aria-label="Analytics controls">
     <label class="control">
@@ -398,8 +389,7 @@
   {#if !repos.length}
     <div class="state-card">
       <strong>Add a repository to begin</strong>
-      <span>Configure at least one owner/name entry in General settings, then return to Analytics.</span>
-      <a href="#/settings/general">Open General settings</a>
+      <a href="#/settings/general">Open Workspace</a>
     </div>
   {:else}
     <details class="scope-control">
@@ -418,17 +408,16 @@
           {/each}
         </div>
       {:else}
-        <p class="scope-empty">No conventional <code>type(scope):</code> titles were found in this payload.</p>
+        <p class="scope-empty">No title scopes found.</p>
       {/if}
     </details>
 
     {#if !base.trim()}
       <div class="state-card">
         <strong>Enter a base branch</strong>
-        <span>Analytics are repository-specific and need a branch such as <code>staging</code> or <code>main</code>.</span>
       </div>
     {:else if loading}
-      <div class="status" role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span>Loading 180 days of merged pull requests…</div>
+      <div class="status" role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span>Loading analytics…</div>
     {:else if loadError}
       <div class="state-card error" role="alert">
         <strong>Analytics could not be loaded</strong>
@@ -446,22 +435,21 @@
       {#if payload.pullRequests.length === 0}
         <div class="state-card">
           <strong>No merged pull requests yet</strong>
-          <span>No pull requests were merged into <code>{payload.base}</code> during the fetched 180-day period.</span>
+          <span>None on <code>{payload.base}</code> in 180 days.</span>
         </div>
       {:else if view.kept.length === 0}
         <div class="state-card">
           <strong>No merges match this view</strong>
-          <span>Choose a wider range or show hidden title scopes to bring pull requests back into the charts.</span>
+          <span>Widen the range or show hidden scopes.</span>
           {#if hiddenScopes.length}<button type="button" onclick={() => (hiddenScopes = [])}>Show all scopes</button>{/if}
         </div>
       {:else}
         <section class="panel" aria-labelledby="developer-metrics-title">
           <div class="panel-head">
             <div>
-              <span class="ui-eyebrow">Working days</span>
               <h3 id="developer-metrics-title">Developer pace</h3>
             </div>
-            <p>PPD excludes zero-merge days. Saturdays count when they reach 80% of that developer’s non-Saturday PPD; PPM uses first-to-last merge time.</p>
+            <details><summary>Metric definitions</summary><p>PPD excludes zero-merge days. Saturdays count when they reach 80% of that developer’s non-Saturday PPD; PPM uses first-to-last merge time.</p></details>
           </div>
           <div class="table-scroll">
             <table>
@@ -483,8 +471,7 @@
 
         <section class="panel heatmap-panel" aria-labelledby="heatmap-title">
           <div class="panel-head">
-            <div><span class="ui-eyebrow">Merge density</span><h3 id="heatmap-title">Author heatmap</h3></div>
-            <p>Hover or focus a cell to inspect and open the pull requests in that interval.</p>
+            <h3 id="heatmap-title">Author heatmap</h3>
           </div>
           <div class="heatmap-scroll">
             <div class="heatmap" style={`--bucket-count: ${view.buckets.length}; --heatmap-width: ${184 + view.buckets.length * 24}px`}>
@@ -513,8 +500,7 @@
 
         <section class="panel chart-panel" aria-labelledby="weekly-chart-title">
           <div class="panel-head">
-            <div><span class="ui-eyebrow">Shipping trend</span><h3 id="weekly-chart-title">Weekly shipping pace</h3></div>
-            <p>Total merges across all authors over the trailing 7 days. Completed UTC days only.</p>
+            <h3 id="weekly-chart-title">Merges · trailing 7 days (UTC)</h3>
           </div>
           <svg viewBox={`0 0 ${CHART.width} ${CHART.height}`} role="img" aria-label="Seven-day rolling total of merged pull requests across all authors">
             {#each weeklyChart.ticks as tick (tick.value)}
@@ -529,8 +515,7 @@
 
         <section class="panel chart-panel" aria-labelledby="daily-chart-title">
           <div class="panel-head">
-            <div><span class="ui-eyebrow">Flow</span><h3 id="daily-chart-title">{view.intervalLabel[0].toUpperCase() + view.intervalLabel.slice(1)} pace</h3></div>
-            <p>Non-cumulative merged pull requests per {view.intervalLabel} interval.</p>
+            <h3 id="daily-chart-title">{view.intervalLabel[0].toUpperCase() + view.intervalLabel.slice(1)} merges</h3>
           </div>
           <svg viewBox={`0 0 ${CHART.width} ${CHART.height}`} role="img" aria-label={`Merged pull requests per ${view.intervalLabel} interval by author`}>
             {#each dailyChart.ticks as tick (tick.value)}
@@ -545,8 +530,7 @@
 
         <section class="panel chart-panel" aria-labelledby="cumulative-chart-title">
           <div class="panel-head">
-            <div><span class="ui-eyebrow">Trajectory</span><h3 id="cumulative-chart-title">Cumulative merges</h3></div>
-            <p>Running total for each author across the selected range.</p>
+            <h3 id="cumulative-chart-title">Cumulative merges</h3>
           </div>
           <svg viewBox={`0 0 ${CHART.width} ${CHART.height}`} role="img" aria-label="Cumulative merged pull requests by author">
             {#each cumulativeChart.ticks as tick (tick.value)}
@@ -589,13 +573,10 @@
 
 <style>
   .analytics { display: grid; gap: var(--space-6); }
-  .intro { display: grid; gap: var(--space-2); padding-bottom: var(--space-5); border-bottom: 1px solid var(--border); }
-  .title-row { display: flex; justify-content: space-between; align-items: end; gap: var(--space-5); }
-  h2, h3, p { margin: 0; }
-  h2 { color: var(--text); font-family: var(--sans); font-size: 20px; font-weight: 650; letter-spacing: -0.02em; }
+  h3, p { margin: 0; }
   h3 { color: var(--text); font-size: 14px; font-weight: 650; }
-  .intro p, .panel-head p { color: var(--text-dim); font-size: 12px; line-height: 1.55; }
-  .title-row time { flex: none; color: var(--text-faint); font-family: var(--mono); font-size: 10.5px; }
+  .panel-head p { color: var(--text-dim); font-size: 12px; line-height: 1.55; }
+  time { color: var(--text-faint); font-family: var(--mono); font-size: 10.5px; }
   .controls { display: grid; grid-template-columns: minmax(220px, 1.5fr) minmax(160px, 1fr) minmax(140px, 0.7fr); gap: var(--space-3); }
   .control { display: grid; gap: var(--space-2); color: var(--text-dim); font-size: 11px; font-weight: 600; }
   .control input, .control select { box-sizing: border-box; width: 100%; min-height: var(--control-md); padding: 0 var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-sm); outline: none; background: var(--panel); box-shadow: var(--shadow-control-hairline); color: var(--text); font-family: var(--mono); font-size: 12px; }
@@ -607,7 +588,7 @@
   .scope-list { display: flex; flex-wrap: wrap; gap: var(--space-2); padding-top: var(--space-3); }
   .scope-chip { display: inline-flex; align-items: center; gap: var(--space-2); min-height: var(--control-sm); padding: 0 var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--panel); color: var(--text-dim); cursor: pointer; }
   .scope-chip input { accent-color: var(--native-accent); }
-  .scope-chip code, .scope-empty code, .summary-line code, .state-card code { color: var(--text); font-family: var(--mono); font-size: 11px; }
+  .scope-chip code, .summary-line code, .state-card code { color: var(--text); font-family: var(--mono); font-size: 11px; }
   .scope-chip span { color: var(--text-faint); font-size: 10px; }
   .scope-empty { padding-top: var(--space-3); color: var(--text-faint); font-size: 12px; }
   .status, .state-card { display: flex; align-items: center; gap: var(--space-3); min-height: 68px; padding: var(--space-4); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); color: var(--text-dim); font-size: 12px; }
@@ -661,7 +642,7 @@
   .hover-links a:hover { background: var(--surface); }
   .hover-links a span { color: var(--link); font-family: var(--mono); }
   @media (max-width: 760px) {
-    .title-row, .panel-head { align-items: flex-start; flex-direction: column; }
+    .panel-head { align-items: flex-start; flex-direction: column; }
     .panel-head p { text-align: left; }
     .controls { grid-template-columns: 1fr; }
     .heatmap { grid-template-columns: 112px repeat(var(--bucket-count), minmax(24px, 1fr)) 44px; min-width: calc(var(--heatmap-width) - 28px); }
