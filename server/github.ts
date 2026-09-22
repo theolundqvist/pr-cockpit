@@ -46,6 +46,7 @@ const quotaProbeInFlight = new Map<GithubQuotaResourceName, {
 }>();
 const lastQuotaProbeAt = new Map<GithubQuotaResourceName, number>();
 const QUOTA_PROBE_INTERVAL_MS = 30_000;
+const SECONDARY_RATE_LIMIT_FALLBACK_MS = 5 * 60_000;
 let activeQuotaToken: string | null = null;
 let activeQuotaGeneration = 0;
 
@@ -285,6 +286,17 @@ async function githubApiResponse(
 async function githubResponseError(label: string, response: Response): Promise<GithubRequestError> {
   const resource = responseQuotaResource(response, quotaResource(new URL(response.url || "https://api.github.com").pathname));
   const body = await response.text();
+  const secondaryWithoutDeadline = response.status === 403
+    && !response.headers.has("retry-after")
+    && /secondary rate limit/i.test(body);
+  if (secondaryWithoutDeadline && responseHasActiveQuota(response)) {
+    const until = Date.now() + SECONDARY_RATE_LIMIT_FALLBACK_MS;
+    updateSecondaryQuota(resource, {
+      status: response.status,
+      until,
+      resetAt: new Date(until).toISOString(),
+    });
+  }
   const quota = response.status === 429
     || (response.status === 403 && (
       response.headers.get("x-ratelimit-remaining") === "0"

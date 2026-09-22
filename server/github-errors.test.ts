@@ -410,6 +410,74 @@ test("a positive primary budget cannot bypass a secondary retry-after cooldown",
   }
 });
 
+test("a body-only secondary limit establishes a fallback cooldown", async () => {
+  const fakeGhDir = mkdtempSync(join(tmpdir(), "pr-cockpit-secondary-fallback-"));
+  const fakeGh = join(fakeGhDir, "gh");
+  writeFileSync(fakeGh, "#!/bin/sh\nprintf 'fixture-token\\n'\n");
+  chmodSync(fakeGh, 0o755);
+  try {
+    const script = `
+      let now = 2_000_000_000_000;
+      Date.now = () => now;
+      const github = await import(${JSON.stringify(githubModuleUrl)});
+      let limited = true;
+      let probes = 0;
+      let targetCalls = 0;
+      globalThis.fetch = async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/rate_limit") {
+          probes++;
+          return Response.json({ resources: { core: { remaining: 4999 } } });
+        }
+        targetCalls++;
+        if (limited) {
+          limited = false;
+          return Response.json({ message: "You have exceeded a secondary rate limit" }, { status: 403, headers: {
+            "x-ratelimit-resource": "core",
+            "x-ratelimit-remaining": "4999",
+          } });
+        }
+        return Response.json({ workflows: [] }, { headers: { "x-ratelimit-resource": "core", "x-ratelimit-remaining": "4999" } });
+      };
+      const capture = async (fn) => { try { await fn(); return null; } catch (error) { return error; } };
+
+      const first = await capture(() => github.fetchActionWorkflows("acme/app"));
+      const during = await capture(() => github.fetchActionWorkflows("acme/app"));
+      now += 301_000;
+      const after = await capture(() => github.fetchActionWorkflows("acme/app"));
+      console.log(JSON.stringify({
+        firstKind: first?.kind ?? null,
+        blockedDuringCooldown: during?.kind === "quota",
+        blockedAfterCooldown: after?.kind === "quota",
+        blockedUntil: first?.resetAt ?? null,
+        probes,
+        targetCalls,
+      }));
+    `;
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: { ...Bun.env, COCKPIT_GH_BIN: fakeGh, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      process.exited,
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+    ]);
+    expect(exitCode, stderr).toBe(0);
+    expect(JSON.parse(stdout)).toEqual({
+      firstKind: "quota",
+      blockedDuringCooldown: true,
+      blockedAfterCooldown: false,
+      blockedUntil: new Date(2_000_000_300_000).toISOString(),
+      probes: 0,
+      targetCalls: 2,
+    });
+  } finally {
+    rmSync(fakeGhDir, { recursive: true, force: true });
+  }
+});
+
 test("a concurrent successful response cannot clear a newer secondary cooldown", async () => {
   const fakeGhDir = mkdtempSync(join(tmpdir(), "pr-cockpit-secondary-race-"));
   const fakeGh = join(fakeGhDir, "gh");
