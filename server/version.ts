@@ -5,7 +5,9 @@ let updateAvailable = false;
 // The revision this process booted from. static/ is only rebuilt by the same update that restarts the
 // server, so a client seeing this change knows a new build is on disk and a reload is safe.
 const sourceRoot = process.env.COCKPIT_SOURCE_ROOT || repoRoot;
-const bootRev = process.env.COCKPIT_RELEASE_REVISION || Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: repoRoot }).stdout.toString().trim();
+const git = Bun.which("git");
+const bootRev = process.env.COCKPIT_RELEASE_REVISION
+  || (git ? Bun.spawnSync([git, "rev-parse", "HEAD"], { cwd: repoRoot }).stdout.toString().trim() : "");
 
 export function updatesEnabled(): boolean {
   return process.env.COCKPIT_UPDATE_DISABLED !== "1";
@@ -13,14 +15,15 @@ export function updatesEnabled(): boolean {
 
 export async function checkForUpdate(): Promise<void> {
   if (!updatesEnabled()) throw new Error("updates are disabled for this installation");
-  const fetchProc = Bun.spawn(["git", "fetch", "--quiet", "origin", "main"], {
+  if (!git) throw new Error("Git is required to check for updates.");
+  const fetchProc = Bun.spawn([git, "fetch", "--quiet", "origin", "main"], {
     cwd: sourceRoot,
     stdout: "ignore",
     stderr: "ignore",
   });
   if (await fetchProc.exited !== 0) throw new Error("Could not fetch origin/main from GitHub.");
 
-  const revListProc = Bun.spawn(["git", "rev-list", `${bootRev}..origin/main`, "--count"], {
+  const revListProc = Bun.spawn([git, "rev-list", `${bootRev}..origin/main`, "--count"], {
     cwd: sourceRoot,
     stdout: "pipe",
     stderr: "ignore",

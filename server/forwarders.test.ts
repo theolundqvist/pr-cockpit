@@ -113,6 +113,7 @@ test("forwarders distinguish local shutdown, rate limits, and an existing owner'
     expect(result.rateLimited.errors.join("\n")).toContain("HTTP 403: API rate limit exceeded");
     expect(result.rateLimited.errors.join("\n")).not.toContain("ghp_12345678901234567890");
     expect(result.rateLimited.status).toEqual([{ repo: "acme/rate-limited", pid: null, alive: false }]);
+    expect(result.existingOwner.errors).toEqual(result.rateLimited.errors);
     expect(result.existingOwner.timers).toBe(0);
     expect(result.existingOwner.processCount).toBe(4);
   } finally {

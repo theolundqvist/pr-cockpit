@@ -388,6 +388,23 @@ export async function fetchRelayCoverage(repos) {
   return res.json();
 }
 
+export async function fetchSystemIssues() {
+  const res = await fetch("/api/system-issues");
+  if (!res.ok) throw new Error(`system issues ${res.status}`);
+  return res.json();
+}
+
+export async function retrySystemIssue(id) {
+  const res = await fetch("/api/system-issues/retry", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id }),
+  });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.error || `system issue retry ${res.status}`);
+  return body;
+}
+
 export async function fetchVersion() {
   const res = await fetch("/api/version");
   if (!res.ok) throw new Error(`version ${res.status}`);

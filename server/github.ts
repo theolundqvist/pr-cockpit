@@ -13,6 +13,11 @@ import {
   type GithubUsageSource,
 } from "./githubUsage.ts";
 import { readSettings } from "./settings.ts";
+import {
+  clearRepositoryUnavailable,
+  reportRepositoryUnavailable,
+  repositoryAvailable,
+} from "./systemIssues.ts";
 const strictUtf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 type GithubGraphqlError = { type?: string; message?: string };
@@ -646,33 +651,67 @@ query($searchQuery: String!) {
   }
 }`;
 
+function repositorySearchUnavailable(error: unknown): error is GithubRequestError {
+  if (!(error instanceof GithubRequestError) || error.kind === "quota" || error.kind === "transport") return false;
+  return error.status === 404
+    || error.status === 422
+    || (error.status === 403 && /permission|resource not accessible/i.test(error.message))
+    || /repositories cannot be searched/i.test(error.message);
+}
+
+async function searchOpenPrBatch(repos: string[]): Promise<SearchHit[]> {
+  const repoFilter = repos.map((repo) => `repo:${repo}`).join(" ");
+  const searchQuery = `is:open is:pr archived:false involves:@me ${repoFilter}`;
+  try {
+    const data = await graphql<{
+      search: {
+        nodes: Array<{
+          number: number;
+          title: string;
+          updatedAt: string;
+          headRefOid: string;
+          repository: { nameWithOwner: string };
+          commits: { nodes: Array<{ commit: { statusCheckRollup: { state: string } | null } }> };
+        }>;
+      };
+    }>(SEARCH_QUERY, { searchQuery }, "background poll", "open PR search");
+    for (const repo of repos) clearRepositoryUnavailable(repo);
+    if (data.search.nodes.length === 50) {
+      console.warn(`search hit the 50-result cap, PRs may be missing: ${searchQuery}`);
+    }
+    return data.search.nodes.map((node) => ({
+      repo: node.repository.nameWithOwner,
+      number: node.number,
+      title: node.title,
+      updatedAt: node.updatedAt,
+      headRefOid: node.headRefOid,
+      ciState: node.commits.nodes[0]?.commit.statusCheckRollup?.state ?? "NONE",
+    }));
+  } catch (error) {
+    if (!repositorySearchUnavailable(error)) throw error;
+    if (repos.length === 1) {
+      const repo = repos.at(0);
+      if (repo) reportRepositoryUnavailable(repo);
+      return [];
+    }
+    const midpoint = Math.ceil(repos.length / 2);
+    const searches = await Promise.allSettled([
+      searchOpenPrBatch(repos.slice(0, midpoint)),
+      searchOpenPrBatch(repos.slice(midpoint)),
+    ]);
+    const hits: SearchHit[] = [];
+    for (const search of searches) {
+      if (search.status === "rejected") throw search.reason;
+      hits.push(...search.value);
+    }
+    return hits;
+  }
+}
+
 export async function searchOpenPrs(repos: string[]): Promise<SearchHit[]> {
   if (mockGithub) return mockGithub.searchOpenPrs(repos);
-  const repoFilter = repos.map((r) => `repo:${r}`).join(" ");
-  const searchQuery = `is:open is:pr archived:false involves:@me ${repoFilter}`;
-  const data = await graphql<{
-    search: {
-      nodes: Array<{
-        number: number;
-        title: string;
-        updatedAt: string;
-        headRefOid: string;
-        repository: { nameWithOwner: string };
-        commits: { nodes: Array<{ commit: { statusCheckRollup: { state: string } | null } }> };
-      }>;
-    };
-  }>(SEARCH_QUERY, { searchQuery }, "background poll", "open PR search");
-  if (data.search.nodes.length === 50) {
-    console.warn(`search hit the 50-result cap, PRs may be missing: ${searchQuery}`);
-  }
-  return data.search.nodes.map((n) => ({
-    repo: n.repository.nameWithOwner,
-    number: n.number,
-    title: n.title,
-    updatedAt: n.updatedAt,
-    headRefOid: n.headRefOid,
-    ciState: n.commits.nodes[0]?.commit.statusCheckRollup?.state ?? "NONE",
-  }));
+  const available = repos.filter(repositoryAvailable);
+  return available.length === 0 ? [] : searchOpenPrBatch(available);
 }
 
 export interface RepositoryOpenPr {
@@ -850,8 +889,13 @@ export async function lookupPrIndexes(repo: string, numbers: number[]): Promise<
 }
 
 export async function lookupPr(repo: string, number: number): Promise<PaletteHit | null> {
-  const entry = (await lookupPrIndexes(repo, [number]))[0];
-  return entry ? { repo, number: entry.number, title: entry.title, state: entry.state } : null;
+  try {
+    const entry = (await lookupPrIndexes(repo, [number]))[0];
+    return entry ? { repo, number: entry.number, title: entry.title, state: entry.state } : null;
+  } catch (error) {
+    if (error instanceof GithubRequestError && error.status === 404) return null;
+    throw error;
+  }
 }
 
 export interface PrIndexEntry {
@@ -870,19 +914,27 @@ export interface PrIndexEntry {
 
 export async function searchRecentPrs(repo: string): Promise<PrIndexEntry[]> {
   if (mockGithub) return mockGithub.searchRecentPrs(repo);
+  if (!repositoryAvailable(repo)) return [];
   const searchQuery = `repo:${repo} is:pr sort:updated-desc`;
-  const items = await restSearchPrs(searchQuery, 100);
-  return items.map((item) => ({
-    repo: restSearchRepo(item),
-    number: item.number,
-    title: item.title,
-    state: restSearchState(item),
-    isDraft: item.draft,
-    author: item.user?.login ?? "unknown",
-    updatedAt: item.updated_at,
-    mergedAt: item.pull_request.merged_at,
-    closedAt: item.closed_at,
-  }));
+  try {
+    const items = await restSearchPrs(searchQuery, 100);
+    clearRepositoryUnavailable(repo);
+    return items.map((item) => ({
+      repo: restSearchRepo(item),
+      number: item.number,
+      title: item.title,
+      state: restSearchState(item),
+      isDraft: item.draft,
+      author: item.user?.login ?? "unknown",
+      updatedAt: item.updated_at,
+      mergedAt: item.pull_request.merged_at,
+      closedAt: item.closed_at,
+    }));
+  } catch (error) {
+    if (!repositorySearchUnavailable(error)) throw error;
+    reportRepositoryUnavailable(repo);
+    return [];
+  }
 }
 
 export interface ClosedPrSearchFailure {
@@ -905,6 +957,7 @@ export async function searchClosedPrs(repos: string[]): Promise<ClosedPrSearchRe
         .map((entry) => ({ ...entry, involvesMe: true })));
       continue;
     }
+    if (!repositoryAvailable(repo)) continue;
     const searchQuery = `is:pr is:closed involves:@me archived:false repo:${repo} sort:updated-desc`;
     try {
       const repoItems = await restSearchPrs(searchQuery, 100);
@@ -923,7 +976,12 @@ export async function searchClosedPrs(repos: string[]): Promise<ClosedPrSearchRe
         closedAt: item.closed_at,
         involvesMe: true,
       })));
+      clearRepositoryUnavailable(repo);
     } catch (error) {
+      if (repositorySearchUnavailable(error)) {
+        reportRepositoryUnavailable(repo);
+        continue;
+      }
       failures.push({
         repo,
         error: error instanceof GithubRequestError

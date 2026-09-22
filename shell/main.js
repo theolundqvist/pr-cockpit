@@ -641,6 +641,23 @@ if (!app.requestSingleInstanceLock()) {
       if (!win || win.isDestroyed()) return { error: "setup launch failed: no cockpit window" };
       return launchSetupTerminal(action, win.getBounds(), process.env, process.platform, process.env.COCKPIT_REPLICA_SSH_HOST || "");
     });
+    ipcMain.handle("cockpit:install-git", async () => {
+      if (process.platform !== "darwin") {
+        await shell.openExternal("https://git-scm.com/downloads");
+        return { ok: true };
+      }
+      return new Promise((resolve) => {
+        const installer = spawn("/usr/bin/xcode-select", ["--install"], { stdio: ["ignore", "ignore", "pipe"] });
+        let stderr = "";
+        installer.stderr.on("data", (chunk) => (stderr += chunk));
+        installer.once("error", (error) => resolve({ error: `Git installer failed: ${error.message}` }));
+        installer.once("exit", (code) => resolve(code === 0 ? { ok: true } : { error: stderr.trim() || "Git installer did not open" }));
+      });
+    });
+    ipcMain.handle("cockpit:open-data-folder", async () => {
+      const error = await shell.openPath(dataDir);
+      return error ? { error } : { ok: true };
+    });
     ipcMain.handle("cockpit:native-palette", () => currentNativePalette());
     ipcMain.handle("cockpit:open-window", (_event, hash) => {
       openExtraWindow(typeof hash === "string" && hash.startsWith("#/") ? hash : null);

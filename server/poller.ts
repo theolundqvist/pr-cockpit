@@ -1,4 +1,4 @@
-import { fetchGithubQuota, fetchPrDetail, fetchPrDetailPart, lookupPr, searchClosedPrs, searchOpenPrs, searchRecentPrs, type GithubQuotaResource, type PrDetail, type PrDetailScope } from "./github.ts";
+import { fetchGithubQuota, fetchPrDetail, fetchPrDetailPart, GithubRequestError, lookupPr, searchClosedPrs, searchOpenPrs, searchRecentPrs, type GithubQuotaResource, type PrDetail, type PrDetailScope } from "./github.ts";
 import type { GithubUsageSource } from "./githubUsage.ts";
 import {
   deleteWebhookRegistrationsForPr,
@@ -26,6 +26,8 @@ import { invalidateInbox, invalidatePr, publishPollCompleted } from "./rendererI
 import { refreshRecentActions } from "./runLogs.ts";
 import { observePrNotifications } from "./notifications.ts";
 import { GRAPHQL_BACKGROUND_RESERVE } from "../ui/src/lib/quotaImpact.js";
+import { captureError } from "./sentry.ts";
+import { reportStorageFailure, repositoryAvailable } from "./systemIssues.ts";
 
 const INDEX_SWEEP_MS = 1_800_000;
 const GRAPHQL_WINDOW_MS = 60 * 60_000;
@@ -228,15 +230,17 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
 
   async function pollOnceInner(): Promise<{ checked: number; refreshed: number }> {
     await deps.refreshWorktreeScan();
-    const repos = await deps.trackedRepos();
+    const configuredRepos = await deps.trackedRepos();
+    const repos = configuredRepos.filter(repositoryAvailable);
     const registrations = deps.listWebhookRegistrations();
-    const keepRepos = [...new Set([...repos, ...registrations.map((registration) => registration.repo)])];
+    const searchableRegistrations = registrations.filter((registration) => repositoryAvailable(registration.repo));
+    const keepRepos = [...new Set([...configuredRepos, ...registrations.map((registration) => registration.repo)])];
     deps.evictReposNotIn(keepRepos);
     await deps.pruneMirrors(keepRepos);
     if (!await deps.backgroundPollAllowed()) return { checked: 0, refreshed: 0 };
     const tracked = new Set(repos);
-    const registered = new Set(registrations.map((r) => prKeyOf(r.repo, r.number)));
-    const searchRepos = keepRepos;
+    const registered = new Set(searchableRegistrations.map((registration) => prKeyOf(registration.repo, registration.number)));
+    const searchRepos = [...new Set([...repos, ...searchableRegistrations.map((registration) => registration.repo)])];
     if (searchRepos.length === 0) {
       lastPollAt = new Date().toISOString();
       deps.publishPollCompleted(lastPollAt);
@@ -247,11 +251,10 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
       const actionRefreshes = await Promise.allSettled(repos.map((repo) => refreshActions(repo)));
       actionRefreshes.forEach((result, index) => {
         if (result.status === "rejected") {
-          console.error(`Actions refresh failed for ${repos[index]}:`, result.reason);
+          console.warn(`Actions refresh failed for ${repos[index]}:`, result.reason);
         }
       });
     }
-
 
     const hits = await deps.searchOpenPrs(searchRepos);
     const nextOpenInboxKeys = new Set(hits.map((hit) => prKeyOf(hit.repo, hit.number)));
@@ -269,10 +272,13 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
       refreshed++;
     }
 
-    const registrationMembershipChanged = await reconcileRegistrations(registrations, new Set(hits.map((h) => prKeyOf(h.repo, h.number))));
+    const registrationMembershipChanged = await reconcileRegistrations(
+      searchableRegistrations,
+      new Set(hits.map((hit) => prKeyOf(hit.repo, hit.number))),
+    );
 
     for (const repo of repos) {
-      const keepNumbers = hits.filter((h) => h.repo === repo).map((h) => h.number);
+      const keepNumbers = hits.filter((hit) => hit.repo === repo).map((hit) => hit.number);
       deps.evictStalePrs(repo, keepNumbers);
     }
 
@@ -370,11 +376,20 @@ export const pollOnce = createPollOnce({
   invalidateInbox,
   publishPollCompleted,
 });
+function reportPollFailure(error: unknown, operation: string): void {
+  if (reportStorageFailure(error) || error instanceof GithubRequestError) {
+    console.warn(`${operation} failed:`, error);
+    return;
+  }
+  console.error(`${operation} failed:`, error);
+  captureError(error, operation);
+}
+
 
 export function startPoller(): void {
   const tick = () => {
     pollOnce()
-      .catch((err) => console.error("poll failed:", err))
+      .catch((error) => reportPollFailure(error, "poll"))
       .finally(() => setTimeout(tick, pollIntervalMs()));
   };
   tick();
@@ -382,5 +397,5 @@ export function startPoller(): void {
   // Keep the first assignee/reviewer picker from opening on a cold cache.
   trackedRepos()
     .then((repos) => Promise.allSettled(repos.map((repo) => refreshRepoUsers(repo))))
-    .catch((err) => console.error("repo-users priming failed:", err));
+    .catch((error) => reportPollFailure(error, "repo-users priming"));
 }

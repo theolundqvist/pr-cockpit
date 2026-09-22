@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const githubModuleUrl = new URL("./github.ts", import.meta.url).href;
+const systemIssuesModuleUrl = new URL("./systemIssues.ts", import.meta.url).href;
 const githubUsageModuleUrl = new URL("./githubUsage.ts", import.meta.url).href;
 const githubAuthModuleUrl = new URL("./githubAuth.ts", import.meta.url).href;
 // Child processes install transport and auth isolation before github.ts evaluates, so static imports cannot exercise these boundaries.
@@ -16,6 +17,7 @@ test("closed PR search isolates inaccessible repositories", async () => {
   try {
     const script = `
       const { searchClosedPrs } = await import(${JSON.stringify(githubModuleUrl)});
+      const { systemIssues } = await import(${JSON.stringify(systemIssuesModuleUrl)});
       const queries = [];
       globalThis.fetch = async (input) => {
         const url = new URL(String(input));
@@ -45,6 +47,7 @@ test("closed PR search isolates inaccessible repositories", async () => {
         queries,
         items: result.items.map((item) => item.repo),
         failures: result.failures.map(({ repo, error }) => ({ repo, status: error.status, kind: error.kind, resource: error.resource, resetAt: error.resetAt })),
+        unavailableRepos: systemIssues().flatMap((issue) => issue.repo ? [issue.repo] : []),
       }));
     `;
     const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
@@ -62,7 +65,8 @@ test("closed PR search isolates inaccessible repositories", async () => {
     expect(result.queries).toHaveLength(3);
     expect(result.queries.every((query: string) => (query.match(/repo:/g) ?? []).length === 1)).toBe(true);
     expect(result.items).toEqual(["acme/first", "acme/last"]);
-    expect(result.failures).toEqual([{ repo: "acme/hidden", status: 422, kind: "http", resource: "search", resetAt: null }]);
+    expect(result.failures).toEqual([]);
+    expect(result.unavailableRepos).toEqual(["acme/hidden"]);
   } finally {
     rmSync(fakeGhDir, { recursive: true, force: true });
   }

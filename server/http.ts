@@ -100,6 +100,11 @@ import { claudeBinPath, codexBinPath, ompBinPath } from "./harness.ts";
 import { CommitMessageError, generateCommitMessage } from "./commitMessage.ts";
 import { relayStatus } from "./relayClient.ts";
 import { relayCoverage } from "./relayCoverage.ts";
+import {
+  clearRepositoryIssues,
+  retrySystemIssue,
+  systemIssues,
+} from "./systemIssues.ts";
 import { testMatcher } from "../ui/src/lib/testPath.js";
 import { checkName, liveCheckNames } from "../ui/src/lib/checks.js";
 import { handleImage, handleMockImage } from "./imageproxy.ts";
@@ -2417,7 +2422,9 @@ async function handlePrIndex(url: URL, runtime: HttpRuntime): Promise<Response> 
   );
   for (const result of lookups) {
     if (result.status === "rejected") {
-      console.error("PR title lookup failed:", result.reason);
+      if (!(result.reason instanceof GithubRequestError && result.reason.status === 404)) {
+        console.error("PR title lookup failed:", result.reason);
+      }
       continue;
     }
     upsertPrIndex(result.value);
@@ -2430,8 +2437,8 @@ async function handlePrIndex(url: URL, runtime: HttpRuntime): Promise<Response> 
         is_draft: entry.isDraft ? 1 : 0,
         author: entry.author,
         updated_at: entry.updatedAt,
-        merged_at: entry.mergedAt ?? null,
         closed_at: entry.closedAt ?? null,
+        merged_at: entry.mergedAt ?? null,
         involves_me: entry.involvesMe ? 1 : 0,
       });
     }
@@ -2464,6 +2471,16 @@ async function handlePendingReview(
     return githubErrorResponse(error, "GitHub pending review fetch failed");
   }
 }
+async function handleRetrySystemIssue(req: Request): Promise<Response> {
+  const body: unknown = await req.json().catch(() => null);
+  if (!body || typeof body !== "object" || !("id" in body) || typeof body.id !== "string") {
+    return json({ error: "system issue id required" }, 400);
+  }
+  retrySystemIssue(body.id);
+  void pollOnce().catch((error) => console.warn("system issue retry poll failed:", error));
+  return json({ issues: systemIssues() });
+}
+
 
 async function handlePutSettings(req: Request): Promise<Response> {
   let body: Partial<{
@@ -2500,13 +2517,16 @@ async function handlePutSettings(req: Request): Promise<Response> {
   } catch {
     return json({ error: "invalid JSON body" }, 400);
   }
-  const previousReplica = readSettings().replica_ssh_host;
+  const previousSettings = readSettings();
+  const previousReplica = previousSettings.replica_ssh_host;
+  const previousRepos = previousSettings.repos;
   let settings: Settings;
   try {
     settings = writeSettings(body);
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : String(error) }, 400);
   }
+  if (settings.repos !== previousRepos) clearRepositoryIssues();
   if (settings.replica_ssh_host !== previousReplica && Bun.env.COCKPIT_LAUNCHER) {
     setTimeout(() => process.exit(1), 250);
   }
@@ -2845,6 +2865,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
         || (req.method === "POST" && url.pathname === "/api/auth/setup")
         || (req.method === "PUT" && url.pathname === "/api/settings")
         || (req.method === "POST" && url.pathname === "/api/notifications/claim")
+        || (req.method === "POST" && url.pathname === "/api/system-issues/retry")
         || (req.method === "POST" && parts.length === 6 && parts[0] === "api" && parts[1] === "pr" && parts[5] === "merge-method")
         || (
           req.method === "POST" && parts.length === 7 &&
@@ -3021,6 +3042,12 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     }
     if (req.method === "GET" && url.pathname === "/healthz") {
       return handleHealthz();
+    }
+    if (req.method === "GET" && url.pathname === "/api/system-issues") {
+      return json({ issues: systemIssues() });
+    }
+    if (req.method === "POST" && url.pathname === "/api/system-issues/retry") {
+      return handleRetrySystemIssue(req);
     }
     if (req.method === "POST" && url.pathname === "/api/shutdown") {
       return handleShutdown();

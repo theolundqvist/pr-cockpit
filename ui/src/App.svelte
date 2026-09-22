@@ -14,7 +14,8 @@
   import Lightbox from "./lib/Lightbox.svelte";
   import QuotaBanner from "./lib/QuotaBanner.svelte";
   import Kbd from "./lib/Kbd.svelte";
-  import { fetchSettings } from "./lib/api.js";
+  import SystemIssueModal from "./lib/SystemIssueModal.svelte";
+  import { fetchSettings, fetchSystemIssues, retrySystemIssue } from "./lib/api.js";
   import { showFlash } from "./lib/flash.svelte.js";
   import { prefs, setPrefs } from "./lib/prefs.svelte.js";
   import { NOTIFICATION_DRAIN_EVENT, canDeliverNotifications, drainNotifications } from "./lib/desktopNotifications.js";
@@ -90,6 +91,44 @@
   let setupOpen = $state(false);
   let inboxRevision = $state(0);
   let detailRevision = $state(0);
+  let systemIssues = $state([]);
+  let dismissedSystemIssueIds = $state(new Set());
+  let currentSystemIssue = $derived(systemIssues.find((issue) => !dismissedSystemIssueIds.has(issue.id)) ?? null);
+
+  function applySystemIssues(next) {
+    systemIssues = Array.isArray(next) ? next : [];
+    const activeIds = new Set(systemIssues.map((issue) => issue.id));
+    dismissedSystemIssueIds = new Set([...dismissedSystemIssueIds].filter((id) => activeIds.has(id)));
+  }
+
+  function dismissSystemIssue() {
+    if (!currentSystemIssue) return;
+    dismissedSystemIssueIds = new Set([...dismissedSystemIssueIds, currentSystemIssue.id]);
+  }
+
+  async function retryCurrentSystemIssue() {
+    if (!currentSystemIssue) return;
+    const retriedId = currentSystemIssue.id;
+    const result = await retrySystemIssue(retriedId);
+    dismissedSystemIssueIds = new Set([...dismissedSystemIssueIds].filter((id) => id !== retriedId));
+    applySystemIssues(result.issues);
+  }
+
+  $effect(() => {
+    let active = true;
+    const refresh = async () => {
+      try {
+        const result = await fetchSystemIssues();
+        if (active) applySystemIssues(result.issues);
+      } catch {}
+    };
+    void refresh();
+    const timer = setInterval(refresh, 30_000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  });
 
   $effect(() => {
     const navigate = (event) => {
@@ -382,6 +421,10 @@
     <Cheatsheet />
     <Lightbox />
   </div>
+{/if}
+
+{#if currentSystemIssue}
+  <SystemIssueModal issue={currentSystemIssue} onRetry={retryCurrentSystemIssue} onClose={dismissSystemIssue} />
 {/if}
 
 <style>

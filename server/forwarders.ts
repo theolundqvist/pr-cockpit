@@ -56,7 +56,6 @@ function spawnForwarder(repo: string, port: number): void {
     if (uptimeMs > 60_000) f.backoffMs = 5_000;
     const errOutput = errHead === errTail ? errHead : `${errHead}\n...\n${errTail}`;
     const detail = failureDetail(errOutput);
-    console.error(`forwarder ${repo} exited (code=${code})${detail ? `: ${detail}` : ""}`);
     if (/Hook already exists/i.test(errOutput)) {
       log(`forwarder ${repo}: another GitHub CLI forwarder owns this repository — poll-only for this repo`);
       f.stopped = true;
@@ -67,6 +66,7 @@ function spawnForwarder(repo: string, port: number): void {
       f.stopped = true;
       return;
     }
+    console.error(`forwarder ${repo} exited (code=${code})${detail ? `: ${detail}` : ""}`);
     const delay = f.backoffMs;
     f.backoffMs = Math.min(f.backoffMs * 2, 60_000);
     f.restartTimer = setTimeout(() => {

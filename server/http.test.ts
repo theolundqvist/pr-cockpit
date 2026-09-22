@@ -1403,6 +1403,25 @@ describe("PR title index", () => {
       db.query("DELETE FROM pr_index WHERE repo = ? AND number = ?").run(repo, number);
     }
   });
+
+  test("treats deleted pull requests as an expected empty lookup", async () => {
+    const errors: unknown[][] = [];
+    const originalError = console.error;
+    console.error = (...args) => errors.push(args);
+    try {
+      const fetchHandler = buildFetchHandler(4820, {
+        lookupPrIndexes: async () => {
+          throw new GithubRequestError("pull request not found", 404);
+        },
+      });
+      const url = `http://127.0.0.1:4820/api/pr-index?keys=${encodeURIComponent("cockpit-test/missing#987654321")}`;
+      const response = await fetchHandler(new Request(url));
+      expect(await response.json()).toEqual({ prs: [] });
+      expect(errors).toEqual([]);
+    } finally {
+      console.error = originalError;
+    }
+  });
 });
 
 describe("PR file edits", () => {
