@@ -1,4 +1,4 @@
-import { codeScanningAlertNumber, isCodeScanningThread } from "../shared/codeScanning.js";
+import { codeScanningAlertNumber, isCodeScanningThread, validateCodeScanningDismissal } from "../shared/codeScanning.js";
 import {
   deleteMutation,
   getCachedPrDetail,
@@ -47,7 +47,7 @@ import { pendingReviewsEnabled } from "./settings.ts";
 export type MutationPayload =
   | { kind: "comment"; body: string; commentNodeId?: string }
   | { kind: "reply-to-thread"; rootCommentId: number; body: string }
-  | { kind: "resolve-thread"; threadId: string; resolved: boolean }
+  | { kind: "resolve-thread"; threadId: string; resolved: boolean; codeScanningDismissal?: { reason: string; comment?: string } }
   | { kind: "review-verdict"; event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT"; body: string; pendingReviewId?: number }
   | { kind: "merge"; force: boolean; baseRef: string; method: MergeMethod; source: MergeMethodSource }
   | { kind: "update-branch" }
@@ -134,6 +134,13 @@ function assertMutationPayload(value: unknown): asserts value is MutationPayload
   if (!value || typeof value !== "object" || !("kind" in value) || typeof value.kind !== "string" || !KNOWN_KINDS.has(value.kind)) {
     throw new Error("invalid mutation payload");
   }
+  if (value.kind === "resolve-thread") {
+    if (!("threadId" in value) || typeof value.threadId !== "string" || !value.threadId
+      || !("resolved" in value) || typeof value.resolved !== "boolean") {
+      throw new Error("thread resolution requires a thread ID and resolved boolean");
+    }
+    if ("codeScanningDismissal" in value && value.codeScanningDismissal !== undefined) validateCodeScanningDismissal(value.codeScanningDismissal);
+  }
   if (value.kind === "merge") {
     if (!("force" in value) || typeof value.force !== "boolean" ||
       !("baseRef" in value) || typeof value.baseRef !== "string" || !value.baseRef ||
@@ -196,6 +203,7 @@ export function enqueueMutation(params: {
   if (params.payload.kind === "edit-title" && !params.payload.title.trim()) {
     throw new Error("pull request title cannot be empty");
   }
+  if (params.payload.kind === "resolve-thread") requireResolutionThread(params.repo, params.number, params.payload);
   const id = insertMutation({
     repo: params.repo,
     number: params.number,
@@ -244,6 +252,15 @@ export function currentBaseRef(repo: string, number: number): string {
   throw new Error(`no base ref known for ${repo}#${number} - cannot pick merge method`);
 }
 
+function requireResolutionThread(repo: string, number: number, payload: Extract<MutationPayload, { kind: "resolve-thread" }>) {
+  const detail = JSON.parse(getPr(repo, number)?.detail_json ?? getCachedPrDetail(repo, number)?.detail_json ?? "null") as PrDetail | null;
+  const thread = detail?.reviewThreads?.nodes.find((thread) => thread.id === payload.threadId);
+  if (!thread) throw new Error("Review thread is not cached; refresh the PR before resolving it");
+  if (payload.resolved && isCodeScanningThread(thread)) validateCodeScanningDismissal(payload.codeScanningDismissal);
+  if (!isCodeScanningThread(thread) && payload.codeScanningDismissal !== undefined) throw new Error("CodeQL dismissal is only available for security-bot threads");
+  return thread;
+}
+
 // returns whether this mutation took the PR out of the open set (merge/close), so the caller polls broadly
 async function executeMutation(row: MutationRow): Promise<boolean> {
   const payload: unknown = JSON.parse(row.payload_json);
@@ -258,11 +275,10 @@ async function executeMutation(row: MutationRow): Promise<boolean> {
       await postReviewCommentReply(row.repo, row.number, payload.rootCommentId, payload.body);
       return false;
     case "resolve-thread": {
-      const detail = JSON.parse(getCachedPrDetail(row.repo, row.number)?.detail_json ?? "null") as PrDetail | null;
-      const thread = detail?.reviewThreads.nodes.find((thread) => thread.id === payload.threadId);
+      const thread = requireResolutionThread(row.repo, row.number, payload);
       const alertNumber = codeScanningAlertNumber(thread, row.repo)
         ?? (isCodeScanningThread(thread) && thread ? await findCodeScanningAlert(row.repo, row.number, thread.path, thread.line) : null);
-      if (alertNumber) await setCodeScanningAlertResolved(row.repo, alertNumber, payload.resolved);
+      if (alertNumber) await setCodeScanningAlertResolved(row.repo, alertNumber, payload.resolved, payload.codeScanningDismissal);
       await setThreadResolved(payload.threadId, payload.resolved);
       return false;
     }

@@ -5,7 +5,7 @@
   import Avatar from "./Avatar.svelte";
   import Reactions from "./Reactions.svelte";
   import Chevron from "./Chevron.svelte";
-  import { isCodeScanningThread } from "../../../shared/codeScanning.js";
+  import { CODE_SCANNING_DISMISSAL_REASONS, isCodeScanningThread } from "../../../shared/codeScanning.js";
   import Kbd from "./Kbd.svelte";
 
   let { thread, pending, onReply, onToggleResolve, onRetry, onDiscard, inline = false } = $props();
@@ -16,6 +16,9 @@
   let replySubmitting = $state(false);
   let resolveSubmitting = $state(false);
   let expanded = $state(false);
+  let dismissalOpen = $state(false);
+  let dismissalReason = $state("");
+  let dismissalComment = $state("");
 
   let resolveMutation = $derived(pending.find((m) => m.kind === "resolve-thread"));
   let replyMutations = $derived(pending.filter((m) => m.kind === "reply-to-thread"));
@@ -65,16 +68,36 @@
     submitReply();
   }
 
-  async function toggleResolve() {
+  function cancelDismissal() {
+    dismissalOpen = false;
+    dismissalReason = "";
+    dismissalComment = "";
+  }
+
+  async function toggleResolve(codeScanningDismissal) {
+    if (resolveSubmitting || resolveMutation) return;
+    if (codeScanningAlert && !effectiveResolved && !codeScanningDismissal) {
+      dismissalOpen = true;
+      return;
+    }
     resolveSubmitting = true;
     resolveError = "";
     try {
-      await onToggleResolve();
+      await onToggleResolve(codeScanningDismissal);
+      cancelDismissal();
     } catch (error) {
       resolveError = error.message;
     } finally {
       resolveSubmitting = false;
     }
+  }
+
+  function dismissAlert() {
+    if (!CODE_SCANNING_DISMISSAL_REASONS.includes(dismissalReason) || dismissalComment.length > 280) return;
+    return toggleResolve({
+      reason: dismissalReason,
+      ...(dismissalComment.trim() ? { comment: dismissalComment.trim() } : {}),
+    });
   }
 </script>
 
@@ -117,11 +140,35 @@
           onDiscard={() => onDiscard(resolveMutation.id)}
         />
       {/if}
-      <button class="resolve-btn" title={codeScanningAlert && !effectiveResolved ? "Dismiss the CodeQL alert as won’t fix and resolve this thread" : undefined} disabled={resolveSubmitting || !!resolveMutation} onclick={toggleResolve}>
-        {effectiveResolved ? "Unresolve" : codeScanningAlert ? "Not relevant" : "Resolve"}
+      <button class="resolve-btn" disabled={resolveSubmitting || !!resolveMutation} onclick={() => toggleResolve()}>
+        {effectiveResolved ? "Unresolve" : codeScanningAlert ? "Dismiss alert…" : "Resolve"}
       </button>
     </div>
     {#if resolveError || resolveMutation?.error}<p role="alert">{resolveError || resolveMutation.error}</p>{/if}
+    {#if dismissalOpen && codeScanningAlert && !effectiveResolved}
+      <div class="dismissal-panel">
+        <p>Dismisses this alert across the repository and resolves this thread.</p>
+        <label>
+          Reason
+          <select aria-label="Reason" bind:value={dismissalReason} disabled={resolveSubmitting}>
+            <option value="" disabled>Choose a reason…</option>
+            {#each CODE_SCANNING_DISMISSAL_REASONS as reason}
+              <option value={reason}>{reason}</option>
+            {/each}
+          </select>
+        </label>
+        <label>
+          Comment <span class="optional">(optional, 280 characters)</span>
+          <textarea bind:value={dismissalComment} maxlength="280" rows="2" disabled={resolveSubmitting}></textarea>
+        </label>
+        <div class="dismissal-actions">
+          <button class="btn" disabled={resolveSubmitting} onclick={cancelDismissal}>Cancel</button>
+          <button class="btn" disabled={!dismissalReason || resolveSubmitting || !!resolveMutation} onclick={dismissAlert}>
+            {resolveSubmitting ? "Dismissing…" : "Dismiss alert"}
+          </button>
+        </div>
+      </div>
+    {/if}
     {#if hunkTail.length}
       <div class="hunk mono">
         {#each hunkTail as row}
@@ -162,6 +209,44 @@
 {/if}
 
 <style>
+  .dismissal-panel {
+    display: grid;
+    gap: 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+    margin-bottom: 12px;
+  }
+  .dismissal-panel p {
+    margin: 0;
+    color: var(--text-dim);
+    font-size: 12px;
+  }
+  .dismissal-panel label {
+    display: grid;
+    gap: 5px;
+    font-size: 12px;
+  }
+  .dismissal-panel select,
+  .dismissal-panel textarea {
+    width: 100%;
+    box-sizing: border-box;
+    background: var(--panel-raised);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 6px 8px;
+    font: inherit;
+  }
+  .optional {
+    color: var(--text-faint);
+  }
+  .dismissal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
   .shortcut-action {
     display: inline-flex;
     align-items: center;

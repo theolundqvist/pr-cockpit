@@ -1,3 +1,4 @@
+import { codeScanningAlertNumber, isCodeScanningThread, validateCodeScanningDismissal } from "../shared/codeScanning.js";
 import { realpath } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -72,6 +73,8 @@ import {
   lookupPrIndexes,
   searchPrs,
   resolveReviewThread,
+  findCodeScanningAlert,
+  setCodeScanningAlertResolved,
   viewerRepos,
   type FileHistoryCommit,
   type FileHistoryDiff,
@@ -1203,7 +1206,11 @@ export function normalizeAgentMutation(repo: string, number: number, detail: PrD
       const resolved = fieldValue(input, "resolved");
       if ("resolved" in input && typeof resolved !== "boolean") throw new Error("resolved must be a boolean");
       const thread = reviewThreadByHandle(detail, fieldValue(input, "threadHandle"));
-      return { kind: "resolve-thread", threadId: thread.id, resolved: resolved !== false };
+      const choice = fieldValue(input, "codeScanningDismissal");
+      if (choice !== undefined && !isCodeScanningThread(thread)) throw new Error("CodeQL dismissal is only available for security-bot threads");
+      const codeScanningDismissal = choice !== undefined || (resolved !== false && isCodeScanningThread(thread))
+        ? validateCodeScanningDismissal(choice) : undefined;
+      return { kind: "resolve-thread", threadId: thread.id, resolved: resolved !== false, ...(codeScanningDismissal ? { codeScanningDismissal } : {}) };
     }
     case "comment":
       return { kind: "comment", body: requiredString(input, "body") };
@@ -1292,6 +1299,7 @@ async function handleResolveReviewThread(
   number: string,
   handle: string,
   runtime: HttpRuntime,
+  req: Request,
 ): Promise<Response> {
   if (!validPrReference(owner, repo, number) || !/^[0-9a-f]{10}$/.test(handle)) {
     return json({ error: "invalid PR reference or thread handle" }, 400);
@@ -1308,8 +1316,25 @@ async function handleResolveReviewThread(
     const message = err instanceof Error ? err.message : String(err);
     return json({ error: message }, message.endsWith("not found") ? 404 : message.endsWith("ambiguous") ? 409 : 400);
   }
+  let dismissal;
+  try {
+    const text = await req.text();
+    const body = text ? JSON.parse(text) : {};
+    if (isCodeScanningThread(thread)) {
+      dismissal = validateCodeScanningDismissal(body?.codeScanningDismissal);
+    } else if (body?.codeScanningDismissal !== undefined) {
+      throw new Error("CodeQL dismissal is only available for security-bot threads");
+    }
+  } catch (err) {
+    return json({ error: `${String(err)}${isCodeScanningThread(thread) ? "; use pr-cockpit dismiss-alert with an explicit reason" : ""}` }, 400);
+  }
   const alreadyResolved = thread.isResolved;
   try {
+    if (dismissal) {
+      const alert = codeScanningAlertNumber(thread, repoName)
+        ?? await findCodeScanningAlert(repoName, num, thread.path, thread.line);
+      await setCodeScanningAlertResolved(repoName, alert, true, dismissal);
+    }
     await runtime.resolveReviewThread(thread.id);
   } catch (err) {
     return githubErrorResponse(err, "GitHub thread resolution failed");
@@ -3302,7 +3327,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     ) {
       if (!trustedCliHost) return json({ error: "loopback CLI request required" }, 403);
       if (req.headers.get("x-pr-cockpit-cli") !== "1") return json({ error: "trusted CLI request required" }, 403);
-      return handleResolveReviewThread(parts[3]!, parts[4]!, parts[5]!, parts[7]!, runtime);
+      return handleResolveReviewThread(parts[3]!, parts[4]!, parts[5]!, parts[7]!, runtime, req);
     }
     if (
       req.method === "GET" &&

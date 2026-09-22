@@ -1,3 +1,4 @@
+import { validateCodeScanningDismissal } from "../shared/codeScanning.js";
 import type { MergeMethod } from "./mergeMethod.ts";
 import { mockGithub, MOCK_FIXTURE_CLOCK } from "./mockGithub.ts";
 import {
@@ -2704,11 +2705,10 @@ export async function findCodeScanningAlert(repo: string, number: number, path: 
   return matches[0]!.number;
 }
 
-// GitHub requires a reason when dismissing a code-scanning alert. This action
-// deliberately means not relevant, rather than falsely claiming the code was fixed.
-export async function setCodeScanningAlertResolved(repo: string, alertNumber: number, resolved: boolean): Promise<void> {
+export async function setCodeScanningAlertResolved(repo: string, alertNumber: number, resolved: boolean, dismissal?: { reason: string; comment?: string }): Promise<void> {
+  const choice = resolved ? validateCodeScanningDismissal(dismissal) : undefined;
   await restRequest("PATCH", `/repos/${encodedRepo(repo)}/code-scanning/alerts/${alertNumber}`,
-    resolved ? { state: "dismissed", dismissed_reason: "won't fix" } : { state: "open" });
+    choice ? { state: "dismissed", dismissed_reason: choice.reason, ...(choice.comment !== undefined ? { dismissed_comment: choice.comment } : {}) } : { state: "open" });
 }
 
 export async function setThreadResolved(threadId: string, resolved: boolean): Promise<void> {

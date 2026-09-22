@@ -10,6 +10,7 @@ Usage:
   pr-cockpit [REF] [READ_OPTION]
   pr-cockpit listen [REF] [--run RUN_ID]
   pr-cockpit resolve REF THREAD
+  pr-cockpit dismiss-alert REF THREAD REASON [--body-file FILE]
   pr-cockpit comment REF --body-file FILE
   pr-cockpit reply REF THREAD --body-file FILE
   pr-cockpit merge REF [--method squash|merge|rebase] [--force]
@@ -21,6 +22,7 @@ Mutation commands:
   comment              post a PR comment from --body-file
   reply                reply to a displayed review-thread handle from --body-file
   resolve, unresolve   change a displayed review-thread handle
+  dismiss-alert        dismiss a CodeQL finding with an explicit GitHub reason
   review               submit approve, request-changes, or comment; body via --body-file
   merge                merge with the cached base snapshot; defaults to the repository method
   update-branch        update the PR branch from its base
@@ -76,6 +78,9 @@ Mutation options:
   --side LEFT|RIGHT    inline-comment diff side
   --start-line N       inline-comment starting line
   --start-side SIDE    inline-comment starting side
+
+CodeQL dismissal reasons: "false positive", "won't fix", "used in tests", "mitigated".
+Use --body-file for an optional dismissal comment (maximum 280 characters).
 
 Default read output is Markdown. Successful mutations print one JSON result after GitHub
 accepts the change and Cockpit refreshes its cache.
@@ -162,7 +167,7 @@ fi
 
 command="read"
 case "${1:-}" in
-  listen|resolve|cache-run|comment|reply|unresolve|review|merge|update-branch|ready-for-review|close|edit-body|edit-title|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers)
+  listen|resolve|cache-run|comment|reply|unresolve|dismiss-alert|review|merge|update-branch|ready-for-review|close|edit-body|edit-title|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers)
     command="$1"
     shift
     ;;
@@ -170,7 +175,7 @@ esac
 
 mutation_command=0
 case "$command" in
-  comment|reply|unresolve|review|merge|update-branch|ready-for-review|close|edit-body|edit-title|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers)
+  comment|reply|unresolve|dismiss-alert|review|merge|update-branch|ready-for-review|close|edit-body|edit-title|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers)
     mutation_command=1
     ;;
 esac
@@ -708,6 +713,17 @@ try {
       exact(1, "unresolve requires one review-thread handle");
       payload = { kind: "resolve-thread", threadHandle: args[0], resolved: false };
       break;
+    case "dismiss-alert": {
+      exact(2, "dismiss-alert requires a review-thread handle and a quoted reason");
+      const comment = await body(false);
+      payload = {
+        kind: "resolve-thread",
+        threadHandle: args[0],
+        resolved: true,
+        codeScanningDismissal: { reason: args[1], ...(comment ? { comment } : {}) },
+      };
+      break;
+    }
     case "review": {
       exact(1, "review requires approve, request-changes, or comment");
       const events = { approve: "APPROVE", "request-changes": "REQUEST_CHANGES", comment: "COMMENT" };

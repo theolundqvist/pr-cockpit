@@ -27,6 +27,7 @@
   import { loadDiffDocument } from "./diffDocument.js";
   import { renderMarkdown } from "./markdown.js";
   import { presentMutationError } from "./mutationError.js";
+  import { isCodeScanningThread } from "../../../shared/codeScanning.js";
   import { loadPrIndex, prSummary } from "./prIndex.svelte.js";
   import { imageFallback, prKeyOwner, shouldCopyPrCockpitUrl, shouldCopyPrUrl } from "./dom.js";
   import { readLastViewed, writeLastViewed } from "./lastViewed.js";
@@ -648,10 +649,10 @@
   let resolveError = $state("");
   let resolvingAll = $state(false);
 
-  async function submitResolve(threadId, isResolved) {
+  async function submitResolve(threadId, isResolved, codeScanningDismissal) {
     resolveError = "";
     try {
-      await enqueueMutation(repo, number, { kind: "resolve-thread", threadId, resolved: !isResolved });
+      await enqueueMutation(repo, number, { kind: "resolve-thread", threadId, resolved: !isResolved, ...(codeScanningDismissal ? { codeScanningDismissal } : {}) });
       await refreshMutations();
     } catch (error) {
       resolveError = presentMutationError("resolve comment", error).message;
@@ -662,12 +663,12 @@
   function requestResolveAll() {
     const targetRepo = repo;
     const targetNumber = number;
-    const threads = publishedThreads.filter((thread) => !thread.isResolved &&
-      !(mutationsByThread.get(thread.id) ?? []).some((mutation) => mutation.kind === "resolve-thread"));
+    const threads = bulkResolvableThreads;
+    if (!threads.length) return;
     confirmAction = {
       title: `Resolve ${threads.length === 1 ? "1 comment" : `all ${threads.length} comments`}?`,
-      message: "This resolves all open review threads on this pull request. Linked CodeQL alerts are marked not relevant using GitHub’s ‘won’t fix’ reason. Alert dismissal applies across the repository.",
-      confirmLabel: "Resolve all comments",
+      message: "Resolves open review comments, excluding CodeQL alerts. Dismiss CodeQL alerts individually with a reason.",
+      confirmLabel: "Resolve review comments",
       run: async () => {
         resolvingAll = true;
         try {
@@ -720,11 +721,15 @@
     return map;
   });
 
+  let bulkResolvableThreads = $derived(publishedThreads.filter((thread) => !thread.isResolved &&
+    !isCodeScanningThread(thread) &&
+    !(mutationsByThread.get(thread.id) ?? []).some((mutation) => mutation.kind === "resolve-thread")));
+
   function threadProps(thread) {
     return {
       pending: mutationsByThread.get(thread.id) ?? [],
       onReply: (rootCommentId, body) => submitReply(rootCommentId, body),
-      onToggleResolve: () => submitResolve(thread.id, thread.isResolved),
+      onToggleResolve: (codeScanningDismissal) => submitResolve(thread.id, thread.isResolved, codeScanningDismissal),
       onRetry: handleRetry,
       onDiscard: handleDiscard,
     };
@@ -2846,8 +2851,8 @@
           <section class="block">
             <h2 class="block-title">Conversation</h2>
             {#if unresolvedTotal > 0}
-              <button class="btn" disabled={resolvingAll || publishedThreads.every((thread) => thread.isResolved || (mutationsByThread.get(thread.id) ?? []).some((mutation) => mutation.kind === "resolve-thread"))} onclick={requestResolveAll}>
-                {resolvingAll ? "Resolving…" : "Resolve all comments"}
+              <button class="btn" title="Resolve open review comments, excluding CodeQL alerts" disabled={resolvingAll || !bulkResolvableThreads.length} onclick={requestResolveAll}>
+                {resolvingAll ? "Resolving…" : "Resolve review comments"}
               </button>
             {/if}
             {#if resolveError}<p class="mut-error" role="alert">{resolveError}</p>{/if}

@@ -462,15 +462,15 @@ const scenarios = [
         requests.push(route.request().postDataJSON());
         await route.fulfill({ status: 201, contentType: "application/json", body: '{"id":123}' });
       });
-      await page.getByRole("button", { name: "Resolve all comments", exact: true }).click();
+      await page.getByRole("button", { name: "Resolve review comments", exact: true }).click();
       await page.getByRole("button", { name: "Cancel", exact: true }).click();
       if (requests.length) throw new Error("Cancel enqueued a mutation");
-      await page.getByRole("button", { name: "Resolve all comments", exact: true }).click();
+      await page.getByRole("button", { name: "Resolve review comments", exact: true }).click();
     },
-    verify: async (page) => page.getByText("Alert dismissal applies across the repository.", { exact: false }).waitFor(),
+    verify: async (page) => page.getByText("Dismiss CodeQL alerts individually with a reason.", { exact: false }).waitFor(),
   },
   {
-    ...detail("detail-resolve-codeql", 103, "CodeQL findings have a one-click not-relevant action."),
+    ...detail("detail-resolve-codeql", 103, "CodeQL dismissal requires an explicit reason and confirmation; cancellation sends no mutation."),
     beforeGoto: async (page) => {
       await page.route("**/api/pr/fixture/cockpit/103", async (route) => {
         const response = await route.fetch();
@@ -482,16 +482,34 @@ const scenarios = [
       });
     },
     interact: async (page) => {
-      let submitted;
+      const requests = [];
       await page.route("**/api/mutations", async (route) => {
-        submitted = route.request().postDataJSON();
+        requests.push(route.request().postDataJSON());
         await route.fulfill({ status: 201, contentType: "application/json", body: '{"id":123}' });
       });
-      const button = page.getByRole("button", { name: "Not relevant", exact: true });
+      const button = page.getByRole("button", { name: "Dismiss alert…", exact: true });
+      const panel = page.locator(".dismissal-panel");
       await button.click();
-      await page.waitForFunction(() => !document.querySelector(".resolve-btn:disabled"));
-      if (submitted?.payload.kind !== "resolve-thread" || submitted.payload.resolved !== true) throw new Error("CodeQL dismissal did not enqueue");
-      await button.scrollIntoViewIfNeeded();
+      if (!await panel.getByRole("button", { name: "Dismiss alert", exact: true }).isDisabled()) throw new Error("Dismissal has a default reason");
+      await panel.getByLabel("Reason", { exact: true }).selectOption("false positive");
+      await panel.getByLabel("Comment", { exact: false }).fill("Fixture-only dismissal rationale.");
+      await panel.getByRole("button", { name: "Cancel", exact: true }).click();
+      if (requests.length) throw new Error("Cancel enqueued a dismissal");
+      await button.click();
+      if (await panel.getByLabel("Reason", { exact: true }).inputValue()) throw new Error("Cancelled reason was retained");
+      await panel.getByLabel("Reason", { exact: true }).selectOption("used in tests");
+      await panel.getByLabel("Comment", { exact: false }).fill("Only exercised by isolated security tests.");
+      await panel.getByRole("button", { name: "Dismiss alert", exact: true }).click();
+      await panel.waitFor({ state: "hidden" });
+      const submitted = requests[0];
+      if (requests.length !== 1 || submitted?.payload.kind !== "resolve-thread" || submitted.payload.resolved !== true ||
+        submitted.payload.codeScanningDismissal?.reason !== "used in tests" ||
+        submitted.payload.codeScanningDismissal?.comment !== "Only exercised by isolated security tests.") throw new Error("Explicit CodeQL dismissal did not enqueue");
+      requests.length = 0;
+      if (!await page.getByRole("button", { name: "Resolve review comments", exact: true }).isDisabled()) throw new Error("Bulk resolve permits a CodeQL-only selection");
+      if (requests.length) throw new Error("Bulk resolve enqueued a CodeQL alert");
+      await button.click();
+      await panel.scrollIntoViewIfNeeded();
     },
   },
   {
@@ -507,8 +525,8 @@ const scenarios = [
       await page.getByRole("button", { name: "Resolve", exact: true }).first().click();
       await page.waitForFunction(() => !document.querySelector(".resolve-btn:disabled"));
       if (requests.length !== 1 || requests[0].payload.resolved !== true) throw new Error("Individual resolve did not enqueue");
-      await page.getByRole("button", { name: "Resolve all comments", exact: true }).click();
-      await page.getByRole("alertdialog").getByRole("button", { name: "Resolve all comments", exact: true }).click();
+      await page.getByRole("button", { name: "Resolve review comments", exact: true }).click();
+      await page.getByRole("alertdialog").getByRole("button", { name: "Resolve review comments", exact: true }).click();
       await page.waitForFunction(() => ![...document.querySelectorAll("button")].some((button) => button.textContent.includes("Resolving…")));
       if (requests.length !== openCount + 1 || requests.some((request) => request.payload.kind !== "resolve-thread" || !request.payload.resolved)) throw new Error("Bulk resolution missed an open thread");
     },
