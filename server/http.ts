@@ -436,6 +436,7 @@ type HttpDependencies = {
   actionWorkflowGraphs: typeof actionWorkflowGraphs;
   actionJobLog: typeof actionJobLog;
   rerunFailedJobs: typeof rerunFailedJobs;
+  pollOnce: typeof pollOnce;
 };
 
 type HttpRuntime = HttpDependencies & {
@@ -467,6 +468,7 @@ const defaultHttpDependencies: HttpDependencies = {
   actionWorkflowGraphs,
   actionJobLog,
   rerunFailedJobs,
+  pollOnce,
 };
 async function handleGithubQuota(runtime: HttpRuntime): Promise<Response> {
   try {
@@ -2517,8 +2519,8 @@ async function handlePrIndex(url: URL, runtime: HttpRuntime): Promise<Response> 
   }));
 }
 
-async function handleRefresh(): Promise<Response> {
-  const result = await pollOnce();
+async function handleRefresh(runtime: HttpRuntime): Promise<Response> {
+  const result = await runtime.pollOnce();
   return json(result);
 }
 
@@ -2538,18 +2540,18 @@ async function handlePendingReview(
     return githubErrorResponse(error, "GitHub pending review fetch failed");
   }
 }
-async function handleRetrySystemIssue(req: Request): Promise<Response> {
+async function handleRetrySystemIssue(req: Request, runtime: HttpRuntime): Promise<Response> {
   const body: unknown = await req.json().catch(() => null);
   if (!body || typeof body !== "object" || !("id" in body) || typeof body.id !== "string") {
     return json({ error: "system issue id required" }, 400);
   }
   retrySystemIssue(body.id);
-  void pollOnce().catch((error) => console.warn("system issue retry poll failed:", error));
+  void runtime.pollOnce().catch((error) => console.warn("system issue retry poll failed:", error));
   return json({ issues: systemIssues() });
 }
 
 
-async function handlePutSettings(req: Request): Promise<Response> {
+async function handlePutSettings(req: Request, runtime: HttpRuntime): Promise<Response> {
   let body: Partial<{
     repos: string;
     default_repo: string;
@@ -2593,7 +2595,10 @@ async function handlePutSettings(req: Request): Promise<Response> {
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : String(error) }, 400);
   }
-  if (settings.repos !== previousRepos) clearRepositoryIssues();
+  if (settings.repos !== previousRepos) {
+    clearRepositoryIssues();
+    void runtime.pollOnce().catch((error) => console.warn("repository settings poll failed:", error));
+  }
   if (settings.replica_ssh_host !== previousReplica && Bun.env.COCKPIT_LAUNCHER) {
     setTimeout(() => process.exit(1), 250);
   }
@@ -3114,7 +3119,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       return json({ issues: systemIssues() });
     }
     if (req.method === "POST" && url.pathname === "/api/system-issues/retry") {
-      return handleRetrySystemIssue(req);
+      return handleRetrySystemIssue(req, runtime);
     }
     if (req.method === "POST" && url.pathname === "/api/shutdown") {
       return handleShutdown();
@@ -3135,13 +3140,13 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       return handleUpdate();
     }
     if (req.method === "POST" && url.pathname === "/api/refresh") {
-      return handleRefresh();
+      return handleRefresh(runtime);
     }
     if (req.method === "GET" && url.pathname === "/api/settings") {
       return json(withAgentPromptDefaults(readSettings()));
     }
     if (req.method === "PUT" && url.pathname === "/api/settings") {
-      return handlePutSettings(req);
+      return handlePutSettings(req, runtime);
     }
     if (req.method === "POST" && url.pathname === "/api/mutations") {
       return handleEnqueueMutation(req);

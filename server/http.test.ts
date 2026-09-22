@@ -2248,3 +2248,33 @@ describe("Actions viewer API", () => {
     }
   });
 });
+
+describe("repository settings refresh", () => {
+  test("polls immediately when tracked repositories change", async () => {
+    const previousRepos = getSetting("repos") ?? "";
+    const nextRepos = previousRepos.includes("test-owner/new-repo")
+      ? "test-owner/other-repo"
+      : "test-owner/new-repo";
+    let polls = 0;
+    const handler = buildFetchHandler(4820, {
+      pollOnce: async () => {
+        polls++;
+        return { checked: 0, refreshed: 0 };
+      },
+    });
+    const save = () => handler(new Request("http://127.0.0.1:4820/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repos: nextRepos }),
+    }));
+
+    try {
+      expect((await save()).status).toBe(200);
+      expect(polls).toBe(1);
+      expect((await save()).status).toBe(200);
+      expect(polls).toBe(1);
+    } finally {
+      setSetting("repos", previousRepos);
+    }
+  });
+});

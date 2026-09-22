@@ -258,13 +258,13 @@
 
   let pollCadence = $derived(pollIntervalS < 120 ? `${pollIntervalS} seconds` : `${Math.round(pollIntervalS / 60)} minutes`);
 
-  let syncLabel = $derived(lastPollAt === null && !syncDelayed ? "Syncing" : syncDelayed ? "Sync delayed" : relayLive ? "Online" : "Synced");
+  let syncLabel = $derived(lastPollAt === null && !syncDelayed ? "Syncing" : syncDelayed ? "Sync delayed" : relayLive ? "Online" : "Queue synced");
 
   let syncTitle = $derived.by(() => {
-    if (lastPollAt === null) return syncDelayed ? "The first sync is taking longer than expected." : "Completing the first sync…";
-    if (syncDelayed) return `Last synced ${syncAge}. Expected about every ${pollCadence}.`;
-    if (relayLive) return `Live updates are online. Last full sync completed ${syncAge}.`;
-    return `Last synced ${syncAge}.`;
+    if (lastPollAt === null) return syncDelayed ? "The first review-queue sync is taking longer than expected." : "Completing the first review-queue sync…";
+    if (syncDelayed) return `Review queue last synced ${syncAge}. Expected about every ${pollCadence}.`;
+    if (relayLive) return `Live review-queue updates are online. Last full sync completed ${syncAge}. All PRs includes every open pull request in tracked repositories.`;
+    return `Review queue synced ${syncAge}. All PRs includes every open pull request in tracked repositories.`;
   });
 
   async function loadArchived() {
@@ -878,12 +878,12 @@
 
     <div class="queue-toolbar">
       <div class="view-tabs" role="tablist" aria-label="List view">
-        <button class="view-tab" role="tab" aria-selected={view === "open"} class:active={view === "open"} onclick={() => showView("open")}>
-          Open
+        <button class="view-tab" role="tab" title="Pull requests involving you" aria-selected={view === "open"} class:active={view === "open"} onclick={() => showView("open")}>
+          Your queue
           <span class="view-tab-count">{filterByRepositories(prs, selectedRepos).length}</span>
           {#if view === "closed"}<Kbd keys="tab" />{/if}
         </button>
-        <button class="view-tab" role="tab" aria-selected={view === "all"} class:active={view === "all"} onclick={() => showView("all")}>
+        <button class="view-tab" role="tab" title="Every open pull request in tracked repositories" aria-selected={view === "all"} class:active={view === "all"} onclick={() => showView("all")}>
           All PRs {#if view === "open"}<Kbd keys="tab" />{/if}
         </button>
         <button class="view-tab" role="tab" aria-selected={view === "closed"} class:active={view === "closed"} onclick={() => showView("closed")}>
@@ -1139,9 +1139,9 @@
           {:else if syncing}
             <div class="empty">Syncing with GitHub…</div>
           {:else if loaded && prs.length === 0}
-            <div class="empty">No open pull requests</div>
+            <div class="empty">No open pull requests involving you. Use All PRs to see every tracked repository.</div>
           {:else if selectedRepos.length && filteredPrs.length === 0}
-            <div class="empty">No open pull requests in the selected repositories</div>
+            <div class="empty">No pull requests involving you in the selected repositories. Use All PRs to see every open pull request.</div>
           {:else if wantsHistory(filterQuery) && !historyActive}
             <div class="empty">Searching history…</div>
           {:else if filterQuery && filteredPrs.length === 0}
