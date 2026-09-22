@@ -32,6 +32,7 @@ test("applied mutations remain pending through refresh without becoming retryabl
       row.payload_json = JSON.stringify({ ...payload, commentNodeId: "mock-comment" });
       return false;
     };
+    const scheduledRecoveries = [];
     const dependencies = (refreshPr, executeMutation = async () => false) => ({
       executeMutation,
       refreshPr,
@@ -39,6 +40,7 @@ test("applied mutations remain pending through refresh without becoming retryabl
       deleteMutation: db.deleteMutation,
       setMutationRefreshing: db.setMutationRefreshing,
       setMutationState: db.setMutationState,
+      scheduleRecovery: (id, retry) => scheduledRecoveries.push({ id, retry }),
     });
 
     let releaseRefresh;
@@ -58,6 +60,16 @@ test("applied mutations remain pending through refresh without becoming retryabl
     releaseRefresh();
     await running;
     const completedCount = db.listMutationsForPr(repo, 102).length;
+
+    let retryRefreshes = 0;
+    const retryingRow = insert(110);
+    await processMutation(retryingRow, dependencies(async () => {
+      retryRefreshes++;
+      if (retryRefreshes === 1) throw new Error("refresh unavailable");
+    }));
+    const scheduledRetry = scheduledRecoveries.shift();
+    await scheduledRetry.retry();
+    const retryingCount = db.listMutationsForPr(repo, 110).length;
 
     const refreshFailureRow = insert(103);
     await processMutation(refreshFailureRow, dependencies(async () => { throw new Error("refresh unavailable"); }));
@@ -91,6 +103,7 @@ test("applied mutations remain pending through refresh without becoming retryabl
       pollOnce: async () => {},
       deleteMutation: db.deleteMutation,
       setMutationState: db.setMutationState,
+      scheduleRecovery: (id, retry) => scheduledRecoveries.push({ id, retry }),
     });
     const unconfirmedAfterRecovery = db.listMutationsForPr(repo, 106).length;
     const interruptedAppliedCount = db.listMutationsForPr(repo, 104).length;
@@ -101,6 +114,9 @@ test("applied mutations remain pending through refresh without becoming retryabl
       persistedWhileRefreshing,
       apiStateWhileRefreshing,
       completedCount,
+      retryingCount,
+      retryRefreshes,
+      scheduledRetryId: scheduledRetry.id,
       refreshFailure: { state: refreshFailure?.state, error: refreshFailure?.error },
       unconfirmedEdit: { state: unconfirmedEdit?.state, error: unconfirmedEdit?.error },
       confirmedCommentCount,
@@ -133,6 +149,9 @@ test("applied mutations remain pending through refresh without becoming retryabl
     expect(result.persistedWhileRefreshing).toBe("refreshing");
     expect(result.apiStateWhileRefreshing).toBe("pending");
     expect(result.completedCount).toBe(0);
+    expect(result.retryingCount).toBe(0);
+    expect(result.retryRefreshes).toBe(2);
+    expect(result.scheduledRetryId).toBeGreaterThan(0);
     expect(result.refreshFailure).toEqual({ state: "refreshing", error: "GitHub accepted resolve-thread, but cache refresh failed: refresh unavailable" });
     expect(result.unconfirmedEdit).toEqual({ state: "refreshing", error: "GitHub accepted edit-body, but cache refresh failed: refreshed cache does not contain the accepted change" });
     expect(result.confirmedCommentCount).toBe(0);

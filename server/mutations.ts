@@ -64,6 +64,22 @@ export type MutationPayload =
   | { kind: "unassign"; logins: string[] }
   | { kind: "request-reviewers"; logins: string[] }
   | { kind: "unrequest-reviewers"; logins: string[] };
+const MUTATION_REFRESH_RETRY_MS = 30_000;
+const mutationRefreshTimers = new Map<number, Timer>();
+
+function cancelMutationRefresh(id: number): void {
+  clearTimeout(mutationRefreshTimers.get(id));
+  mutationRefreshTimers.delete(id);
+}
+function scheduleMutationRefresh(id: number, retry: () => Promise<void>): void {
+  cancelMutationRefresh(id);
+  const timer = setTimeout(() => {
+    mutationRefreshTimers.delete(id);
+    void retry();
+  }, MUTATION_REFRESH_RETRY_MS);
+  timer.unref();
+  mutationRefreshTimers.set(id, timer);
+}
 
 const KNOWN_KINDS: ReadonlySet<string> = new Set([
   "comment",
@@ -193,11 +209,13 @@ export function mutationsForPr(repo: string, number: number): MutationRow[] {
 }
 
 export function retryMutation(id: number): void {
+  cancelMutationRefresh(id);
   setMutationState(id, "pending", null);
   kickWorker();
 }
 
 export function discardMutation(id: number): void {
+  cancelMutationRefresh(id);
   deleteMutation(id);
 }
 
@@ -365,6 +383,7 @@ type MutationCompletionDependencies = {
   pollOnce: typeof pollOnce;
   deleteMutation: typeof deleteMutation;
   setMutationState: typeof setMutationState;
+  scheduleRecovery?: (id: number, retry: () => Promise<void>) => void;
 };
 
 const mutationCompletionDependencies: MutationCompletionDependencies = {
@@ -386,9 +405,12 @@ export async function finalizeMutation(
   } catch (err) {
     const error = `GitHub accepted ${row.kind}, but cache refresh failed: ${err instanceof Error ? err.message : String(err)}`;
     dependencies.setMutationState(row.id, "refreshing", error);
-    console.error(error);
+    console.warn(error);
+    const retry = () => finalizeMutation(row, merged, dependencies);
+    (dependencies.scheduleRecovery ?? scheduleMutationRefresh)(row.id, retry);
     return;
   }
+  cancelMutationRefresh(row.id);
   dependencies.deleteMutation(row.id);
 }
 
