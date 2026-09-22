@@ -451,6 +451,69 @@ const scenarios = [
     verify: async (page) => page.getByRole("button", { name: "Comment", exact: true }).waitFor(),
   },
   {
+    ...detail("detail-resolve-overview", 103, "Review thread resolution controls."),
+    interact: async (page) => page.locator(".conversation-thread").first().scrollIntoViewIfNeeded(),
+  },
+  {
+    ...detail("detail-resolve-all-confirm", 103, "Bulk resolution requires confirmation and cancellation sends no mutation."),
+    interact: async (page) => {
+      const requests = [];
+      await page.route("**/api/mutations", async (route) => {
+        requests.push(route.request().postDataJSON());
+        await route.fulfill({ status: 201, contentType: "application/json", body: '{"id":123}' });
+      });
+      await page.getByRole("button", { name: "Resolve all comments", exact: true }).click();
+      await page.getByRole("button", { name: "Cancel", exact: true }).click();
+      if (requests.length) throw new Error("Cancel enqueued a mutation");
+      await page.getByRole("button", { name: "Resolve all comments", exact: true }).click();
+    },
+    verify: async (page) => page.getByText("Alert dismissal applies across the repository.", { exact: false }).waitFor(),
+  },
+  {
+    ...detail("detail-resolve-codeql", 103, "CodeQL findings have a one-click not-relevant action."),
+    beforeGoto: async (page) => {
+      await page.route("**/api/pr/fixture/cockpit/103", async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        const thread = body.reviewThreads.nodes.find((thread) => !thread.isResolved);
+        thread.comments.nodes[0].author.login = "github-advanced-security";
+        thread.comments.nodes[0].body = "This finding is not relevant to this change. [View alert](https://github.com/fixture/cockpit/security/code-scanning/42)";
+        await route.fulfill({ response, json: body });
+      });
+    },
+    interact: async (page) => {
+      let submitted;
+      await page.route("**/api/mutations", async (route) => {
+        submitted = route.request().postDataJSON();
+        await route.fulfill({ status: 201, contentType: "application/json", body: '{"id":123}' });
+      });
+      const button = page.getByRole("button", { name: "Not relevant", exact: true });
+      await button.click();
+      await page.waitForFunction(() => !document.querySelector(".resolve-btn:disabled"));
+      if (submitted?.payload.kind !== "resolve-thread" || submitted.payload.resolved !== true) throw new Error("CodeQL dismissal did not enqueue");
+      await button.scrollIntoViewIfNeeded();
+    },
+  },
+  {
+    ...detail("detail-resolve-actions", 103, "Individual and bulk resolve buttons enqueue the open review threads."),
+    interact: async (page) => {
+      const requests = [];
+      await page.route("**/api/mutations", async (route) => {
+        requests.push(route.request().postDataJSON());
+        await route.fulfill({ status: 201, contentType: "application/json", body: '{"id":123}' });
+      });
+      const openCount = await page.getByRole("button", { name: "Resolve", exact: true }).count();
+      if (!openCount) throw new Error("Fixture has no unresolved threads");
+      await page.getByRole("button", { name: "Resolve", exact: true }).first().click();
+      await page.waitForFunction(() => !document.querySelector(".resolve-btn:disabled"));
+      if (requests.length !== 1 || requests[0].payload.resolved !== true) throw new Error("Individual resolve did not enqueue");
+      await page.getByRole("button", { name: "Resolve all comments", exact: true }).click();
+      await page.getByRole("alertdialog").getByRole("button", { name: "Resolve all comments", exact: true }).click();
+      await page.waitForFunction(() => ![...document.querySelectorAll("button")].some((button) => button.textContent.includes("Resolving…")));
+      if (requests.length !== openCount + 1 || requests.some((request) => request.payload.kind !== "resolve-thread" || !request.payload.resolved)) throw new Error("Bulk resolution missed an open thread");
+    },
+  },
+  {
     ...detail("detail-thread-reply", 103, "Open review thread with a deterministic reply draft."),
     interact: async (page) => {
       const reply = page.getByPlaceholder("Reply…").first();

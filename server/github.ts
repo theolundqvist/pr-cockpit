@@ -2693,6 +2693,24 @@ mutation($threadId: ID!) {
   unresolveReviewThread(input: { threadId: $threadId }) { thread { id } }
 }`;
 
+export async function findCodeScanningAlert(repo: string, number: number, path: string, line: number | null): Promise<number> {
+  type Alert = { number: number; most_recent_instance: { location: { path: string; start_line: number; end_line?: number } } };
+  const alerts = await fetchRestPages<Alert>(`https://api.github.com/repos/${encodedRepo(repo)}/code-scanning/alerts?ref=${encodeURIComponent(`refs/pull/${number}/merge`)}&tool_name=CodeQL&per_page=100`);
+  const matches = alerts.filter((alert) => {
+    const location = alert.most_recent_instance.location;
+    return location.path === path && line !== null && line >= location.start_line && line <= (location.end_line ?? location.start_line);
+  });
+  if (matches.length !== 1) throw new Error("Could not uniquely identify the CodeQL alert. Open the finding on GitHub to choose its dismissal reason.");
+  return matches[0]!.number;
+}
+
+// GitHub requires a reason when dismissing a code-scanning alert. This action
+// deliberately means not relevant, rather than falsely claiming the code was fixed.
+export async function setCodeScanningAlertResolved(repo: string, alertNumber: number, resolved: boolean): Promise<void> {
+  await restRequest("PATCH", `/repos/${encodedRepo(repo)}/code-scanning/alerts/${alertNumber}`,
+    resolved ? { state: "dismissed", dismissed_reason: "won't fix" } : { state: "open" });
+}
+
 export async function setThreadResolved(threadId: string, resolved: boolean): Promise<void> {
   if (mockGithub) return;
   await graphql(resolved ? RESOLVE_THREAD_MUTATION : UNRESOLVE_THREAD_MUTATION, { threadId }, "user action", resolved ? "resolve review thread" : "unresolve review thread");

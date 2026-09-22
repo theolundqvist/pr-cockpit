@@ -1,3 +1,4 @@
+import { codeScanningAlertNumber, isCodeScanningThread } from "../shared/codeScanning.js";
 import {
   deleteMutation,
   getCachedPrDetail,
@@ -29,6 +30,8 @@ import {
   requestReviewers,
   setGithubAutoMerge,
   setThreadResolved,
+  setCodeScanningAlertResolved,
+  findCodeScanningAlert,
   submitPendingReview,
   updatePullRequestBody,
   updatePullRequestTitle,
@@ -254,9 +257,15 @@ async function executeMutation(row: MutationRow): Promise<boolean> {
     case "reply-to-thread":
       await postReviewCommentReply(row.repo, row.number, payload.rootCommentId, payload.body);
       return false;
-    case "resolve-thread":
+    case "resolve-thread": {
+      const detail = JSON.parse(getCachedPrDetail(row.repo, row.number)?.detail_json ?? "null") as PrDetail | null;
+      const thread = detail?.reviewThreads.nodes.find((thread) => thread.id === payload.threadId);
+      const alertNumber = codeScanningAlertNumber(thread, row.repo)
+        ?? (isCodeScanningThread(thread) && thread ? await findCodeScanningAlert(row.repo, row.number, thread.path, thread.line) : null);
+      if (alertNumber) await setCodeScanningAlertResolved(row.repo, alertNumber, payload.resolved);
       await setThreadResolved(payload.threadId, payload.resolved);
       return false;
+    }
     case "review-verdict": {
       const pr = getPr(row.repo, row.number);
       const viewerLogin = await getViewerLogin();

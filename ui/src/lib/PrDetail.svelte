@@ -162,6 +162,7 @@
     quotaMergeModal = false;
     forceMergeConfirm = false;
     confirmAction = null;
+    resolveError = "";
     mergeMenuOpen = false;
     reviewMenuOpen = false;
     editingTitle = false;
@@ -642,6 +643,48 @@
   async function submitReply(rootCommentId, body) {
     await enqueueMutation(repo, number, { kind: "reply-to-thread", rootCommentId, body });
     await refreshMutations();
+  }
+
+  let resolveError = $state("");
+  let resolvingAll = $state(false);
+
+  async function submitResolve(threadId, isResolved) {
+    resolveError = "";
+    try {
+      await enqueueMutation(repo, number, { kind: "resolve-thread", threadId, resolved: !isResolved });
+      await refreshMutations();
+    } catch (error) {
+      resolveError = presentMutationError("resolve comment", error).message;
+      throw error;
+    }
+  }
+
+  function requestResolveAll() {
+    const targetRepo = repo;
+    const targetNumber = number;
+    const threads = publishedThreads.filter((thread) => !thread.isResolved &&
+      !(mutationsByThread.get(thread.id) ?? []).some((mutation) => mutation.kind === "resolve-thread"));
+    confirmAction = {
+      title: `Resolve ${threads.length === 1 ? "1 comment" : `all ${threads.length} comments`}?`,
+      message: "This resolves all open review threads on this pull request. Linked CodeQL alerts are marked not relevant using GitHub’s ‘won’t fix’ reason. Alert dismissal applies across the repository.",
+      confirmLabel: "Resolve all comments",
+      run: async () => {
+        resolvingAll = true;
+        try {
+          for (const thread of threads) {
+            await enqueueMutation(targetRepo, targetNumber, { kind: "resolve-thread", threadId: thread.id, resolved: true });
+          }
+        } catch (error) {
+          if (repo === targetRepo && number === targetNumber) resolveError = presentMutationError("resolve all comments", error).message;
+        } finally {
+          resolvingAll = false;
+          if (repo === targetRepo && number === targetNumber) {
+            try { await refreshMutations(); }
+            catch (error) { resolveError = presentMutationError("refresh comments", error).message; }
+          }
+        }
+      },
+    };
   }
 
   let pendingReviewCommentIds = $derived(new Set((pendingReview?.comments ?? []).map((comment) => comment.id)));
@@ -2802,6 +2845,12 @@
 
           <section class="block">
             <h2 class="block-title">Conversation</h2>
+            {#if unresolvedTotal > 0}
+              <button class="btn" disabled={resolvingAll || publishedThreads.every((thread) => thread.isResolved || (mutationsByThread.get(thread.id) ?? []).some((mutation) => mutation.kind === "resolve-thread"))} onclick={requestResolveAll}>
+                {resolvingAll ? "Resolving…" : "Resolve all comments"}
+              </button>
+            {/if}
+            {#if resolveError}<p class="mut-error" role="alert">{resolveError}</p>{/if}
             {#if prefs.newestCommentsFirst}
               {@render commentComposer(true)}
             {/if}

@@ -5,10 +5,13 @@
   import Avatar from "./Avatar.svelte";
   import Reactions from "./Reactions.svelte";
   import Chevron from "./Chevron.svelte";
+  import { isCodeScanningThread } from "../../../shared/codeScanning.js";
   import Kbd from "./Kbd.svelte";
 
   let { thread, pending, onReply, onToggleResolve, onRetry, onDiscard, inline = false } = $props();
 
+  let codeScanningAlert = $derived(isCodeScanningThread(thread));
+  let resolveError = $state("");
   let replyDraft = $state("");
   let replySubmitting = $state(false);
   let resolveSubmitting = $state(false);
@@ -64,8 +67,11 @@
 
   async function toggleResolve() {
     resolveSubmitting = true;
+    resolveError = "";
     try {
       await onToggleResolve();
+    } catch (error) {
+      resolveError = error.message;
     } finally {
       resolveSubmitting = false;
     }
@@ -111,10 +117,11 @@
           onDiscard={() => onDiscard(resolveMutation.id)}
         />
       {/if}
-      <button class="resolve-btn" disabled={resolveSubmitting || !!resolveMutation} onclick={toggleResolve}>
-        {effectiveResolved ? "Unresolve" : "Resolve"}
+      <button class="resolve-btn" title={codeScanningAlert && !effectiveResolved ? "Dismiss the CodeQL alert as won’t fix and resolve this thread" : undefined} disabled={resolveSubmitting || !!resolveMutation} onclick={toggleResolve}>
+        {effectiveResolved ? "Unresolve" : codeScanningAlert ? "Not relevant" : "Resolve"}
       </button>
     </div>
+    {#if resolveError || resolveMutation?.error}<p role="alert">{resolveError || resolveMutation.error}</p>{/if}
     {#if hunkTail.length}
       <div class="hunk mono">
         {#each hunkTail as row}
