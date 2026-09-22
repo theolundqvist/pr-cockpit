@@ -78,6 +78,22 @@ test("applied mutations remain pending through refresh without becoming retryabl
     const unconfirmedEditRow = insert(106, { kind: "edit-body", body: "new body" });
     await processMutation(unconfirmedEditRow, dependencies(async () => {}));
     const unconfirmedEdit = db.listMutationsForPr(repo, 106)[0];
+    db.db.query(\`INSERT INTO prs (
+      repo, number, state, is_draft, title, author, base_ref, head_ref, head_sha,
+      updated_at, additions, deletions, changed_files, commit_count, mergeable,
+      ci_status, unresolved_count, needs_me_rank, detail_json, fetched_at
+    ) VALUES (?, 111, 'MERGED', 0, 'merged PR', 'author', 'main', 'feature', ?, ?, 0, 0, 0, 1,
+      'MERGEABLE', 'SUCCESS', 0, 0, ?, ?)\`).run(
+      repo, "a".repeat(40), "2026-09-21T20:00:00Z",
+      JSON.stringify({ body: "old body", comments: { nodes: [] } }), "2026-09-21T20:00:00Z",
+    );
+    const freshEditRow = insert(111, { kind: "edit-body", body: "published image" });
+    await processMutation(freshEditRow, dependencies(async () => {
+      cache(111, { body: "published image", comments: { nodes: [] } });
+    }));
+    const freshEditCount = db.listMutationsForPr(repo, 111).length;
+    db.evictStalePrs(repo, []);
+    const publishedBody = JSON.parse(db.getCachedPrDetail(repo, 111).detail_json).body;
     cache(107, { body: "body", comments: { nodes: [] } });
     const confirmedCommentRow = insert(107, { kind: "comment", body: "accepted comment\\r\\n" });
     await processMutation(confirmedCommentRow, dependencies(async () => {
@@ -120,6 +136,7 @@ test("applied mutations remain pending through refresh without becoming retryabl
       refreshFailure: { state: refreshFailure?.state, error: refreshFailure?.error },
       unconfirmedEdit: { state: unconfirmedEdit?.state, error: unconfirmedEdit?.error },
       confirmedCommentCount,
+      freshEditCount, publishedBody,
       duplicateComment: {
         state: duplicateComment?.state,
         error: duplicateComment?.error,
@@ -155,6 +172,8 @@ test("applied mutations remain pending through refresh without becoming retryabl
     expect(result.refreshFailure).toEqual({ state: "refreshing", error: "GitHub accepted resolve-thread, but cache refresh failed: refresh unavailable" });
     expect(result.unconfirmedEdit).toEqual({ state: "refreshing", error: "GitHub accepted edit-body, but cache refresh failed: refreshed cache does not contain the accepted change" });
     expect(result.confirmedCommentCount).toBe(0);
+    expect(result.freshEditCount).toBe(0);
+    expect(result.publishedBody).toBe("published image");
     expect(result.interruptedAppliedCount).toBe(0);
     expect(result.interruptedCommentCount).toBe(0);
     expect(result.duplicateComment).toEqual({

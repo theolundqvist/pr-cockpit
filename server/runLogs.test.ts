@@ -397,6 +397,13 @@ test("an explicit terminal cache fails when final reconciliation is incomplete",
     const actions = await import(${JSON.stringify(runLogsUrl)});
     const dbm = await import(${JSON.stringify(dbUrl)});
     ${seed}
+    dbm.upsertRunJob({
+      repo: "acme/app", job_id: 642, run_id: 64, run_attempt: 1, head_sha: head,
+      head_branch: "feature", workflow_name: "Dispatch", name: "earlier failure",
+      status: "completed", conclusion: "failure", started_at: null, completed_at: null,
+      html_url: null, runner_name: null, runner_group_name: null, labels_json: "[]", failed_step: null,
+    });
+    dbm.saveRunJobLog("acme/app", 642, 64, 1, head, Bun.gzipSync("cached evidence"), 15);
     let error = "";
     try {
       await actions.cacheActionsRun("acme/app", 7, head, "feature", 64, {
@@ -413,7 +420,7 @@ test("an explicit terminal cache fails when final reconciliation is incomplete",
           started_at: null, completed_at: null, html_url: null, runner_name: null,
           runner_group_name: null, labels: [], steps: [],
         }],
-        fetchJobLog: async () => { throw new Error("log unavailable"); },
+        fetchJobLog: async () => { throw new Error("log unavailable: HTTP 403 https://logs.example.test/archive?sig=secret ghp_secret"); },
         restRemaining: async () => 5000,
       });
     } catch (caught) {
@@ -423,12 +430,49 @@ test("an explicit terminal cache fails when final reconciliation is incomplete",
       error,
       run: dbm.latestWorkflowRunAttempt("acme/app", 64),
       job: dbm.db.query("SELECT log_error FROM run_jobs WHERE repo=? AND job_id=?").get("acme/app", 641),
+      cachedBodies: (await actions.cachedJobLogs("acme/app", head, undefined, { run_id: 64, run_attempt: 1 })).entries.map((entry) => entry.body),
     }));
   `);
 
-  expect(result.error).toBe("Actions run 64 reconciliation did not complete");
+  expect(result.error).toContain("job 641: log unavailable: HTTP 403");
+  expect(result.error).toContain("cached jobs and logs remain readable");
+  expect(result.error).not.toContain("secret");
   expect(result.run).toMatchObject({ status: "completed", reconciled_at: null });
-  expect(result.job).toEqual({ log_error: "log unavailable" });
+  expect(result.job.log_error).toContain("log unavailable: HTTP 403");
+  expect(result.job.log_error).not.toContain("secret");
+  expect(result.cachedBodies).toContain("cached evidence");
+});
+
+test("current-head catalog refresh discovers a newly queued workflow with no jobs", async () => {
+  const result = await runScenario("pr-cockpit-actions-catalog-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    let listing = 0;
+    const completed = {
+      id: 71, run_attempt: 1, head_sha: head, head_branch: "feature", name: "Desktop",
+      path: ".github/workflows/desktop.yml", event: "pull_request",
+      status: "completed", conclusion: "success", updated_at: "2026-09-17T02:40:00Z",
+      html_url: null,
+    };
+    const pending = { ...completed, id: 72, name: "Mobile", path: ".github/workflows/mobile.yml", status: "pending", conclusion: null };
+    const fetchers = {
+      fetchWorkflowRuns: async () => ++listing === 1 ? [completed] : [completed, pending],
+      fetchRunJobs: async () => [],
+      fetchJobLog: async () => { throw new Error("no jobs"); },
+      restRemaining: async () => 5000,
+    };
+    await actions.cacheGithubActionsForCommit("acme/app", 7, head, fetchers, true);
+    await actions.cacheGithubActionsForCommit("acme/app", 7, head, fetchers, true);
+    console.log(JSON.stringify({
+      run: dbm.latestWorkflowRunAttempt("acme/app", 72),
+      jobs: dbm.listRunJobsForRun("acme/app", 72, 1),
+      lease: dbm.actionsLease("acme/app", 7),
+    }));
+  `);
+  expect(result.run).toMatchObject({ pr_number: 7, workflow_name: "Mobile", status: "pending", conclusion: null });
+  expect(result.jobs).toEqual([]);
+  expect(result.lease).toMatchObject({ head_sha: "a".repeat(40), bootstrapped_at: expect.any(String) });
 });
 
 test("an explicit activation for a new head queues behind an in-flight activation for the old head", async () => {

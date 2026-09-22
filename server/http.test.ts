@@ -1,11 +1,16 @@
 import { beforeEach, describe, expect, setSystemTime, spyOn, test } from "bun:test";
-import { buildFetchHandler, buildPrAgentSummary, checkoutTargetFor, formatPrAgentSummary, mergeabilityNeedsRefresh, normalizeAgentMutation, reviewThreadHandle, snapshotStatus, statsExcludingTests, trackedDetailIsStale } from "./http.ts";
+import { buildFetchHandler as buildLiveFetchHandler, buildPrAgentSummary, checkoutTargetFor, formatPrAgentSummary, mergeabilityNeedsRefresh, normalizeAgentMutation, reviewThreadHandle, snapshotStatus, statsExcludingTests, trackedDetailIsStale } from "./http.ts";
 import { GithubRequestError, StalePrHeadError, type PrDetail } from "./github.ts";
-import { db, getCachedPrDetail, getPr, getSetting, listRunJobs, saveDiff, saveFileContents, saveRunJobLog, setSetting, upsertCachedPrDetail, upsertPr, upsertPrIndex, upsertRunJob, upsertWorkflowRun } from "./db.ts";
+import { db, getCachedPrDetail, getPr, getSetting, listRunJobs, markActionsLeaseBootstrapped, markWorkflowRunJobsFetched, renewActionsLease, saveDiff, saveFileContents, saveRunJobLog, setSetting, upsertCachedPrDetail, upsertPr, upsertPrIndex, upsertRunJob, upsertWorkflowRun } from "./db.ts";
 import { testMatcher } from "../ui/src/lib/testPath.js";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+// HTTP fixtures do not contact GitHub when refreshing the native workflow catalog.
+function buildFetchHandler(port: number, dependencies: Parameters<typeof buildLiveFetchHandler>[1] = {}) {
+  return buildLiveFetchHandler(port, { cacheGithubActionsForCommit: async () => {}, ...dependencies });
+}
 
 const pr = { additions: 999, deletions: 999 } as any;
 const testRe = testMatcher("");
@@ -559,7 +564,7 @@ describe("agent PR summary", () => {
       headSha: "a".repeat(40),
       checksFetched: true,
       state: "PENDING",
-      complete: true,
+      complete: false,
       passed: 2,
       running: 1,
       failed: 1,
@@ -613,6 +618,65 @@ describe("agent PR summary", () => {
     expect(ci.failed).toBe(1);
     expect(ci.cancelled).toBe(0);
     expect(ci.running).toBe(3);
+  });
+
+  test("successful replacement runs exclude cancelled history and zero-job workflows block success", async () => {
+    const repo = "test/current-workflows";
+    const head = detail.headRefOid;
+    const current = structuredClone(detail);
+    const rollup = current.lastCommit.nodes[0]!.commit.statusCheckRollup!;
+    rollup.state = "FAILURE";
+    const check = (id: number, workflow: string, conclusion: string) => ({
+      __typename: "CheckRun" as const, name: "gate", status: "COMPLETED", conclusion,
+      detailsUrl: null, startedAt: null, completedAt: null, isRequired: true,
+      checkSuite: { workflowRun: { databaseId: id, workflow: { name: workflow } } },
+    });
+    rollup.contexts.nodes = [check(12, "Desktop", "SUCCESS"), check(11, "Desktop", "CANCELLED")];
+    renewActionsLease(repo, 1, head);
+    markActionsLeaseBootstrapped(repo, 1, head);
+    for (const id of [11, 12]) {
+      upsertWorkflowRun({
+        repo, run_id: id, run_attempt: 1, pr_number: 1, head_sha: head,
+        head_branch: current.headRefName, workflow_name: "Desktop", workflow_path: "desktop.yml",
+        status: "completed", conclusion: id === 12 ? "success" : "cancelled",
+        event_at: "2026-09-21T21:39:00Z", html_url: null,
+      });
+      upsertRunJob({
+        repo, job_id: id, run_id: id, run_attempt: 1, head_sha: head,
+        head_branch: current.headRefName, workflow_name: "Desktop", name: "gate",
+        status: "completed", conclusion: id === 12 ? "success" : "cancelled",
+        started_at: null, completed_at: null, html_url: null, runner_name: null,
+        runner_group_name: null, labels_json: "[]", failed_step: null,
+      });
+      markWorkflowRunJobsFetched(repo, id, 1);
+    }
+    try {
+      expect(buildPrAgentSummary(`${repo}#1`, current, null).ci).toMatchObject({
+        state: "SUCCESS", complete: true, passed: 1, cancelled: 0, failed: 0,
+      });
+      expect(listRunJobs(repo, head).map((job) => job.conclusion).sort()).toEqual(["cancelled", "success"]);
+      upsertWorkflowRun({
+        repo, run_id: 13, run_attempt: 1, pr_number: 1, head_sha: head,
+        head_branch: current.headRefName, workflow_name: "Mobile", workflow_path: "mobile.yml",
+        status: "pending", conclusion: null, event_at: "2026-09-21T21:40:00Z", html_url: null,
+      });
+      markWorkflowRunJobsFetched(repo, 13, 1);
+      upsertCachedPrDetail({ repo, number: 1, head_sha: head, detail_json: JSON.stringify(current), fetched_at: new Date().toISOString() });
+      const selected = await buildFetchHandler(4820)(new Request(
+        `http://127.0.0.1:4820/api/agent/pr/test/current-workflows/1/jobs?format=json&runId=13`,
+      ));
+      expect(selected.status).toBe(200);
+      expect(await selected.json()).toMatchObject({ selectedRun: { id: 13, status: "pending" }, jobs: [] });
+      expect(buildPrAgentSummary(`${repo}#1`, current, null).ci).toMatchObject({
+        state: "PENDING", complete: false, passed: 1, failed: 0,
+      });
+      db.query("DELETE FROM workflow_runs WHERE repo = ?").run(repo);
+      expect(buildPrAgentSummary(`${repo}#1`, current, null).ci).toMatchObject({
+        state: "PENDING", complete: false,
+      });
+    } finally {
+      for (const table of ["workflow_runs", "run_jobs", "actions_leases", "pr_detail_cache"]) db.query(`DELETE FROM ${table} WHERE repo = ?`).run(repo);
+    }
   });
 
   test("keeps a four-minute-old snapshot recent without newer webhook evidence", () => {
@@ -712,7 +776,6 @@ describe("agent PR summary", () => {
     partial.reviewThreads.nodes[0]!.comments.pageInfo = { hasNextPage: true, endCursor: "comments" };
     const output = formatPrAgentSummary(buildPrAgentSummary("example-org/webapp#6133", partial, null));
 
-    expect(output).toContain("PARTIAL (100+ checks)");
     expect(output).toContain("_Partial: review threads or replies may be missing._");
   });
 
@@ -721,7 +784,7 @@ describe("agent PR summary", () => {
     empty.lastCommit.nodes[0]!.commit.statusCheckRollup = null;
     expect(buildPrAgentSummary("example-org/webapp#6133", empty, null).ci).toMatchObject({
       checksFetched: true,
-      complete: true,
+      complete: false,
       checks: [],
     });
 

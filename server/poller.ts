@@ -23,7 +23,7 @@ import { pollIntervalMs, settingsRepos } from "./settings.ts";
 import { discoveredRepos, refreshWorktreeScan } from "./worktreeScan.ts";
 import { onPrActivity } from "./activity.ts";
 import { invalidateInbox, invalidatePr, publishPollCompleted } from "./rendererInvalidation.ts";
-import { refreshRecentActions } from "./runLogs.ts";
+import { cacheGithubActionsForCommit, refreshRecentActions } from "./runLogs.ts";
 import { observePrNotifications } from "./notifications.ts";
 import { GRAPHQL_BACKGROUND_RESERVE } from "../ui/src/lib/quotaImpact.js";
 import { captureError } from "./sentry.ts";
@@ -126,6 +126,12 @@ async function refreshPrNow(
   const detail = scope === "all" || current === null
     ? await fetchPrDetail(repo, number, source)
     : await fetchPrDetailPart(repo, number, current, scope, source);
+  if (scope !== "review") {
+    // Cache the native run catalog alongside check contexts, including queued runs
+    // without jobs and run IDs that selected-run cache reads will advertise.
+    await cacheGithubActionsForCommit(repo, number, detail.headRefOid, undefined, true)
+      .catch((error) => console.error(`Actions coverage refresh failed for ${repo}#${number}:`, error));
+  }
   if (!previous || previous.head_sha !== detail.headRefOid) {
     fetchMirror(repo).catch((err) => console.error(`mirror fetch failed for ${repo}:`, err));
     onPrActivity(repo, number, previous !== null);

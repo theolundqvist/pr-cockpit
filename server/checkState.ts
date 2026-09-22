@@ -31,6 +31,38 @@ export function checkState(check: PrCheck): CheckState {
   return STATE_BY_RESULT[result] ?? "failed";
 }
 
+// Keep raw contexts/jobs as history; only the newest run of a workflow votes on CI.
+export function currentChecks(checks: PrCheck[]): PrCheck[] {
+  const latestRuns = new Map<string, number>();
+  for (const check of checks) {
+    if (check.__typename !== "CheckRun") continue;
+    const run = check.checkSuite?.workflowRun;
+    if (run?.databaseId == null) continue;
+    const identity = String(run.workflow.databaseId ?? run.workflow.name);
+    latestRuns.set(identity, Math.max(latestRuns.get(identity) ?? 0, run.databaseId));
+  }
+  const selected = new Map<string, PrCheck>();
+  for (const check of checks) {
+    const run = check.__typename === "CheckRun" ? check.checkSuite?.workflowRun : null;
+    const workflow = run ? String(run.workflow.databaseId ?? run.workflow.name) : "";
+    if (run?.databaseId != null && latestRuns.get(workflow) !== run.databaseId) continue;
+    const identity = check.__typename === "CheckRun"
+      ? `check:${check.checkSuite?.app?.databaseId ?? ""}:${workflow}:${check.name}`
+      : `status:${check.context}`;
+    const previous = selected.get(identity);
+    const observedAt = (value: PrCheck) => value.__typename === "CheckRun"
+      ? value.startedAt ?? value.completedAt ?? ""
+      : value.createdAt ?? "";
+    const jobId = (value: PrCheck) => value.__typename === "CheckRun"
+      ? value.databaseId ?? Number(value.detailsUrl?.match(/\/jobs?\/(\d+)/)?.[1] ?? 0) : 0;
+    if (!previous || jobId(check) > jobId(previous)
+      || (jobId(check) === jobId(previous) && observedAt(check) >= observedAt(previous))) {
+      selected.set(identity, check);
+    }
+  }
+  return [...selected.values()];
+}
+
 // a required check only counts as satisfied when it actually passed: skipped, cancelled and
 // still-running required checks leave the merge requirement unmet
 export function unsatisfiedRequiredChecks(detailJson: string): string[] {

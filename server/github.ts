@@ -1183,6 +1183,7 @@ const REACTION_GROUPS_FIELD = `reactionGroups { content viewerHasReacted reactor
 const CHECK_CONTEXT_FIELDS = `
   __typename
   ... on CheckRun {
+    databaseId
     name
     status
     conclusion
@@ -1190,7 +1191,7 @@ const CHECK_CONTEXT_FIELDS = `
     startedAt
     completedAt
     isRequired(pullRequestNumber: $number)
-    checkSuite { workflowRun { databaseId workflow { name } } }
+    checkSuite { app { databaseId } workflowRun { databaseId workflow { databaseId name } } }
   }
   ... on StatusContext {
     context
@@ -1377,6 +1378,7 @@ type PrDetailShape<Rx> = {
             nodes: Array<
               | {
                   __typename: "CheckRun";
+                  databaseId?: number | null;
                   name: string;
                   status: string;
                   conclusion: string | null;
@@ -1384,7 +1386,7 @@ type PrDetailShape<Rx> = {
                   startedAt: string | null;
                   completedAt: string | null;
                   isRequired: boolean;
-                  checkSuite: { workflowRun: { databaseId: number | null; workflow: { name: string } } | null } | null;
+                  checkSuite: { app?: { databaseId: number | null } | null; workflowRun: { databaseId: number | null; workflow: { databaseId?: number | null; name: string } } | null } | null;
                 }
               | {
                   __typename: "StatusContext";
@@ -2080,6 +2082,7 @@ export async function fetchWorkflowRun(repo: string, runId: number): Promise<Wor
 
 
 export async function fetchWorkflowRuns(repo: string, headSha: string): Promise<WorkflowRun[]> {
+  if (mockGithub) return [];
   const runs: WorkflowRun[] = [];
   for (let page = 1;; page++) {
     const payload = await githubRestJson<{ workflow_runs?: WorkflowRun[] }>(

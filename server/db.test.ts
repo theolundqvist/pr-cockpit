@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const dbModuleUrl = new URL("./db.ts", import.meta.url).href;
+const agentsModuleUrl = new URL("./agents.ts", import.meta.url).href;
 
 test("pinned PRs stay pinned until they are archived or leave the open inbox", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-pinned-lifecycle-"));
@@ -43,20 +44,21 @@ test("pinned PRs stay pinned until they are archived or leave the open inbox", a
   }
 });
 
-test("eviction preserves the newest tracked detail as immediately stale cache", async () => {
+test("eviction preserves the newest tracked detail and its observed freshness", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-eviction-"));
   const scenario = `
     // Dynamic import is required so the isolated child sets COCKPIT_DATA_DIR before db.ts opens SQLite.
     const { db, evictStalePrs, getCachedPrDetail, getPr, upsertCachedPrDetail } = await import(${JSON.stringify(dbModuleUrl)});
     const repo = "test/eviction-cache";
     const number = 987654;
-    const trackedDetail = JSON.stringify({ title: "new tracked detail", state: "OPEN" });
+    const observedAt = new Date().toISOString();
+    const trackedDetail = JSON.stringify({ title: "new tracked detail", state: "MERGED" });
     upsertCachedPrDetail({
       repo,
       number,
       head_sha: "old-head",
       detail_json: JSON.stringify({ title: "old cached detail" }),
-      fetched_at: "2026-01-01T00:00:00.000Z",
+      fetched_at: new Date(Date.now() - 16 * 60_000).toISOString(),
     });
     db.query(\`
       INSERT INTO prs (
@@ -65,9 +67,9 @@ test("eviction preserves the newest tracked detail as immediately stale cache", 
         ci_status, unresolved_count, needs_me_rank, detail_json, fetched_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     \`).run(
-      repo, number, "OPEN", 0, "new tracked detail", "theo", "main", "feature", "new-head",
+      repo, number, "MERGED", 0, "new tracked detail", "theo", "main", "feature", "new-head",
       "2026-07-24T18:00:00.000Z", 1, 0, 1, 1, "MERGEABLE", "passing", 0, 0,
-      trackedDetail, "2026-07-24T18:00:00.000Z",
+      trackedDetail, observedAt,
     );
     evictStalePrs(repo, []);
     const cached = getCachedPrDetail(repo, number);
@@ -75,7 +77,8 @@ test("eviction preserves the newest tracked detail as immediately stale cache", 
       prMissing: getPr(repo, number) === null,
       headSha: cached?.head_sha,
       detailJson: cached?.detail_json,
-      staleAgeHours: (Date.now() - Date.parse(cached?.fetched_at ?? "")) / 3_600_000,
+      fetchedAt: cached?.fetched_at,
+      observedAt,
     }));
     db.close();
   `;
@@ -95,9 +98,8 @@ test("eviction preserves the newest tracked detail as immediately stale cache", 
     const result = JSON.parse(stdout);
     expect(result.prMissing).toBe(true);
     expect(result.headSha).toBe("new-head");
-    expect(result.detailJson).toBe(JSON.stringify({ title: "new tracked detail", state: "OPEN" }));
-    expect(result.staleAgeHours).toBeGreaterThan(23);
-    expect(result.staleAgeHours).toBeLessThan(25);
+    expect(result.detailJson).toBe(JSON.stringify({ title: "new tracked detail", state: "MERGED" }));
+    expect(result.fetchedAt).toBe(result.observedAt);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }
@@ -106,8 +108,9 @@ test("eviction preserves the newest tracked detail as immediately stale cache", 
 test("older refreshes cannot replace newer pull request snapshots", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-monotonic-snapshot-"));
   const scenario = `
-    // Dynamic import is required so the isolated child sets COCKPIT_DATA_DIR before db.ts opens SQLite.
-    const { db, evictStalePrs, getCachedPrDetail, getPr, upsertCachedPrDetail, upsertPr } = await import(${JSON.stringify(dbModuleUrl)});
+    // Dynamic imports are required so the isolated child sets COCKPIT_DATA_DIR before db.ts opens SQLite.
+    await import(${JSON.stringify(agentsModuleUrl)});
+    const { db, evictStalePrs, getCachedPrDetail, getPr, upsertCachedPrDetail, upsertPr, readInboxReplica, replaceInboxReplica } = await import(${JSON.stringify(dbModuleUrl)});
     const repo = "test/monotonic-snapshot";
     const base = {
       repo,
@@ -148,7 +151,15 @@ test("older refreshes cannot replace newer pull request snapshots", async () => 
     upsertPr({ ...base, number: 3, title: "tracked", detail_json: JSON.stringify({ title: "tracked" }), fetched_at: freshCacheAt });
     upsertCachedPrDetail({ repo, number: 3, head_sha: "new-head", detail_json: JSON.stringify({ title: "new cache" }), fetched_at: freshCacheAt });
     evictStalePrs(repo, [1]);
-    console.log(JSON.stringify({ tracked: getPr(repo, 1), cached: getCachedPrDetail(repo, 2), evictedCache: getCachedPrDetail(repo, 3), freshCacheAt }));
+    const replica = readInboxReplica();
+    replica.prs = [{ ...base, title: "obsolete replica", fetched_at: "2026-09-04T12:51:31.191Z" }];
+    replaceInboxReplica(replica);
+    const replicaTracked = getPr(repo, 1);
+    replica.prs = [];
+    replaceInboxReplica(replica);
+    const replicaEvicted = getCachedPrDetail(repo, 1);
+    upsertPr(base);
+    console.log(JSON.stringify({ tracked: getPr(repo, 1), cached: getCachedPrDetail(repo, 2), evictedCache: getCachedPrDetail(repo, 3), freshCacheAt, replicaTracked, replicaEvicted }));
     db.close();
   `;
 
@@ -168,6 +179,8 @@ test("older refreshes cannot replace newer pull request snapshots", async () => 
     expect(result.tracked).toMatchObject({ title: "new", head_sha: "new-head", fetched_at: "2026-09-05T12:50:15.868Z" });
     expect(result.cached).toMatchObject({ head_sha: "new-head", fetched_at: "2026-09-05T12:50:15.868Z" });
     expect(result.evictedCache).toMatchObject({ head_sha: "new-head", detail_json: JSON.stringify({ title: "new cache" }), fetched_at: result.freshCacheAt });
+    expect(result.replicaTracked).toMatchObject({ title: "new", fetched_at: "2026-09-05T12:50:15.868Z" });
+    expect(result.replicaEvicted).toMatchObject({ detail_json: JSON.stringify({ title: "new" }), fetched_at: "2026-09-05T12:50:15.868Z" });
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }

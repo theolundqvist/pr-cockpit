@@ -1206,7 +1206,7 @@ export function renewActionsLease(repo: string, number: number, headSha: string)
 }
 
 export function markActionsLeaseBootstrapped(repo: string, number: number, headSha: string): void {
-  db.prepare("UPDATE actions_leases SET bootstrapped_at = datetime('now') WHERE repo = ? AND number = ? AND head_sha = ?")
+  db.prepare("UPDATE actions_leases SET bootstrapped_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE repo = ? AND number = ? AND head_sha = ?")
     .run(repo, number, headSha);
 }
 
@@ -1386,14 +1386,14 @@ export function setSetting(key: string, value: string): void {
 function preservePrDetails(whereSql: string, params: Array<string | number>): void {
   db.prepare(`
     INSERT INTO pr_detail_cache (repo, number, head_sha, detail_json, fetched_at)
-    SELECT repo, number, head_sha, detail_json, strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day')
+    SELECT repo, number, head_sha, detail_json, fetched_at
     FROM prs
     WHERE ${whereSql}
     ON CONFLICT (repo, number) DO UPDATE SET
       head_sha = excluded.head_sha,
       detail_json = excluded.detail_json,
       fetched_at = excluded.fetched_at
-    WHERE excluded.fetched_at >= pr_detail_cache.fetched_at
+    WHERE excluded.fetched_at > pr_detail_cache.fetched_at
   `).run(...params);
 }
 
@@ -1715,11 +1715,19 @@ function replicaBinding(value: unknown): SQLQueryBindings {
 }
 
 const replaceInboxReplicaTxn = db.transaction((snapshot: InboxReplica) => {
+  // Inbox membership is authoritative, but removing/replacing a tracked row must
+  // not discard the newest detail already observed by this replica.
+  preservePrDetails("1", []);
+  const previousPrs = new Map(listPrs().map((row) => [`${row.repo}#${row.number}`, row]));
   for (const table of REPLICA_TABLES) {
     const columns = db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().map((column) => column.name);
     const insert = db.prepare(`INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`);
     db.exec(`DELETE FROM ${table}`);
-    for (const row of snapshot[table]) insert.run(...columns.map((column) => replicaBinding(row[column] ?? null)));
+    for (const row of snapshot[table]) {
+      const previous = table === "prs" ? previousPrs.get(`${row.repo}#${row.number}`) : undefined;
+      const next = previous && previous.fetched_at > String(row.fetched_at) ? previous : row;
+      insert.run(...columns.map((column) => replicaBinding((next as Record<string, unknown>)[column] ?? null)));
+    }
   }
 });
 

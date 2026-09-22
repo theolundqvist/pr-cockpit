@@ -479,6 +479,14 @@ function jobProducesLog(job: { status: string; conclusion: string | null }): boo
   return jobIsComplete(job) && job.conclusion !== "skipped";
 }
 
+export function reconciliationError(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error))
+    .replace(/https?:\/\/[^\s]+/g, "[redacted URL]")
+    .replace(/\b(?:github_pat_|gh[pousr]_)[A-Za-z0-9_]+\b/g, "[redacted]")
+    .replace(/(authorization:\s*)[^\r\n]+/gi, "$1[redacted]")
+    .slice(0, 1024);
+}
+
 async function fetchLogs(repo: string, jobs: CompactJob[], fetchers: ActionsFetchers, background: boolean): Promise<boolean> {
   const wanted = jobs.filter((job) => jobProducesLog(job) && getRunJobLog(repo, job.id) === null);
   if (wanted.length === 0) return true;
@@ -494,7 +502,7 @@ async function fetchLogs(repo: string, jobs: CompactJob[], fetchers: ActionsFetc
       saveRunJobLog(repo, job.id, job.runId, job.attempt, job.headSha, compressed, Buffer.byteLength(body));
     } catch (error) {
       complete = false;
-      saveRunJobLogError(repo, job.id, job.attempt, error instanceof Error ? error.message : String(error));
+      saveRunJobLogError(repo, job.id, job.attempt, reconciliationError(error));
     }
   }
   return complete;
@@ -582,7 +590,10 @@ export async function cacheActionsRun(
   }
   const reconciled = await queueReconciliation(repo, compactStoredRun(latest), fetchers, false);
   if (latest.status === "completed" && !reconciled) {
-    throw new Error(`Actions run ${runId} reconciliation did not complete`);
+    const causes = listRunJobsForRun(repo, runId, latest.run_attempt)
+      .filter((job) => job.log_error !== null && getRunJobLog(repo, job.job_id) === null)
+      .map((job) => `job ${job.job_id}: ${reconciliationError(job.log_error)}`);
+    throw new Error(`Actions run ${runId} reconciliation incomplete; cached jobs and logs remain readable. ${causes.join("; ") || "Retry cache-run to finish reconciliation"}`);
   }
   return "fetched";
 }
@@ -640,15 +651,21 @@ export async function cacheGithubActionsForCommit(
   number: number,
   headSha: string,
   fetchers: ActionsFetchers = liveFetchers,
+  currentHead = false,
 ): Promise<void> {
+  if (currentHead) renewActionsLease(repo, number, headSha);
   const runs = (await fetchers.fetchWorkflowRuns(repo, headSha)).map(compactRun);
   for (const run of runs) storeRun(repo, number, run);
   for (const run of runs) {
+    const stored = latestWorkflowRunAttempt(repo, run.id);
+    if (stored?.run_attempt === run.attempt && stored.status === "completed" && stored.jobs_fetched_at !== null
+      && listRunJobsForRun(repo, run.id, run.attempt).length > 0) continue;
     const jobs = (await fetchers.fetchRunJobs(repo, run.id, run.status === "completed" ? run.attempt : undefined))
       .map((job) => compactJob(job, run));
     for (const job of jobs) storeJob(repo, job);
     markWorkflowRunJobsFetched(repo, run.id, run.attempt);
   }
+  if (currentHead) markActionsLeaseBootstrapped(repo, number, headSha);
 }
 
 export async function cacheRepoActionsRunJobs(

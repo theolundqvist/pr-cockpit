@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { checkState, unsatisfiedRequiredChecks, type CheckState, type PrCheck } from "./checkState.ts";
+import { checkState, currentChecks, unsatisfiedRequiredChecks, type CheckState, type PrCheck } from "./checkState.ts";
 
 function checkRun(conclusion: string | null, status = "COMPLETED", isRequired = false): PrCheck {
   return { __typename: "CheckRun", name: "job", status, conclusion, detailsUrl: null, startedAt: null, completedAt: null, isRequired, checkSuite: null } as unknown as PrCheck;
@@ -53,6 +53,22 @@ describe("checkState", () => {
   test("an unrecognised result reads as failing rather than better than it is", () => {
     expect(checkState(checkRun("SOME_NEW_CONCLUSION"))).toBe("failed");
   });
+});
+
+test("current checks isolate workflow identities and order retry jobs independently of response order", () => {
+  const native = (workflowId: number, runId: number, jobId: number, conclusion: string): PrCheck => ({
+    __typename: "CheckRun", databaseId: jobId, name: "gate", status: "COMPLETED", conclusion,
+    detailsUrl: null, startedAt: null, completedAt: null, isRequired: true,
+    checkSuite: { workflowRun: { databaseId: runId, workflow: { databaseId: workflowId, name: "CI" } } },
+  });
+  const replacement = native(1, 20, 200, "SUCCESS");
+  const independentFailure = native(2, 15, 150, "FAILURE");
+  const history = [
+    replacement, native(1, 10, 100, "CANCELLED"),
+    independentFailure, native(1, 20, 190, "FAILURE"),
+  ];
+  expect(currentChecks(history)).toEqual([replacement, independentFailure]);
+  expect(history.map(checkState)).toEqual(["passed", "cancelled", "failed", "failed"]);
 });
 
 describe("unsatisfiedRequiredChecks", () => {

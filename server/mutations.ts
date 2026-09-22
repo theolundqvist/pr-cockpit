@@ -395,9 +395,11 @@ function mutationReflected(row: Pick<MutationRow, "repo" | "number" | "payload_j
   const payload: unknown = JSON.parse(row.payload_json);
   assertMutationPayload(payload);
   if (payload.kind !== "comment" && payload.kind !== "edit-body") return true;
-  const cached = getPr(row.repo, row.number)?.detail_json ?? getCachedPrDetail(row.repo, row.number)?.detail_json;
-  if (!cached) return false;
-  const detail = JSON.parse(cached) as PrDetail;
+  const tracked = getPr(row.repo, row.number);
+  const cached = getCachedPrDetail(row.repo, row.number);
+  const snapshot = !tracked ? cached : cached && cached.fetched_at > tracked.fetched_at ? cached : tracked;
+  if (!snapshot) return false;
+  const detail = JSON.parse(snapshot.detail_json) as PrDetail;
   if (payload.kind === "edit-body") return sameGithubText(detail.body, payload.body);
   if (!payload.commentNodeId) return false;
   return detail.comments.nodes.some((comment) => comment.id === payload.commentNodeId);

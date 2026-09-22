@@ -3,6 +3,7 @@ import { realpath } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import {
+  actionsLease,
   countPrs,
   getCachedPrDetail,
   getDiff,
@@ -95,7 +96,7 @@ import { runtimeSupervisor } from "./supervisor.ts";
 import type { GithubUsageSource } from "./githubUsage.ts";
 import type { GithubAuthStatus } from "./githubAuth.ts";
 import { commitsFromMirror, commitStatsFromMirror, conflictFilesFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError, summarizeCommitStats, type PullRequestCommit } from "./mirror.ts";
-import { checkState, type CheckState } from "./checkState.ts";
+import { checkState, currentChecks, type CheckState } from "./checkState.ts";
 import { currentBaseRef, discardMutation, enqueueMutation, mutationsForPr, retryMutation, type MutationPayload } from "./mutations.ts";
 import { isMergeMethod, mergeMethodFor, mergeMethodSourceFor, setMergeMethodPreference } from "./mergeMethod.ts";
 import { AGENT_DEFAULTS, pendingReviewsEnabled, readSettings, relayConfig, RELAY_APP_INSTALL_URL, RELAY_APP_SLUG, settingsRepos, writeSettings, type AgentSetting, type Settings } from "./settings.ts";
@@ -109,7 +110,6 @@ import {
   systemIssues,
 } from "./systemIssues.ts";
 import { testMatcher } from "../ui/src/lib/testPath.js";
-import { checkName, liveCheckNames } from "../ui/src/lib/checks.js";
 import { handleImage, handleMockImage } from "./imageproxy.ts";
 import {
   agentLogTail,
@@ -137,7 +137,7 @@ import { createTmuxFocusHandler } from "./tmuxFocus.ts";
 import type { TmuxFocusHandler } from "./tmuxFocus.ts";
 import { needsMeRank } from "./rank.ts";
 import { invalidateInbox, invalidatePr } from "./rendererInvalidation.ts";
-import { actionJobLog, actionWorkflowGraphs, activateActionsLease, cacheActionsRun, cacheGithubActionsForCommit, cacheRepoActionsRunJobs, cachedJobLogs, formatJobLogs, formatRunJobs, refreshWorkflowRuns, repoActionWorkflowGraphs, type CompactStep } from "./runLogs.ts";
+import { actionJobLog, actionWorkflowGraphs, activateActionsLease, cacheActionsRun, cacheGithubActionsForCommit, cacheRepoActionsRunJobs, cachedJobLogs, formatJobLogs, formatRunJobs, reconciliationError, refreshWorkflowRuns, repoActionWorkflowGraphs, type CompactStep } from "./runLogs.ts";
 import { claimNotifications } from "./notifications.ts";
 import type { NotificationSettings } from "../shared/notificationRules.ts";
 const cockpitRoot = process.cwd();
@@ -378,9 +378,12 @@ async function revalidateCachedPrDetail(
   number: number,
   fetchDetail: typeof fetchPrDetail,
   source: GithubUsageSource,
+  cacheActions: typeof cacheGithubActionsForCommit,
 ): Promise<void> {
   const snapshotCutoffAt = new Date().toISOString();
   const detail = await fetchDetail(repo, number, source);
+  await cacheActions(repo, number, detail.headRefOid, undefined, true)
+    .catch((error) => console.error(`Actions coverage refresh failed for ${repo}#${number}:`, error));
   upsertCachedPrDetail({
     repo,
     number,
@@ -756,6 +759,8 @@ async function handlePrDetail(
   try {
     const snapshotCutoffAt = new Date().toISOString();
     const detail = await runtime.fetchPrDetail(repoName, num, agentRead ? "agent read" : "app detail");
+    await runtime.cacheGithubActionsForCommit(repoName, num, detail.headRefOid, undefined, true)
+      .catch((error) => console.error(`Actions coverage refresh failed for ${repoName}#${num}:`, error));
     upsertCachedPrDetail({
       repo: repoName,
       number: num,
@@ -852,8 +857,36 @@ export function buildPrAgentSummary(
 ): PrAgentSummary {
   const rollup = detail.lastCommit?.nodes?.[0]?.commit?.statusCheckRollup;
   const checksFetched = detail.lastCommit?.nodes?.[0] !== undefined;
-  const checkNodes = rollup?.contexts?.nodes ?? [];
-  const live = liveCheckNames(checkNodes);
+  let checkNodes = currentChecks(rollup?.contexts?.nodes ?? []);
+  const repo = ref.slice(0, ref.lastIndexOf("#"));
+  const number = Number(ref.slice(ref.lastIndexOf("#") + 1));
+  const lease = actionsLease(repo, number);
+  const runs = latestActionRunAttempts(workflowRunsForLease(repo, number, detail.headRefOid));
+  const latestRuns = new Map<string, WorkflowRunRow>();
+  for (const run of runs) {
+    const identity = run.workflow_path || run.workflow_name;
+    if ((latestRuns.get(identity)?.run_id ?? 0) < run.run_id) latestRuns.set(identity, run);
+  }
+  checkNodes = checkNodes.filter((check) => {
+    const runId = check.__typename === "CheckRun" ? check.checkSuite?.workflowRun?.databaseId : null;
+    const run = runId == null ? null : runs.find((candidate) => candidate.run_id === runId);
+    return !run || latestRuns.get(run.workflow_path || run.workflow_name)?.run_id === runId;
+  });
+  const workflowCoverageComplete = lease?.head_sha === detail.headRefOid && lease.bootstrapped_at !== null
+    && (!detail.agentSnapshot || Date.parse(lease.bootstrapped_at) >= Date.parse(detail.agentSnapshot.fetchedAt))
+    && checkNodes.every((check) => {
+      const runId = check.__typename === "CheckRun" ? check.checkSuite?.workflowRun?.databaseId : null;
+      return runId == null || runs.some((run) => run.run_id === runId);
+    });
+  let workflowsPending = false;
+  let workflowsFailed = false;
+  let workflowsCancelled = false;
+  for (const run of latestRuns.values()) {
+    workflowsPending ||= run.status !== "completed" || run.jobs_fetched_at === null
+      || listRunJobsForRun(repo, run.run_id, run.run_attempt).length === 0;
+    workflowsFailed ||= run.conclusion !== null && FAILED_ACTION_CONCLUSIONS[run.conclusion] === true;
+    workflowsCancelled ||= run.conclusion === "cancelled";
+  }
   const checks: PrSummaryCheck[] = [];
   const counts: Record<CheckState, number> = { passed: 0, running: 0, failed: 0, cancelled: 0, skipped: 0 };
   // a cached log turns a red check into something an agent can read without another GitHub call
@@ -863,8 +896,7 @@ export function buildPrAgentSummary(
   }
   for (const check of checkNodes) {
     const state = checkState(check);
-    // a re-queued run supersedes the previous attempt's verdict
-    if ((state === "failed" || state === "cancelled") && live.has(checkName(check))) continue;
+    // Historical contexts remain in the detail cache, not in this current-head summary.
     counts[state] += 1;
     const name = String(check.__typename === "CheckRun" ? check.name : check.context);
     checks.push({
@@ -919,7 +951,14 @@ export function buildPrAgentSummary(
     review: String(detail.reviewDecision ?? "NONE"),
     updatedAt: String(detail.updatedAt ?? ""),
     snapshot: detail.agentSnapshot ?? null,
-    ci: { headSha: String(detail.headRefOid ?? ""), checksFetched, state: String(rollup?.state ?? "NONE"), complete: checkPageComplete, ...counts, checks },
+    ci: {
+      headSha: String(detail.headRefOid ?? ""), checksFetched,
+      state: counts.running || workflowsPending ? "PENDING" : counts.failed || workflowsFailed ? "FAILURE"
+        : !workflowCoverageComplete || !checkPageComplete ? "PENDING"
+        : counts.cancelled || workflowsCancelled ? "CANCELLED" : checks.length || latestRuns.size ? "SUCCESS" : "NONE",
+      complete: checkPageComplete && workflowCoverageComplete && !workflowsPending,
+      ...counts, checks,
+    },
     openComments,
     openCommentsComplete: commentPagesComplete,
     newCommentsSince,
@@ -1020,7 +1059,7 @@ export function formatPrAgentSummary(summary: PrAgentSummary, options: AgentSumm
   lines.push("", "## Cockpit Status", "");
   lines.push(
     `Review: ${summary.review} · CI: ${summary.ci.state}`,
-    `Checks: ${summary.ci.passed} passed · ${summary.ci.running} running · ${summary.ci.failed} failed · ${summary.ci.cancelled} cancelled · ${summary.ci.skipped} skipped · ${summary.ci.checks.length} total${!summary.ci.checksFetched ? " · NOT FETCHED" : summary.ci.complete ? "" : " · PARTIAL (100+ checks)"}`,
+    `Checks: ${summary.ci.passed} passed · ${summary.ci.running} running · ${summary.ci.failed} failed · ${summary.ci.cancelled} cancelled · ${summary.ci.skipped} skipped · ${summary.ci.checks.length} total${!summary.ci.checksFetched ? " · NOT FETCHED" : summary.ci.complete ? "" : " · PARTIAL (checks or workflow coverage incomplete)"}`,
   );
   for (const check of summary.ci.checks) {
     const log = check.logBytes === null ? "" : ` · log cached (${Math.max(1, Math.round(check.logBytes / 1024))} KB)`;
@@ -2027,7 +2066,10 @@ async function handleAgentCacheRun(
       headers: { "content-type": "text/plain; charset=utf-8" },
     });
   } catch (error) {
-    return json({ error: error instanceof Error ? error.message : String(error) }, 502);
+    return json({
+      error: reconciliationError(error),
+      cachedDataUsable: latestWorkflowRunAttempt(context.repoName, id) !== null,
+    }, 502);
   }
 }
 
@@ -2871,7 +2913,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     allPrsCache: new Map(),
     allPrsRefreshes: new Map(),
     revalidateCachedPrDetail: createPrDetailRevalidator((repo, number, source) =>
-      revalidateCachedPrDetail(repo, number, dependencies.fetchPrDetail, source)
+      revalidateCachedPrDetail(repo, number, dependencies.fetchPrDetail, source, dependencies.cacheGithubActionsForCommit)
     ),
     revalidateTrackedPr: createPrDetailRevalidator(async (repo, number, source) => {
       await dependencies.refreshPr(repo, number, source);
