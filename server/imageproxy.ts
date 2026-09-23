@@ -8,7 +8,7 @@ const ALLOWED_HOSTS = new Set([
   "raw.githubusercontent.com",
 ]);
 
-const IMAGE_CACHE_BYTES = 256 * 1024 * 1024;
+const CACHE_BYTES_PER_KIND = 2 * 1024 * 1024 * 1024;
 
 const ghImgBin =
   Bun.env.COCKPIT_GH_IMG ??
@@ -23,7 +23,8 @@ const ghImgBin =
   "gh-img";
 
 const dataDir = Bun.env.COCKPIT_DATA_DIR ?? "data";
-const cacheDir = `${dataDir}/images`;
+const imageCacheDir = `${dataDir}/images`;
+const videoCacheDir = `${dataDir}/videos`;
 
 function sniffContentType(bytes: Uint8Array): string {
   if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return "image/png";
@@ -98,7 +99,7 @@ async function serveBody(body: Bun.BunFile | Uint8Array, range: string | null): 
   });
 }
 
-function evictOverCap(): void {
+function evictOverCap(cacheDir: string): void {
   let names: string[];
   try {
     names = readdirSync(cacheDir);
@@ -115,10 +116,10 @@ function evictOverCap(): void {
     }
   });
   let total = files.reduce((sum, f) => sum + f.size, 0);
-  if (total <= IMAGE_CACHE_BYTES) return;
+  if (total <= CACHE_BYTES_PER_KIND) return;
   files.sort((a, b) => a.mtime - b.mtime);
   for (const f of files) {
-    if (total <= IMAGE_CACHE_BYTES) break;
+    if (total <= CACHE_BYTES_PER_KIND) break;
     try {
       rmSync(f.path);
       total -= f.size;
@@ -149,17 +150,13 @@ async function loadImage(raw: string): Promise<ImageResult> {
   }
 
   const key = new Bun.CryptoHasher("sha256").update(raw).digest("hex");
-  const cachePath = `${cacheDir}/${key}`;
-  const cached = Bun.file(cachePath);
-  if (await cached.exists()) return { file: cached };
+  for (const dir of [imageCacheDir, videoCacheDir]) {
+    const cached = Bun.file(`${dir}/${key}`);
+    if (await cached.exists()) return { file: cached };
+  }
 
   const fetched = await fetchAllowedImage(raw).catch(() => null);
-  if (fetched) {
-    mkdirSync(cacheDir, { recursive: true });
-    await Bun.write(cachePath, fetched);
-    evictOverCap();
-    return { file: Bun.file(cachePath) };
-  }
+  if (fetched) return { file: await storeCached(key, fetched) };
 
   if (!ghImgAvailable()) {
     return { error: "gh-img get unavailable", status: 501 };
@@ -175,11 +172,16 @@ async function loadImage(raw: string): Promise<ImageResult> {
     return { error: stderr || `gh-img get exited ${code}`, status: 502 };
   }
 
-  const bytes = new Uint8Array(stdout);
-  mkdirSync(cacheDir, { recursive: true });
-  await Bun.write(cachePath, bytes);
-  evictOverCap();
-  return { file: Bun.file(cachePath) };
+  return { file: await storeCached(key, new Uint8Array(stdout)) };
+}
+
+// Videos keep their own budget so one large recording cannot evict every cached image.
+async function storeCached(key: string, bytes: Uint8Array): Promise<Bun.BunFile> {
+  const dir = sniffContentType(bytes).startsWith("video/") ? videoCacheDir : imageCacheDir;
+  mkdirSync(dir, { recursive: true });
+  await Bun.write(`${dir}/${key}`, bytes);
+  evictOverCap(dir);
+  return Bun.file(`${dir}/${key}`);
 }
 
 export async function handleImage(url: URL, range: string | null = null): Promise<Response> {
