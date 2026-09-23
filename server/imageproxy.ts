@@ -33,6 +33,10 @@ function sniffContentType(bytes: Uint8Array): string {
     bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
     bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50
   ) return "image/webp";
+  if (bytes[4] === 0x66 && bytes[5] === 0x74 && bytes[6] === 0x79 && bytes[7] === 0x70) {
+    return bytes[8] === 0x71 && bytes[9] === 0x74 ? "video/quicktime" : "video/mp4";
+  }
+  if (bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3) return "video/webm";
   const head = new TextDecoder().decode(bytes.subarray(0, 256)).trimStart();
   if (head.startsWith("<?xml") || head.startsWith("<svg")) return "image/svg+xml";
   return "application/octet-stream";

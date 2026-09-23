@@ -88,3 +88,13 @@ test("failed image requests do not poison subsequent downloads", async () => {
   `);
   expect(result).toEqual({ failed: 501, recovered: 200, bytes: Array.from(png) });
 });
+
+test("GitHub video attachments are proxied with a playable content type", async () => {
+  const result = await imageScenario(`
+    const mp4 = new Uint8Array([0, 0, 0, 0x20, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    globalThis.fetch = async () => new Response(mp4);
+    const response = await handleImage(url);
+    console.log(JSON.stringify({ status: response.status, type: response.headers.get("content-type") }));
+  `);
+  expect(result).toEqual({ status: 200, type: "video/mp4" });
+});

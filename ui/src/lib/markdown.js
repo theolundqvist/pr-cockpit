@@ -62,6 +62,23 @@ function proxyImages(doc) {
   }
 }
 
+const GH_VIDEO_RE = /^https:\/\/github\.com\/user-attachments\/assets\/[0-9a-f-]+$/i;
+
+// GitHub renders an uploaded video as its bare attachment URL on its own line.
+function embedVideos(doc) {
+  for (const p of doc.querySelectorAll("p")) {
+    const a = p.firstElementChild;
+    const href = a?.getAttribute("href") ?? "";
+    if (a?.tagName !== "A" || p.childElementCount !== 1 || !GH_VIDEO_RE.test(href) || p.textContent.trim() !== href) continue;
+    const video = doc.createElement("video");
+    video.setAttribute("src", `/api/image?url=${encodeURIComponent(href)}`);
+    video.setAttribute("controls", "");
+    video.setAttribute("preload", "metadata");
+    video.setAttribute("playsinline", "");
+    p.replaceWith(video);
+  }
+}
+
 const MARKDOWN_CACHE_MAX = 400;
 const markdownCache = new Map();
 
@@ -167,6 +184,7 @@ export function renderMarkdown(source) {
   const doc = new DOMParser().parseFromString(clean, "text/html");
   styleAlerts(doc);
   proxyImages(doc);
+  embedVideos(doc);
   linkifyRefs(doc);
   linkifyBareRefs(doc, currentRepo(), prTitle);
   highlightMentions(doc);
