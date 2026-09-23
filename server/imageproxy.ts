@@ -1,4 +1,4 @@
-import { accessSync, constants, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import { accessSync, constants, mkdirSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { mockGithub } from "./mockGithub.ts";
 import { mockScreenshotSvg } from "./mockImages.ts";
 
@@ -127,6 +127,10 @@ function evictOverCap(cacheDir: string): void {
   }
 }
 
+function cacheKey(raw: string): string {
+  return new Bun.CryptoHasher("sha256").update(raw).digest("hex");
+}
+
 type ImageResult = { file: Bun.BunFile } | { error: string; status: number };
 const imageRequests = new Map<string, Promise<ImageResult>>();
 
@@ -149,7 +153,7 @@ async function loadImage(raw: string): Promise<ImageResult> {
     return { error: "host not allowed", status: 400 };
   }
 
-  const key = new Bun.CryptoHasher("sha256").update(raw).digest("hex");
+  const key = cacheKey(raw);
   for (const dir of [imageCacheDir, videoCacheDir]) {
     const cached = Bun.file(`${dir}/${key}`);
     if (await cached.exists()) return { file: cached };
@@ -184,19 +188,64 @@ async function storeCached(key: string, bytes: Uint8Array): Promise<Bun.BunFile>
   return Bun.file(`${dir}/${key}`);
 }
 
+const gifConversions = new Map<string, Promise<ImageResult>>();
+
+// GIFs become seekable H.264 so the player can scrub them; the conversion is cached beside other videos.
+function gifAsVideo(raw: string, gif: Bun.BunFile | Uint8Array): Promise<ImageResult> {
+  const path = `${videoCacheDir}/${cacheKey(raw)}.mp4`;
+  const pending = gifConversions.get(path);
+  if (pending) return pending;
+  const conversion = convertGif(gif, path).finally(() => gifConversions.delete(path));
+  gifConversions.set(path, conversion);
+  return conversion;
+}
+
+async function convertGif(gif: Bun.BunFile | Uint8Array, path: string): Promise<ImageResult> {
+  const cached = Bun.file(path);
+  if (await cached.exists()) return { file: cached };
+  const head = gif instanceof Uint8Array ? gif : await gif.slice(0, 16).bytes();
+  if (sniffContentType(head) !== "image/gif") return { error: "not a GIF", status: 415 };
+  const ffmpeg = Bun.which("ffmpeg");
+  if (!ffmpeg) return { error: "ffmpeg unavailable", status: 501 };
+  mkdirSync(videoCacheDir, { recursive: true });
+  const tmp = `${path}.${process.pid}.tmp.mp4`;
+  const input = gif instanceof Uint8Array ? `${tmp}.gif` : gif.name!;
+  if (gif instanceof Uint8Array) await Bun.write(input, gif);
+  const proc = Bun.spawn([
+    ffmpeg, "-loglevel", "error", "-y", "-i", input, "-an", "-threads", "2",
+    "-vf", "scale=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+    "-pix_fmt", "yuv420p", "-movflags", "+faststart", tmp,
+  ], { stdout: "ignore", stderr: "pipe" });
+  const [code, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
+  if (gif instanceof Uint8Array) rmSync(input, { force: true });
+  if (code !== 0) {
+    rmSync(tmp, { force: true });
+    return { error: stderr || `ffmpeg exited ${code}`, status: 502 };
+  }
+  renameSync(tmp, path);
+  evictOverCap(videoCacheDir);
+  return { file: Bun.file(path) };
+}
+
+async function serveResult(result: ImageResult, range: string | null): Promise<Response> {
+  if ("error" in result) return new Response(result.error, { status: result.status });
+  return serveBody(result.file, range);
+}
+
 export async function handleImage(url: URL, range: string | null = null): Promise<Response> {
   const raw = url.searchParams.get("url");
   if (!raw) return new Response("url query param required", { status: 400 });
   const result = await getImage(raw);
-  if ("error" in result) return new Response(result.error, { status: result.status });
-  return serveBody(result.file, range);
+  if (url.searchParams.get("as") !== "video" || "error" in result) return serveResult(result, range);
+  return serveResult(await gifAsVideo(raw, result.file), range);
 }
 
 export function handleMockImage(url: URL, range: string | null = null): Promise<Response> {
   const raw = url.searchParams.get("url");
   if (!raw) return Promise.resolve(new Response("url query param required", { status: 400 }));
-  const captured = mockGithub?.image?.(raw);
-  return serveBody(captured ?? new TextEncoder().encode(mockScreenshotSvg(raw)), range);
+  const body = mockGithub?.image?.(raw) ?? new TextEncoder().encode(mockScreenshotSvg(raw));
+  if (url.searchParams.get("as") === "video") return gifAsVideo(raw, body).then((result) => serveResult(result, range));
+  return serveBody(body, range);
 }
 
 const MD_IMAGE_RE = /!\[[^\]]*\]\(\s*<?([^)\s>]+)>?/g;

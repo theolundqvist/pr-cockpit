@@ -74,24 +74,53 @@ const VIDEO_CONTROLS = `<media-control-bar>
 </media-control-bar>`;
 let mediaChrome;
 
+function videoPlayer(doc, src) {
+  mediaChrome ??= import("media-chrome");
+  const player = doc.createElement("media-controller");
+  const video = doc.createElement("video");
+  video.setAttribute("slot", "media");
+  video.setAttribute("src", src);
+  video.setAttribute("preload", "metadata");
+  video.setAttribute("playsinline", "");
+  player.append(video);
+  player.insertAdjacentHTML("beforeend", VIDEO_CONTROLS);
+  return player;
+}
+
 // GitHub renders an uploaded video as its bare attachment URL on its own line.
 function embedVideos(doc) {
   for (const p of doc.querySelectorAll("p")) {
     const a = p.firstElementChild;
     const href = a?.getAttribute("href") ?? "";
     if (a?.tagName !== "A" || p.childElementCount !== 1 || !GH_VIDEO_RE.test(href) || p.textContent.trim() !== href) continue;
-    mediaChrome ??= import("media-chrome");
-    const player = doc.createElement("media-controller");
-    const video = doc.createElement("video");
-    video.setAttribute("slot", "media");
-    video.setAttribute("src", `/api/image?url=${encodeURIComponent(href)}`);
-    video.setAttribute("preload", "metadata");
-    video.setAttribute("playsinline", "");
-    player.append(video);
-    player.insertAdjacentHTML("beforeend", VIDEO_CONTROLS);
-    p.replaceWith(player);
+    p.replaceWith(videoPlayer(doc, `/api/image?url=${encodeURIComponent(href)}`));
   }
 }
+
+const GIF_RE = /\.gif$/i;
+
+// GIFs play as looping video so they can be paused and scrubbed; the server transcodes them.
+function embedGifs(doc) {
+  for (const img of doc.querySelectorAll("img[data-original-src]")) {
+    if (!GIF_RE.test(img.getAttribute("alt") ?? "") && !GIF_RE.test(new URL(img.dataset.originalSrc).pathname)) continue;
+    const player = videoPlayer(doc, `${img.getAttribute("src")}&as=video`);
+    const video = player.querySelector("video");
+    for (const flag of ["autoplay", "muted", "loop"]) video.setAttribute(flag, "");
+    video.dataset.gifSrc = img.getAttribute("src");
+    video.dataset.gifAlt = img.getAttribute("alt") ?? "";
+    const link = img.parentElement?.tagName === "A" && img.parentElement.childNodes.length === 1 ? img.parentElement : null;
+    (link ?? img).replaceWith(player);
+  }
+}
+
+document.addEventListener("error", (event) => {
+  const video = event.target;
+  if (!(video instanceof HTMLVideoElement) || !video.dataset.gifSrc) return;
+  const img = document.createElement("img");
+  img.src = video.dataset.gifSrc;
+  img.alt = video.dataset.gifAlt;
+  video.closest("media-controller")?.replaceWith(img);
+}, true);
 
 const MARKDOWN_CACHE_MAX = 400;
 const markdownCache = new Map();
@@ -199,6 +228,7 @@ export function renderMarkdown(source) {
   styleAlerts(doc);
   proxyImages(doc);
   embedVideos(doc);
+  embedGifs(doc);
   linkifyRefs(doc);
   linkifyBareRefs(doc, currentRepo(), prTitle);
   highlightMentions(doc);

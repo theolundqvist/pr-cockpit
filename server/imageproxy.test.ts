@@ -110,3 +110,17 @@ test("image proxy serves byte ranges so video players do not download the whole 
   `);
   expect(result).toEqual({ status: 206, range: "bytes 100-199/1000", length: 100, first: 100 });
 });
+
+test.skipIf(!Bun.which("ffmpeg"))("GIFs requested as video are transcoded to seekable MP4 and other images are refused", async () => {
+  const result = await imageScenario(`
+    const gifPath = ${JSON.stringify(join(tmpdir(), `pr-cockpit-${process.pid}.gif`))};
+    Bun.spawnSync(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=33x17:rate=10:duration=1", gifPath]);
+    const gif = new Uint8Array(await Bun.file(gifPath).arrayBuffer());
+    globalThis.fetch = async (input) => new Response(String(input).endsWith(".gif") ? gif : png);
+    const asVideo = (raw) => handleImage(new URL("http://localhost/api/image?as=video&url=" + encodeURIComponent(raw)), "bytes=0-");
+    const video = await asVideo("https://raw.githubusercontent.com/acme/app/main/flow.gif");
+    const still = await asVideo(raw);
+    console.log(JSON.stringify({ video: [video.status, video.headers.get("content-type")], still: still.status }));
+  `);
+  expect(result).toEqual({ video: [206, "video/mp4"], still: 415 });
+});
