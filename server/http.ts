@@ -2929,7 +2929,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     const url = new URL(req.url);
     const parts = url.pathname.split("/").filter(Boolean);
     if (isMockGithub && url.pathname === "/api/image") {
-      return handleMockImage(url);
+      return handleMockImage(url, req.headers.get("range"));
     }
     if (isMockGithub && req.method !== "GET") {
       let allowed = (req.method === "POST" && url.pathname === "/api/archive")
@@ -3098,7 +3098,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       return handleRepoFile(url);
     }
     if (req.method === "GET" && url.pathname === "/api/image") {
-      return handleImage(url);
+      return handleImage(url, req.headers.get("range"));
     }
     if (req.method === "GET" && url.pathname === "/api/relay/status") {
       return handleRelayStatus();

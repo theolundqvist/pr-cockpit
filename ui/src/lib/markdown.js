@@ -64,18 +64,32 @@ function proxyImages(doc) {
 
 const GH_VIDEO_RE = /^https:\/\/github\.com\/user-attachments\/assets\/[0-9a-f-]+$/i;
 
+const VIDEO_CONTROLS = `<media-control-bar>
+  <media-play-button></media-play-button>
+  <media-time-range></media-time-range>
+  <media-time-display showduration></media-time-display>
+  <media-mute-button></media-mute-button>
+  <media-playback-rate-button rates="1 1.5 2"></media-playback-rate-button>
+  <media-fullscreen-button></media-fullscreen-button>
+</media-control-bar>`;
+let mediaChrome;
+
 // GitHub renders an uploaded video as its bare attachment URL on its own line.
 function embedVideos(doc) {
   for (const p of doc.querySelectorAll("p")) {
     const a = p.firstElementChild;
     const href = a?.getAttribute("href") ?? "";
     if (a?.tagName !== "A" || p.childElementCount !== 1 || !GH_VIDEO_RE.test(href) || p.textContent.trim() !== href) continue;
+    mediaChrome ??= import("media-chrome");
+    const player = doc.createElement("media-controller");
     const video = doc.createElement("video");
+    video.setAttribute("slot", "media");
     video.setAttribute("src", `/api/image?url=${encodeURIComponent(href)}`);
-    video.setAttribute("controls", "");
     video.setAttribute("preload", "metadata");
     video.setAttribute("playsinline", "");
-    p.replaceWith(video);
+    player.append(video);
+    player.insertAdjacentHTML("beforeend", VIDEO_CONTROLS);
+    p.replaceWith(player);
   }
 }
 

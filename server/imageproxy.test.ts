@@ -98,3 +98,15 @@ test("GitHub video attachments are proxied with a playable content type", async 
   `);
   expect(result).toEqual({ status: 200, type: "video/mp4" });
 });
+
+test("image proxy serves byte ranges so video players do not download the whole file", async () => {
+  const result = await imageScenario(`
+    const mp4 = new Uint8Array(1000).map((_, i) => i % 256);
+    mp4.set([0, 0, 0, 0x20, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    globalThis.fetch = async () => new Response(mp4);
+    const response = await handleImage(url, "bytes=100-199");
+    const body = new Uint8Array(await response.arrayBuffer());
+    console.log(JSON.stringify({ status: response.status, range: response.headers.get("content-range"), length: body.length, first: body[0] }));
+  `);
+  expect(result).toEqual({ status: 206, range: "bytes 100-199/1000", length: 100, first: 100 });
+});

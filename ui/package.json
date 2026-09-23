@@ -15,6 +15,7 @@
     "@lezer/highlight": "1.2.3",
     "dompurify": "3.4.11",
     "marked": "18.0.5",
+    "media-chrome": "4.19.2",
     "mermaid": "11.16.0",
     "shiki": "4.3.0",
     "svelte": "5.56.4"

@@ -75,14 +75,26 @@ export async function fetchAllowedImage(raw: string, fetcher: typeof fetch = fet
   return null;
 }
 
-function serveBytes(bytes: Uint8Array): Response {
-  return new Response(bytes, {
-    headers: {
-      "content-type": sniffContentType(bytes),
-      "cache-control": "public, max-age=31536000, immutable",
-      "content-disposition": "inline",
-      "content-security-policy": "default-src 'none'; sandbox",
-    },
+async function serveBody(body: Bun.BunFile | Uint8Array, range: string | null): Promise<Response> {
+  const head = body instanceof Uint8Array ? body : await body.slice(0, 256).bytes();
+  const headers = {
+    "content-type": sniffContentType(head),
+    "cache-control": "public, max-age=31536000, immutable",
+    "content-disposition": "inline",
+    "content-security-policy": "default-src 'none'; sandbox",
+    "accept-ranges": "bytes",
+  };
+  const match = range?.match(/^bytes=(\d*)-(\d*)$/);
+  if (!match || (!match[1] && !match[2])) return new Response(body, { headers });
+  const size = body instanceof Uint8Array ? body.byteLength : body.size;
+  const start = match[1] ? Number(match[1]) : Math.max(0, size - Number(match[2]));
+  const end = match[1] && match[2] ? Math.min(Number(match[2]), size - 1) : size - 1;
+  if (start >= size || start > end) {
+    return new Response(null, { status: 416, headers: { ...headers, "content-range": `bytes */${size}` } });
+  }
+  return new Response(body.slice(start, end + 1), {
+    status: 206,
+    headers: { ...headers, "content-range": `bytes ${start}-${end}/${size}` },
   });
 }
 
@@ -114,7 +126,7 @@ function evictOverCap(): void {
   }
 }
 
-type ImageResult = { bytes: Uint8Array } | { error: string; status: number };
+type ImageResult = { file: Bun.BunFile } | { error: string; status: number };
 const imageRequests = new Map<string, Promise<ImageResult>>();
 
 function getImage(raw: string): Promise<ImageResult> {
@@ -139,16 +151,14 @@ async function loadImage(raw: string): Promise<ImageResult> {
   const key = new Bun.CryptoHasher("sha256").update(raw).digest("hex");
   const cachePath = `${cacheDir}/${key}`;
   const cached = Bun.file(cachePath);
-  if (await cached.exists()) {
-    return { bytes: new Uint8Array(await cached.arrayBuffer()) };
-  }
+  if (await cached.exists()) return { file: cached };
 
   const fetched = await fetchAllowedImage(raw).catch(() => null);
   if (fetched) {
     mkdirSync(cacheDir, { recursive: true });
     await Bun.write(cachePath, fetched);
     evictOverCap();
-    return { bytes: fetched };
+    return { file: Bun.file(cachePath) };
   }
 
   if (!ghImgAvailable()) {
@@ -169,23 +179,22 @@ async function loadImage(raw: string): Promise<ImageResult> {
   mkdirSync(cacheDir, { recursive: true });
   await Bun.write(cachePath, bytes);
   evictOverCap();
-  return { bytes };
+  return { file: Bun.file(cachePath) };
 }
 
-export async function handleImage(url: URL): Promise<Response> {
+export async function handleImage(url: URL, range: string | null = null): Promise<Response> {
   const raw = url.searchParams.get("url");
   if (!raw) return new Response("url query param required", { status: 400 });
   const result = await getImage(raw);
   if ("error" in result) return new Response(result.error, { status: result.status });
-  return serveBytes(result.bytes);
+  return serveBody(result.file, range);
 }
 
-export function handleMockImage(url: URL): Response {
+export function handleMockImage(url: URL, range: string | null = null): Promise<Response> {
   const raw = url.searchParams.get("url");
-  if (!raw) return new Response("url query param required", { status: 400 });
+  if (!raw) return Promise.resolve(new Response("url query param required", { status: 400 }));
   const captured = mockGithub?.image?.(raw);
-  if (captured) return serveBytes(captured);
-  return serveBytes(new TextEncoder().encode(mockScreenshotSvg(raw)));
+  return serveBody(captured ?? new TextEncoder().encode(mockScreenshotSvg(raw)), range);
 }
 
 const MD_IMAGE_RE = /!\[[^\]]*\]\(\s*<?([^)\s>]+)>?/g;
