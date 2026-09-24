@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
-import { backgroundQuotaAvailable, createPollOnce, type PollDeps } from "./poller.ts";
+import { backgroundQuotaAvailable, createPollOnce, nextPollDelayMs, type PollDeps } from "./poller.ts";
 import type { PrDetailScope, SearchHit } from "./github.ts";
 import type { GithubUsageSource } from "./githubUsage.ts";
 import type { PrRow, WebhookRegistrationRow } from "./db.ts";
@@ -63,6 +63,13 @@ test("allows the first refresh when GitHub reports a full unused window", () => 
   const now = Date.parse("2026-09-01T08:55:16.000Z");
   const resetAt = "2026-09-01T09:55:16.000Z";
   expect(backgroundQuotaAvailable({ limit: 5000, used: 0, remaining: 5000, resetAt }, now)).toBe(true);
+});
+
+test("a poll that could not reach GitHub retries on a short backoff capped at the interval", () => {
+  expect(nextPollDelayMs(0, 180_000)).toBe(180_000);
+  expect([1, 2, 3, 4, 5, 6, 7].map((failures) => nextPollDelayMs(failures, 180_000)))
+    .toEqual([5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 180_000]);
+  expect(nextPollDelayMs(3, 15_000)).toBe(15_000);
 });
 
 function registration(repo: string, number: number): WebhookRegistrationRow {

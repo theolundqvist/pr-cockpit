@@ -28,6 +28,7 @@ import { observePrNotifications } from "./notifications.ts";
 import { GRAPHQL_BACKGROUND_RESERVE } from "../ui/src/lib/quotaImpact.js";
 import { captureError } from "./sentry.ts";
 import { reportStorageFailure, repositoryAvailable } from "./systemIssues.ts";
+import { watchForWake } from "./wake.ts";
 
 const INDEX_SWEEP_MS = 1_800_000;
 const GRAPHQL_WINDOW_MS = 60 * 60_000;
@@ -388,13 +389,56 @@ function reportPollFailure(error: unknown, operation: string): void {
 }
 
 
+const TRANSPORT_RETRY_MIN_MS = 5_000;
+
+export function isTransportFailure(error: unknown): boolean {
+  return error instanceof GithubRequestError && error.kind === "transport";
+}
+
+// A poll that could not reach GitHub (typically the network is still coming up after a wake)
+// retries on a short backoff rather than leaving the queue stale for a whole interval.
+export function nextPollDelayMs(consecutiveTransportFailures: number, intervalMs: number): number {
+  if (consecutiveTransportFailures === 0) return intervalMs;
+  return Math.min(intervalMs, TRANSPORT_RETRY_MIN_MS * 2 ** (consecutiveTransportFailures - 1));
+}
+
 export function startPoller(): void {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let polling = false;
+  let wokeDuringPoll = false;
+  let transportFailures = 0;
   const tick = () => {
+    timer = null;
+    polling = true;
+    wokeDuringPoll = false;
     pollOnce()
-      .catch((error) => reportPollFailure(error, "poll"))
-      .finally(() => setTimeout(tick, pollIntervalMs()));
+      .then(() => {
+        if (transportFailures > 0) console.log(`poll reached GitHub again after ${transportFailures} failed attempt(s)`);
+        transportFailures = 0;
+      }, (error) => {
+        if (!isTransportFailure(error)) {
+          transportFailures = 0;
+          reportPollFailure(error, "poll");
+          return;
+        }
+        // One line per outage: an offline laptop otherwise logs a stack trace every retry.
+        if (transportFailures === 0) console.warn(`poll could not reach GitHub, retrying: ${(error as Error).message}`);
+        transportFailures++;
+      })
+      .finally(() => {
+        polling = false;
+        timer = setTimeout(tick, wokeDuringPoll ? 0 : nextPollDelayMs(transportFailures, pollIntervalMs()));
+      });
   };
   tick();
+  watchForWake(() => {
+    if (polling) {
+      wokeDuringPoll = true;
+    } else if (timer !== null) {
+      clearTimeout(timer);
+      tick();
+    }
+  });
 
   // Keep the first assignee/reviewer picker from opening on a cold cache.
   trackedRepos()

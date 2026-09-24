@@ -269,6 +269,119 @@ test("WebSocket frames replay markers, initialize cursors, and await reset recon
   }
 });
 
+test("a stream that stops answering pings is abandoned; one that answers stays open", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-relay-keepalive-"));
+  try {
+    const script = `
+      const { streamRelayOnce } = await import(${JSON.stringify(relayClientUrl)});
+      const { db, setSetting } = await import(${JSON.stringify(dbUrl)});
+      setSetting("relay_cursor", "1");
+      class SilentSocket {
+        listeners = {};
+        pings = 0;
+        closed = false;
+        constructor(answers) {
+          this.answers = answers;
+          queueMicrotask(() => this.emit("open"));
+        }
+        addEventListener(type, listener) { (this.listeners[type] ??= []).push(listener); }
+        emit(type, event) { for (const listener of this.listeners[type] ?? []) listener(event); }
+        ping() { this.pings++; if (this.answers) queueMicrotask(() => this.emit("pong")); }
+        // a half-open TCP connection never delivers the close event
+        close() { this.closed = true; }
+      }
+      const keepalive = { pingIntervalMs: 10, silenceTimeoutMs: 40 };
+      const dead = new SilentSocket(false);
+      const startedAt = Date.now();
+      let deadError = null;
+      try {
+        await streamRelayOnce("https://stream.test", "ticket", { socket: () => dead, keepalive });
+      } catch (error) {
+        deadError = error.message;
+      }
+      const deadMs = Date.now() - startedAt;
+
+      const live = new SilentSocket(true);
+      let liveSettled = false;
+      const liveStream = streamRelayOnce("https://stream.test", "ticket", { socket: () => live, keepalive })
+        .catch(() => {}).finally(() => { liveSettled = true; });
+      await Bun.sleep(150);
+      const liveOpen = !liveSettled && !live.closed;
+      live.emit("close", { code: 1000, reason: "done" });
+      await liveStream;
+      console.log(JSON.stringify({ deadError, deadMs, deadClosed: dead.closed, deadPings: dead.pings, liveOpen, livePings: live.pings }));
+      db.close();
+    `;
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_MOCK: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([process.exited, new Response(process.stdout).text(), new Response(process.stderr).text()]);
+    if (exitCode !== 0) throw new Error(stderr);
+    const result = JSON.parse(stdout);
+    expect(result.deadError).toMatch(/^relay WebSocket went silent for \d+s$/);
+    expect(result.deadMs).toBeLessThan(1_000);
+    expect(result.deadClosed).toBe(true);
+    expect(result.deadPings).toBeGreaterThan(0);
+    expect(result.liveOpen).toBe(true);
+    expect(result.livePings).toBeGreaterThan(3);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("reconnect after a wake replaces a stream that never reported closing", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-relay-wake-"));
+  try {
+    const script = `
+      const { createRelayConnection } = await import(${JSON.stringify(relayClientUrl)});
+      const { db, setSetting } = await import(${JSON.stringify(dbUrl)});
+      setSetting("relay_cursor", "3");
+      class HalfOpenSocket {
+        listeners = {};
+        closed = false;
+        constructor() { queueMicrotask(() => this.emit("open")); }
+        addEventListener(type, listener) { (this.listeners[type] ??= []).push(listener); }
+        emit(type, event) { for (const listener of this.listeners[type] ?? []) listener(event); }
+        ping() { this.emit("pong"); }
+        close() { this.closed = true; }
+      }
+      const sockets = [];
+      let sessions = 0;
+      const connection = createRelayConnection({
+        fetcher: async (input) => String(input).endsWith("/capabilities")
+          ? Response.json({ stream: "websocket-v1" })
+          : Response.json({ ticket: "ticket-" + ++sessions, expiresAt: 1_777_580_800_000, repos: { "acme/app": true } }),
+        token: async () => "token",
+        repos: async () => ["acme/app"],
+        socket: () => { const socket = new HalfOpenSocket(); sockets.push(socket); return socket; },
+      });
+      void connection.tick("https://relay.test");
+      await Bun.sleep(20);
+      void connection.tick("https://relay.test");
+      await Bun.sleep(20);
+      const beforeWake = sessions;
+      connection.reconnect();
+      void connection.tick("https://relay.test");
+      await Bun.sleep(20);
+      console.log(JSON.stringify({ beforeWake, sessions, firstClosed: sockets[0].closed, sockets: sockets.length }));
+      db.close();
+      process.exit(0);
+    `;
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_MOCK: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([process.exited, new Response(process.stdout).text(), new Response(process.stderr).text()]);
+    if (exitCode !== 0) throw new Error(stderr);
+    expect(JSON.parse(stdout)).toEqual({ beforeWake: 1, sessions: 2, firstClosed: true, sockets: 2 });
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("advertised WebSocket failures reconnect without polling and URL changes renegotiate", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-relay-reconnect-"));
   try {
@@ -346,7 +459,7 @@ test("an expired session ticket renews on the next tick without backoff", async 
   try {
     const script = `
       const errors = [];
-      console.error = (...args) => errors.push(args.map(String).join(" "));
+      console.error = console.warn = (...args) => errors.push(args.map(String).join(" "));
       const { createRelayConnection } = await import(${JSON.stringify(relayClientUrl)});
       const { db } = await import(${JSON.stringify(dbUrl)});
       class ExpiringSocket {
@@ -400,7 +513,7 @@ test("active WebSocket sessions reconfigure locally without hiding a later peer 
   try {
     const script = `
       const errors = [];
-      console.error = (...args) => errors.push(args.map((arg) => arg instanceof Error ? arg.message : String(arg)).join(" "));
+      console.error = console.warn = (...args) => errors.push(args.map((arg) => arg instanceof Error ? arg.message : String(arg)).join(" "));
       const { createRelayConnection } = await import(${JSON.stringify(relayClientUrl)});
       const { db } = await import(${JSON.stringify(dbUrl)});
       class ActiveSocket {
@@ -466,7 +579,7 @@ test("active WebSocket sessions reconfigure locally without hiding a later peer 
       ["acme/tools"],
     ]);
     expect(result.socketCount).toBe(4);
-    expect(result.errors).toEqual(["relay stream failed: relay WebSocket closed (code=1000, reason=server maintenance)"]);
+    expect(result.errors).toEqual(["relay stream ended: relay WebSocket closed (code=1000, reason=server maintenance); reconnecting in 1s"]);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }

@@ -4,11 +4,14 @@ import { backgroundPollAllowed, pollOnce, refreshPr, trackedRepos } from "./poll
 import { createPollRequester, prDetailScopeForEvent, refreshPrFromEvent } from "./eventRefresh.ts";
 import { relayConfig } from "./settings.ts";
 import { ingestActionsState, type CompactJob, type CompactRun } from "./runLogs.ts";
+import { watchForWake } from "./wake.ts";
 
 const POLL_MS = 5_000;
 const ERROR_BACKOFF_MS = 60_000;
 const FULL_POLL_DEBOUNCE_MS = 30_000;
 const STREAM_BACKOFF_MAX_MS = 30_000;
+const RELAY_PING_INTERVAL_MS = 20_000;
+const RELAY_SILENCE_TIMEOUT_MS = 45_000;
 
 export interface RelayMarker {
   seq: number;
@@ -31,11 +34,14 @@ interface RelayWebSocket {
   addEventListener(type: "message", listener: (event: MessageEvent) => void): void;
   addEventListener(type: "close", listener: (event: { code: number; reason: string }) => void, options?: { once?: boolean }): void;
   addEventListener(type: "error", listener: () => void, options?: { once?: boolean }): void;
+  addEventListener(type: "pong", listener: () => void): void;
   close(): void;
+  ping?(): void;
 }
 
 interface RelayStreamDependencies extends RelayPollDependencies {
   fullPoll?: typeof pollOnce;
+  keepalive?: { pingIntervalMs: number; silenceTimeoutMs: number };
   socket?: (url: string) => RelayWebSocket;
   onOpen?: () => void;
   expectedClose?: () => boolean;
@@ -193,24 +199,47 @@ export async function streamRelayOnce(
   const fullPoll = deps.fullPoll ?? pollOnce;
   const socket = (deps.socket ?? ((target) => new WebSocket(target)))(streamUrl(url, ticket, persistedCursor()));
 
+  const keepalive = deps.keepalive ?? { pingIntervalMs: RELAY_PING_INTERVAL_MS, silenceTimeoutMs: RELAY_SILENCE_TIMEOUT_MS };
+
   return await new Promise<void>((resolve, reject) => {
     let opened = false;
     let socketFailed = false;
     let settled = false;
     let queue = Promise.resolve();
+    let lastHeardAt = Date.now();
+    const heard = () => {
+      lastHeardAt = Date.now();
+      lastOkAt = lastHeardAt;
+    };
     const settle = (error?: Error) => {
       if (settled) return;
       settled = true;
+      clearInterval(keepaliveTimer);
       queue.then(() => error ? reject(error) : resolve(), reject);
     };
+    // After sleep or a network change the TCP connection can be dead without either side
+    // closing it: no close event ever fires and markers silently stop. The relay answers pings,
+    // so a stream that stays silent past a few ping rounds is abandoned and reopened.
+    const keepaliveTimer = setInterval(() => {
+      if (!opened || settled) return;
+      const silentMs = Date.now() - lastHeardAt;
+      if (silentMs >= keepalive.silenceTimeoutMs) {
+        settle(new Error(`relay WebSocket went silent for ${Math.round(silentMs / 1000)}s`));
+        socket.close();
+        return;
+      }
+      socket.ping?.();
+    }, keepalive.pingIntervalMs);
 
     socket.addEventListener("open", () => {
       opened = true;
-      lastOkAt = Date.now();
+      heard();
       lastError = null;
       deps.onOpen?.();
     }, { once: true });
+    socket.addEventListener("pong", heard);
     socket.addEventListener("message", (event) => {
+      heard();
       queue = queue.then(async () => {
         const frame = JSON.parse(await frameText(event.data)) as RelayFrame;
         if (frame.type === "ready") {
@@ -263,32 +292,37 @@ class RelayConnection {
 
   constructor(private readonly deps: RelayClientDependencies = {}) {}
 
+  private dropStream(): void {
+    this.generation++;
+    this.stream?.close();
+    this.stream = null;
+    this.running = false;
+    this.repoSignature = "";
+    this.reconnectAt = 0;
+    this.reconnectAttempt = 0;
+  }
+
+  // A stream opened before the machine slept is presumed dead; the next tick opens a fresh one
+  // and replays everything after the persisted cursor.
+  reconnect(): void {
+    if (this.mode === "websocket") this.dropStream();
+    backoffUntil = 0;
+  }
+
   async tick(url: string): Promise<void> {
     const now = this.deps.now ?? Date.now;
     let sessionRepos: string[] | null = null;
     if (url !== this.url) {
       this.url = url;
       this.mode = "unknown";
-      this.generation++;
-      this.stream?.close();
-      this.stream = null;
-      this.running = false;
-      this.repoSignature = "";
-      this.reconnectAt = 0;
-      this.reconnectAttempt = 0;
+      this.dropStream();
     }
     if (!url) return;
     if (this.mode === "websocket" && this.running) {
       sessionRepos = await (this.deps.repos ?? trackedRepos)();
       const signature = [...new Set(sessionRepos)].sort().join("\n");
       if (signature === this.repoSignature) return;
-      this.generation++;
-      this.stream?.close();
-      this.stream = null;
-      this.running = false;
-      this.repoSignature = "";
-      this.reconnectAt = 0;
-      this.reconnectAttempt = 0;
+      this.dropStream();
     } else if (this.running) {
       return;
     }
@@ -348,22 +382,25 @@ class RelayConnection {
     } catch (error) {
       if (generation !== this.generation) return;
       lastError = error instanceof Error ? error.message : String(error);
-      console.error("relay stream failed:", error);
       this.reconnectAttempt++;
-      this.reconnectAt = now() + Math.min(1_000 * 2 ** (this.reconnectAttempt - 1), STREAM_BACKOFF_MAX_MS);
+      const delayMs = Math.min(1_000 * 2 ** (this.reconnectAttempt - 1), STREAM_BACKOFF_MAX_MS);
+      this.reconnectAt = now() + delayMs;
+      // Abnormal closes (1006) are routine for a long-lived stream; the stack trace says nothing.
+      console.warn(`relay stream ended: ${lastError}; reconnecting in ${Math.ceil(delayMs / 1000)}s`);
     } finally {
       if (generation === this.generation) this.running = false;
     }
   }
 }
 
-export function createRelayConnection(deps: RelayClientDependencies = {}): { tick(url: string): Promise<void> } {
+export function createRelayConnection(deps: RelayClientDependencies = {}): { tick(url: string): Promise<void>; reconnect(): void } {
   return new RelayConnection(deps);
 }
 
 const connection = new RelayConnection();
 
 export function startRelayClient(): void {
+  watchForWake(() => connection.reconnect());
   setInterval(() => {
     connection.tick(relayConfig().url).catch((error) => console.error("relay tick failed:", error));
   }, POLL_MS);
