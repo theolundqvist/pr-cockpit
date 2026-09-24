@@ -614,6 +614,29 @@ export async function fetchGithubQuota(): Promise<GithubQuota> {
   const token = await ghToken();
   const generation = quotaGeneration(token);
   if (cachedQuota && Date.now() - Date.parse(cachedQuota.fetchedAt) < QUOTA_TTL_MS) return cachedQuota;
+  if (quotaFetchInFlight?.generation === generation) return quotaFetchInFlight.promise;
+  const entry = { generation, promise: fetchRateLimit(token, generation) };
+  quotaFetchInFlight = entry;
+  try {
+    return await entry.promise;
+  } finally {
+    if (quotaFetchInFlight === entry) quotaFetchInFlight = null;
+  }
+}
+
+let quotaFetchInFlight: { generation: number; promise: Promise<GithubQuota> } | null = null;
+
+// The last quota reading if it is at most maxAgeMs old and its windows have not reset since,
+// without a network call. Background pacing uses this so a relay-triggered refresh after a
+// quiet minute does not first wait on /rate_limit.
+export function recentGithubQuota(maxAgeMs: number, now = Date.now()): GithubQuota | null {
+  if (mockGithub || !cachedQuota) return null;
+  if (now - Date.parse(cachedQuota.fetchedAt) > maxAgeMs) return null;
+  if (Date.parse(cachedQuota.graphql.resetAt) <= now || Date.parse(cachedQuota.rest.resetAt) <= now) return null;
+  return cachedQuota;
+}
+
+async function fetchRateLimit(token: string, generation: number): Promise<GithubQuota> {
   const res = await githubApiResponse("GET", "/rate_limit", { authentication: { token, generation } });
   if (!res.ok) throw await githubResponseError("GitHub quota request failed", res);
   const body = (await res.json()) as {

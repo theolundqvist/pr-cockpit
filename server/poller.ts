@@ -1,4 +1,4 @@
-import { fetchGithubQuota, fetchPrDetail, fetchPrDetailPart, GithubRequestError, lookupPr, searchClosedPrs, searchOpenPrs, searchRecentPrs, type GithubQuotaResource, type PrDetail, type PrDetailScope } from "./github.ts";
+import { fetchGithubQuota, fetchPrDetail, recentGithubQuota, fetchPrDetailPart, GithubRequestError, lookupPr, searchClosedPrs, searchOpenPrs, searchRecentPrs, type GithubQuotaResource, type PrDetail, type PrDetailScope } from "./github.ts";
 import type { GithubUsageSource } from "./githubUsage.ts";
 import {
   deleteWebhookRegistrationsForPr,
@@ -51,8 +51,15 @@ export function backgroundQuotaAvailable(quota: GithubQuotaResource, now = Date.
   return quota.remaining > Math.max(GRAPHQL_BACKGROUND_RESERVE, pacedReserve);
 }
 
+// Pacing tolerates a reading this old; fetching a fresh one first added a /rate_limit round
+// trip (~0.5s) to the first relay refresh after every quiet minute.
+const BACKGROUND_QUOTA_MAX_AGE_MS = 5 * 60_000;
+
 export async function backgroundPollAllowed(): Promise<boolean> {
-  const quota = await fetchGithubQuota();
+  const recent = recentGithubQuota(BACKGROUND_QUOTA_MAX_AGE_MS);
+  // fetchGithubQuota answers from cache while the reading is fresh, so this only calls out when stale.
+  if (recent) void fetchGithubQuota().catch(() => {});
+  const quota = recent ?? await fetchGithubQuota();
   if (backgroundQuotaAvailable(quota.graphql)) {
     quotaPauseResetAt = null;
     return true;

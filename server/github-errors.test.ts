@@ -72,6 +72,57 @@ test("closed PR search isolates inaccessible repositories", async () => {
   }
 });
 
+test("quota readings are shared by concurrent callers and reusable for pacing until stale or reset", async () => {
+  const fakeGhDir = mkdtempSync(join(tmpdir(), "pr-cockpit-quota-reuse-"));
+  const fakeGh = join(fakeGhDir, "gh");
+  writeFileSync(fakeGh, "#!/bin/sh\nprintf 'fixture-token\\n'\n");
+  chmodSync(fakeGh, 0o755);
+  try {
+    const script = `
+      const github = await import(${JSON.stringify(githubModuleUrl)});
+      const reset = Math.floor(Date.now() / 1000) + 30 * 60;
+      let rateLimitCalls = 0;
+      globalThis.fetch = async (input) => {
+        if (new URL(String(input)).pathname !== "/rate_limit") throw new Error("unexpected request");
+        rateLimitCalls++;
+        await Bun.sleep(10);
+        const window = { limit: 5000, used: 100, remaining: 4900, reset };
+        return Response.json({ resources: { core: window, graphql: window } });
+      };
+      const before = github.recentGithubQuota(5 * 60_000);
+      await Promise.all([github.fetchGithubQuota(), github.fetchGithubQuota(), github.fetchGithubQuota()]);
+      const now = Date.now();
+      console.log(JSON.stringify({
+        before,
+        rateLimitCalls,
+        twoMinutesLater: github.recentGithubQuota(5 * 60_000, now + 2 * 60_000)?.graphql.remaining ?? null,
+        tenMinutesLater: github.recentGithubQuota(5 * 60_000, now + 10 * 60_000),
+        afterReset: github.recentGithubQuota(60 * 60_000, (reset + 1) * 1000),
+      }));
+    `;
+    const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: { ...Bun.env, COCKPIT_GH_BIN: fakeGh, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect(exitCode, stderr).toBe(0);
+    expect(JSON.parse(stdout)).toEqual({
+      before: null,
+      rateLimitCalls: 1,
+      twoMinutesLater: 4900,
+      tenMinutesLater: null,
+      afterReset: null,
+    });
+  } finally {
+    rmSync(fakeGhDir, { recursive: true, force: true });
+  }
+});
+
 test("non-quota GraphQL errors do not expose the ordinary rate-window reset", async () => {
   const fakeGhDir = mkdtempSync(join(tmpdir(), "pr-cockpit-graphql-error-reset-"));
   const fakeGh = join(fakeGhDir, "gh");
