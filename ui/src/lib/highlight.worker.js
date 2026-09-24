@@ -1,7 +1,9 @@
 import { ensureTheme, getHighlighter } from "./highlight.js";
 
+const colourOnly = (tokens) => tokens.map(({ content, color }) => ({ content, color }));
+
 self.onmessage = async ({ data }) => {
-  const { id, lang, theme, lines } = data;
+  const { id, lang, theme, lines, code } = data;
   try {
     const highlighter = await getHighlighter();
     await ensureTheme(highlighter, theme);
@@ -9,9 +11,9 @@ self.onmessage = async ({ data }) => {
       self.postMessage({ id, tokens: null });
       return;
     }
-    const tokens = lines.map((line) =>
-      (highlighter.codeToTokensBase(line, { lang, theme })[0] ?? []).map(({ content, color }) => ({ content, color })),
-    );
+    const tokens = code !== undefined
+      ? highlighter.codeToTokensBase(code, { lang, theme }).map(colourOnly)
+      : lines.map((line) => colourOnly(highlighter.codeToTokensBase(line, { lang, theme })[0] ?? []));
     self.postMessage({ id, tokens });
   } catch (error) {
     self.postMessage({ id, error: error instanceof Error ? error.message : String(error) });

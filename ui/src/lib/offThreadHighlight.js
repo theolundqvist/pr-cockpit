@@ -1,21 +1,13 @@
 import { ensureTheme, getHighlighter } from "./highlight.js";
 
-// Diff lines are tokenized in a worker: compiling a grammar's rules and matching long lines can
-// hold the main thread for 100 ms at a time, which stalls the first Files paint and scrolling.
-// Results are cached per theme, language, and text, so revisits and repeated lines are free.
-const cache = new Map();
+// Syntax highlighting runs in a worker: compiling a grammar's rules or matching one long line
+// can hold the main thread for 100 ms, which stalled the first Files paint, diff scrolling,
+// and opening PRs whose conversation has fenced code. If the worker cannot start, the same
+// work falls back to the main thread.
 const pending = new Map();
 let worker = null;
 let workerFailed = false;
 let nextId = 0;
-
-function cacheKey(text, lang, theme) {
-  return `${theme}\n${lang}\n${text}`;
-}
-
-export function cachedLineTokens(text, lang, theme) {
-  return cache.get(cacheKey(text, lang, theme));
-}
 
 function failWorker(error) {
   workerFailed = true;
@@ -44,34 +36,52 @@ function highlightWorker() {
   return worker;
 }
 
-async function tokenizeOnMainThread(lines, lang, theme) {
+async function tokenizeOnMainThread({ lang, theme, lines, code }) {
   const highlighter = await getHighlighter();
   await ensureTheme(highlighter, theme);
   if (!highlighter.getLoadedLanguages().includes(lang)) return null;
+  if (code !== undefined) return highlighter.codeToTokensBase(code, { lang, theme });
   return lines.map((line) => highlighter.codeToTokensBase(line, { lang, theme })[0] ?? []);
 }
 
-function tokenizeInWorker(lines, lang, theme) {
+// Resolves to one token list per line, or null when the language cannot be highlighted.
+function tokenize(request) {
   const target = highlightWorker();
-  if (!target) return tokenizeOnMainThread(lines, lang, theme);
+  if (!target) return tokenizeOnMainThread(request);
   const id = ++nextId;
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject });
-    target.postMessage({ id, lang, theme, lines });
-  }).catch(() => (workerFailed ? tokenizeOnMainThread(lines, lang, theme) : null));
+    target.postMessage({ id, ...request });
+  }).catch(() => (workerFailed ? tokenizeOnMainThread(request) : null));
 }
 
-// Resolves to one token list per line, or null when the language cannot be highlighted.
+// Diff lines are tokenized one by one and cached per theme, language, and text, so revisits
+// and repeated lines are free.
+const lineCache = new Map();
+
+function lineKey(text, lang, theme) {
+  return `${theme}\n${lang}\n${text}`;
+}
+
+export function cachedLineTokens(text, lang, theme) {
+  return lineCache.get(lineKey(text, lang, theme));
+}
+
 export async function tokenizeLines(lines, lang, theme) {
-  const tokens = await tokenizeInWorker(lines, lang, theme);
+  const tokens = await tokenize({ lang, theme, lines });
   if (!tokens) return null;
-  tokens.forEach((lineTokens, index) => cache.set(cacheKey(lines[index], lang, theme), lineTokens));
+  tokens.forEach((lineTokens, index) => lineCache.set(lineKey(lines[index], lang, theme), lineTokens));
   return tokens;
 }
 
+// A code block keeps grammar state across its lines, so it is tokenized as one text.
+export function tokenizeCodeBlock(code, lang, theme) {
+  return tokenize({ lang, theme, code });
+}
+
 // A cold worker needs ~250 ms to load grammars and another ~130 ms of JIT and rule compilation
-// on its first real batch. Paying that while a PR's conversation is on screen lets the first
-// Files view colour its lines almost at once.
+// on its first real batch. Paying that ahead of time lets the first code block or Files view
+// colour its lines almost at once.
 const WARM_LINES = [
   'import { readFile } from "node:fs/promises";',
   "export async function load<T extends object>(path: string, fallback?: T): Promise<T | null> {",
@@ -82,11 +92,11 @@ const WARM_LINES = [
 ];
 const warmed = new Set();
 
-export function warmLineHighlight(theme) {
+export function warmHighlightWorker(theme) {
   for (const lang of ["typescript", "tsx"]) {
     const key = `${theme}\n${lang}`;
     if (warmed.has(key)) continue;
     warmed.add(key);
-    void tokenizeLines(WARM_LINES, lang, theme).catch(() => warmed.delete(key));
+    void tokenizeLines(WARM_LINES, lang, theme);
   }
 }

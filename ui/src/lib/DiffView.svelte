@@ -5,7 +5,7 @@
   import MutationBadge from "./MutationBadge.svelte";
   import PendingReviewComment from "./PendingReviewComment.svelte";
   import { langForPath } from "./highlight.js";
-  import { cachedLineTokens, tokenizeLines } from "./lineHighlight.js";
+  import { cachedLineTokens, tokenizeLines } from "./offThreadHighlight.js";
   import { renderMarkdown } from "./markdown.js";
   import { presentMutationError } from "./mutationError.js";
   import { theme } from "./theme.svelte.js";

@@ -4,7 +4,7 @@ import { prIndexRevision, prTitle } from "./prIndex.svelte.js";
 import { linkifyBareRefs } from "./prRefs.js";
 import { theme } from "./theme.svelte.js";
 import { viewer } from "./viewer.svelte.js";
-import { highlightFencedCode } from "./codeHighlight.svelte.js";
+import { HIGHLIGHT_PENDING, codeHl, highlightFencedCode } from "./codeHighlight.svelte.js";
 
 marked.setOptions({ gfm: true, breaks: true });
 
@@ -197,14 +197,17 @@ function highlightMentions(doc) {
   }
 }
 
+// Returns false while any block's tokens are still being computed.
 function highlightCodeBlocks(doc) {
   const blocks = doc.querySelectorAll("pre code");
-  if (!blocks.length) return;
+  let complete = true;
+  if (!blocks.length) return complete;
   const themeName = theme.shiki;
   for (const codeEl of blocks) {
     const fenceLang = (codeEl.className || "").match(/language-(\S+)/)?.[1];
     const lines = highlightFencedCode(codeEl.textContent.replace(/\n$/, ""), fenceLang, themeName);
-    if (!lines) continue;
+    if (lines === HIGHLIGHT_PENDING) complete = false;
+    if (!Array.isArray(lines)) continue;
     codeEl.textContent = "";
     lines.forEach((tokens, i) => {
       if (i > 0) codeEl.appendChild(doc.createTextNode("\n"));
@@ -216,10 +219,12 @@ function highlightCodeBlocks(doc) {
       }
     });
   }
+  return complete;
 }
 
 export function renderMarkdown(source) {
   if (!source) return "";
+  void codeHl.revision;
   const context = `${theme.shiki}\u0000${viewer.login ?? ""}\u0000${currentRepo() ?? ""}\u0000${prIndexRevision()}`;
   const cached = cachedMarkdown(source, context);
   if (cached !== null) return cached;
@@ -232,7 +237,7 @@ export function renderMarkdown(source) {
   linkifyRefs(doc);
   linkifyBareRefs(doc, currentRepo(), prTitle);
   highlightMentions(doc);
-  highlightCodeBlocks(doc);
+  if (!highlightCodeBlocks(doc)) return doc.body.innerHTML;
   return storeMarkdown(source, context, doc.body.innerHTML);
 }
 
