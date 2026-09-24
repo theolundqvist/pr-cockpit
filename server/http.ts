@@ -381,7 +381,8 @@ async function revalidateCachedPrDetail(
   cacheActions: typeof cacheGithubActionsForCommit,
 ): Promise<void> {
   const snapshotCutoffAt = new Date().toISOString();
-  const detail = await fetchDetail(repo, number, source);
+  const cached = getCachedPrDetail(repo, number);
+  const detail = await fetchDetail(repo, number, source, cached ? JSON.parse(cached.detail_json) as PrDetail : null);
   await cacheActions(repo, number, detail.headRefOid, undefined, true)
     .catch((error) => console.error(`Actions coverage refresh failed for ${repo}#${number}:`, error));
   upsertCachedPrDetail({

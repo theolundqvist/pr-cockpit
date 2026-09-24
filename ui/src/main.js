@@ -11,7 +11,8 @@ import { initNativePalette } from "./lib/nativePalette.js";
 initNativePalette();
 initTheme();
 initPrefs();
-initCodeHighlight();
 initHistory();
 initQuota();
 mount(App, { target: document.getElementById("app") });
+// Highlighting only decorates code that renders later; warm it once the first screen has painted.
+requestIdleCallback(initCodeHighlight, { timeout: 1500 });

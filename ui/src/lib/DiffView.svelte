@@ -4,7 +4,6 @@
   import Thread from "./Thread.svelte";
   import MutationBadge from "./MutationBadge.svelte";
   import PendingReviewComment from "./PendingReviewComment.svelte";
-  import CodeEditor from "./CodeEditor.svelte";
   import { getHighlighter, ensureTheme, langForPath, tokenizeLine } from "./highlight.js";
   import { renderMarkdown } from "./markdown.js";
   import { presentMutationError } from "./mutationError.js";
@@ -849,6 +848,21 @@
   }
 
 
+  // CodeMirror is only needed once someone edits a file, so it loads beside the file contents
+  // instead of weighing down the startup bundle.
+  let CodeEditor = $state.raw(null);
+  let codeEditorLoad = null;
+  function loadCodeEditor() {
+    codeEditorLoad ??= import("./CodeEditor.svelte").then(
+      (module) => (CodeEditor = module.default),
+      (error) => {
+        codeEditorLoad = null;
+        throw error;
+      },
+    );
+    return codeEditorLoad;
+  }
+
   async function startFileEdit(file, placement, change = null) {
     if (!editable || file.isBinary || file.isDeleted || fileEditor || !placement) return;
     const token = {};
@@ -869,7 +883,7 @@
       ...placement,
     };
     try {
-      const result = await fetchFileContents(repo, file.path, headSha);
+      const [result] = await Promise.all([fetchFileContents(repo, file.path, headSha), loadCodeEditor()]);
       if (fileEditRequest !== token) return;
       const normalized = result.tooLarge ? null : normalizeFileEndings(result.content);
       if (result.tooLarge) {

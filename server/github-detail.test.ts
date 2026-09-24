@@ -219,6 +219,50 @@ describe("REST PR detail parity", () => {
     }
   });
 
+  test("carries commit line counts over and asks only about new commits", async () => {
+    const known = "a".repeat(40);
+    const added = "b".repeat(40);
+    const commit = (oid: string, counts: { additions?: number; deletions?: number } = {}) => ({
+      commit: { oid, abbreviatedOid: oid.slice(0, 7), messageHeadline: oid, committedDate: "2026-08-27T10:00:00Z", author: null, parents: { nodes: [] }, ...counts },
+    });
+    const current = {
+      ...mapRestPrDetailBase(restPullRequest, restFiles),
+      lastCommit: { nodes: [] },
+      commitList: { nodes: [commit(known, { additions: 7, deletions: 2 })] },
+    } as unknown as PrDetail;
+    const originalFetch = globalThis.fetch;
+    const queries: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      const query = JSON.parse(String(init?.body)).query as string;
+      queries.push(query);
+      if (query.includes("commitList")) {
+        expect(query).not.toContain("additions");
+        return Response.json({
+          data: { repository: { pullRequest: { lastCommit: { nodes: [{ commit: { statusCheckRollup: null } }] }, commitList: { nodes: [commit(known), commit(added)] } } } },
+        });
+      }
+      expect(query).toContain(`object(oid: "${added}")`);
+      expect(query).not.toContain(known);
+      return Response.json({ data: { repository: { c0: { additions: 30, deletions: 4 } } } });
+    }) as typeof fetch;
+
+    try {
+      const next = await fetchPrDetailPart("acme/repo", 42, current, "checks", "relay");
+      expect(next.commitList.nodes.map(({ commit }) => [commit.oid, commit.additions, commit.deletions])).toEqual([
+        [known, 7, 2],
+        [added, 30, 4],
+      ]);
+      expect(queries).toHaveLength(2);
+
+      queries.length = 0;
+      const again = await fetchPrDetailPart("acme/repo", 42, next, "checks", "relay");
+      expect(again.commitList.nodes[1]?.commit.additions).toBe(30);
+      expect(queries).toHaveLength(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("uses REST for equivalent setup, search, and user mutations", async () => {
     const requests: Array<{ url: URL; method: string; body: unknown }> = [];
     const originalFetch = globalThis.fetch;
