@@ -752,8 +752,12 @@ async function handlePrDetail(
   try {
     const snapshotCutoffAt = new Date().toISOString();
     const detail = await runtime.fetchPrDetail(repoName, num, agentRead ? "agent read" : "app detail");
-    await runtime.cacheGithubActionsForCommit(repoName, num, detail.headRefOid, undefined, true)
+    const actionsCatalog = runtime.cacheGithubActionsForCommit(repoName, num, detail.headRefOid, undefined, true)
       .catch((error) => console.error(`Actions coverage refresh failed for ${repoName}#${num}:`, error));
+    // Agent summaries report cached job logs, so they wait for the catalog. The app paints
+    // the detail now (the catalog adds 1-3s) and is told again once the catalog lands.
+    if (agentRead) await actionsCatalog;
+    else void actionsCatalog.then(() => invalidatePr(repoName, num));
     upsertCachedPrDetail({
       repo: repoName,
       number: num,

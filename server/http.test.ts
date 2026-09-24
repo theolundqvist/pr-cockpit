@@ -3,6 +3,7 @@ import { buildFetchHandler as buildLiveFetchHandler, buildPrAgentSummary, checko
 import { GithubRequestError, StalePrHeadError, type PrDetail } from "./github.ts";
 import { db, getCachedPrDetail, getPr, getSetting, listRunJobs, markActionsLeaseBootstrapped, markWorkflowRunJobsFetched, renewActionsLease, saveDiff, saveFileContents, saveRunJobLog, setSetting, upsertCachedPrDetail, upsertPr, upsertPrIndex, upsertRunJob, upsertWorkflowRun } from "./db.ts";
 import { testMatcher } from "../ui/src/lib/testPath.js";
+import { setRendererInvalidationPublisher, type RendererInvalidation } from "./rendererInvalidation.ts";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1207,6 +1208,35 @@ describe("agent PR summary", () => {
     } finally {
       finish();
       setSystemTime();
+      db.run("DELETE FROM pr_detail_cache WHERE repo = ? AND number = ?", [repo, number]);
+    }
+  });
+
+  test("a first app open answers before the Actions catalog and republishes once it lands", async () => {
+    const repo = "http-snapshots/cold-catalog";
+    const number = 96138;
+    const detail = JSON.parse(trackedPrRow({ repo, number, fetchedAt: new Date().toISOString() }).detail_json);
+    let finishCatalog!: () => void;
+    const catalog = new Promise<void>((resolve) => { finishCatalog = resolve; });
+    const events: RendererInvalidation[] = [];
+    setRendererInvalidationPublisher((event) => events.push(event));
+    const handler = buildFetchHandler(4820, {
+      fetchPrDetail: async () => detail,
+      cacheGithubActionsForCommit: () => catalog,
+    });
+    try {
+      const response = await Promise.race([
+        handler(new Request(`http://127.0.0.1:4820/api/pr/${repo}/${number}`)),
+        Bun.sleep(200).then(() => { throw new Error("detail waited for the Actions catalog"); }),
+      ]);
+      expect((await response.json()).headRefOid).toBe(detail.headRefOid);
+      expect(events.filter((event) => event.type === "pr")).toEqual([]);
+      finishCatalog();
+      await Bun.sleep(0);
+      expect(events.filter((event) => event.type === "pr")).toEqual([{ type: "pr", repo, number }]);
+    } finally {
+      finishCatalog();
+      setRendererInvalidationPublisher(() => {});
       db.run("DELETE FROM pr_detail_cache WHERE repo = ? AND number = ?", [repo, number]);
     }
   });
