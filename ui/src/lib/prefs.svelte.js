@@ -1,8 +1,10 @@
+import { normalizePrGrouping } from "../../../shared/prGrouping.ts";
 import { fetchSettings } from "./api.js";
 
 // agents seeded with the built-in keybinds so handlers work before /api/settings resolves
 export const prefs = $state({
   loaded: false,
+  prGrouping: normalizePrGrouping(null),
   hideSidebar: false,
   hideTestsDefault: false,
   newestCommentsFirst: false,
@@ -17,6 +19,7 @@ export const prefs = $state({
 });
 
 export function setPrefs(settings) {
+  prefs.prGrouping = normalizePrGrouping(settings.pr_grouping);
   prefs.hideSidebar = settings.hide_sidebar === true;
   prefs.hideTestsDefault = settings.hide_tests_default;
   prefs.newestCommentsFirst = settings.newest_comments_first === true;

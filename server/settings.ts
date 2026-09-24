@@ -1,3 +1,4 @@
+import { normalizePrGrouping, type PrGrouping } from "../shared/prGrouping.ts";
 import { getSetting, setSetting } from "./db.ts";
 import { detectHarness, normalizeHarness, type Harness } from "./harness.ts";
 import { notificationSettingsChanged, storedNotificationSettings } from "./notifications.ts";
@@ -224,6 +225,11 @@ export function pendingReviewsEnabled(): boolean {
   return getSetting("pending_reviews_enabled") === "true";
 }
 
+function readPrGrouping(): PrGrouping {
+  try { return normalizePrGrouping(JSON.parse(getSetting("pr_grouping") ?? "null")); }
+  catch { return normalizePrGrouping(null); }
+}
+
 export interface Settings {
   desktop_platform: string;
   repos: string;
@@ -254,6 +260,7 @@ export interface Settings {
   repo_roots: string;
   cockpit_webhooks: boolean;
   pending_reviews_enabled: boolean;
+  pr_grouping: PrGrouping;
   agent_harness: Harness;
   relay_url: string;
   notifications: NotificationSettings;
@@ -293,6 +300,7 @@ export function readSettings(): Settings {
     repo_roots: getSetting("repo_roots") ?? envRepoRoots,
     cockpit_webhooks: getSetting("cockpit_webhooks") === "true",
     pending_reviews_enabled: pendingReviewsEnabled(),
+    pr_grouping: readPrGrouping(),
     agent_harness: normalizeHarness(getSetting("agent_harness")),
     relay_url: relayConfig().url,
     notifications: notificationSettings(),
@@ -329,6 +337,7 @@ export function writeSettings(
     repo_roots: string;
     cockpit_webhooks: boolean;
     pending_reviews_enabled: boolean;
+    pr_grouping: PrGrouping;
     agent_harness: string;
     relay_url: string;
     notifications: NotificationSettings;
@@ -343,6 +352,7 @@ export function writeSettings(
   if (replicaSshHost === "" && (typeof patch.replica_ssh_host !== "string" || patch.replica_ssh_host.trim() !== "")) {
     throw new Error("invalid replica SSH host");
   }
+  if (patch.pr_grouping !== undefined) setSetting("pr_grouping", JSON.stringify(normalizePrGrouping(patch.pr_grouping)));
   if (patch.repos !== undefined) setSetting("repos", patch.repos);
   if (patch.default_repo !== undefined) setSetting("default_repo", patch.default_repo);
   if (patch.poll_interval_s !== undefined) setSetting("poll_interval_s", String(clampInterval(Number(patch.poll_interval_s))));

@@ -4,6 +4,8 @@
 </script>
 
 <script>
+  import { categoryForPr, PR_TYPES, TYPE_TITLES } from "../../../shared/prGrouping.ts";
+  import { assignments, assignPr, syncAssignments, onAssignmentStorage } from "./prAssignments.svelte.js";
   import { isSetAside, putAside } from "./setAside.svelte.js";
   import { untrack } from "svelte";
   import { fetchInbox, fetchRecentClosed, fetchAllPrs, fetchPrDetails, setArchived, saveSettings, reorderPr, fetchSettings, fetchRelayStatus, fetchRelayCoverage, autofixAgent, customAgent } from "./api.js";
@@ -478,18 +480,44 @@
     return { units: [...unranked, ...ranked], unrankedCount: unranked.length, items };
   }
 
+  $effect(() => {
+    if (prefs.prGrouping.mode !== "manual") return;
+    syncAssignments();
+    window.addEventListener("storage", onAssignmentStorage);
+    return () => window.removeEventListener("storage", onAssignmentStorage);
+  });
+
+  function groupId(pr) {
+    if (pr.rank != null) return "pinned";
+    const root = topUnit(pr);
+    return prefs.prGrouping.mode === "status" ? classify(root, viewerLogin).group
+      : categoryForPr(root.title, prefs.prGrouping, assignments.values[prKey(root)]);
+  }
+
+  function moveToGroup(pr, value, select) {
+    const key = prKey(pr);
+    if (assignPr(prKey(topUnit(pr)), value)) {
+      selected = Math.max(0, ordered.findIndex((item) => prKey(item) === key));
+      scrollSelectedIntoView();
+    } else select.value = assignments.values[prKey(topUnit(pr))] ?? "";
+  }
+
   let groups = $derived.by(() => {
     const pinned = filteredPrs.filter((pr) => pr.rank != null);
     const buckets = new Map();
     for (const pr of filteredPrs) {
       if (pr.rank != null) continue;
-      const id = classify(topUnit(pr), viewerLogin).group;
+      const id = groupId(pr);
       if (!buckets.has(id)) buckets.set(id, []);
       buckets.get(id).push(pr);
     }
-    const statusGroups = GROUP_ORDER.filter((id) => buckets.has(id)).map((id) => {
+    const categories = prefs.prGrouping.mode === "status" ? GROUP_ORDER.map((id) => ({ id, title: GROUP_TITLES[id] }))
+      : [...(prefs.prGrouping.mode === "type" ? PR_TYPES.map((type) => ({ id: `type:${type}`, title: TYPE_TITLES[type] }))
+        : prefs.prGrouping.groups.map((group) => ({ id: `group:${group.id}`, title: group.name }))),
+        { id: "other", title: prefs.prGrouping.mode === "manual" ? "Ungrouped" : "Other" }];
+    const statusGroups = categories.filter(({ id }) => buckets.has(id)).map(({ id, title }) => {
       const { units, unrankedCount, items } = orderGroup(buckets.get(id));
-      return { id, title: GROUP_TITLES[id], units, unrankedCount, items };
+      return { id, title, units, unrankedCount, items };
     });
     if (!pinned.length) return statusGroups;
     const { units, unrankedCount, items } = orderGroup(pinned);
@@ -580,7 +608,7 @@
     if (!draggedKey) return;
     const r = e.currentTarget.getBoundingClientRect();
     const before = e.clientY - r.top < r.height / 2;
-    const group = groups.find((g) => g.id === (overPr.rank != null ? "pinned" : classify(topUnit(overPr), viewerLogin).group));
+    const group = groups.find((g) => g.id === groupId(overPr));
     if (!group) return;
     const dragged = group.units.find((p) => prKey(p) === draggedKey);
     if (!dragged) return;
@@ -614,7 +642,7 @@
   let dragGroupId = $derived.by(() => {
     if (!dragKey) return null;
     const pr = prs.find((p) => prKey(p) === dragKey);
-    return pr ? (pr.rank != null ? "pinned" : classify(topUnit(pr), viewerLogin).group) : null;
+    return pr ? groupId(pr) : null;
   });
   let visibleAllPrs = $derived(allPrs.filter((pr) => !isSetAside(pr)));
   let visibleArchivedPrs = $derived(archivedPrs.filter((pr) => !isSetAside(pr)));
@@ -912,6 +940,24 @@
         />
       </div>
     </div>
+
+    {#if prefs.prGrouping.mode !== "status" && view === "open"}
+      <div class="grouping-toolbar">
+        <a href="#/settings/general">Grouping: {prefs.prGrouping.mode === "manual" ? "Manual" : prefs.prGrouping.mode === "feature" ? "Feature area" : "PR type"}</a>
+        {#if prefs.prGrouping.mode === "manual" && ordered[selected] && !isArchived(ordered[selected])}
+          {@const target = ordered[selected]}
+          {@const root = topUnit(target)}
+          {@const assignment = assignments.values[prKey(root)]}
+          <label>
+            <span>Group #{target.number}{root !== target ? ` (stack #${root.number})` : ""}</span>
+            <select aria-label={`Group PR #${target.number}`} value={prefs.prGrouping.groups.some((group) => group.id === assignment) ? assignment : ""} onchange={(event) => moveToGroup(target, event.currentTarget.value, event.currentTarget)}>
+              <option value="">Ungrouped</option>
+              {#each prefs.prGrouping.groups as group (group.id)}<option value={group.id}>{group.name}</option>{/each}
+            </select>
+          </label>
+        {/if}
+      </div>
+    {/if}
 
     {#if filterOpen && view === "open"}
       <div class="filter-row">
@@ -1268,6 +1314,11 @@
 {/if}
 
 <style>
+  .grouping-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 0; font-size: 12px; color: var(--muted); }
+  .grouping-toolbar a { color: inherit; }
+  .grouping-toolbar label { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+  .grouping-toolbar select { max-width: 200px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel); color: var(--text); padding: 4px 8px; font: inherit; }
+
   .page {
     height: var(--general-height);
     overflow-y: auto;

@@ -1,3 +1,4 @@
+import { groupingScenarios } from "./grouping-scenarios.mjs";
 import { createServer } from "node:net";
 import { inflateSync } from "node:zlib";
 import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
@@ -219,6 +220,7 @@ function setAsideScenario(roundtrip) {
 }
 
 const scenarios = [
+  ...groupingScenarios(),
   setAsideScenario(false),
   setAsideScenario(true),
   repositoryPickerScenario(false),

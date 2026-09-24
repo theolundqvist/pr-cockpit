@@ -1,4 +1,5 @@
 <script>
+  import { normalizePrGrouping } from "../../../shared/prGrouping.ts";
   import { fetchRelayCoverage, fetchRelayStatus, fetchSettings, saveSettings } from "./api.js";
   import { setCodeTheme, setFonts, setScales, setTheme } from "./theme.svelte.js";
   import { setPrefs } from "./prefs.svelte.js";
@@ -19,6 +20,7 @@
   let { onRunSetup, section = "general" } = $props();
 
 
+  let grouping = $state(normalizePrGrouping(null));
   let repos = $state("");
   let defaultRepo = $state("");
   let pollInterval = $state(180);
@@ -97,7 +99,8 @@
     }
     return issues;
   });
-  let saveBlocked = $derived(keybindClash || agentKeybindIssues.size > 0 || notificationIssues.size > 0);
+  let groupIssues = $derived((grouping.mode === "manual" || grouping.mode === "feature") && grouping.groups.some((group, index) => !group.name.trim() || grouping.groups.some((other, otherIndex) => otherIndex < index && other.name.trim().toLowerCase() === group.name.trim().toLowerCase())));
+  let saveBlocked = $derived(keybindClash || agentKeybindIssues.size > 0 || notificationIssues.size > 0 || groupIssues);
 
   function addAgent() {
     agents = [...agents, { id: `custom-${crypto.randomUUID().slice(0, 8)}`, name: "", enabled: true, trigger: "keybind", keybind: "", model: "opus", prompt_template: "", prompt_default: "", promptText: "" }];
@@ -116,6 +119,7 @@
   }
 
   function apply(s) {
+    grouping = normalizePrGrouping(s.pr_grouping);
     repos = toLines(s.repos);
     defaultRepo = s.default_repo;
     pollInterval = s.poll_interval_s;
@@ -212,6 +216,7 @@
     error = null;
     try {
       const next = await saveSettings({
+        pr_grouping: grouping,
         repos: toCsv(repos),
         default_repo: defaultRepo.trim(),
         poll_interval_s: Number(pollInterval),
@@ -331,7 +336,7 @@
     {/if}
 
     {#if loaded}
-      <div class="settings-panel" id={`settings-panel-${activeTab}`} aria-label={`${activeSection?.label ?? "Workspace"} settings`}>
+      <div class="settings-panel" class:grouping-settings={activeTab === "general" && (grouping.mode === "manual" || grouping.mode === "feature")} id={`settings-panel-${activeTab}`} aria-label={`${activeSection?.label ?? "Workspace"} settings`}>
       <fieldset class="settings-controls" disabled={saving}>
       <legend class="sr-only">{activeSection?.label ?? "Workspace"} settings</legend>
       {#if activeTab === "general"}
@@ -364,6 +369,35 @@
             <input class="input mono" bind:value={defaultRepo} placeholder="owner/name" spellcheck="false" autocomplete="off" />
           </label>
 
+
+          <label class="field field-wide">
+            <span class="label">Group review queue by</span>
+            <select class="input" bind:value={grouping.mode}>
+              <option value="status">Review status (default)</option>
+              <option value="manual">Manual groups</option>
+              <option value="feature">Feature area</option>
+              <option value="type">PR type (feat, fix, etc.)</option>
+            </select>
+            <span class="hint">Pinned PRs stay at the top.</span>
+          </label>
+          {#if grouping.mode === "manual" || grouping.mode === "feature"}
+            <div class="field field-wide group-editor">
+              <span class="label">Groups</span>
+              <span class="hint">{grouping.mode === "manual" ? "Select a PR in your queue, then choose its group. Assignments stay on this device. Stacked PRs follow their parent." : "Match titles and scopes like feat(settings). Comma-separated keywords; the first matching group wins. Stacked PRs follow their parent."}</span>
+              {#each grouping.groups as group, index (group.id)}
+                <div class="group-editor-row">
+                  <input class="input" aria-label={`Group ${index + 1} name`} maxlength="80" placeholder="Group name" bind:value={group.name} />
+                  {#if grouping.mode === "feature"}<input class="input" aria-label={`Group ${index + 1} keywords`} maxlength="1000" placeholder="Keywords, separated by commas" bind:value={group.keywords} />{/if}
+                  <button class="btn" type="button" aria-label={`Remove group ${group.name || index + 1}`} onclick={() => grouping.groups = grouping.groups.filter((item) => item.id !== group.id)}>Remove</button>
+                </div>
+              {/each}
+              {#if groupIssues}<span class="hint invalid-hint">Give each group a unique, nonempty name.</span>{/if}
+              <span class="hint">Unmatched PRs appear in {grouping.mode === "manual" ? "Ungrouped" : "Other"}. Removing a group keeps its PRs.</span>
+              <button class="btn" type="button" disabled={grouping.groups.length >= 50} onclick={() => grouping.groups = [...grouping.groups, { id: crypto.randomUUID(), name: "", keywords: "" }]}>Add group</button>
+            </div>
+          {:else if grouping.mode === "type"}
+            <span class="hint field-wide">Uses title prefixes such as feat:, fix:, and refactor:. Titles without a recognized prefix appear in Other.</span>
+          {/if}
 
           <label class="check-field settings-option field-wide">
             <input class="check" type="checkbox" bind:checked={pendingReviewsEnabled} />
@@ -729,6 +763,10 @@
 {/if}
 
 <style>
+  .group-editor-row { display: flex; gap: 8px; align-items: center; margin-block: 8px; }
+  .group-editor-row .input { min-width: 0; flex: 1; }
+  .group-editor > .btn { align-self: flex-start; }
+  @media (max-width: 700px) { .group-editor-row { flex-wrap: wrap; } .group-editor-row .input { flex-basis: 100%; } }
   .page {
     --settings-page-inset: 18px;
     height: 100%;
@@ -892,6 +930,7 @@
     border-top: 1px solid var(--border-soft);
     background: var(--bg);
   }
+  .grouping-settings .actions { position: static; }
   .save-copy { flex: 1 1 260px; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
   .saved { color: var(--ready); }
   .btn {

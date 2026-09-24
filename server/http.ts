@@ -2589,6 +2589,7 @@ async function handlePutSettings(req: Request, runtime: HttpRuntime): Promise<Re
     relay_url: string;
     notifications: NotificationSettings;
     pending_reviews_enabled: boolean;
+    pr_grouping: Settings["pr_grouping"];
   }>;
   try {
     body = (await req.json()) as typeof body;
