@@ -475,6 +475,49 @@ test("current-head catalog refresh discovers a newly queued workflow with no job
   expect(result.lease).toMatchObject({ head_sha: "a".repeat(40), bootstrapped_at: expect.any(String) });
 });
 
+test("current-head catalog refresh fetches running workflows' jobs in parallel, bounded, and skips settled runs", async () => {
+  const result = await runScenario("pr-cockpit-actions-parallel-jobs-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    const run = (id, status) => ({
+      id, run_attempt: 1, head_sha: head, head_branch: "feature", name: "W" + id,
+      path: ".github/workflows/w" + id + ".yml", event: "pull_request",
+      status, conclusion: status === "completed" ? "success" : null,
+      updated_at: "2026-09-17T02:40:00Z", html_url: null,
+    });
+    let inFlight = 0;
+    let peak = 0;
+    const fetched = [];
+    const fetchers = {
+      fetchWorkflowRuns: async () => [run(80, "completed"), ...[81, 82, 83, 84, 85, 86].map((id) => run(id, "in_progress"))],
+      fetchRunJobs: async (_repo, runId) => {
+        inFlight++;
+        peak = Math.max(peak, inFlight);
+        await Bun.sleep(20);
+        inFlight--;
+        fetched.push(runId);
+        return [{
+          id: runId * 10, run_id: runId, run_attempt: 1, head_sha: head, head_branch: "feature",
+          workflow_name: "W" + runId, name: "job", status: "in_progress", conclusion: null,
+          started_at: null, completed_at: null, html_url: null, labels: [], steps: [],
+        }];
+      },
+      fetchJobLog: async () => "",
+      restRemaining: async () => 5000,
+    };
+    await actions.cacheGithubActionsForCommit("acme/app", 7, head, fetchers, true);
+    const firstPass = [...fetched].sort();
+    fetched.length = 0;
+    await actions.cacheGithubActionsForCommit("acme/app", 7, head, fetchers, true);
+    console.log(JSON.stringify({ firstPass, secondPass: [...fetched].sort(), peak }));
+  `);
+  expect(result.firstPass).toEqual([80, 81, 82, 83, 84, 85, 86]);
+  // The completed run's jobs are cached now; only the running ones are asked again.
+  expect(result.secondPass).toEqual([81, 82, 83, 84, 85, 86]);
+  expect(result.peak).toBe(4);
+});
+
 test("an explicit activation for a new head queues behind an in-flight activation for the old head", async () => {
   const result = await runScenario("pr-cockpit-actions-head-change-", `
     const actions = await import(${JSON.stringify(runLogsUrl)});

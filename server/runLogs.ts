@@ -656,16 +656,34 @@ export async function cacheGithubActionsForCommit(
   if (currentHead) renewActionsLease(repo, number, headSha);
   const runs = (await fetchers.fetchWorkflowRuns(repo, headSha)).map(compactRun);
   for (const run of runs) storeRun(repo, number, run);
-  for (const run of runs) {
+  const stale = runs.filter((run) => {
     const stored = latestWorkflowRunAttempt(repo, run.id);
-    if (stored?.run_attempt === run.attempt && stored.status === "completed" && stored.jobs_fetched_at !== null
-      && listRunJobsForRun(repo, run.id, run.attempt).length > 0) continue;
+    return !(stored?.run_attempt === run.attempt && stored.status === "completed" && stored.jobs_fetched_at !== null
+      && listRunJobsForRun(repo, run.id, run.attempt).length > 0);
+  });
+  // A busy head has a dozen running workflows; fetching their jobs one by one held every
+  // refresh for seconds. The request count, and so the REST quota spent, is unchanged.
+  await forEachWithConcurrency(stale, RUN_JOBS_FETCH_CONCURRENCY, async (run) => {
     const jobs = (await fetchers.fetchRunJobs(repo, run.id, run.status === "completed" ? run.attempt : undefined))
       .map((job) => compactJob(job, run));
     for (const job of jobs) storeJob(repo, job);
     markWorkflowRunJobsFetched(repo, run.id, run.attempt);
-  }
+  });
   if (currentHead) markActionsLeaseBootstrapped(repo, number, headSha);
+}
+
+const RUN_JOBS_FETCH_CONCURRENCY = 4;
+
+// Rejects with the first failure only after every started task settles, so no fetch keeps
+// writing to the cache after the caller has moved on.
+async function forEachWithConcurrency<T>(items: T[], limit: number, task: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) await task(items[next++]!);
+  });
+  const results = await Promise.allSettled(workers);
+  const failure = results.find((result) => result.status === "rejected");
+  if (failure) throw (failure as PromiseRejectedResult).reason;
 }
 
 export async function cacheRepoActionsRunJobs(
