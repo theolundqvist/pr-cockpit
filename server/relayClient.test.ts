@@ -213,7 +213,7 @@ test("WebSocket frames replay markers, initialize cursors, and await reset recon
               { type: "reset", latest: 9 },
             ]);
           },
-          ingest: async (_repo, state) => { seen.push(state.run.id); return true; },
+          ingest: async (_repo, state, _fetchers, followup) => { seen.push(state.run.id + ":" + followup); return true; },
           fullPoll: async () => { order.push("poll:" + getSetting("relay_cursor")); },
         });
       } catch (error) {
@@ -255,7 +255,7 @@ test("WebSocket frames replay markers, initialize cursors, and await reset recon
     const [exitCode, stdout, stderr] = await Promise.all([process.exited, new Response(process.stdout).text(), new Response(process.stderr).text()]);
     if (exitCode !== 0) throw new Error(stderr);
     const result = JSON.parse(stdout);
-    expect(result.seen).toEqual([5]);
+    expect(result.seen).toEqual(["5:background"]);
     expect(result.order).toEqual(["poll:5", "done:9", "rewind:20"]);
     expect(result.urls).toEqual([
       "wss://stream.test/stream?ticket=one-time-ticket&since=4",

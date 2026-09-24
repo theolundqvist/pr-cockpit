@@ -631,6 +631,33 @@ test("reserved background work can be repaired without mixing rerun logs", async
   expect(result.visible).toEqual([502]);
 });
 
+test("background follow-up stores a watched run's completion without waiting for its logs", async () => {
+  const result = await runScenario("pr-cockpit-actions-background-followup-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    let releaseLog;
+    const logGate = new Promise((resolve) => { releaseLog = resolve; });
+    const fetchers = {
+      fetchWorkflowRuns: async () => [],
+      fetchRunJobs: async () => [{ id: 601, run_id: 60, run_attempt: 1, head_sha: head, head_branch: "feature",
+        workflow_name: "CI", name: "fail", status: "completed", conclusion: "failure",
+        started_at: null, completed_at: null, html_url: null, labels: [], steps: [] }],
+      fetchJobLog: async () => { await logGate; return "failure evidence"; },
+      restRemaining: async () => 5000,
+    };
+    await actions.activateActionsLease("acme/app", 7, head, fetchers);
+    const run = { id: 60, attempt: 1, headSha: head, headBranch: "feature", workflowName: "CI",
+      status: "completed", conclusion: "failure", eventAt: "2026-08-24T10:01:00Z", htmlUrl: null };
+    const changed = await actions.ingestActionsState("acme/app", { run }, fetchers, "background");
+    const whileLogPending = { run: dbm.latestWorkflowRunAttempt("acme/app", 60).status, log: dbm.getRunJobLog("acme/app", 601) };
+    releaseLog();
+    while (dbm.latestWorkflowRunAttempt("acme/app", 60).reconciled_at === null) await Bun.sleep(1);
+    console.log(JSON.stringify({ changed, whileLogPending, logged: dbm.getRunJobLog("acme/app", 601) !== null }));
+  `);
+  expect(result).toEqual({ changed: true, whileLogPending: { run: "completed", log: null }, logged: true });
+});
+
 test("explicit activation retries transient log failures", async () => {
   const result = await runScenario("pr-cockpit-actions-retry-", `
     const actions = await import(${JSON.stringify(runLogsUrl)});

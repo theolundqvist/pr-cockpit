@@ -98,7 +98,9 @@ function saveCursor(value: number): void {
 async function processMarker(marker: RelayMarker, deps: RelayPollDependencies = {}): Promise<void> {
   const ingest = deps.ingest ?? ingestActionsState;
   if (marker.run || marker.job) {
-    await ingest(marker.repo, { run: marker.run, job: marker.job });
+    // Log downloads for a watched PR would otherwise hold every later marker, including the
+    // check and review events that refresh what the user is looking at.
+    await ingest(marker.repo, { run: marker.run, job: marker.job }, undefined, "background");
   } else if (marker.number === null) {
     (deps.requestFullPoll ?? requestFullPoll)();
   } else {

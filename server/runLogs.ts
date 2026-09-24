@@ -733,10 +733,21 @@ export function activateActionsLease(
 }
 
 
+// "background" stores the event and returns without waiting for the REST follow-up (jobs and
+// logs of a watched PR), so an ordered event stream is not held behind log downloads.
+export type ActionsFollowup = "await" | "background";
+
+function runFollowup(work: Promise<unknown>, followup: ActionsFollowup, label: string): Promise<unknown> | undefined {
+  if (followup === "await") return work;
+  work.catch((error) => console.error(`Actions follow-up failed for ${label}:`, error));
+  return undefined;
+}
+
 export async function ingestActionsState(
   repo: string,
   state: { run?: CompactRun; job?: CompactJob },
   fetchers: ActionsFetchers = liveFetchers,
+  followup: ActionsFollowup = "await",
 ): Promise<boolean> {
   const item = state.run ?? state.job;
   if (!item) return false;
@@ -748,7 +759,9 @@ export async function ingestActionsState(
     if (changed && lease?.head_sha === pr.head_sha && state.run.status === "completed") {
       const row = workflowRunsForLease(repo, pr.number, pr.head_sha)
         .find((candidate) => candidate.run_id === state.run!.id && candidate.run_attempt === state.run!.attempt);
-      if (row?.reconciled_at === null) await queueReconciliation(repo, state.run, fetchers, true);
+      if (row?.reconciled_at === null) {
+        await runFollowup(queueReconciliation(repo, state.run, fetchers, true), followup, `${repo} run ${state.run.id}`);
+      }
     }
     return changed;
   }
@@ -758,7 +771,7 @@ export async function ingestActionsState(
   if (!pr) return changed;
   const lease = actionsLease(repo, pr.number);
   if (changed && lease?.head_sha === pr.head_sha && jobProducesLog(job) && getRunJobLog(repo, job.id) === null) {
-    await fetchLogs(repo, [job], fetchers, true);
+    await runFollowup(fetchLogs(repo, [job], fetchers, true), followup, `${repo} job ${job.id}`);
   }
   return changed;
 }
