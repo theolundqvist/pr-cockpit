@@ -302,9 +302,11 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
     });
     // Each refresh is a GraphQL detail plus its Actions catalog (1-3s); after a burst of activity,
     // refreshing one PR at a time held the last one's update for the sum. Quota spend is unchanged.
+    // A slot frees once the PR's detail is published: its catalog, which publishes the PR again
+    // when it lands, finishes beside the next refreshes and does not hold the poll.
     let refreshed = 0;
     await forEachWithConcurrency(changedHits, POLL_REFRESH_CONCURRENCY, async (hit) => {
-      await deps.refreshPr(hit.repo, hit.number, "background poll");
+      await deps.refreshPr(hit.repo, hit.number, "background poll", "all", "detail");
       refreshed++;
     });
 
@@ -342,7 +344,7 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
       try {
         const status = await deps.lookupPr(reg.repo, reg.number);
         if (status?.state === "OPEN") {
-          await deps.refreshPr(reg.repo, reg.number, "background poll");
+          await deps.refreshPr(reg.repo, reg.number, "background poll", "all", "detail");
           continue;
         }
         deps.deleteWebhookRegistrationsForPr(reg.repo, reg.number);

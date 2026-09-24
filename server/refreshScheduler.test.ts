@@ -50,6 +50,20 @@ test("a trailing refresh starts once the detail is stored, not after the Actions
   expect(events).toEqual(["detail 1", "detail 2", "detail 3", "catalog 1"]);
 });
 
+test("a detail-only caller settles before the Actions catalog; others still wait for it", async () => {
+  const catalog = Promise.withResolvers<void>();
+  const refresh = createPrRefreshScheduler(async () => ({ followUp: catalog.promise }));
+  let settled = false;
+  const full = refresh("org/repo", 42).then(() => { settled = true; });
+  await refresh("org/repo", 42, "background poll", "all", "detail");
+  expect(settled).toBe(false);
+  catalog.resolve();
+  await full;
+
+  const failing = createPrRefreshScheduler(async () => { throw new Error("detail failed"); });
+  await expect(failing("org/repo", 43, "background poll", "all", "detail")).rejects.toThrow("detail failed");
+});
+
 test("attributes a trailing refresh to the latest trigger", async () => {
   const gate = Promise.withResolvers<void>();
   const sources: string[] = [];

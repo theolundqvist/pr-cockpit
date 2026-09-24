@@ -6,6 +6,7 @@ import { backgroundQuotaAvailable, createPollOnce, nextPollDelayMs, type PollDep
 import { GithubRequestError, type PrDetailScope, type SearchHit } from "./github.ts";
 import type { GithubUsageSource } from "./githubUsage.ts";
 import type { PrRow, WebhookRegistrationRow } from "./db.ts";
+import type { PrRefreshUntil } from "./refreshScheduler.ts";
 
 let registrations: WebhookRegistrationRow[] = [];
 let searchHits: SearchHit[] = [];
@@ -18,6 +19,7 @@ const refreshPr = mock(async (
   _number: number,
   _source?: GithubUsageSource,
   _scope?: PrDetailScope,
+  _until?: PrRefreshUntil,
 ) => {});
 const invalidateInbox = mock(() => {});
 const publishPollCompleted = mock((_lastPollAt: string) => {});
@@ -214,7 +216,7 @@ describe("poll-loop registration lifecycle", () => {
     searchHits = [hit("ext/repo", 5)];
     statusLookupError = new Error("lookupPr must not run for open hits");
     await createPollOnce(deps)();
-    expect(refreshPr.mock.calls).toContainEqual(["ext/repo", 5, "background poll"]);
+    expect(refreshPr.mock.calls).toContainEqual(["ext/repo", 5, "background poll", "all", "detail"]);
     expect(registeredKeys()).toEqual(["ext/repo#5"]);
   });
 
@@ -241,7 +243,7 @@ describe("poll-loop registration lifecycle", () => {
     registrationStatuses.set("ext/repo#5", { state: "OPEN" });
     await createPollOnce(deps)();
     expect(registeredKeys()).toEqual(["ext/repo#5"]);
-    expect(refreshPr.mock.calls).toContainEqual(["ext/repo", 5, "background poll"]);
+    expect(refreshPr.mock.calls).toContainEqual(["ext/repo", 5, "background poll", "all", "detail"]);
   });
 
   test("registration absent from hits and MERGED is dropped", async () => {
