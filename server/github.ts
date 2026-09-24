@@ -1704,7 +1704,9 @@ query($owner: String!, $name: String!, $number: Int!) {
   }
 }`;
 
-function knownLineCounts(previous: Pick<PrDetail, "commitList"> | null): Map<string, CommitLineCounts> {
+type CommitLineCountSource = { commitList: { nodes: Array<{ commit: { oid: string } & Partial<CommitLineCounts> }> } };
+
+function knownLineCounts(previous: CommitLineCountSource | null): Map<string, CommitLineCounts> {
   const known = new Map<string, CommitLineCounts>();
   for (const { commit } of previous?.commitList?.nodes ?? []) {
     if (typeof commit.additions === "number" && typeof commit.deletions === "number") {
