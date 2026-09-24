@@ -4,6 +4,7 @@
 </script>
 
 <script>
+  import { isSetAside, putAside } from "./setAside.svelte.js";
   import { untrack } from "svelte";
   import { fetchInbox, fetchRecentClosed, fetchAllPrs, fetchPrDetails, setArchived, saveSettings, reorderPr, fetchSettings, fetchRelayStatus, fetchRelayCoverage, autofixAgent, customAgent } from "./api.js";
   import { cacheDetail, cachedHeadSha } from "./detailCache.js";
@@ -47,7 +48,6 @@
   }
 
   let keybindAgents = $derived(prefs.agents.filter((a) => a.trigger === "keybind" && a.enabled && a.keybind));
-  let lastG = 0;
   let filterOpen = $state(false);
   let filterQuery = $state("");
   let filterInput;
@@ -316,7 +316,7 @@
     const repos = [...selectedRepos];
     const scope = JSON.stringify(repos);
     const selectedKey = scope === allPrsScope
-      ? restoreKey ?? (allPrs[selected] ? prKey(allPrs[selected]) : allPrsSelectedKey)
+      ? restoreKey ?? (visibleAllPrs[selected] ? prKey(visibleAllPrs[selected]) : allPrsSelectedKey)
       : null;
     const seq = ++allPrsSeq;
     allPrsScope = scope;
@@ -330,9 +330,9 @@
       allPrs = res.prs;
       allPrsRepos = [...new Set([...allPrsRepos, ...res.prs.map((pr) => pr.repo)])];
       restoreKey = null;
-      const index = selectedKey === null ? -1 : allPrs.findIndex((pr) => prKey(pr) === selectedKey);
+      const index = selectedKey === null ? -1 : visibleAllPrs.findIndex((pr) => prKey(pr) === selectedKey);
       selected = Math.max(0, index);
-      allPrsSelectedKey = allPrs[selected] ? prKey(allPrs[selected]) : null;
+      allPrsSelectedKey = visibleAllPrs[selected] ? prKey(visibleAllPrs[selected]) : null;
       scrollSelectedIntoView();
     } catch (e) {
       if (seq === allPrsSeq && active && view === "all" && scope === JSON.stringify(selectedRepos)) {
@@ -395,8 +395,8 @@
   let historyActive = $derived(wantsHistory(filterQuery) && historyQuery === filterQuery.trim() && !historyLoading);
   let queryFilteredPrs = $derived(wantsHistory(filterQuery) ? (historyQuery === filterQuery.trim() ? historyPrs : []) : filterPrs(prs, filterQuery, showArchived));
   let availableRepos = $derived(availableRepositories(view === "all" ? [...configuredRepos, ...allPrsRepos, ...selectedRepos] : configuredRepos, prs, archivedPrs, closedPrs));
-  let filteredPrs = $derived(filterByRepositories(queryFilteredPrs, selectedRepos));
-  let filteredClosedPrs = $derived(filterByRepositories(closedPrs, selectedRepos));
+  let filteredPrs = $derived(filterByRepositories(queryFilteredPrs.filter((pr) => !isSetAside(pr)), selectedRepos));
+  let filteredClosedPrs = $derived(filterByRepositories(closedPrs.filter((pr) => !isSetAside(pr)), selectedRepos));
   let actionsHref = $derived.by(() => {
     const params = new URLSearchParams();
     if (selectedRepos.length === 0) params.append("repo", "");
@@ -407,8 +407,8 @@
 
   // history views can't be counted from the open inbox; show the live count only while applied, else a placeholder
   function viewCount(v) {
-    if (wantsHistory(v.query)) return activeView === v.name && historyActive ? historyPrs.length : "–";
-    return countMatches(prs, v.query, showArchived);
+    if (wantsHistory(v.query)) return activeView === v.name && historyActive ? historyPrs.filter((pr) => !isSetAside(pr)).length : "–";
+    return countMatches(prs.filter((pr) => !isSetAside(pr)), v.query, showArchived);
   }
 
 
@@ -614,7 +614,9 @@
     const pr = prs.find((p) => prKey(p) === dragKey);
     return pr ? (pr.rank != null ? "pinned" : classify(topUnit(pr), viewerLogin).group) : null;
   });
-  let ordered = $derived(view === "all" ? allPrs : view === "closed" ? filteredClosedPrs : showArchived ? [...openOrdered, ...archivedPrs] : openOrdered);
+  let visibleAllPrs = $derived(allPrs.filter((pr) => !isSetAside(pr)));
+  let visibleArchivedPrs = $derived(archivedPrs.filter((pr) => !isSetAside(pr)));
+  let ordered = $derived(view === "all" ? visibleAllPrs : view === "closed" ? filteredClosedPrs : showArchived ? [...openOrdered, ...visibleArchivedPrs] : openOrdered);
   let archivedSet = $derived(new Set(archivedPrs.map((pr) => prKey(pr))));
   const isArchived = (pr) => archivedSet.has(prKey(pr));
 
@@ -775,13 +777,18 @@
       if (confirmAction) return;
       const pr = ordered[selected];
       if (e.key === "g" && !e.shiftKey) {
-        const now = Date.now();
-        if (now - lastG < 400) {
-          selected = 0;
-          scrollEdge(document.querySelector(".page"), "top");
-          lastG = 0;
-          e.preventDefault();
-        } else lastG = now;
+        e.preventDefault();
+        if (e.repeat) return;
+        if (pr && putAside(pr)) {
+          multiAnchor = null;
+          scrollSelectedIntoView();
+        }
+        return;
+      }
+      if (e.key === "Home") {
+        selected = 0;
+        scrollEdge(document.querySelector(".page"), "top");
+        e.preventDefault();
         return;
       }
       if (e.key === "G") {
@@ -880,7 +887,7 @@
       <div class="view-tabs" role="tablist" aria-label="List view">
         <button class="view-tab" role="tab" title="Pull requests involving you" aria-selected={view === "open"} class:active={view === "open"} onclick={() => showView("open")}>
           Your queue
-          <span class="view-tab-count">{filterByRepositories(prs, selectedRepos).length}</span>
+          <span class="view-tab-count">{filterByRepositories(prs.filter((pr) => !isSetAside(pr)), selectedRepos).length}</span>
           {#if view === "closed"}<Kbd keys="tab" />{/if}
         </button>
         <button class="view-tab" role="tab" title="Every open pull request in tracked repositories" aria-selected={view === "all"} class:active={view === "all"} onclick={() => showView("all")}>
@@ -1111,12 +1118,12 @@
             </div>
           {:else if allPrsLoading}
             <div class="empty" role="status">Loading all PRs…</div>
-          {:else if allPrs.length === 0}
+          {:else if visibleAllPrs.length === 0}
             <div class="empty">No open pull requests in {selectedRepos.length ? "the selected" : "tracked"} repositories</div>
           {:else}
             <section class="queue-group" aria-label="All open pull requests">
               <div class="group-body">
-                {#each allPrs as pr, index (prKey(pr))}{@render allPrRow(pr, index)}{/each}
+                {#each visibleAllPrs as pr, index (prKey(pr))}{@render allPrRow(pr, index)}{/each}
               </div>
             </section>
           {/if}
@@ -1140,6 +1147,8 @@
             <div class="empty">Syncing with GitHub…</div>
           {:else if loaded && prs.length === 0}
             <div class="empty">No open pull requests involving you. Use All PRs to see every tracked repository.</div>
+          {:else if !filterQuery && filteredPrs.length === 0 && prs.some(isSetAside)}
+            <div class="empty">You’re all caught up here. Your set-aside PRs are in the tray.</div>
           {:else if selectedRepos.length && filteredPrs.length === 0}
             <div class="empty">No pull requests involving you in the selected repositories. Use All PRs to see every open pull request.</div>
           {:else if wantsHistory(filterQuery) && !historyActive}
@@ -1161,12 +1170,12 @@
 
           {#if showArchived}
             <section class="queue-group archived-group">
-              <div class="group-label archived-label"><span>Archived</span><span class="group-count">{archivedPrs.length}</span></div>
+              <div class="group-label archived-label"><span>Archived</span><span class="group-count">{visibleArchivedPrs.length}</span></div>
               <div class="group-body">
-                {#if archivedPrs.length === 0}
+                {#if visibleArchivedPrs.length === 0}
                   <div class="empty">Nothing archived</div>
                 {/if}
-                {#each archivedPrs as pr (prKey(pr))}{@render row(pr)}{/each}
+                {#each visibleArchivedPrs as pr (prKey(pr))}{@render row(pr)}{/each}
               </div>
             </section>
           {/if}
@@ -1214,7 +1223,7 @@
             <div class="view-item" class:active={!filterQuery.trim()}>
               <button class="view-apply" onclick={() => (filterQuery = "")}>
                 <span class="view-name">All</span>
-                <span class="view-count">{prs.length}</span>
+                <span class="view-count">{prs.filter((pr) => !isSetAside(pr)).length}</span>
               </button>
             </div>
             {#each savedViews as v, i (v.name)}

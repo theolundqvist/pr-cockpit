@@ -1,4 +1,5 @@
 <script>
+  import { isSetAside, putAside, bringBack } from "./setAside.svelte.js";
   import { onDestroy, tick, untrack } from "svelte";
   import {
     fetchPrDetail,
@@ -78,7 +79,6 @@
   let handledRefreshRevision = refreshRevision;
   loadPrIndex();
 
-  let lastG = 0;
   const copied = timedFlag(1200);
   const branchCopied = timedFlag(1200);
   const fixPromptCopied = timedFlag(1200);
@@ -2030,6 +2030,7 @@
     let downPressed = false;
     let upPressed = false;
     function onKey(e) {
+      if (e.defaultPrevented) return;
       const keyOwner = prKeyOwner(e);
       if (keyOwner === "blur") {
         e.target.blur();
@@ -2110,12 +2111,17 @@
       }
       const page = document.querySelector(".page");
       if (e.key === "g" && !e.shiftKey) {
-        const now = Date.now();
-        if (now - lastG < 400) {
-          scrollEdge(page, "top");
-          lastG = 0;
-          e.preventDefault();
-        } else lastG = now;
+        e.preventDefault();
+        if (e.repeat || !pr || !finishFileEdit()) return;
+        const item = { ...pr, repo, number };
+        if (isSetAside(item)) {
+          if (bringBack(item)) showFlash("PR brought back to the main view");
+        } else if (putAside(item)) location.hash = "#/";
+        return;
+      }
+      if (e.key === "Home") {
+        scrollEdge(page, "top");
+        e.preventDefault();
         return;
       }
       if (e.key === "G") {

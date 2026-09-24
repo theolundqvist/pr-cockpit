@@ -93,7 +93,127 @@ function repositoryPickerScenario(searchable) {
   };
 }
 
+function setAsideScenario(roundtrip) {
+  return {
+    name: roundtrip ? "inbox-set-aside-roundtrip" : "inbox-set-aside-tray",
+    sidebar: true, // The phone layout always shows its bottom navigation.
+    route: "#/",
+    description: "Set aside from the keyboard, retain across reloads, inspect and restore from the tray.",
+    ready: ".inbox-layout .queue-group",
+    verify: async (page) => {
+      if (roundtrip || page.viewportSize().width > 700) return;
+      const pill = await page.locator(".aside-pill").boundingBox();
+      const nav = await page.locator(".app-sidebar").boundingBox();
+      if (pill.y + pill.height > nav.y - 8) throw new Error("Set Aside overlaps phone navigation");
+    },
+    beforeGoto: async (page) => {
+      // The runner shares a browser context across scenarios.
+      await page.goto("about:blank");
+      await page.addInitScript(() => {
+        if (!sessionStorage.getItem("set-aside-scenario")) {
+          localStorage.removeItem("cockpit:set-aside:v1");
+          sessionStorage.setItem("set-aside-scenario", "1");
+        }
+      });
+    },
+    interact: async (page) => {
+      const rows = page.locator(".inbox .row");
+      const initialCount = await rows.count();
+      if (await page.locator(".aside-pill").count()) throw new Error("Set Aside is visible before use");
+      const targets = [];
+      for (let i = 0; i < 3; i++) {
+        targets.push(await page.locator(".inbox .row.selected").getAttribute("href"));
+        await page.keyboard.press("g");
+        await page.waitForFunction((count) => document.querySelectorAll(".inbox .row").length === count, initialCount - i - 1);
+      }
+      await page.getByRole("button", { name: "3 PRs set aside" }).waitFor();
+      await page.reload();
+      await page.locator(".inbox-layout .queue-group").first().waitFor();
+      if (await rows.count() !== initialCount - 3) throw new Error("Reload lost set-aside state");
+      await page.getByRole("button", { name: "3 PRs set aside" }).click();
+      const tray = page.getByRole("dialog", { name: "Set aside" });
+      await tray.waitFor();
+      await page.keyboard.press("j");
+      await page.keyboard.press("g");
+      if (await rows.count() !== initialCount - 3) throw new Error("Tray keys changed the underlying inbox");
+      await page.keyboard.press("ArrowDown");
+      if (!await tray.locator(".pr-link").nth(1).evaluate((el) => el === document.activeElement)) throw new Error("Tray arrow navigation failed");
+      if (!roundtrip) return;
+      await tray.locator(".pr-link").first().click();
+      await page.waitForURL(`**/${targets[0]}`);
+      await page.locator(".pr-title-row h1").first().waitFor();
+      await page.getByRole("button", { name: "3 PRs set aside" }).waitFor();
+      // Opening is non-destructive. G on that PR restores it without navigating.
+      await page.keyboard.press("g");
+      await page.getByRole("button", { name: "2 PRs set aside" }).waitFor();
+      await page.keyboard.press("Escape");
+      await page.waitForURL("**/#/");
+      await page.waitForFunction((count) => document.querySelectorAll(".inbox .row").length === count, initialCount - 2);
+      await page.keyboard.press("Control+g");
+      await tray.waitFor();
+      await tray.locator(".restore").first().focus();
+      await page.keyboard.press("Space");
+      await page.getByRole("button", { name: "1 PR set aside" }).waitFor();
+      await tray.getByRole("button", { name: "Bring back all", exact: true }).click();
+      await tray.waitFor({ state: "hidden" });
+      if (await page.locator(".aside-pill").count()) throw new Error("Empty tray pill remains visible");
+      await page.waitForFunction((count) => document.querySelectorAll(".inbox .row").length === count, initialCount);
+      // A held G must not set aside the entire list.
+      await page.keyboard.down("g");
+      await page.keyboard.down("g");
+      await page.keyboard.up("g");
+      await page.getByRole("button", { name: "1 PR set aside" }).waitFor();
+      // Cross-window storage updates restore the same main list.
+      const peer = await page.context().newPage();
+      await peer.goto(page.url());
+      await peer.getByRole("button", { name: "1 PR set aside" }).click();
+      await peer.getByRole("button", { name: "Bring back all", exact: true }).click();
+      await peer.close();
+      await page.locator(".aside-pill").waitFor({ state: "hidden" });
+      // Typing in the filter must never set aside a PR.
+      await page.keyboard.press("/");
+      await page.locator(".filter-row input").fill("g");
+      if (await page.locator(".aside-pill").count()) throw new Error("Typing activated Set Aside");
+      await page.keyboard.press("Escape");
+      // Set aside from the PR page returns to the queue.
+      await page.keyboard.press("Enter");
+      await page.locator(".pr-title-row h1").first().waitFor();
+      await page.keyboard.press("g");
+      await page.waitForURL("**/#/");
+      await page.getByRole("button", { name: "1 PR set aside" }).waitFor();
+      await page.keyboard.press("Control+g");
+      await tray.getByRole("button", { name: "Bring back all", exact: true }).click();
+      // The all-repository view uses the same exclusion and selection ordering.
+      await page.getByRole("tab", { name: /^All PRs/ }).click();
+      await page.locator(".inbox .row.selected").waitFor();
+      const allCount = await rows.count();
+      const allTarget = await page.locator(".inbox .row.selected").getAttribute("href");
+      await page.keyboard.press("g");
+      await page.waitForFunction((count) => document.querySelectorAll(".inbox .row").length === count, allCount - 1);
+      if (await page.locator(`.inbox .row[href="${allTarget}"]`).count()) throw new Error("All PRs still contains set-aside item");
+      await page.keyboard.press("Control+g");
+      await tray.getByRole("button", { name: "Bring back all", exact: true }).click();
+      await page.getByRole("tab", { name: /^Your queue/ }).click();
+      // Storage failure must leave the PR visible and report a recoverable error.
+      await page.evaluate(() => {
+        window.originalStorageSetItem = Storage.prototype.setItem;
+        Storage.prototype.setItem = function(key, value) {
+          if (key === "cockpit:set-aside:v1") throw new DOMException("Full", "QuotaExceededError");
+          return window.originalStorageSetItem.call(this, key, value);
+        };
+      });
+      await page.keyboard.press("g");
+      await page.getByText("Couldn't save Set Aside.", { exact: false }).waitFor();
+      if (await rows.count() !== initialCount || await page.locator(".aside-pill").count()) throw new Error("Storage failure hid a PR");
+      await page.evaluate(() => { Storage.prototype.setItem = window.originalStorageSetItem; });
+      await page.getByRole("button", { name: "Dismiss", exact: true }).click();
+    },
+  };
+}
+
 const scenarios = [
+  setAsideScenario(false),
+  setAsideScenario(true),
   repositoryPickerScenario(false),
   repositoryPickerScenario(true),
   {

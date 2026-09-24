@@ -1,4 +1,5 @@
 <script>
+  import SetAsideTray from "./lib/SetAsideTray.svelte";
   import Inbox from "./lib/Inbox.svelte";
   import PrDetail from "./lib/PrDetail.svelte";
   import Palette from "./lib/Palette.svelte";
@@ -416,6 +417,7 @@
       <FindBar />
     {/if}
 
+    <SetAsideTray />
     <Palette />
     <FlashBar />
     <Cheatsheet />
