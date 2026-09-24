@@ -352,3 +352,122 @@ describe("REST PR detail parity", () => {
     ]);
   });
 });
+
+describe("review thread pagination", () => {
+  const thread = (id: string) => ({
+    id,
+    isResolved: true,
+    isOutdated: false,
+    path: "server/github.ts",
+    line: 1,
+    diffSide: "RIGHT",
+    comments: {
+      pageInfo: { hasNextPage: false, endCursor: null },
+      nodes: [{ id: `${id}-c`, databaseId: 1, diffHunk: "", author: null, body: id, createdAt: "2026-08-27T10:00:00Z", pullRequestReview: null, reactionGroups: [] }],
+    },
+  });
+  const threadIds = Array.from({ length: 250 }, (_, index) => `t${index}`);
+  const pageStarts: Record<string, number> = { c100: 100, c200: 200 };
+  const pageAt = (start: number) => {
+    const end = Math.min(start + 100, threadIds.length);
+    return {
+      pageInfo: { hasNextPage: end < threadIds.length, endCursor: `c${end}` },
+      nodes: threadIds.slice(start, end).map(thread),
+    };
+  };
+  const reviewPage = (reviewThreads: unknown) => ({
+    data: {
+      repository: {
+        pullRequest: {
+          reactionGroups: [],
+          viewerCanMergeAsAdmin: false,
+          reviewDecision: null,
+          reviews: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
+          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
+          reviewThreads,
+          author: null,
+        },
+      },
+    },
+  });
+  const currentWithThreads = (count: number) => ({
+    ...mapRestPrDetailBase(restPullRequest, restFiles),
+    lastCommit: { nodes: [] },
+    commitList: { nodes: [] },
+    reviewThreads: { pageInfo: null, nodes: threadIds.slice(0, count).map(thread) },
+  } as unknown as PrDetail);
+
+  async function withGithub(
+    respond: (query: string, after: string | null) => Promise<unknown> | unknown,
+    run: () => Promise<void>,
+  ): Promise<void> {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input, init) => {
+      if (new URL(String(input)).pathname === "/user") return Response.json({ login: "viewer" });
+      const body = JSON.parse(String(init?.body)) as { query: string; variables: { after?: string | null } };
+      return Response.json(await respond(body.query, body.variables.after ?? null));
+    }) as typeof fetch;
+    try {
+      await run();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }
+
+  test("starts the later pages of a PR that already had a full page beside the first", async () => {
+    const started: string[] = [];
+    let laterPagesStarted!: () => void;
+    const laterPages = new Promise<void>((resolve) => { laterPagesStarted = resolve; });
+    await withGithub(async (query, after) => {
+      if (query.includes("viewerCanMergeAsAdmin")) {
+        // Serial pagination would wait here for pages it only requests after this answer.
+        await Promise.race([laterPages, Bun.sleep(500)]);
+        started.push("first page answered");
+        return reviewPage(pageAt(0));
+      }
+      if (!query.includes("comments(first: 50)")) {
+        const page = pageAt(after === null ? 0 : pageStarts[after]!);
+        return { data: { repository: { pullRequest: { reviewThreads: { pageInfo: page.pageInfo } } } } };
+      }
+      started.push(`page ${after}`);
+      if (after === "c200") laterPagesStarted();
+      return { data: { repository: { pullRequest: { reviewThreads: pageAt(pageStarts[after!]!) } } } };
+    }, async () => {
+      const next = await fetchPrDetailPart("acme/repo", 42, currentWithThreads(100), "review", "relay");
+      expect(next.reviewThreads.nodes.map((node) => node.id)).toEqual(threadIds);
+      expect(started).toEqual(["page c100", "page c200", "first page answered"]);
+    });
+  });
+
+  test("falls back to following the first page when the thread list moved during the walk", async () => {
+    await withGithub((query, after) => {
+      if (query.includes("viewerCanMergeAsAdmin")) return reviewPage(pageAt(0));
+      if (!query.includes("comments(first: 50)")) {
+        // The early walk, started before the first page, saw a list that has since changed.
+        const pageInfo = after === null
+          ? { hasNextPage: true, endCursor: "moved" }
+          : after === "moved" ? { hasNextPage: false, endCursor: "gone" } : pageAt(pageStarts[after]!).pageInfo;
+        return { data: { repository: { pullRequest: { reviewThreads: { pageInfo } } } } };
+      }
+      const reviewThreads = after === "moved"
+        ? { pageInfo: { hasNextPage: false, endCursor: "gone" }, nodes: [thread("stale")] }
+        : pageAt(pageStarts[after!]!);
+      return { data: { repository: { pullRequest: { reviewThreads } } } };
+    }, async () => {
+      const next = await fetchPrDetailPart("acme/repo", 42, currentWithThreads(100), "review", "relay");
+      expect(next.reviewThreads.nodes.map((node) => node.id)).toEqual(threadIds);
+    });
+  });
+
+  test("a PR without a full page of threads makes no extra requests", async () => {
+    const queries: string[] = [];
+    await withGithub((query) => {
+      queries.push(query);
+      return reviewPage({ pageInfo: { hasNextPage: false, endCursor: "c3" }, nodes: threadIds.slice(0, 3).map(thread) });
+    }, async () => {
+      const next = await fetchPrDetailPart("acme/repo", 42, currentWithThreads(3), "review", "relay");
+      expect(next.reviewThreads.nodes).toHaveLength(3);
+      expect(queries).toHaveLength(1);
+    });
+  });
+});

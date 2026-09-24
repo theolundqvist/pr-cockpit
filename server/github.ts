@@ -1637,6 +1637,19 @@ query($owner: String!, $name: String!, $number: Int!, $after: String!) {
   }
 }`;
 
+// The same pages as REVIEW_THREADS_PAGE_QUERY without their contents: ~0.5s where a full page
+// on a PR with hundreds of threads takes ~2s, so the cursors are known before the pages land.
+const REVIEW_THREAD_CURSORS_QUERY = `
+query($owner: String!, $name: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}`;
+
 const THREAD_COMMENTS_PAGE_QUERY = `
 query($threadId: ID!, $after: String!) {
   node(id: $threadId) {
@@ -1793,19 +1806,126 @@ async function fetchDetailChecks(
   return checks;
 }
 
+const REVIEW_THREADS_PER_PAGE = 100;
+
 async function fetchDetailReview(
   owner: string,
   name: string,
   number: number,
   source: GithubUsageSource,
+  previousThreadCount: number,
 ): Promise<RawPrDetailReview | null> {
+  // A PR that already had a full first page of threads very likely has more, so its later
+  // pages start beside the first instead of after it.
+  const laterPages = previousThreadCount >= REVIEW_THREADS_PER_PAGE
+    ? fetchReviewThreadPagesAfter(owner, name, number, null, source).catch(() => null)
+    : null;
   const data = await graphql<{
     repository: { pullRequest: RawPrDetailReview | null } | null;
   }>(DETAIL_REVIEW_QUERY, { owner, name, number }, source, "PR review detail");
   const review = data.repository?.pullRequest;
   if (!review) return null;
-  await completeReviewThreads(owner, name, number, review.reviewThreads, source);
+  await completeReviewThreads(owner, name, number, review.reviewThreads, laterPages, source);
   return review;
+}
+
+type ReviewThreadPage = { after: string; connection: RawThreadConnection };
+
+async function fetchReviewThreadPage(
+  owner: string,
+  name: string,
+  number: number,
+  after: string,
+  source: GithubUsageSource,
+): Promise<ReviewThreadPage> {
+  const data = await graphql<{
+    repository: { pullRequest: { reviewThreads: RawThreadConnection } | null } | null;
+  }>(REVIEW_THREADS_PAGE_QUERY, { owner, name, number, after }, source, "PR review thread pagination");
+  const connection = data.repository?.pullRequest?.reviewThreads;
+  if (!connection?.pageInfo) throw new GithubRequestError("Review thread pagination returned no page", 502);
+  return { after, connection };
+}
+
+// Thread pages only page forward, and on a PR with hundreds of threads each takes ~2s, so
+// following endCursor loads them one after another. A cursor-only walk (~0.5s a step) finds
+// where each page starts and starts it at once. `start` is the first page's endCursor, or
+// null to walk from the beginning beside the query that carries the first page.
+async function fetchReviewThreadPagesAfter(
+  owner: string,
+  name: string,
+  number: number,
+  start: string | null,
+  source: GithubUsageSource,
+): Promise<ReviewThreadPage[]> {
+  const pages: Promise<ReviewThreadPage>[] = [];
+  const seen = new Set<string>();
+  const startPage = (after: string) => {
+    if (seen.has(after)) throw new GithubRequestError("Review thread pagination returned an invalid cursor", 502);
+    seen.add(after);
+    const page = fetchReviewThreadPage(owner, name, number, after, source);
+    // Observed by Promise.all below; this keeps a failure during the walk from going unhandled.
+    page.catch(() => {});
+    pages.push(page);
+  };
+  if (start !== null) startPage(start);
+  let cursor = start;
+  for (;;) {
+    const data = await graphql<{
+      repository: { pullRequest: { reviewThreads: Pick<RawThreadConnection, "pageInfo"> } | null } | null;
+    }>(REVIEW_THREAD_CURSORS_QUERY, { owner, name, number, after: cursor }, source, "PR review thread cursors");
+    const pageInfo = data.repository?.pullRequest?.reviewThreads.pageInfo;
+    if (!pageInfo) throw new GithubRequestError("Review thread pagination returned no page", 502);
+    if (!pageInfo.hasNextPage) break;
+    if (!pageInfo.endCursor) throw new GithubRequestError("Review thread pagination returned an invalid cursor", 502);
+    startPage(pageInfo.endCursor);
+    cursor = pageInfo.endCursor;
+  }
+  return Promise.all(pages);
+}
+
+// Appends pages only when each starts exactly where the previous one ended and the last one
+// ends the list; a walk that raced a new or deleted thread is dropped instead.
+function appendReviewThreadPages(connection: RawThreadConnection, pages: ReviewThreadPage[]): boolean {
+  let pageInfo = connection.pageInfo;
+  for (const page of pages) {
+    if (!pageInfo?.hasNextPage || pageInfo.endCursor !== page.after) return false;
+    pageInfo = page.connection.pageInfo;
+  }
+  if (pageInfo?.hasNextPage) return false;
+  for (const page of pages) connection.nodes.push(...page.connection.nodes);
+  connection.pageInfo = pageInfo;
+  return true;
+}
+
+async function completeReviewThreads(
+  owner: string,
+  name: string,
+  number: number,
+  connection: RawThreadConnection,
+  laterPages: Promise<ReviewThreadPage[] | null> | null,
+  source: GithubUsageSource,
+): Promise<void> {
+  if (connection.pageInfo?.hasNextPage) {
+    const early = laterPages ? await laterPages : null;
+    if (!early || !appendReviewThreadPages(connection, early)) {
+      const after = connection.pageInfo.endCursor;
+      if (!after) throw new GithubRequestError("Review thread pagination returned an invalid cursor", 502);
+      appendReviewThreadPages(connection, await fetchReviewThreadPagesAfter(owner, name, number, after, source));
+    }
+  }
+  // Only reached with pages left when the walk above raced a change to the thread list.
+  const cursors = new Set<string>();
+  while (connection.pageInfo?.hasNextPage) {
+    const after = connection.pageInfo.endCursor;
+    if (!after || cursors.has(after)) throw new GithubRequestError("Review thread pagination returned an invalid cursor", 502);
+    cursors.add(after);
+    const next = await fetchReviewThreadPage(owner, name, number, after, source);
+    connection.nodes.push(...next.connection.nodes);
+    connection.pageInfo = next.connection.pageInfo;
+  }
+  for (const thread of connection.nodes) {
+    if (!thread.isResolved) await completeThreadComments(thread, source);
+  }
 }
 
 async function completeThreadComments(thread: RawThread, source: GithubUsageSource): Promise<void> {
@@ -1826,30 +1946,6 @@ async function completeThreadComments(thread: RawThread, source: GithubUsageSour
   }
 }
 
-async function completeReviewThreads(
-  owner: string,
-  name: string,
-  number: number,
-  connection: RawThreadConnection,
-  source: GithubUsageSource,
-): Promise<void> {
-  const cursors = new Set<string>();
-  while (connection.pageInfo?.hasNextPage) {
-    const after = connection.pageInfo.endCursor;
-    if (!after || cursors.has(after)) throw new GithubRequestError("Review thread pagination returned an invalid cursor", 502);
-    cursors.add(after);
-    const data = await graphql<{
-      repository: { pullRequest: { reviewThreads: RawThreadConnection } | null } | null;
-    }>(REVIEW_THREADS_PAGE_QUERY, { owner, name, number, after }, source, "PR review thread pagination");
-    const next = data.repository?.pullRequest?.reviewThreads;
-    if (!next?.pageInfo) throw new GithubRequestError("Review thread pagination returned no page", 502);
-    connection.nodes.push(...next.nodes);
-    connection.pageInfo = next.pageInfo;
-  }
-  for (const thread of connection.nodes) {
-    if (!thread.isResolved) await completeThreadComments(thread, source);
-  }
-}
 
 function normalizeReviewDetail(
   review: RawPrDetailReview,
@@ -1909,14 +2005,14 @@ export async function fetchPrDetail(
   repo: string,
   number: number,
   source: GithubUsageSource = "app detail",
-  previous: Pick<PrDetail, "commitList"> | null = null,
+  previous: Pick<PrDetail, "commitList" | "reviewThreads"> | null = null,
 ): Promise<PrDetail> {
   if (mockGithub) return mockGithub.detail(repo, number);
   const [owner, name] = repo.split("/");
   if (!owner || !name) throw new GithubRequestError(`Invalid repository: ${repo}`, 404);
   const [checks, review, rest, viewerLogin] = await Promise.all([
     fetchDetailChecks(owner, name, number, previous, source),
-    fetchDetailReview(owner, name, number, source),
+    fetchDetailReview(owner, name, number, source, previous?.reviewThreads.nodes.length ?? 0),
     fetchRestPrDetailBase(repo, number),
     getViewerLogin(),
   ]);
@@ -1952,7 +2048,7 @@ export async function fetchPrDetailPart(
   }
 
   const [review, viewerLogin] = await Promise.all([
-    fetchDetailReview(owner, name, number, source),
+    fetchDetailReview(owner, name, number, source, current.reviewThreads.nodes.length),
     getViewerLogin(),
   ]);
   if (!review) throw new GithubRequestError(`${repo}#${number} was not found`, 404);
