@@ -52,6 +52,9 @@ const quotaProbeInFlight = new Map<GithubQuotaResourceName, {
 }>();
 const lastQuotaProbeAt = new Map<GithubQuotaResourceName, number>();
 const QUOTA_PROBE_INTERVAL_MS = 30_000;
+// A socket that dies silently (sleep, network change) never settles its fetch, and one hung
+// request stalls the poll loop until restart, so every GitHub request carries a deadline.
+const GITHUB_REQUEST_TIMEOUT_MS = 60_000;
 const SECONDARY_RATE_LIMIT_FALLBACK_MS = 5 * 60_000;
 let activeQuotaToken: string | null = null;
 let activeQuotaGeneration = 0;
@@ -197,6 +200,7 @@ async function revalidateQuota(
   entry.promise = (async () => {
     try {
       const response = await fetch("https://api.github.com/rate_limit", {
+        signal: AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS),
         headers: {
           Authorization: `bearer ${token}`,
           Accept: "application/vnd.github+json",
@@ -271,6 +275,7 @@ async function githubApiResponse(
       },
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
       redirect: options.redirect,
+      signal: AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS),
     });
   } catch (error) {
     throw new GithubRequestError(
@@ -2148,7 +2153,7 @@ export async function fetchJobLog(repo: string, jobId: number): Promise<string> 
   if (!location) throw await githubResponseError("job log fetch failed", res);
   let download: Response;
   try {
-    download = await fetch(location);
+    download = await fetch(location, { signal: AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS) });
   } catch (error) {
     throw new GithubRequestError(
       `GitHub job log transport unavailable: ${error instanceof Error ? error.message : String(error)}`,

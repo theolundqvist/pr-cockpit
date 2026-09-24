@@ -926,3 +926,38 @@ test("a retry-after from a quota probe prevents further probes and API requests"
     rmSync(fakeGhDir, { recursive: true, force: true });
   }
 });
+
+test("GitHub requests carry a deadline so a silently dead socket cannot stall polling", async () => {
+  const fakeGhDir = mkdtempSync(join(tmpdir(), "pr-cockpit-request-deadline-"));
+  const fakeGh = join(fakeGhDir, "gh");
+  writeFileSync(fakeGh, "#!/bin/sh\nprintf 'fixture-token\\n'\n");
+  chmodSync(fakeGh, 0o755);
+  try {
+    const script = `
+      const { searchClosedPrs } = await import(${JSON.stringify(githubModuleUrl)});
+      const signals = [];
+      globalThis.fetch = async (_input, init) => {
+        signals.push(init?.signal instanceof AbortSignal);
+        return Response.json({ items: [] });
+      };
+      await searchClosedPrs(["acme/first"]);
+      console.log(JSON.stringify(signals));
+    `;
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: { ...Bun.env, COCKPIT_GH_BIN: fakeGh, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      process.exited,
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+    ]);
+    expect(exitCode, stderr).toBe(0);
+    const signals = JSON.parse(stdout);
+    expect(signals.length).toBeGreaterThan(0);
+    expect(signals.every(Boolean)).toBe(true);
+  } finally {
+    rmSync(fakeGhDir, { recursive: true, force: true });
+  }
+});
