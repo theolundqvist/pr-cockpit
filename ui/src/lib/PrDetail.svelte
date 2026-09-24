@@ -116,10 +116,9 @@
   const VIEWED_FILES_KEY_PREFIX = "pr-cockpit:viewed-files:";
   const TREE_MIN_WIDTH = 220;
   const TREE_DEFAULT_WIDTH = 250;
-  const TREE_MAX_WIDTH = 300;
+  const TREE_MAX_WIDTH = 900;
   let treeDesiredWidth = $state(Number(localStorage.getItem(TREE_WIDTH_KEY)) || TREE_DEFAULT_WIDTH);
-  let treeMaxWidth = $state(TREE_MAX_WIDTH);
-  let treeWidth = $derived(Math.max(TREE_MIN_WIDTH, Math.min(treeDesiredWidth, treeMaxWidth)));
+  let treeWidth = $derived(Math.max(TREE_MIN_WIDTH, Math.min(treeDesiredWidth, TREE_MAX_WIDTH)));
 
   let activeFetch;
   let loadedKey = null;
@@ -1739,29 +1738,15 @@
   let testsHidden = $derived(testFiles.length > 0 && testFiles.every((f) => collapsedFiles.has(f.path)));
   let treeFiles = $derived(testsHidden ? files.filter((f) => !testPattern.test(f.path)) : files);
 
-
-  $effect(() => {
-    if (tab !== "files" || diffState !== "ready" || treeFiles.length === 0) return;
-    const paths = treeFiles.map((file) => file.path);
-    requestAnimationFrame(() => {
-      const name = document.querySelector(".tree-pane .name");
-      if (!name) return;
-      const context = document.createElement("canvas").getContext("2d");
-      context.font = getComputedStyle(name).font;
-      let widest = TREE_DEFAULT_WIDTH;
-      for (const path of paths) widest = Math.max(widest, context.measureText(path).width + 96);
-      treeMaxWidth = Math.min(TREE_MAX_WIDTH, widest);
-    });
-  });
-
   function startTreeResize(e) {
     e.preventDefault();
     const target = e.currentTarget;
     target.setPointerCapture(e.pointerId);
     const startX = e.clientX;
     const startWidth = target.previousElementSibling?.getBoundingClientRect().width ?? treeWidth;
+    const maxWidth = Math.min(TREE_MAX_WIDTH, target.parentElement.getBoundingClientRect().width * 0.6);
     function onMove(ev) {
-      treeDesiredWidth = Math.max(TREE_MIN_WIDTH, Math.min(treeMaxWidth, startWidth + (ev.clientX - startX)));
+      treeDesiredWidth = Math.max(TREE_MIN_WIDTH, Math.min(maxWidth, startWidth + (ev.clientX - startX)));
     }
     function onUp() {
       target.removeEventListener("pointermove", onMove);
@@ -6499,7 +6484,7 @@
     margin-left: 0;
   }
   .files-layout {
-    grid-template-columns: var(--tree-width) 6px minmax(0, 1fr);
+    grid-template-columns: min(var(--tree-width), 60%) 6px minmax(0, 1fr);
   }
   .files-toolbar {
     grid-column: 1 / -1;

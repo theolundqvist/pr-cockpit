@@ -32,6 +32,7 @@
         additions: file.additions,
         deletions: file.deletions,
         tone: fileTone(file),
+        icon: fileIcon(name),
         isRenamed: Boolean(file.previousPath),
         isUnchangedRename: file.isUnchangedRename,
       });
@@ -85,6 +86,18 @@
     if (file.isNew) return "new";
     if (file.isDeleted) return "del";
     return "mod";
+  }
+
+  const iconByExtension = Object.fromEntries([
+    [["ts", "tsx", "js", "jsx", "mjs", "cjs", "svelte", "vue", "html", "py", "rs", "go", "swift", "java", "sh"], "code"],
+    [["json", "jsonc", "yaml", "yml", "toml", "xml"], "data"],
+    [["css", "scss", "sass", "less"], "style"],
+    [["png", "jpg", "jpeg", "gif", "svg", "webp", "ico"], "image"],
+    [["md", "mdx", "txt", "rst"], "text"],
+    [["sql", "sqlite", "db"], "database"],
+  ].flatMap(([extensions, icon]) => extensions.map((extension) => [extension, icon])));
+  function fileIcon(name) {
+    return iconByExtension[name.split(".").pop().toLowerCase()] ?? "file";
   }
 
   function updateWindow() {
@@ -171,7 +184,7 @@
       <button class="row dir" style="padding-left: {row.depth * INDENT + 8}px" onclick={() => toggleDir(value.path)}>
         {@render rails(row.depth)}
         <Chevron direction={collapsedDirs.has(value.path) ? "right" : "down"} size={12} />
-        <span class="folder-icon"></span>
+        <svg class="folder-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M1.5 4.5V3a1 1 0 0 1 1-1h3l1.5 2h6.5a1 1 0 0 1 1 1v7.5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z" /></svg>
         <span class="name">{value.name}</span>
         <span class="counts mono"><span class="add">+{value.additions}</span><span class="del">−{value.deletions}</span></span>
       </button>
@@ -191,6 +204,25 @@
         {:else}
           <span class="dot {value.tone}"></span>
         {/if}
+        <svg class="file-icon {value.icon}" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M3 1.5h6l4 4v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zM9 1.5v4h4" />
+          {#if value.icon === "code"}
+            <path d="m6.5 8-2 1.5 2 1.5m3-3 2 1.5-2 1.5" />
+          {:else if value.icon === "data"}
+            <path d="M6.5 7c-1 0-1 .7-1 1.4s-.4 1.1-1 1.1c.6 0 1 .4 1 1.1S5.5 12 6.5 12m3-5c1 0 1 .7 1 1.4s.4 1.1 1 1.1c-.6 0-1 .4-1 1.1S10.5 12 9.5 12" />
+          {:else if value.icon === "style"}
+            <circle cx="8" cy="9.5" r="2.2" />
+            <path d="M8 6.5v.8m0 4.4v.8m-3-3h.8m4.4 0h.8" />
+          {:else if value.icon === "image"}
+            <circle cx="6" cy="7.5" r=".8" />
+            <path d="m4.5 12 2.4-2.5 1.5 1.4 1.3-1.3 2 2.4" />
+          {:else if value.icon === "database"}
+            <ellipse cx="8" cy="8" rx="3.2" ry="1.3" />
+            <path d="M4.8 8v3c0 .7 1.4 1.3 3.2 1.3s3.2-.6 3.2-1.3V8" />
+          {:else if value.icon === "text"}
+            <path d="M5 8h6m-6 2h6m-6 2h4" />
+          {/if}
+        </svg>
         <span class="name">{value.name}</span>
         {#if !value.isUnchangedRename}
           <span class="counts mono"><span class="add">+{value.additions}</span><span class="del">−{value.deletions}</span></span>
@@ -254,24 +286,22 @@
     background: repeating-linear-gradient(to right, var(--border) 0 1px, transparent 1px 16px);
     pointer-events: none;
   }
-  .folder-icon {
+  .folder-icon, .file-icon {
     flex: none;
-    position: relative;
-    width: 12px;
-    height: 9px;
-    background: var(--text-faint);
-    border-radius: 0 2px 2px 2px;
+    width: 16px;
+    height: 16px;
+    stroke: currentColor;
+    stroke-width: 1.3;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
-  .folder-icon::before {
-    content: "";
-    position: absolute;
-    top: -2px;
-    left: 0;
-    width: 6px;
-    height: 2px;
-    background: var(--text-faint);
-    border-radius: 2px 2px 0 0;
-  }
+  .folder-icon { color: #c98632; }
+  .file-icon { color: var(--text-faint); }
+  .file-icon.code { color: #5892df; }
+  .file-icon.data { color: #c49230; }
+  .file-icon.style { color: #aa74d4; }
+  .file-icon.image { color: #6caa75; }
+  .file-icon.database { color: #b77d4c; }
   .dir .name {
     color: var(--text-dim);
     font-weight: 500;
