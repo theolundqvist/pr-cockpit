@@ -314,6 +314,53 @@ test("listen --comments-only ignores failed CI and unrelated changes, then exits
   }
 });
 
+test("every listen scope stops polling once the PR is merged or closed", async () => {
+  const cases = [
+    { scope: [], finishedAt: 1, state: "MERGED" },
+    { scope: ["--ci-only"], finishedAt: 1, state: "CLOSED" },
+    { scope: ["--comments-only"], finishedAt: 1, state: "MERGED" },
+    { scope: ["--ci-only"], finishedAt: 3, state: "MERGED" },
+    { scope: ["--comments-only"], finishedAt: 3, state: "CLOSED" },
+  ];
+  for (const { scope, finishedAt, state } of cases) {
+    let reads = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch(request) {
+        if (new URL(request.url).searchParams.get("format") === "json") {
+          reads += 1;
+          return Response.json({
+            state: reads >= finishedAt ? state : "OPEN",
+            ci: { state: "SUCCESS", failed: 0 },
+            openComments: [],
+            openCommentsComplete: true,
+          });
+        }
+        return new Response(`${state}\n`);
+      },
+    });
+    const process = Bun.spawn([join(import.meta.dir, "pr-cockpit"), "listen", ...scope, "owner/repo#1"], {
+      env: { ...Bun.env, COCKPIT_PORT: String(server.port), COCKPIT_LISTEN_INTERVAL: "0.01" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    try {
+      const [output, error, exitCode] = await Promise.all([
+        new Response(process.stdout).text(),
+        new Response(process.stderr).text(),
+        process.exited,
+      ]);
+      expect(exitCode).toBe(0);
+      expect(error).toBe("");
+      expect(output).toBe(`${state}\n`);
+      expect(reads).toBe(finishedAt);
+    } finally {
+      process.kill();
+      server.stop(true);
+    }
+  }
+});
+
 test("resolve posts the displayed thread handle", async () => {
   let requestPath = "";
   let requestMethod = "";

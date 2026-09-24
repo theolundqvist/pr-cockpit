@@ -249,6 +249,17 @@ function assertQuotaAvailable(resource: GithubQuotaResourceName): void {
   );
 }
 
+async function requireQuota(
+  resource: GithubQuotaResourceName,
+  authentication?: { token: string; generation: number },
+): Promise<{ token: string; generation: number }> {
+  const token = authentication?.token ?? await ghToken();
+  const generation = authentication?.generation ?? quotaGeneration(token);
+  await revalidateQuota(resource, token, generation);
+  assertQuotaAvailable(resource);
+  return { token, generation };
+}
+
 async function githubApiResponse(
   method: string,
   path: string,
@@ -260,10 +271,7 @@ async function githubApiResponse(
   } = {},
 ): Promise<Response> {
   const resource = quotaResource(path);
-  const token = options.authentication?.token ?? await ghToken();
-  const generation = options.authentication?.generation ?? quotaGeneration(token);
-  await revalidateQuota(resource, token, generation);
-  assertQuotaAvailable(resource);
+  const { token, generation } = await requireQuota(resource, options.authentication);
   let response: Response;
   try {
     response = await fetch(`https://api.github.com${path}`, {
@@ -2014,6 +2022,8 @@ export async function fetchPrDetail(
   if (mockGithub) return mockGithub.detail(repo, number);
   const [owner, name] = repo.split("/");
   if (!owner || !name) throw new GithubRequestError(`Invalid repository: ${repo}`, 404);
+  // The GraphQL and REST halves run together, so one exhausted quota would waste the other's spend on every retry.
+  await Promise.all([requireQuota("graphql"), requireQuota("core")]);
   const [checks, review, rest, viewerLogin] = await Promise.all([
     fetchDetailChecks(owner, name, number, previous, source),
     fetchDetailReview(owner, name, number, source, previous?.reviewThreads?.nodes.length ?? 0),

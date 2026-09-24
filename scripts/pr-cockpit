@@ -422,11 +422,12 @@ switch (operation) {
     break;
   case "pr-fingerprint": {
     if (argument === "ci") {
-      console.log(stable(input.ci ?? null));
+      console.log(stable({ state: input.state ?? null, ci: input.ci ?? null }));
       break;
     }
     if (argument === "comments") {
       console.log(stable({
+        state: input.state ?? null,
         openComments: input.openComments ?? [],
         openCommentsComplete: input.openCommentsComplete ?? false,
       }));
@@ -442,7 +443,8 @@ switch (operation) {
     // a cancelled check never produced a verdict, so it blocks the same way a failure does
     const failedCi = Number(input.ci?.failed) > 0 || Number(input.ci?.cancelled) > 0 || /^(FAILURE|ERROR)$/i.test(String(input.ci?.state ?? ""));
     const openComments = Array.isArray(input.openComments) && input.openComments.length > 0;
-    console.log(argument === "ci" ? Number(failedCi) : argument === "comments" ? Number(openComments) : Number(failedCi || openComments));
+    const finished = input.state === "MERGED" || input.state === "CLOSED";
+    console.log(Number(finished || (argument === "ci" ? failedCi : argument === "comments" ? openComments : failedCi || openComments)));
     break;
   }
   case "run-state": {

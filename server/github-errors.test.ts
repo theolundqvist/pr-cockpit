@@ -821,6 +821,48 @@ test("a stale positive probe cannot clear a newer primary block", async () => {
   }
 });
 
+test("PR detail spends no GraphQL while its REST half is quota-blocked", async () => {
+  const fakeGhDir = mkdtempSync(join(tmpdir(), "pr-cockpit-detail-core-block-"));
+  const fakeGh = join(fakeGhDir, "gh");
+  writeFileSync(fakeGh, "#!/bin/sh\nprintf 'fixture-token\\n'\n");
+  chmodSync(fakeGh, 0o755);
+  try {
+    const script = `
+      const github = await import(${JSON.stringify(githubModuleUrl)});
+      let graphqlCalls = 0;
+      globalThis.fetch = async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/rate_limit") return Response.json({ resources: { core: { remaining: 0 } } });
+        if (url.pathname === "/graphql") graphqlCalls++;
+        return Response.json({ message: "API rate limit exceeded" }, { status: 403, headers: {
+          "x-ratelimit-resource": "core",
+          "x-ratelimit-remaining": "0",
+          "x-ratelimit-reset": String((Date.now() + 60_000) / 1000),
+        } });
+      };
+      const capture = async (fn) => { try { await fn(); return null; } catch (error) { return error; } };
+      await capture(() => github.fetchActionWorkflows("acme/app"));
+      const errors = [];
+      for (let attempt = 0; attempt < 3; attempt++) errors.push(await capture(() => github.fetchPrDetail("acme/app", 7, "agent read")));
+      console.log(JSON.stringify({ blocked: errors.map((error) => error?.kind === "quota" && error.resource === "core"), graphqlCalls }));
+    `;
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: { ...Bun.env, COCKPIT_GH_BIN: fakeGh, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      process.exited,
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+    ]);
+    expect(exitCode, stderr).toBe(0);
+    expect(JSON.parse(stdout)).toEqual({ blocked: [true, true, true], graphqlCalls: 0 });
+  } finally {
+    rmSync(fakeGhDir, { recursive: true, force: true });
+  }
+});
+
 test("a stale quota probe cannot change the next account's block", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-quota-probe-auth-switch-"));
   try {
