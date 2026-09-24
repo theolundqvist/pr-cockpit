@@ -518,6 +518,42 @@ test("current-head catalog refresh fetches running workflows' jobs in parallel, 
   expect(result.peak).toBe(4);
 });
 
+test("concurrent catalogs across many PRs share one process-wide bound on Actions REST requests", async () => {
+  const result = await runScenario("pr-cockpit-actions-global-bound-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    let inFlight = 0;
+    let peak = 0;
+    let jobFetches = 0;
+    const track = async (work) => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await Bun.sleep(10);
+      inFlight--;
+      return work();
+    };
+    const fetchers = {
+      fetchWorkflowRuns: (_repo, sha) => track(() => [1, 2, 3, 4].map((slot) => ({
+        id: parseInt(sha.slice(0, 6), 16) * 10 + slot, run_attempt: 1, head_sha: sha, head_branch: "feature",
+        name: "W" + slot, path: ".github/workflows/w" + slot + ".yml", event: "pull_request",
+        status: "in_progress", conclusion: null, updated_at: "2026-09-17T02:40:00Z", html_url: null,
+      }))),
+      fetchRunJobs: (_repo, runId) => track(() => { jobFetches++; return []; }),
+      fetchJobLog: async () => "",
+      restRemaining: async () => 5000,
+    };
+    const heads = Array.from({ length: 30 }, (_, index) => (index + 1).toString(16).padStart(6, "0").padEnd(40, "c"));
+    await Promise.all(heads.map((sha, index) => actions.cacheGithubActionsForCommit("acme/app", 100 + index, sha, fetchers)));
+    const cataloged = heads.filter((sha) => dbm.latestWorkflowRunAttempt("acme/app", parseInt(sha.slice(0, 6), 16) * 10 + 4)).length;
+    console.log(JSON.stringify({ peak, jobFetches, cataloged }));
+  `);
+  // 30 catalogs x (1 listing + 4 job fetches) would otherwise put 120 requests in flight at once.
+  expect(result.jobFetches).toBe(120);
+  expect(result.cataloged).toBe(30);
+  expect(result.peak).toBe(8);
+});
+
 test("an explicit activation for a new head queues behind an in-flight activation for the old head", async () => {
   const result = await runScenario("pr-cockpit-actions-head-change-", `
     const actions = await import(${JSON.stringify(runLogsUrl)});

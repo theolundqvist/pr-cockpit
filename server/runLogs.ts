@@ -40,7 +40,7 @@ import {
   fetchWorkflowRunsForWorkflow,
 } from "./github.ts";
 
-import { forEachWithConcurrency } from "./concurrency.ts";
+import { createConcurrencyLimit, forEachWithConcurrency } from "./concurrency.ts";
 
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
@@ -656,7 +656,7 @@ export async function cacheGithubActionsForCommit(
   currentHead = false,
 ): Promise<void> {
   if (currentHead) renewActionsLease(repo, number, headSha);
-  const runs = (await fetchers.fetchWorkflowRuns(repo, headSha)).map(compactRun);
+  const runs = (await catalogRequest(() => fetchers.fetchWorkflowRuns(repo, headSha))).map(compactRun);
   for (const run of runs) storeRun(repo, number, run);
   const stale = runs.filter((run) => {
     const stored = latestWorkflowRunAttempt(repo, run.id);
@@ -666,7 +666,7 @@ export async function cacheGithubActionsForCommit(
   // A busy head has a dozen running workflows; fetching their jobs one by one held every
   // refresh for seconds. The request count, and so the REST quota spent, is unchanged.
   await forEachWithConcurrency(stale, RUN_JOBS_FETCH_CONCURRENCY, async (run) => {
-    const jobs = (await fetchers.fetchRunJobs(repo, run.id, run.status === "completed" ? run.attempt : undefined))
+    const jobs = (await catalogRequest(() => fetchers.fetchRunJobs(repo, run.id, run.status === "completed" ? run.attempt : undefined)))
       .map((job) => compactJob(job, run));
     for (const job of jobs) storeJob(repo, job);
     markWorkflowRunJobsFetched(repo, run.id, run.attempt);
@@ -675,6 +675,10 @@ export async function cacheGithubActionsForCommit(
 }
 
 const RUN_JOBS_FETCH_CONCURRENCY = 4;
+// A poll after a long sleep catalogs every changed PR at once; without a shared bound that is
+// dozens of simultaneous REST calls, which trips GitHub's secondary rate limit.
+const CATALOG_REQUEST_CONCURRENCY = 8;
+const catalogRequest = createConcurrencyLimit(CATALOG_REQUEST_CONCURRENCY);
 
 export async function cacheRepoActionsRunJobs(
   run: WorkflowRunRow,

@@ -9,3 +9,21 @@ export async function forEachWithConcurrency<T>(items: T[], limit: number, task:
   const failure = results.find((result) => result.status === "rejected");
   if (failure) throw (failure as PromiseRejectedResult).reason;
 }
+
+// Returns a runner that admits at most `limit` tasks at once across every caller that shares it;
+// later tasks wait in arrival order for a free slot.
+export function createConcurrencyLimit(limit: number): <T>(task: () => Promise<T>) => Promise<T> {
+  let active = 0;
+  const waiting: Array<() => void> = [];
+  return async (task) => {
+    if (active >= limit) await new Promise<void>((resolve) => waiting.push(resolve));
+    else active++;
+    try {
+      return await task();
+    } finally {
+      const next = waiting.shift();
+      if (next) next();
+      else active--;
+    }
+  };
+}
