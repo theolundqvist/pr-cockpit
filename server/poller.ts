@@ -136,7 +136,7 @@ async function refreshPrNow(
   const snapshotCutoffAt = new Date().toISOString();
   const current = previous ? JSON.parse(previous.detail_json) as PrDetail : null;
   const detail = scope === "all" || current === null
-    ? await fetchPrDetail(repo, number, source)
+    ? await fetchPrDetail(repo, number, source, current)
     : await fetchPrDetailPart(repo, number, current, scope, source);
   if (!previous || previous.head_sha !== detail.headRefOid) {
     fetchMirror(repo).catch((err) => console.error(`mirror fetch failed for ${repo}:`, err));

@@ -1247,6 +1247,9 @@ const THREAD_COMMENT_FIELDS = `
   ${REACTION_GROUPS_FIELD}
 `;
 
+// commitList deliberately omits additions/deletions: GitHub computes them per commit, which
+// took the query from ~0.7s to ~1.8s on a 48-commit PR. They never change for an oid, so
+// completeCommitLineCounts carries them over and asks only about commits it has not seen.
 const DETAIL_CHECKS_QUERY = `
 query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
@@ -1271,8 +1274,6 @@ query($owner: String!, $name: String!, $number: Int!) {
             abbreviatedOid
             messageHeadline
             committedDate
-            additions
-            deletions
             statusCheckRollup { state }
             author { name user { login avatarUrl } }
             parents(first: 1) { nodes { oid } }
@@ -1678,6 +1679,133 @@ async function completeCheckContexts(
 }
 
 
+type RawCommitList = RawPrDetail["commitList"];
+type CommitLineCounts = { additions: number; deletions: number };
+
+const COMMIT_OID_RE = /^[0-9a-f]{40}$/;
+const COMMIT_LINE_COUNTS_BATCH = 100;
+
+function commitLineCountsQuery(oids: string[]): string {
+  const fields = oids.map((oid, index) => `c${index}: object(oid: "${oid}") { ... on Commit { additions deletions } }`);
+  return `
+query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    ${fields.join("\n    ")}
+  }
+}`;
+}
+
+const COMMIT_LIST_LINE_COUNTS_QUERY = `
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      commits(last: 100) { nodes { commit { oid additions deletions } } }
+    }
+  }
+}`;
+
+function knownLineCounts(previous: Pick<PrDetail, "commitList"> | null): Map<string, CommitLineCounts> {
+  const known = new Map<string, CommitLineCounts>();
+  for (const { commit } of previous?.commitList?.nodes ?? []) {
+    if (typeof commit.additions === "number" && typeof commit.deletions === "number") {
+      known.set(commit.oid, { additions: commit.additions, deletions: commit.deletions });
+    }
+  }
+  return known;
+}
+
+// With no earlier snapshot every commit is unknown, so the counts for the whole list are asked
+// for beside the checks query rather than after it.
+async function fetchCommitListLineCounts(owner: string, name: string, number: number, source: GithubUsageSource): Promise<Map<string, CommitLineCounts>> {
+  const data = await graphql<{
+    repository: { pullRequest: { commits: { nodes: Array<{ commit: { oid: string } & CommitLineCounts }> } } | null } | null;
+  }>(COMMIT_LIST_LINE_COUNTS_QUERY, { owner, name, number }, source, "PR commit line counts");
+  return knownLineCounts({ commitList: data.repository?.pullRequest?.commits ?? { nodes: [] } });
+}
+
+// Line counts are a fallback for commits the local mirror cannot count, so a failed lookup
+// leaves them unset rather than failing the whole detail.
+async function completeCommitLineCounts(
+  owner: string,
+  name: string,
+  commitList: RawCommitList,
+  known: Map<string, CommitLineCounts>,
+  source: GithubUsageSource,
+): Promise<void> {
+  const missing: RawCommitList["nodes"][number]["commit"][] = [];
+  for (const { commit } of commitList.nodes) {
+    const counts = known.get(commit.oid);
+    if (counts) Object.assign(commit, counts);
+    else if (COMMIT_OID_RE.test(commit.oid)) missing.push(commit);
+  }
+  for (let start = 0; start < missing.length; start += COMMIT_LINE_COUNTS_BATCH) {
+    const batch = missing.slice(start, start + COMMIT_LINE_COUNTS_BATCH);
+    try {
+      const data = await graphql<{ repository: Record<string, Partial<CommitLineCounts> | null> | null }>(
+        commitLineCountsQuery(batch.map((commit) => commit.oid)),
+        { owner, name },
+        source,
+        "PR commit line counts",
+      );
+      batch.forEach((commit, index) => {
+        const counts = data.repository?.[`c${index}`];
+        if (typeof counts?.additions === "number" && typeof counts.deletions === "number") {
+          commit.additions = counts.additions;
+          commit.deletions = counts.deletions;
+        }
+      });
+    } catch (error) {
+      console.warn(`commit line counts unavailable for ${owner}/${name}:`, error);
+      return;
+    }
+  }
+}
+
+async function fetchDetailChecks(
+  owner: string,
+  name: string,
+  number: number,
+  previous: Pick<PrDetail, "commitList"> | null,
+  source: GithubUsageSource,
+): Promise<RawPrDetailChecks | null> {
+  const listCounts = previous
+    ? null
+    : fetchCommitListLineCounts(owner, name, number, source).catch((error) => {
+      console.warn(`commit line counts unavailable for ${owner}/${name}#${number}:`, error);
+      return new Map<string, CommitLineCounts>();
+    });
+  const data = await graphql<{
+    repository: { pullRequest: RawPrDetailChecks | null } | null;
+  }>(DETAIL_CHECKS_QUERY, { owner, name, number }, source, "PR checks");
+  const checks = data.repository?.pullRequest;
+  if (!checks) return null;
+  const rollup = checks.lastCommit.nodes[0]?.commit.statusCheckRollup;
+  const completeLineCounts = async () => {
+    const known = listCounts ? await listCounts : knownLineCounts(previous);
+    await completeCommitLineCounts(owner, name, checks.commitList, known, source);
+  };
+  await Promise.all([
+    rollup ? completeCheckContexts(owner, name, number, rollup.contexts, source) : undefined,
+    completeLineCounts(),
+  ]);
+  return checks;
+}
+
+async function fetchDetailReview(
+  owner: string,
+  name: string,
+  number: number,
+  source: GithubUsageSource,
+): Promise<RawPrDetailReview | null> {
+  const data = await graphql<{
+    repository: { pullRequest: RawPrDetailReview | null } | null;
+  }>(DETAIL_REVIEW_QUERY, { owner, name, number }, source, "PR review detail");
+  const review = data.repository?.pullRequest;
+  if (!review) return null;
+  await completeReviewThreads(owner, name, number, review.reviewThreads, source);
+  return review;
+}
+
 async function completeThreadComments(thread: RawThread, source: GithubUsageSource): Promise<void> {
   const cursors = new Set<string>();
   while (thread.comments.pageInfo?.hasNextPage) {
@@ -1779,27 +1907,18 @@ export async function fetchPrDetail(
   repo: string,
   number: number,
   source: GithubUsageSource = "app detail",
+  previous: Pick<PrDetail, "commitList"> | null = null,
 ): Promise<PrDetail> {
   if (mockGithub) return mockGithub.detail(repo, number);
   const [owner, name] = repo.split("/");
   if (!owner || !name) throw new GithubRequestError(`Invalid repository: ${repo}`, 404);
-  const variables = { owner, name, number };
-  const [checksData, reviewData, rest, viewerLogin] = await Promise.all([
-    graphql<{
-      repository: { pullRequest: RawPrDetailChecks | null } | null;
-    }>(DETAIL_CHECKS_QUERY, variables, source, "PR checks"),
-    graphql<{
-      repository: { pullRequest: RawPrDetailReview | null } | null;
-    }>(DETAIL_REVIEW_QUERY, variables, source, "PR review detail"),
+  const [checks, review, rest, viewerLogin] = await Promise.all([
+    fetchDetailChecks(owner, name, number, previous, source),
+    fetchDetailReview(owner, name, number, source),
     fetchRestPrDetailBase(repo, number),
     getViewerLogin(),
   ]);
-  const checks = checksData.repository?.pullRequest;
-  const review = reviewData.repository?.pullRequest;
   if (!checks || !review) throw new GithubRequestError(`${repo}#${number} was not found`, 404);
-  const rollup = checks.lastCommit.nodes[0]?.commit.statusCheckRollup;
-  if (rollup) await completeCheckContexts(owner, name, number, rollup.contexts, source);
-  await completeReviewThreads(owner, name, number, review.reviewThreads, source);
   return {
     ...rest,
     ...checks,
@@ -1820,31 +1939,21 @@ export async function fetchPrDetailPart(
   if (mockGithub) return mockGithub.detail(repo, number);
   const [owner, name] = repo.split("/");
   if (!owner || !name) throw new GithubRequestError(`Invalid repository: ${repo}`, 404);
-  const variables = { owner, name, number };
 
   if (scope === "checks") {
-    const data = await graphql<{
-      repository: { pullRequest: RawPrDetailChecks | null } | null;
-    }>(DETAIL_CHECKS_QUERY, variables, source, "PR checks");
-    const checks = data.repository?.pullRequest;
+    const checks = await fetchDetailChecks(owner, name, number, current, source);
     if (!checks) throw new GithubRequestError(`${repo}#${number} was not found`, 404);
-    const rollup = checks.lastCommit.nodes[0]?.commit.statusCheckRollup;
-    if (rollup) await completeCheckContexts(owner, name, number, rollup.contexts, source);
     return {
       ...current,
       ...checks,
     };
   }
 
-  const [data, viewerLogin] = await Promise.all([
-    graphql<{
-      repository: { pullRequest: RawPrDetailReview | null } | null;
-    }>(DETAIL_REVIEW_QUERY, variables, source, "PR review detail"),
+  const [review, viewerLogin] = await Promise.all([
+    fetchDetailReview(owner, name, number, source),
     getViewerLogin(),
   ]);
-  const review = data.repository?.pullRequest;
   if (!review) throw new GithubRequestError(`${repo}#${number} was not found`, 404);
-  await completeReviewThreads(owner, name, number, review.reviewThreads, source);
   return {
     ...current,
     viewerLogin,
