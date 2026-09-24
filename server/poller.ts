@@ -249,6 +249,7 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
   // Start of the last closed-PR sweep that covered every repo; the next one only asks for
   // PRs updated since then, and the first sweep after start takes the most recent page.
   let closedSweptAt: number | null = null;
+  let actionsListing: Promise<void> | null = null;
 
   async function pollOnceInner(): Promise<{ checked: number; refreshed: number }> {
     await deps.refreshWorktreeScan();
@@ -268,19 +269,22 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
       deps.publishPollCompleted(lastPollAt);
       return { checked: 0, refreshed: 0 };
     }
-    // The repo-wide recent-runs listing (two ~2s pages per repo) feeds only the Actions page,
-    // so it runs beside the inbox search and PR refreshes instead of ahead of them. It never
-    // rejects; a poll that fails later simply leaves it to finish on its own.
+    // The repo-wide recent-runs listing (two ~2.5s pages per repo) feeds only the Actions page,
+    // so the poll neither waits for it nor stacks a second one behind a listing still running.
+    // Awaiting it held every poll, and the merges and refreshes awaiting a poll, ~4s past its
+    // last inbox change.
     const refreshActions = deps.refreshRecentActions;
-    const actionRefreshes = refreshActions
-      ? Promise.allSettled(repos.map((repo) => refreshActions(repo))).then((results) => {
+    if (refreshActions && !actionsListing) {
+      actionsListing = Promise.allSettled(repos.map((repo) => refreshActions(repo))).then((results) => {
         results.forEach((result, index) => {
           if (result.status === "rejected") {
             console.warn(`Actions refresh failed for ${repos[index]}:`, result.reason);
           }
         });
-      })
-      : Promise.resolve();
+      }).finally(() => {
+        actionsListing = null;
+      });
+    }
 
     const hits = await deps.searchOpenPrs(searchRepos);
     const nextOpenInboxKeys = new Set(hits.map((hit) => prKeyOf(hit.repo, hit.number)));
@@ -312,7 +316,6 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
     }
 
     await sweepPrIndexIfDue(repos);
-    await actionRefreshes;
     lastPollAt = new Date().toISOString();
     deps.publishPollCompleted(lastPollAt);
     if (openInboxChanged || registrationMembershipChanged) deps.invalidateInbox();
