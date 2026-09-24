@@ -1334,6 +1334,8 @@ export interface PrIndexRow {
   involves_me: number;
 }
 
+// Search results trail writes by minutes and index sweeps overlap PR refreshes, so an entry
+// older than the stored row keeps the row's fields and only adds what never goes back.
 const upsertPrIndexStmt = db.prepare(`
 INSERT INTO pr_index (
   repo, number, title, state, is_draft, author, updated_at, merged_at, closed_at, involves_me
@@ -1342,15 +1344,15 @@ VALUES (
   $repo, $number, $title, $state, $is_draft, $author, $updated_at, $merged_at, $closed_at, $involves_me
 )
 ON CONFLICT (repo, number) DO UPDATE SET
-  title = excluded.title,
-  state = excluded.state,
-  is_draft = excluded.is_draft,
-  author = excluded.author,
-  updated_at = excluded.updated_at,
+  title = CASE WHEN {newer} THEN excluded.title ELSE pr_index.title END,
+  state = CASE WHEN {newer} THEN excluded.state ELSE pr_index.state END,
+  is_draft = CASE WHEN {newer} THEN excluded.is_draft ELSE pr_index.is_draft END,
+  author = CASE WHEN {newer} THEN excluded.author ELSE pr_index.author END,
+  updated_at = CASE WHEN {newer} THEN excluded.updated_at ELSE pr_index.updated_at END,
   merged_at = COALESCE(excluded.merged_at, pr_index.merged_at),
   closed_at = COALESCE(excluded.closed_at, pr_index.closed_at),
   involves_me = MAX(pr_index.involves_me, excluded.involves_me)
-`);
+`.replaceAll("{newer}", "excluded.updated_at >= pr_index.updated_at"));
 
 const upsertPrIndexTxn = db.transaction((entries: PrIndexEntry[]) => {
   for (const entry of entries) {

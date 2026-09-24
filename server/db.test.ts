@@ -186,6 +186,44 @@ test("older refreshes cannot replace newer pull request snapshots", async () => 
   }
 });
 
+test("an older search result cannot replace a newer PR index row", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-monotonic-index-"));
+  const scenario = `
+    const { db, listPrIndex, upsertPrIndex } = await import(${JSON.stringify(dbModuleUrl)});
+    const entry = { repo: "test/monotonic-index", number: 1, isDraft: false, author: "theo" };
+    upsertPrIndex([{ ...entry, title: "merged", state: "MERGED", updatedAt: "2026-09-24T10:05:00Z", mergedAt: "2026-09-24T10:05:00Z" }]);
+    upsertPrIndex([{ ...entry, title: "stale open", state: "OPEN", updatedAt: "2026-09-24T10:00:00Z", involvesMe: true }]);
+    const afterStale = listPrIndex()[0];
+    upsertPrIndex([{ ...entry, title: "renamed", state: "MERGED", updatedAt: "2026-09-24T10:05:00Z" }]);
+    console.log(JSON.stringify({ afterStale, afterEqual: listPrIndex()[0] }));
+    db.close();
+  `;
+  try {
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      process.exited,
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(stderr);
+    const result = JSON.parse(stdout);
+    expect(result.afterStale).toMatchObject({
+      title: "merged",
+      state: "MERGED",
+      updated_at: "2026-09-24T10:05:00Z",
+      merged_at: "2026-09-24T10:05:00Z",
+      involves_me: 1,
+    });
+    expect(result.afterEqual).toMatchObject({ title: "renamed", state: "MERGED" });
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("fresh databases include terminal PR index columns", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-fresh-index-"));
   const scenario = `
