@@ -1539,8 +1539,11 @@
     }
   }
 
+  // Materializing a checkout writes a full working tree; wait until the diff is on screen
+  // so it never competes with loading, and skip PRs only read on other tabs.
   $effect(() => {
     if (!fileEditable || !pr?.headRefOid || !window.cockpitShell?.prepareEditor) return;
+    if (tab !== "files" || files.length === 0) return;
     const key = `${repo}#${number}@${pr.headRefOid}`;
     if (key === preparedEditorKey) return;
     preparedEditorKey = key;

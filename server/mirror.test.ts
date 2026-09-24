@@ -302,6 +302,68 @@ describe("materializePrWorktree", () => {
   });
 });
 
+describe("prunePrWorktrees", () => {
+  test("removes idle checkouts through Git and keeps open, dirty, and locally committed ones", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-worktree-prune-"));
+    cleanup.push(dataDir);
+    const moduleUrl = pathToFileURL(join(import.meta.dir, "mirror.ts")).href;
+    const scenario = `
+      import { existsSync, mkdirSync } from "node:fs";
+      import { join } from "node:path";
+      const dataDir = process.env.COCKPIT_DATA_DIR;
+      const source = join(dataDir, "source");
+      const mirror = join(dataDir, "mirrors", "test__repo");
+      function git(cwd, ...args) {
+        const result = Bun.spawnSync(["git", "-C", cwd, ...args], { stdout: "pipe", stderr: "pipe" });
+        if (!result.success) throw new Error(result.stderr.toString());
+        return result.stdout.toString().trim();
+      }
+      mkdirSync(source, { recursive: true });
+      git(source, "init", "-b", "main");
+      git(source, "config", "user.name", "PR Cockpit Test");
+      git(source, "config", "user.email", "pr-cockpit@example.test");
+      await Bun.write(join(source, "source.ts"), "export const value = 1;\\n");
+      git(source, "add", "source.ts");
+      git(source, "commit", "-m", "base");
+      const base = git(source, "rev-parse", "HEAD");
+      mkdirSync(join(dataDir, "mirrors"), { recursive: true });
+      git(dataDir, "clone", "--bare", source, mirror);
+
+      const { materializePrWorktree, prunePrWorktrees } = await import(${JSON.stringify(moduleUrl)});
+      const closed = await materializePrWorktree("test/repo", 1, base);
+      const open = await materializePrWorktree("test/repo", 2, base);
+      const dirty = await materializePrWorktree("test/repo", 3, base);
+      const committed = await materializePrWorktree("test/repo", 4, base);
+      await Bun.write(join(dirty, "source.ts"), "unsaved editor work\\n");
+      git(committed, "config", "user.name", "PR Cockpit Test");
+      git(committed, "config", "user.email", "pr-cockpit@example.test");
+      git(committed, "commit", "--allow-empty", "-m", "local work");
+
+      const twoDaysLater = Date.now() + 2 * 24 * 60 * 60_000;
+      const result = await prunePrWorktrees((_repo, number) => number === 2, twoDaysLater);
+      if (JSON.stringify(result.removed) !== JSON.stringify(["test/repo#1"])) throw new Error("removed " + JSON.stringify(result));
+      if (existsSync(closed) || existsSync(join(dataDir, "worktrees", "test__repo", ".pr-1.head"))) throw new Error("idle checkout survived");
+      if (git(mirror, "worktree", "list").includes("pr-1")) throw new Error("Git still lists the removed checkout");
+      if (!existsSync(open) || !existsSync(dirty) || !existsSync(committed)) throw new Error("a protected checkout was removed");
+      if ((await Bun.file(join(dirty, "source.ts")).text()) !== "unsaved editor work\\n") throw new Error("dirty checkout changed");
+
+      const nextWeek = Date.now() + 8 * 24 * 60 * 60_000;
+      const later = await prunePrWorktrees((_repo, number) => number === 2, nextWeek);
+      if (!later.removed.includes("test/repo#2") || existsSync(open)) throw new Error("week-idle open checkout survived");
+
+      const recreated = await materializePrWorktree("test/repo", 1, base);
+      if (git(recreated, "rev-parse", "HEAD") !== base) throw new Error("pruned checkout was not recreated");
+    `;
+    const result = Bun.spawnSync([process.execPath, "-e", scenario], {
+      env: { ...process.env, COCKPIT_DATA_DIR: dataDir },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(result.stderr.toString()).toBe("");
+    expect(result.exitCode).toBe(0);
+  });
+});
+
 test("mirror fetches and checkouts distinguish credentials, connectivity, and deadlines", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-mirror-failures-"));
   cleanup.push(dataDir);

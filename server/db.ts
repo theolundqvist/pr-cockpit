@@ -567,6 +567,15 @@ export function getPr(repo: string, number: number): PrRow | null {
   return getPrStmt.get(repo, number) ?? null;
 }
 
+const prIsOpenStmt = db.prepare<{ open: number }, [string, number, string, number]>(`
+SELECT EXISTS (SELECT 1 FROM prs WHERE repo = ? AND number = ? AND state IN ('OPEN', 'draft'))
+  OR EXISTS (SELECT 1 FROM pr_index WHERE repo = ? AND number = ? AND state = 'OPEN') AS open
+`);
+
+export function prIsOpen(repo: string, number: number): boolean {
+  return prIsOpenStmt.get(repo, number, repo, number)?.open === 1;
+}
+
 const getPrByBranchStmt = db.prepare<PrRow, [string, string]>(
   "SELECT * FROM prs WHERE repo = ? AND head_ref = ? ORDER BY updated_at DESC LIMIT 1",
 );

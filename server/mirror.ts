@@ -326,6 +326,112 @@ export function materializePrWorktree(repo: string, number: number, sha: string)
   return promise;
 }
 
+// Checkouts exist to prewarm the external editor. A closed or unknown PR keeps its checkout
+// for a day after last use and an open one for a week, so repeat edits stay instant while
+// the cache stays bounded: each checkout of a large repository is a full working tree.
+export const CLOSED_PR_WORKTREE_IDLE_MS = 24 * 60 * 60_000;
+export const OPEN_PR_WORKTREE_IDLE_MS = 7 * 24 * 60 * 60_000;
+
+export type PrWorktreePruneResult = { removed: string[]; kept: string[] };
+
+async function prWorktreeLastUsedAt(parent: string, number: number, dir: string): Promise<number> {
+  try {
+    return (await stat(`${parent}/.pr-${number}.head`)).mtimeMs;
+  } catch (error) {
+    if (!missingPath(error)) throw error;
+    return (await stat(dir)).mtimeMs;
+  }
+}
+
+// Local commits or edits (including ignored files, as materialization treats them) are user work.
+async function prWorktreeHoldsLocalWork(parent: string, number: number, dir: string): Promise<boolean> {
+  const head = await git(["-C", dir, "rev-parse", "HEAD"]);
+  if (!head.ok) return true;
+  let materializedHead = "";
+  try {
+    materializedHead = (await Bun.file(`${parent}/.pr-${number}.head`).text()).trim();
+  } catch {
+    return true;
+  }
+  if (head.stdout.trim() !== materializedHead) return true;
+  const status = await git(["-C", dir, "status", "--porcelain", "--untracked-files=all", "--ignored=matching"]);
+  return !status.ok || status.stdout.trim() !== "";
+}
+
+async function removePrWorktree(repo: string, number: number): Promise<boolean> {
+  const key = `${repo}#${number}`;
+  if (inFlightWorktrees.has(key)) return false;
+  const removal = withMirrorOperation(repo, async () => {
+    const parent = `${worktreesRoot}/${mirrorDirName(repo)}`;
+    const dir = prWorktreeDir(repo, number);
+    if (await prWorktreeHoldsLocalWork(parent, number, dir)) return "";
+    const removed = await git(["--git-dir", mirrorDir(repo), "worktree", "remove", "--force", dir]);
+    if (!removed.ok) throw new Error(`PR worktree removal failed for ${key}: ${removed.stderr.trim()}`);
+    await rm(`${parent}/.pr-${number}.head`, { force: true });
+    return dir;
+  }).finally(() => inFlightWorktrees.delete(key));
+  // A materialization requested meanwhile waits for the removal and then recreates the checkout.
+  inFlightWorktrees.set(key, removal);
+  return (await removal) !== "";
+}
+
+export async function prunePrWorktrees(
+  isOpen: (repo: string, number: number) => boolean,
+  now = Date.now(),
+): Promise<PrWorktreePruneResult> {
+  const result: PrWorktreePruneResult = { removed: [], kept: [] };
+  let entries: string[];
+  try {
+    entries = (await readdir(worktreesRoot)).filter((entry) => !entry.startsWith("."));
+  } catch (error) {
+    if (missingPath(error)) return result;
+    throw error;
+  }
+  for (const entry of entries) {
+    const separator = entry.indexOf("__");
+    if (separator <= 0) continue;
+    const repo = `${entry.slice(0, separator)}/${entry.slice(separator + 2)}`;
+    if (!(await Bun.file(`${mirrorsRoot}/${entry}/HEAD`).exists())) continue;
+    const parent = `${worktreesRoot}/${entry}`;
+    for (const name of await readdir(parent)) {
+      const match = /^pr-(\d+)$/.exec(name);
+      if (!match) continue;
+      const number = Number(match[1]);
+      const dir = `${parent}/${name}`;
+      const key = `${repo}#${number}`;
+      const idleMs = now - await prWorktreeLastUsedAt(parent, number, dir);
+      const maxIdleMs = isOpen(repo, number) ? OPEN_PR_WORKTREE_IDLE_MS : CLOSED_PR_WORKTREE_IDLE_MS;
+      if (idleMs <= maxIdleMs) continue;
+      try {
+        (await removePrWorktree(repo, number) ? result.removed : result.kept).push(key);
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : error);
+        result.kept.push(key);
+      }
+    }
+    // Drops admin entries whose checkout directory vanished outside Cockpit.
+    await git(["--git-dir", `${mirrorsRoot}/${entry}`, "worktree", "prune"]);
+  }
+  return result;
+}
+
+const PR_WORKTREE_PRUNE_DELAY_MS = 2 * 60_000;
+const PR_WORKTREE_PRUNE_INTERVAL_MS = 60 * 60_000;
+
+export function startPrWorktreePruning(isOpen: (repo: string, number: number) => boolean): void {
+  const sweep = () => {
+    prunePrWorktrees(isOpen)
+      .then(({ removed, kept }) => {
+        if (removed.length || kept.length) {
+          console.log(`PR worktree cache: removed ${removed.length} idle checkouts; kept ${kept.length} holding local work or failing removal`);
+        }
+      })
+      .catch((error) => console.error("PR worktree pruning failed:", error))
+      .finally(() => setTimeout(sweep, PR_WORKTREE_PRUNE_INTERVAL_MS));
+  };
+  setTimeout(sweep, PR_WORKTREE_PRUNE_DELAY_MS);
+}
+
 async function directorySize(path: string): Promise<number> {
   let pathStat: Stats;
   try {

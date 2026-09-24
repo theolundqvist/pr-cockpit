@@ -1,4 +1,4 @@
-import { db, failInterruptedMutations } from "./db.ts";
+import { db, failInterruptedMutations, prIsOpen } from "./db.ts";
 import { recoverRefreshingMutations } from "./mutations.ts";
 import { seedSettings } from "./settings.ts";
 import { startPoller } from "./poller.ts";
@@ -12,6 +12,7 @@ import { buildFetchHandler } from "./http.ts";
 import { installMockNetworkGuard, isMockGithub, seedMockDatabase } from "./mockGithub.ts";
 import { mergeRendererOrigins, startCockpitServer } from "./cockpitServer.ts";
 import { ensureOmpInstalled } from "./commitMessage.ts";
+import { startPrWorktreePruning } from "./mirror.ts";
 import { replicaEnabled, startReplicaSync } from "./replica.ts";
 import { captureFatal, startSentry } from "./sentry.ts";
 import { startTailscaleServe } from "./tailscaleServe.ts";
@@ -51,6 +52,7 @@ try {
     startFixerSupervision();
     void ensureOmpInstalled().catch((error) => console.error("background OMP installation failed:", error));
     startWebhooks();
+    startPrWorktreePruning(prIsOpen);
   }
   if (!isMockGithub) startUpdateCheck();
 
