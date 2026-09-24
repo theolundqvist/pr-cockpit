@@ -110,7 +110,7 @@
 
 <div bind:this={panel} id="set-aside-tray" class="aside-tray" popover="auto" role="dialog" aria-labelledby="set-aside-title" onbeforetoggle={(event) => (setAside.open = event.newState === "open")}>
   <header>
-    <div><h2 id="set-aside-title">Set aside <span>{setAside.items.length}</span></h2><p>Out of your way. Here when you’re ready.</p></div>
+    <h2 id="set-aside-title">Set aside <span>{setAside.items.length}</span></h2>
     <button class="close" type="button" aria-label="Close set aside" onclick={() => close()}><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8" /></svg></button>
   </header>
   <div class="aside-list">
@@ -143,7 +143,6 @@
   header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 20px 20px 16px; }
   h2 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 15px; font-weight: 650; }
   h2 span { padding: 2px 6px; background: var(--surface); border-radius: 6px; font-size: 11px; color: var(--text-dim); }
-  p { margin: 7px 0 0; font-size: 12px; color: var(--text-dim); }
   .close { display: grid; place-items: center; border: 0; border-radius: 6px; padding: 4px; color: var(--text-dim); background: transparent; cursor: pointer; }
   .close svg { width: 16px; height: 16px; }
   .aside-list { overflow-y: auto; overscroll-behavior: contain; padding: 0 8px 8px; }
