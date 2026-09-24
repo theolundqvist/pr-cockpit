@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, mock, setSystemTime, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { backgroundQuotaAvailable, createPollOnce, nextPollDelayMs, type PollDeps } from "./poller.ts";
 import { GithubRequestError, type PrDetailScope, type SearchHit } from "./github.ts";
 import type { GithubUsageSource } from "./githubUsage.ts";
@@ -291,4 +294,73 @@ test("closed-PR sweeps after the first only ask for PRs updated since the last c
     console.error = error;
   }
   expect(bounds).toEqual([null, "2026-09-24T07:45:00.000Z", "2026-09-24T07:45:00.000Z"]);
+});
+
+test("a PR refresh publishes checks and status before the Actions catalog lands", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-refresh-order-"));
+  const url = (file: string) => JSON.stringify(new URL(file, import.meta.url).href);
+  const scenario = `
+    import { mock } from "bun:test";
+    const head = "a".repeat(40);
+    const detail = {
+      title: "t", body: "", url: "https://github.com/acme/app/pull/7", state: "OPEN", isDraft: false,
+      author: { login: "theo" }, baseRefName: "main", headRefName: "feature", headRefOid: head,
+      updatedAt: "2026-09-24T08:00:00Z", additions: 1, deletions: 0, changedFiles: 1,
+      commitCount: { totalCount: 1 }, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN",
+      reviewDecision: null, viewerIsAuthor: true, viewerReviewRequested: false, viewerReviewState: null,
+      reviews: { nodes: [] }, comments: { nodes: [] }, reviewThreads: { nodes: [] },
+      lastCommit: { nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS", contexts: { nodes: [] } } } }] },
+    };
+    const events = [];
+    const github = await import(${url("./github.ts")});
+    mock.module(${url("./github.ts")}, () => ({ ...github, fetchPrDetail: async () => detail }));
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const runLogs = await import(${url("./runLogs.ts")});
+    mock.module(${url("./runLogs.ts")}, () => ({
+      ...runLogs,
+      cacheGithubActionsForCommit: async () => { events.push("catalog:start"); await gate; events.push("catalog:end"); },
+    }));
+    const dbm = await import(${url("./db.ts")});
+    dbm.upsertPr({
+      repo: "acme/app", number: 7, state: "OPEN", is_draft: 0, title: "old", author: "theo",
+      base_ref: "main", head_ref: "feature", head_sha: head, updated_at: "2026-09-24T07:00:00Z",
+      additions: 1, deletions: 0, changed_files: 1, commit_count: 1, mergeable: "MERGEABLE",
+      merge_state_status: "CLEAN", auto_merge_enabled: 0, viewer_is_author: 1, viewer_review_requested: 0,
+      viewer_review_state: null, ci_status: "PENDING", review_decision: null, unresolved_count: 0,
+      needs_me_rank: 0, greptile_confidence: null, greptile_reviewed_sha: null, greptile_unresolved_count: 0,
+      detail_json: JSON.stringify(detail), fetched_at: "2026-09-24T07:00:00Z",
+    });
+    const invalidation = await import(${url("./rendererInvalidation.ts")});
+    invalidation.setRendererInvalidationPublisher((event) => {
+      if (event.type === "pr") events.push("pr:" + dbm.getPr("acme/app", 7).title);
+    });
+    const { refreshPr } = await import(${url("./poller.ts")});
+    let settled = false;
+    const refresh = refreshPr("acme/app", 7, "relay", "all").then(() => { settled = true; });
+    while (!events.includes("catalog:start")) await Bun.sleep(1);
+    const beforeCatalog = { events: [...events], settled };
+    release();
+    await refresh;
+    console.log(JSON.stringify({ beforeCatalog, events }));
+    process.exit(0);
+  `;
+  try {
+    const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(stderr);
+    const result = JSON.parse(stdout.trim().split("\n").at(-1)!);
+    expect(result.beforeCatalog).toEqual({ events: ["pr:t", "catalog:start"], settled: false });
+    expect(result.events).toEqual(["pr:t", "catalog:start", "catalog:end", "pr:t"]);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
 });

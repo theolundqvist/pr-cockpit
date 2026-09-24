@@ -129,12 +129,6 @@ async function refreshPrNow(
   const detail = scope === "all" || current === null
     ? await fetchPrDetail(repo, number, source)
     : await fetchPrDetailPart(repo, number, current, scope, source);
-  if (scope !== "review") {
-    // Cache the native run catalog alongside check contexts, including queued runs
-    // without jobs and run IDs that selected-run cache reads will advertise.
-    await cacheGithubActionsForCommit(repo, number, detail.headRefOid, undefined, true)
-      .catch((error) => console.error(`Actions coverage refresh failed for ${repo}#${number}:`, error));
-  }
   if (!previous || previous.head_sha !== detail.headRefOid) {
     fetchMirror(repo).catch((err) => console.error(`mirror fetch failed for ${repo}:`, err));
     onPrActivity(repo, number, previous !== null);
@@ -203,6 +197,16 @@ async function refreshPrNow(
   if (detail.state === "MERGED" || detail.state === "CLOSED") setAutoMergeArmed(repo, number, false);
   invalidatePr(repo, number);
   invalidateInbox();
+
+  if (scope !== "review") {
+    // Cache the native run catalog alongside check contexts, including queued runs
+    // without jobs and run IDs that selected-run cache reads will advertise. It takes a
+    // REST round trip or more, so the checks and status above are published first and the
+    // renderer is told again once the catalog lands; the refresh settles only after both.
+    await cacheGithubActionsForCommit(repo, number, detail.headRefOid, undefined, true)
+      .catch((error) => console.error(`Actions coverage refresh failed for ${repo}#${number}:`, error));
+    invalidatePr(repo, number);
+  }
 }
 
 export const refreshPr = createPrRefreshScheduler(refreshPrNow);
