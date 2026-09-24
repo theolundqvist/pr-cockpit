@@ -4,7 +4,8 @@
   import Thread from "./Thread.svelte";
   import MutationBadge from "./MutationBadge.svelte";
   import PendingReviewComment from "./PendingReviewComment.svelte";
-  import { getHighlighter, ensureTheme, langForPath, tokenizeLine } from "./highlight.js";
+  import { langForPath } from "./highlight.js";
+  import { cachedLineTokens, tokenizeLines } from "./lineHighlight.js";
   import { renderMarkdown } from "./markdown.js";
   import { presentMutationError } from "./mutationError.js";
   import { theme } from "./theme.svelte.js";
@@ -599,9 +600,7 @@
   const HUNK_HEAD_BORDER_H = 2;
   const MAX_HIGHLIGHT_LINE = 1000;
   const GAP_PAGE_LINES = 70;
-  const SLICE_MAX_ROWS = 150;
-  const SLICE_BUDGET_MS = 8;
-  const IDLE_TIMEOUT_MS = 300;
+  const HIGHLIGHT_BATCH_ROWS = 100;
   let diffLayoutScale = $derived(theme.diffScale / theme.generalScale);
   let generalLayoutScale = $derived(theme.generalScale / 100);
   $effect(() => {
@@ -1291,49 +1290,46 @@
     const themeName = theme.shiki;
     let cancelled = false;
     (async () => {
-      const highlighter = await getHighlighter();
-      await ensureTheme(highlighter, themeName);
-      if (cancelled) return;
-      const loaded = new Set(highlighter.getLoadedLanguages());
       const seen = new Set();
-      let sliceStart = performance.now();
-      let sliceRows = 0;
-      const tokenize = async (rows, lang) => {
+      const batches = [];
+      const collect = (rows, lang) => {
+        let missing = [];
         for (const row of rows) {
           if (row.text.length > MAX_HIGHLIGHT_LINE) continue;
           seen.add(row);
-          const tokens = tokenizeLine(highlighter, row.text, lang, themeName);
-          if (rowTokens.get(row) !== tokens) {
-            rowTokens.set(row, tokens);
-            sliceRows++;
-          }
-          if (sliceRows >= SLICE_MAX_ROWS || performance.now() - sliceStart > SLICE_BUDGET_MS) {
-            await new Promise((resolve) => requestIdleCallback(resolve, { timeout: IDLE_TIMEOUT_MS }));
-            if (cancelled) return false;
-            sliceStart = performance.now();
-            sliceRows = 0;
+          const tokens = cachedLineTokens(row.text, lang, themeName);
+          if (!tokens) missing.push(row);
+          else if (rowTokens.get(row) !== tokens) rowTokens.set(row, tokens);
+          if (missing.length === HIGHLIGHT_BATCH_ROWS) {
+            batches.push({ rows: missing, lang });
+            missing = [];
           }
         }
-        return true;
+        if (missing.length) batches.push({ rows: missing, lang });
       };
       for (const indexedFile of snapshot) {
         const file = hydratedSnapshot.get(indexedFile.path) ?? indexedFile;
         if (!hotSnapshot.has(file.path) || file.hydrated === false) continue;
         const lang = langForPath(file.path);
-        if (!lang || !loaded.has(lang)) continue;
+        if (!lang) continue;
         const split = fileUsesSplitLayout(file, layoutSnapshot);
-        for (const hunk of file.hunks) {
-          if (!(await tokenize(visibleHighlightRows(hunk.rows, split, chunkSnapshot), lang))) return;
-        }
+        for (const hunk of file.hunks) collect(visibleHighlightRows(hunk.rows, split, chunkSnapshot), lang);
         const whole = wholeSnapshot.get(file.path);
-        if (whole?.status === "ready" && !(await tokenize(visibleHighlightRows(whole.rows, split, chunkSnapshot), lang))) return;
+        if (whole?.status === "ready") collect(visibleHighlightRows(whole.rows, split, chunkSnapshot), lang);
         for (let hi = 0; hi <= file.hunks.length; hi++) {
           const g = gapSnapshot.get(gapKey(file, hi));
-          if (Array.isArray(g) && !(await tokenize(visibleHighlightRows(g, split, chunkSnapshot), lang))) return;
+          if (Array.isArray(g)) collect(visibleHighlightRows(g, split, chunkSnapshot), lang);
         }
       }
       for (const row of [...rowTokens.keys()]) {
         if (!seen.has(row)) rowTokens.delete(row);
+      }
+      // One batch in flight at a time, so a scroll or theme change abandons queued work quickly.
+      for (const batch of batches) {
+        const tokens = await tokenizeLines(batch.rows.map((row) => row.text), batch.lang, themeName).catch(() => null);
+        if (cancelled) return;
+        if (!tokens) continue;
+        batch.rows.forEach((row, index) => rowTokens.set(row, tokens[index]));
       }
     })();
     return () => {

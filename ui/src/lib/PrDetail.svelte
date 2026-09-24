@@ -36,6 +36,7 @@
   import { durationText, relativeTime } from "./time.js";
   import { mermaidDiagrams } from "./mermaid.js";
   import { theme } from "./theme.svelte.js";
+  import { warmLineHighlight } from "./lineHighlight.js";
   import { setViewerLogin } from "./viewer.svelte.js";
   import { scrollPage, scrollEdge, holdScrollStart, holdScrollRelease, cancelHoldScroll, scrollAnimating } from "./scroll.js";
   import { testMatcher } from "./testPath.js";
@@ -401,6 +402,14 @@
     const head = pr.headRefOid;
     const timer = setTimeout(() => writeLastViewed(repo, number, head), 4000);
     return () => clearTimeout(timer);
+  });
+
+  // Files is usually next; start the diff highlighting worker while the conversation is read.
+  $effect(() => {
+    if (!pr) return;
+    const shikiTheme = theme.shiki;
+    const idle = requestIdleCallback(() => warmLineHighlight(shikiTheme), { timeout: 2000 });
+    return () => cancelIdleCallback(idle);
   });
 
   let newCommitCount = $derived.by(() => {

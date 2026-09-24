@@ -296,16 +296,18 @@ test("closed-PR sweeps after the first only ask for PRs updated since the last c
   expect(bounds).toEqual([null, "2026-09-24T07:45:00.000Z", "2026-09-24T07:45:00.000Z"]);
 });
 
-test("a poll searches and refreshes PRs without waiting for the repo-wide Actions listing", async () => {
+test("a poll completes without waiting for the repo-wide Actions listing, and never stacks two", async () => {
   const order: string[] = [];
   let releaseActions!: () => void;
   const actionsGate = new Promise<void>((resolve) => { releaseActions = resolve; });
+  let listings = 0;
   let inFlight = 0;
   let peak = 0;
   const poll = createPollOnce({
     ...deps,
     listWebhookRegistrations: () => [],
     refreshRecentActions: async () => {
+      listings++;
       await actionsGate;
       order.push("actions");
       return 0;
@@ -320,13 +322,17 @@ test("a poll searches and refreshes PRs without waiting for the repo-wide Action
     },
     publishPollCompleted: () => { order.push("complete"); },
   });
-  const done = poll();
-  while (order.filter((step) => step === "refresh").length < 5) await Bun.sleep(1);
-  expect(order).not.toContain("complete");
-  releaseActions();
-  expect(await done).toEqual({ checked: 5, refreshed: 5 });
-  expect(order.slice(-2)).toEqual(["actions", "complete"]);
+  expect(await poll()).toEqual({ checked: 5, refreshed: 5 });
+  expect(order).toEqual(["refresh", "refresh", "refresh", "refresh", "refresh", "complete"]);
   expect(peak).toBe(3);
+
+  await poll();
+  expect(listings).toBe(1);
+  releaseActions();
+  while (!order.includes("actions")) await Bun.sleep(1);
+  await Bun.sleep(1);
+  await poll();
+  expect(listings).toBe(2);
 });
 
 test("a PR refresh publishes checks and status before the Actions catalog lands", async () => {
