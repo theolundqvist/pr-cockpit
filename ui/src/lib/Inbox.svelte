@@ -7,7 +7,7 @@
   import { categoryForPr, PR_TYPES, TYPE_TITLES } from "../../../shared/prGrouping.ts";
   import { assignments, assignPr, syncAssignments, onAssignmentStorage } from "./prAssignments.svelte.js";
   import { isSetAside, putAside } from "./setAside.svelte.js";
-  import { untrack } from "svelte";
+  import { tick, untrack } from "svelte";
   import { fetchInbox, fetchRecentClosed, fetchAllPrs, fetchPrDetails, setArchived, saveSettings, reorderPr, fetchSettings, fetchRelayStatus, fetchRelayCoverage, autofixAgent, customAgent } from "./api.js";
   import { cacheDetail, cachedHeadSha } from "./detailCache.js";
   import { filterPrs, countMatches, wantsHistory } from "./prFilter.js";
@@ -80,6 +80,46 @@
   let allPrsRepos = $state([]);
   let undo = $state(null);
   const archiveFlash = timedFlag(4000, () => (undo = null));
+  let contextMenu = $state(null);
+  let contextMenuNode = $state();
+  let lastG = 0;
+
+  $effect(() => {
+    if (!contextMenu) return;
+    const dismiss = () => (contextMenu = null);
+    const outside = (event) => { if (!contextMenuNode?.contains(event.target)) dismiss(); };
+    window.addEventListener("pointerdown", outside, true);
+    window.addEventListener("scroll", dismiss, true);
+    window.addEventListener("resize", dismiss);
+    return () => {
+      window.removeEventListener("pointerdown", outside, true);
+      window.removeEventListener("scroll", dismiss, true);
+      window.removeEventListener("resize", dismiss);
+    };
+  });
+
+  async function openContextMenu(event, pr) {
+    event.preventDefault();
+    contextMenu = { pr, x: 0, y: 0 };
+    await tick();
+    if (!contextMenuNode || contextMenu?.pr !== pr) return;
+    const rect = contextMenuNode.getBoundingClientRect();
+    const scale = Number.parseFloat(getComputedStyle(contextMenuNode.closest("#app")).zoom) || 1;
+    const x = Math.max(8, Math.min(event.clientX, window.innerWidth - rect.width - 8));
+    const y = Math.max(8, Math.min(event.clientY, window.innerHeight - rect.height - 8));
+    contextMenu = { pr, x: (x - rect.left) / scale, y: (y - rect.top) / scale };
+    contextMenuNode.querySelector("button")?.focus();
+  }
+
+  function archiveFromMenu(pr) {
+    const archived = isArchived(pr);
+    contextMenu = null;
+    archive(pr, !archived);
+    if (!archived) {
+      undo = { repo: pr.repo, number: pr.number };
+      archiveFlash.show();
+    }
+  }
   function storedRepositories() {
     try {
       const parsed = JSON.parse(localStorage.getItem("cockpit:repository-scope") ?? "[]");
@@ -660,6 +700,7 @@
       { key: "j / k", label: "move" },
       { key: "⏎", label: "open" },
     ];
+    if (pr) keys.push({ key: "b", label: "set aside" });
     if (view === "all" || view === "closed") {
       keys.push({ key: "o", label: "github" });
       keys.push({ key: "Tab", label: view === "all" ? "recently merged" : "back to open" });
@@ -757,7 +798,15 @@
   $effect(() => {
     if (!active) return;
     function onKey(e) {
-      if (e.defaultPrevented || (repoPickerOpen && e.key !== "r")) return;
+      if (e.defaultPrevented) return;
+      if (contextMenu) {
+        if (e.key === "Escape") {
+          contextMenu = null;
+          e.preventDefault();
+        }
+        return;
+      }
+      if (repoPickerOpen && e.key !== "r") return;
       if (e.metaKey && e.key === ",") {
         location.hash = "#/settings";
         e.preventDefault();
@@ -806,18 +855,21 @@
       }
       if (confirmAction) return;
       const pr = ordered[selected];
-      if (e.key === "g" && !e.shiftKey) {
+      if (e.key === "b" && !e.shiftKey) {
         e.preventDefault();
-        if (e.repeat) return;
-        if (pr && putAside(pr)) {
+        if (!e.repeat && pr && putAside(pr)) {
           multiAnchor = null;
           scrollSelectedIntoView();
         }
         return;
       }
-      if (e.key === "Home") {
-        selected = 0;
-        scrollEdge(document.querySelector(".page"), "top");
+      if (e.key === "g" && !e.shiftKey) {
+        const now = Date.now();
+        if (now - lastG < 400) {
+          selected = 0;
+          scrollEdge(document.querySelector(".page"), "top");
+          lastG = 0;
+        } else lastG = now;
         e.preventDefault();
         return;
       }
@@ -996,6 +1048,7 @@
         class:archived-row={isArchived(pr)}
         class:stack-child={info?.indent}
         class:dragging={dragKey === prKey(pr)}
+        oncontextmenu={(event) => openContextMenu(event, pr)}
         class:drop-before={dropHint?.key === prKey(pr) && dropHint.before}
         class:drop-after={dropHint?.key === prKey(pr) && !dropHint.before}
         href="#/pr/{pr.repo}/{pr.number}"
@@ -1109,6 +1162,7 @@
         class:selected={index === selected}
         href="#/pr/{pr.repo}/{pr.number}"
         onmouseenter={(e) => onRowHover(e, index)}
+        oncontextmenu={(event) => openContextMenu(event, pr)}
       >
         <span class="row-avatar">
           <Avatar login={pr.author} url={`https://github.com/${pr.author}.png?size=64`} size={30} />
@@ -1136,6 +1190,7 @@
         href="#/pr/{pr.repo}/{pr.number}"
         onmouseenter={(e) => onRowHover(e, index)}
         onclick={() => (restoreKey = prKey(pr))}
+        oncontextmenu={(event) => openContextMenu(event, pr)}
       >
         <span class="row-avatar">
           <Avatar login={pr.author} url={`https://github.com/${pr.author}.png?size=64`} size={30} />
@@ -1293,6 +1348,28 @@
     </div>
   </div>
 </div>
+{#if contextMenu}
+  <div
+    class="pr-context-menu"
+    bind:this={contextMenuNode}
+    role="menu"
+    tabindex="-1"
+    aria-label={`Actions for #${contextMenu.pr.number}`}
+    style="left:{contextMenu.x}px;top:{contextMenu.y}px"
+    oncontextmenu={(event) => event.preventDefault()}
+  >
+    <button role="menuitem" onclick={() => { location.hash = `#/pr/${contextMenu.pr.repo}/${contextMenu.pr.number}`; contextMenu = null; }}>Open pull request</button>
+    <button role="menuitem" onclick={() => { openGithub(contextMenu.pr); contextMenu = null; }}>Open on GitHub</button>
+    {#if view === "open" && !isArchived(contextMenu.pr) && contextMenu.pr.state === "OPEN"}
+      <button role="menuitem" onclick={() => { togglePinned(contextMenu.pr); contextMenu = null; }}>{contextMenu.pr.rank == null ? "Pin" : "Unpin"}</button>
+    {/if}
+    {#if view === "open"}
+      <button role="menuitem" onclick={() => archiveFromMenu(contextMenu.pr)}>{isArchived(contextMenu.pr) ? "Unarchive" : "Archive"}</button>
+    {/if}
+    <button role="menuitem" onclick={() => { putAside(contextMenu.pr); contextMenu = null; }}>Set aside</button>
+  </div>
+{/if}
+
 
 {#if confirmAction}
   <ConfirmDialog
@@ -1314,6 +1391,33 @@
 {/if}
 
 <style>
+  .pr-context-menu {
+    position: fixed;
+    z-index: 100;
+    min-width: 174px;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel-raised);
+    box-shadow: var(--shadow-sm);
+  }
+  .pr-context-menu button {
+    display: block;
+    width: 100%;
+    padding: 7px 9px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text);
+    font: 12px var(--sans);
+    text-align: left;
+    cursor: pointer;
+  }
+  .pr-context-menu button:hover, .pr-context-menu button:focus-visible {
+    outline: none;
+    background: var(--hunk-hover);
+  }
+
   .grouping-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 0; font-size: 12px; color: var(--muted); }
   .grouping-toolbar a { color: inherit; }
   .grouping-toolbar label { display: flex; align-items: center; gap: 8px; margin-left: auto; }

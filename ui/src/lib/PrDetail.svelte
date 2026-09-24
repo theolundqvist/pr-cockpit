@@ -119,6 +119,7 @@
   const TREE_MAX_WIDTH = 900;
   let treeDesiredWidth = $state(Number(localStorage.getItem(TREE_WIDTH_KEY)) || TREE_DEFAULT_WIDTH);
   let treeWidth = $derived(Math.max(TREE_MIN_WIDTH, Math.min(treeDesiredWidth, TREE_MAX_WIDTH)));
+  let lastG = 0;
 
   let activeFetch;
   let loadedKey = null;
@@ -2105,13 +2106,22 @@
         return;
       }
       const page = document.querySelector(".page");
-      if (e.key === "g" && !e.shiftKey) {
+      if (e.key === "b" && !e.shiftKey) {
         e.preventDefault();
         if (e.repeat || !pr || !finishFileEdit()) return;
         const item = { ...pr, repo, number };
         if (isSetAside(item)) {
           if (bringBack(item)) showFlash("PR brought back to the main view");
         } else if (putAside(item)) location.hash = "#/";
+        return;
+      }
+      if (e.key === "g" && !e.shiftKey) {
+        const now = Date.now();
+        if (now - lastG < 400) {
+          scrollEdge(page, "top");
+          lastG = 0;
+        } else lastG = now;
+        e.preventDefault();
         return;
       }
       if (e.key === "Home") {
@@ -2253,6 +2263,7 @@
     { key: "x", label: "close" },
     ...autoMergeKeys,
     { key: "o", label: "github" },
+    { key: "b", label: isSetAside({ repo, number }) ? "bring back" : "set aside" },
     ...localCheckoutKeys,
     { key: "esc", label: "back" },
   ]);
@@ -2271,6 +2282,7 @@
     mergeKey,
     ...autoMergeKeys,
     { key: "o", label: "github" },
+    { key: "b", label: isSetAside({ repo, number }) ? "bring back" : "set aside" },
     ...localCheckoutKeys,
     { key: "esc", label: "back" },
   ]);
@@ -2278,6 +2290,7 @@
     { key: "⌘1 / ⌘2 / ⌘3 / ⌘4", label: "switch tab" },
     { key: "x", label: "close" },
     { key: "o", label: tab === "actions" && actionsRunUrl ? "github run" : "github" },
+    { key: "b", label: isSetAside({ repo, number }) ? "bring back" : "set aside" },
     ...localCheckoutKeys,
     { key: "esc", label: "back" },
   ]);
