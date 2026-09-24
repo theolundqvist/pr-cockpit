@@ -97,17 +97,20 @@ export function imageFallback(node) {
     chip.textContent = "⤷ image";
     element.replaceWith(chip);
   };
+  const failed = (event) => {
+    const img = event.target;
+    if (!(img instanceof HTMLImageElement) || !node.contains(img)) return;
+    const original = img.dataset.originalSrc || img.src;
+    if (!GH_VIDEO_RE.test(original)) return replace(img, original);
+    const player = videoPlayer(document, img.src);
+    player.querySelector("video").addEventListener("error", () => replace(player, original), { once: true });
+    img.replaceWith(player);
+  };
+  node.addEventListener("error", failed, true);
   for (const img of node.querySelectorAll("img")) {
-    const failed = () => {
-      const original = img.dataset.originalSrc || img.src;
-      if (!GH_VIDEO_RE.test(original)) return replace(img, original);
-      const player = videoPlayer(document, img.src);
-      player.querySelector("video").addEventListener("error", () => replace(player, original), { once: true });
-      img.replaceWith(player);
-    };
-    if (img.complete && img.naturalWidth === 0) failed();
-    else img.addEventListener("error", failed, { once: true });
+    if (img.complete && img.naturalWidth === 0) failed({ target: img });
   }
+  return { destroy: () => node.removeEventListener("error", failed, true) };
 }
 
 // GitHub renders an uploaded video as its bare attachment URL on its own line.
