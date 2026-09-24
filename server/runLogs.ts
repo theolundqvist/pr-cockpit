@@ -40,6 +40,8 @@ import {
   fetchWorkflowRunsForWorkflow,
 } from "./github.ts";
 
+import { forEachWithConcurrency } from "./concurrency.ts";
+
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
 
@@ -673,18 +675,6 @@ export async function cacheGithubActionsForCommit(
 }
 
 const RUN_JOBS_FETCH_CONCURRENCY = 4;
-
-// Rejects with the first failure only after every started task settles, so no fetch keeps
-// writing to the cache after the caller has moved on.
-async function forEachWithConcurrency<T>(items: T[], limit: number, task: (item: T) => Promise<void>): Promise<void> {
-  let next = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (next < items.length) await task(items[next++]!);
-  });
-  const results = await Promise.allSettled(workers);
-  const failure = results.find((result) => result.status === "rejected");
-  if (failure) throw (failure as PromiseRejectedResult).reason;
-}
 
 export async function cacheRepoActionsRunJobs(
   run: WorkflowRunRow,

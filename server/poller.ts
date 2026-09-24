@@ -29,8 +29,10 @@ import { GRAPHQL_BACKGROUND_RESERVE } from "../ui/src/lib/quotaImpact.js";
 import { captureError } from "./sentry.ts";
 import { reportStorageFailure, repositoryAvailable } from "./systemIssues.ts";
 import { watchForWake } from "./wake.ts";
+import { forEachWithConcurrency } from "./concurrency.ts";
 
 const INDEX_SWEEP_MS = 1_800_000;
+const POLL_REFRESH_CONCURRENCY = 3;
 // GitHub's search index trails writes by minutes, so bounded sweeps overlap the previous one.
 const CLOSED_SWEEP_OVERLAP_MS = 15 * 60_000;
 const GRAPHQL_WINDOW_MS = 60 * 60_000;
@@ -266,31 +268,38 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
       deps.publishPollCompleted(lastPollAt);
       return { checked: 0, refreshed: 0 };
     }
+    // The repo-wide recent-runs listing (two ~2s pages per repo) feeds only the Actions page,
+    // so it runs beside the inbox search and PR refreshes instead of ahead of them. It never
+    // rejects; a poll that fails later simply leaves it to finish on its own.
     const refreshActions = deps.refreshRecentActions;
-    if (refreshActions) {
-      const actionRefreshes = await Promise.allSettled(repos.map((repo) => refreshActions(repo)));
-      actionRefreshes.forEach((result, index) => {
-        if (result.status === "rejected") {
-          console.warn(`Actions refresh failed for ${repos[index]}:`, result.reason);
-        }
-      });
-    }
+    const actionRefreshes = refreshActions
+      ? Promise.allSettled(repos.map((repo) => refreshActions(repo))).then((results) => {
+        results.forEach((result, index) => {
+          if (result.status === "rejected") {
+            console.warn(`Actions refresh failed for ${repos[index]}:`, result.reason);
+          }
+        });
+      })
+      : Promise.resolve();
 
     const hits = await deps.searchOpenPrs(searchRepos);
     const nextOpenInboxKeys = new Set(hits.map((hit) => prKeyOf(hit.repo, hit.number)));
     const openInboxChanged = nextOpenInboxKeys.size !== openInboxKeys.size
       || [...nextOpenInboxKeys].some((key) => !openInboxKeys.has(key));
     openInboxKeys = nextOpenInboxKeys;
-    let refreshed = 0;
-    for (const hit of hits) {
-      if (!tracked.has(hit.repo) && !registered.has(prKeyOf(hit.repo, hit.number))) continue;
+    const changedHits = hits.filter((hit) => {
+      if (!tracked.has(hit.repo) && !registered.has(prKeyOf(hit.repo, hit.number))) return false;
       const cached = deps.getPr(hit.repo, hit.number);
       // fetched_at deliberately stays put: thread resolution moves none of these fields, so only detail staleness repairs it.
-      const unchanged = cached && cached.head_sha === hit.headRefOid && cached.updated_at === hit.updatedAt && cached.ci_status === hit.ciState;
-      if (unchanged) continue;
+      return !(cached && cached.head_sha === hit.headRefOid && cached.updated_at === hit.updatedAt && cached.ci_status === hit.ciState);
+    });
+    // Each refresh is a GraphQL detail plus its Actions catalog (1-3s); after a burst of activity,
+    // refreshing one PR at a time held the last one's update for the sum. Quota spend is unchanged.
+    let refreshed = 0;
+    await forEachWithConcurrency(changedHits, POLL_REFRESH_CONCURRENCY, async (hit) => {
       await deps.refreshPr(hit.repo, hit.number, "background poll");
       refreshed++;
-    }
+    });
 
     const registrationMembershipChanged = await reconcileRegistrations(
       searchableRegistrations,
@@ -303,6 +312,7 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
     }
 
     await sweepPrIndexIfDue(repos);
+    await actionRefreshes;
     lastPollAt = new Date().toISOString();
     deps.publishPollCompleted(lastPollAt);
     if (openInboxChanged || registrationMembershipChanged) deps.invalidateInbox();

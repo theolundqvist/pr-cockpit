@@ -296,6 +296,39 @@ test("closed-PR sweeps after the first only ask for PRs updated since the last c
   expect(bounds).toEqual([null, "2026-09-24T07:45:00.000Z", "2026-09-24T07:45:00.000Z"]);
 });
 
+test("a poll searches and refreshes PRs without waiting for the repo-wide Actions listing", async () => {
+  const order: string[] = [];
+  let releaseActions!: () => void;
+  const actionsGate = new Promise<void>((resolve) => { releaseActions = resolve; });
+  let inFlight = 0;
+  let peak = 0;
+  const poll = createPollOnce({
+    ...deps,
+    listWebhookRegistrations: () => [],
+    refreshRecentActions: async () => {
+      await actionsGate;
+      order.push("actions");
+      return 0;
+    },
+    searchOpenPrs: async () => [1, 2, 3, 4, 5].map((number) => hit("acme/tracked", number)),
+    refreshPr: async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await Bun.sleep(5);
+      inFlight--;
+      order.push("refresh");
+    },
+    publishPollCompleted: () => { order.push("complete"); },
+  });
+  const done = poll();
+  while (order.filter((step) => step === "refresh").length < 5) await Bun.sleep(1);
+  expect(order).not.toContain("complete");
+  releaseActions();
+  expect(await done).toEqual({ checked: 5, refreshed: 5 });
+  expect(order.slice(-2)).toEqual(["actions", "complete"]);
+  expect(peak).toBe(3);
+});
+
 test("a PR refresh publishes checks and status before the Actions catalog lands", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-refresh-order-"));
   const url = (file: string) => JSON.stringify(new URL(file, import.meta.url).href);
