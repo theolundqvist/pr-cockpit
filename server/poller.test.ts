@@ -335,6 +335,44 @@ test("a poll completes without waiting for the repo-wide Actions listing, and ne
   expect(listings).toBe(2);
 });
 
+test("a poll completes without waiting for the PR-index sweep, and never stacks two", async () => {
+  const order: string[] = [];
+  let releaseSweep!: () => void;
+  const sweepGate = new Promise<void>((resolve) => { releaseSweep = resolve; });
+  let sweeps = 0;
+  const upserted: string[] = [];
+  const poll = createPollOnce({
+    ...deps,
+    listWebhookRegistrations: () => [],
+    searchOpenPrs: async () => [hit("acme/tracked", 1)],
+    searchRecentPrs: async () => {
+      sweeps++;
+      await sweepGate;
+      return [{ repo: "acme/tracked", number: 9, title: "t", state: "MERGED", isDraft: false, author: "a", updatedAt: "2026-09-24T08:00:00Z" }];
+    },
+    upsertPrIndex: (entries) => {
+      upserted.push(...entries.map((entry) => `${entry.repo}#${entry.number}`));
+      order.push("sweep");
+    },
+    publishPollCompleted: () => { order.push("complete"); },
+  });
+  try {
+    setSystemTime(new Date("2026-09-24T08:00:00.000Z"));
+    await poll();
+    expect(order).toEqual(["complete"]);
+    // Due again, but the first sweep is still running.
+    setSystemTime(new Date("2026-09-24T08:31:00.000Z"));
+    await poll();
+    expect(sweeps).toBe(1);
+    releaseSweep();
+    while (!order.includes("sweep")) await Bun.sleep(1);
+    expect(upserted).toEqual(["acme/tracked#9"]);
+  } finally {
+    releaseSweep();
+    setSystemTime();
+  }
+});
+
 test("a PR refresh publishes checks and status before the Actions catalog lands", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-refresh-order-"));
   const url = (file: string) => JSON.stringify(new URL(file, import.meta.url).href);

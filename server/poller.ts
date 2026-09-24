@@ -250,6 +250,7 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
   // PRs updated since then, and the first sweep after start takes the most recent page.
   let closedSweptAt: number | null = null;
   let actionsListing: Promise<void> | null = null;
+  let indexSweep: Promise<void> | null = null;
 
   async function pollOnceInner(): Promise<{ checked: number; refreshed: number }> {
     await deps.refreshWorktreeScan();
@@ -315,7 +316,15 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
       deps.evictStalePrs(repo, keepNumbers);
     }
 
-    await sweepPrIndexIfDue(repos);
+    // The index sweep (~1-2.5s of searches every 30 minutes) feeds only All PRs and titles,
+    // so the poll does not wait for it; upsertPrIndex keeps its older results from winning.
+    if (!indexSweep) {
+      indexSweep = sweepPrIndexIfDue(repos)
+        .catch((error) => console.error("pr-index sweep failed:", error))
+        .finally(() => {
+          indexSweep = null;
+        });
+    }
     lastPollAt = new Date().toISOString();
     deps.publishPollCompleted(lastPollAt);
     if (openInboxChanged || registrationMembershipChanged) deps.invalidateInbox();
@@ -348,6 +357,7 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
   async function sweepPrIndexIfDue(repos: string[]): Promise<void> {
     if (lastIndexSweepAt !== null && Date.now() - lastIndexSweepAt < INDEX_SWEEP_MS) return;
     const sweepStartedAt = Date.now();
+    lastIndexSweepAt = sweepStartedAt;
     const closedSince = closedSweptAt === null ? null : new Date(closedSweptAt - CLOSED_SWEEP_OVERLAP_MS).toISOString();
     const sweeps = await Promise.allSettled([
       ...repos.map((repo) => deps.searchRecentPrs(repo)),
@@ -369,7 +379,6 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
       }
     }
     if (changed) deps.invalidateInbox();
-    lastIndexSweepAt = Date.now();
   }
 
   function poll(): Promise<{ checked: number; refreshed: number }> {
