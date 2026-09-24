@@ -13,6 +13,8 @@ function fakeInstall(
   loadedRoot: string | null,
   platform: "Darwin" | "Linux",
   healthRoot?: string,
+  listenerPid = "4242",
+  healthFailure?: "once" | "always",
 ) {
   const root = join(home, "checkout");
   const bin = join(home, "bin");
@@ -47,8 +49,16 @@ exit 0`],
     ["uname", `printf '${platform}\\n'`],
     ["gh", "exit 0"],
     // the readiness probe needs the server agent to own the listening port
-    ["lsof", 'printf "4242\\n"'],
-    ["curl", `printf '%s\\n' "$*" >> ${JSON.stringify(curlCalls)}; printf '{"root":"${healthRoot ?? realpathSync(root)}"}'`],
+    ["lsof", `printf '${listenerPid}\\n'`],
+    ["curl", `printf '%s\\n' "$*" >> ${JSON.stringify(curlCalls)}
+if [[ "$*" == *"/healthz"* ]]; then
+  if [[ "${healthFailure}" == "always" ]]; then exit 7; fi
+  if [[ "${healthFailure}" == "once" && ! -f ${JSON.stringify(join(home, "health-failed"))} ]]; then
+    touch ${JSON.stringify(join(home, "health-failed"))}
+    exit 7
+  fi
+fi
+printf '{"root":"${healthRoot ?? realpathSync(root)}"}'`],
     [
       "launchctl",
       `printf '%s\\n' "$*" >> ${JSON.stringify(calls)}
@@ -71,11 +81,11 @@ exit 0`,
 
 async function install(
   loadedRoot: string | null,
-  options: { platform?: "Darwin" | "Linux"; proxy?: string; healthRoot?: string; tailscalePort?: string; failInstall?: boolean; hangReporter?: boolean } = {},
+  options: { platform?: "Darwin" | "Linux"; proxy?: string; healthRoot?: string; listenerPid?: string; healthFailure?: "once" | "always"; tailscalePort?: string; failInstall?: boolean; hangReporter?: boolean } = {},
 ) {
   const home = mkdtempSync(join(tmpdir(), "cockpit-install-"));
   try {
-    const fake = fakeInstall(home, loadedRoot, options.platform ?? "Darwin", options.healthRoot);
+    const fake = fakeInstall(home, loadedRoot, options.platform ?? "Darwin", options.healthRoot, options.listenerPid, options.healthFailure);
     const installHome = join(home, "home");
     const proc = Bun.spawn([join(fake.root, "scripts/install")], {
       env: {
@@ -304,12 +314,27 @@ test("a registration for this root keeps the running window", async () => {
   expect(result.calls).toContain("app.pr-cockpit.server.plist");
 });
 
+test("update replaces its managed listener when the first health probe fails", async () => {
+  const result = await install("__ROOT__", { healthFailure: "once" });
+  expect(result.exitCode).toBe(0);
+  expect(result.calls).toContain(`bootout gui/${uid}/app.pr-cockpit.server\n`);
+  expect(result.curlCalls).not.toContain("-X POST http://127.0.0.1:4820/api/shutdown");
+});
+
+test("installer leaves a foreign non-HTTP listener untouched", async () => {
+  const result = await install("__ROOT__", { listenerPid: "5757", healthFailure: "always" });
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("port 4820 belongs to PID 5757, not the managed Cockpit server");
+  expect(result.calls).not.toContain(`bootout gui/${uid}/app.pr-cockpit.server\n`);
+  expect(result.curlCalls).not.toContain("-X POST http://127.0.0.1:4820/api/shutdown");
+});
+
 test("replica installation restarts the local server", async () => {
   const result = await install("__ROOT__", {
     proxy: "root@dev-vm",
   });
   expect(result.exitCode).toBe(0);
-  expect(result.curlCalls).toContain("-X POST http://127.0.0.1:4820/api/shutdown");
+  expect(result.calls).toContain(`bootout gui/${uid}/app.pr-cockpit.server\n`);
   expect(result.serverPlist).toContain("<key>KeepAlive</key>");
   expect(result.serverPlist).toContain("<string>--server-only</string>");
   expect(result.serverPlist).toContain("<string>COCKPIT_REPLICA_SSH_HOST=root@dev-vm</string>");

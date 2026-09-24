@@ -245,8 +245,7 @@ server_agent_owns_port() {
 health_is_ours() {
   local health
   health="$(curl --max-time 2 -fsS "http://127.0.0.1:$install_port/healthz" 2>/dev/null)" || return 1
-  [[ "$health" == *"\"root\":\"$root\""* ]] && return 0
-  [[ "$health" != *'"root":'* ]] && server_agent_owns_port
+  [[ "$health" == *"\"root\":\"$root\""* ]]
 }
 
 mkdir -p "$agent_dir"
@@ -343,15 +342,20 @@ if agent_state="$(launchctl print "gui/$(id -u)/$agent_label" 2>/dev/null)"; the
   # foreign root in /healthz, and exits "serving a different instance".
   shell_agent_root="$(printf '%s\n' "$agent_state" | sed -n 's/^[[:space:]]*COCKPIT_ROOT=\(.*\)$/\1/p' | head -n 1)"
 fi
-if health_is_ours; then
-  curl --max-time 2 -fsS -X POST "http://127.0.0.1:$install_port/api/shutdown" >/dev/null 2>&1 || true
-  for _ in {1..20}; do
-    health_is_ours || break
-    sleep 0.1
-  done
-elif curl --max-time 2 -fsS -o /dev/null "http://127.0.0.1:$install_port/healthz"; then
-  echo "pr-cockpit: port $install_port is already serving another app; pick a free port with COCKPIT_PORT (env, or COCKPIT_PORT=4821 in $config_file) and rerun" >&2
-  exit 1
+if ! server_agent_owns_port; then
+  if health_is_ours; then
+    curl --max-time 2 -fsS -X POST "http://127.0.0.1:$install_port/api/shutdown" >/dev/null 2>&1 || true
+    for _ in {1..20}; do
+      health_is_ours || break
+      sleep 0.1
+    done
+  else
+    listener_pids="$(lsof -nP -tiTCP:"$install_port" -sTCP:LISTEN 2>/dev/null || true)"
+    if [[ -n "$listener_pids" ]] || curl --max-time 2 -fsS -o /dev/null "http://127.0.0.1:$install_port/healthz"; then
+      echo "pr-cockpit: port $install_port belongs to PID ${listener_pids:-unknown}, not the managed Cockpit server; stop that process or choose another COCKPIT_PORT" >&2
+      exit 1
+    fi
+  fi
 fi
 launchctl bootout "gui/$(id -u)/$server_agent_label" >/dev/null 2>&1 || true
 
