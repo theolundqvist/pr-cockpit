@@ -31,6 +31,8 @@ import { reportStorageFailure, repositoryAvailable } from "./systemIssues.ts";
 import { watchForWake } from "./wake.ts";
 
 const INDEX_SWEEP_MS = 1_800_000;
+// GitHub's search index trails writes by minutes, so bounded sweeps overlap the previous one.
+const CLOSED_SWEEP_OVERLAP_MS = 15 * 60_000;
 const GRAPHQL_WINDOW_MS = 60 * 60_000;
 
 export let lastPollAt: string | null = null;
@@ -231,6 +233,9 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
   let inFlightPoll: Promise<{ checked: number; refreshed: number }> | null = null;
   let trailingPoll: Promise<{ checked: number; refreshed: number }> | null = null;
   let lastIndexSweepAt: number | null = null;
+  // Start of the last closed-PR sweep that covered every repo; the next one only asks for
+  // PRs updated since then, and the first sweep after start takes the most recent page.
+  let closedSweptAt: number | null = null;
 
   async function pollOnceInner(): Promise<{ checked: number; refreshed: number }> {
     await deps.refreshWorktreeScan();
@@ -318,10 +323,13 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
 
   async function sweepPrIndexIfDue(repos: string[]): Promise<void> {
     if (lastIndexSweepAt !== null && Date.now() - lastIndexSweepAt < INDEX_SWEEP_MS) return;
+    const sweepStartedAt = Date.now();
+    const closedSince = closedSweptAt === null ? null : new Date(closedSweptAt - CLOSED_SWEEP_OVERLAP_MS).toISOString();
     const sweeps = await Promise.allSettled([
       ...repos.map((repo) => deps.searchRecentPrs(repo)),
-      deps.searchClosedPrs(repos).then(({ items, failures }) => {
+      deps.searchClosedPrs(repos, closedSince).then(({ items, failures }) => {
         for (const failure of failures) console.error(`closed PR search failed for ${failure.repo}:`, failure.error);
+        if (failures.length === 0) closedSweptAt = sweepStartedAt;
         return items;
       }),
     ]);

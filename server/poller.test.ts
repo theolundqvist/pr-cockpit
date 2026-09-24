@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, mock, setSystemTime, test } from "bun:test";
 import { backgroundQuotaAvailable, createPollOnce, nextPollDelayMs, type PollDeps } from "./poller.ts";
-import type { PrDetailScope, SearchHit } from "./github.ts";
+import { GithubRequestError, type PrDetailScope, type SearchHit } from "./github.ts";
 import type { GithubUsageSource } from "./githubUsage.ts";
 import type { PrRow, WebhookRegistrationRow } from "./db.ts";
 
@@ -262,4 +262,33 @@ describe("poll-loop registration lifecycle", () => {
     await createPollOnce(deps)();
     expect(registeredKeys()).toEqual(["ext/repo#5"]);
   });
+});
+
+test("closed-PR sweeps after the first only ask for PRs updated since the last complete sweep", async () => {
+  const bounds: Array<string | null> = [];
+  let failNext = false;
+  const poll = createPollOnce({
+    ...deps,
+    searchClosedPrs: async (repos, updatedSince = null) => {
+      bounds.push(updatedSince);
+      if (!failNext) return { items: [], failures: [] };
+      failNext = false;
+      return { items: [], failures: [{ repo: repos[0]!, error: new GithubRequestError("search down", 503) }] };
+    },
+  });
+  const error = console.error;
+  console.error = () => {};
+  try {
+    setSystemTime(new Date("2026-09-24T08:00:00.000Z"));
+    await poll();
+    setSystemTime(new Date("2026-09-24T08:31:00.000Z"));
+    failNext = true;
+    await poll();
+    setSystemTime(new Date("2026-09-24T09:02:00.000Z"));
+    await poll();
+  } finally {
+    setSystemTime();
+    console.error = error;
+  }
+  expect(bounds).toEqual([null, "2026-09-24T07:45:00.000Z", "2026-09-24T07:45:00.000Z"]);
 });

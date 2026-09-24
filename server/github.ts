@@ -953,7 +953,12 @@ export interface ClosedPrSearchResult {
   failures: ClosedPrSearchFailure[];
 }
 
-export async function searchClosedPrs(repos: string[]): Promise<ClosedPrSearchResult> {
+const CLOSED_SEARCH_PAGE = 100;
+
+// Without a lower bound the search always matches every closed PR the viewer ever touched, so
+// it capped on every sweep and the cap said nothing. A sweep bounded by the previous one only
+// caps when more PRs than one page really closed or changed in between.
+export async function searchClosedPrs(repos: string[], updatedSince: string | null = null): Promise<ClosedPrSearchResult> {
   const items: PrIndexEntry[] = [];
   const failures: ClosedPrSearchFailure[] = [];
   for (const repo of repos) {
@@ -964,11 +969,12 @@ export async function searchClosedPrs(repos: string[]): Promise<ClosedPrSearchRe
       continue;
     }
     if (!repositoryAvailable(repo)) continue;
-    const searchQuery = `is:pr is:closed involves:@me archived:false repo:${repo} sort:updated-desc`;
+    const updatedFilter = updatedSince === null ? "" : ` updated:>=${updatedSince.replace(/\.\d{3}Z$/, "Z")}`;
+    const searchQuery = `is:pr is:closed involves:@me archived:false repo:${repo}${updatedFilter} sort:updated-desc`;
     try {
-      const repoItems = await restSearchPrs(searchQuery, 100);
-      if (repoItems.length === 100) {
-        console.warn(`search hit the 100-result cap, PRs may be missing: ${searchQuery}`);
+      const repoItems = await restSearchPrs(searchQuery, CLOSED_SEARCH_PAGE);
+      if (updatedSince !== null && repoItems.length === CLOSED_SEARCH_PAGE) {
+        console.warn(`search hit the ${CLOSED_SEARCH_PAGE}-result cap, PRs may be missing: ${searchQuery}`);
       }
       items.push(...repoItems.map((item) => ({
         repo: restSearchRepo(item),
