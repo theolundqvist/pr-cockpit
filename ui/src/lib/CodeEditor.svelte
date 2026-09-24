@@ -5,7 +5,8 @@
   import { bracketMatching, indentOnInput } from "@codemirror/language";
   import { Compartment, EditorState, StateEffect, StateField } from "@codemirror/state";
   import { Decoration, drawSelection, EditorView, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers, ViewPlugin } from "@codemirror/view";
-  import { ensureTheme, getHighlighter, langForPath, tokenizeCode } from "./highlight.js";
+  import { langForPath } from "./highlight.js";
+  import { cachedLineTokens, tokenizeLines } from "./offThreadHighlight.js";
   import { theme } from "./theme.svelte.js";
 
   let {
@@ -72,10 +73,6 @@
     let idle = null;
     let generation = 0;
     let destroyed = false;
-    const ready = getHighlighter().then(async (highlighter) => {
-      await ensureTheme(highlighter, themeName);
-      return highlighter;
-    });
 
     function cancelScheduled() {
       if (idle === null) return;
@@ -84,43 +81,55 @@
       idle = null;
     }
 
+    // Visible lines are tokenized in the highlight worker, so a first edit or a scroll never
+    // compiles grammars or matches long lines on the main thread. A result is dropped when the
+    // document or viewport changed while it was in flight.
+    async function highlightVisible(view, request) {
+      const lines = [];
+      const visible = browserVisibleLineRange(view);
+      let remaining = SHIKI_VISIBLE_TEXT_BUDGET;
+      if (visible) {
+        for (let number = visible.first; number <= visible.last; number++) {
+          const line = view.state.doc.line(number);
+          if (line.length > SHIKI_VISIBLE_TEXT_BUDGET) continue;
+          if (line.length > remaining) break;
+          remaining -= line.length;
+          lines.push({ from: line.from, text: line.text, tokens: cachedLineTokens(line.text, lang, themeName) });
+        }
+      }
+      const uncached = lines.filter((line) => line.tokens === undefined);
+      if (uncached.length) {
+        const tokens = await tokenizeLines(uncached.map((line) => line.text), lang, themeName).catch(() => null);
+        if (!tokens) return;
+        uncached.forEach((line, index) => (line.tokens = tokens[index]));
+      }
+      if (destroyed || request !== generation) return;
+      const ranges = [];
+      for (const line of lines) {
+        let offset = 0;
+        for (const token of line.tokens ?? []) {
+          const from = line.from + offset;
+          offset += token.content.length;
+          if (token.color && offset > from - line.from) {
+            ranges.push(Decoration.mark({ attributes: { style: `color:${token.color}` } }).range(from, line.from + offset));
+          }
+        }
+      }
+      view.dispatch({ effects: setShikiDecorations.of(Decoration.set(ranges, true)) });
+    }
+
     function schedule(view) {
       const request = ++generation;
       cancelScheduled();
-      ready.then((highlighter) => {
+      const run = () => {
+        idle = null;
         if (destroyed || request !== generation) return;
-        const run = () => {
-          idle = null;
-          if (destroyed || request !== generation) return;
-          const ranges = [];
-          const visible = browserVisibleLineRange(view);
-          let remaining = SHIKI_VISIBLE_TEXT_BUDGET;
-          if (visible) {
-            for (let number = visible.first; number <= visible.last; number++) {
-              const line = view.state.doc.line(number);
-              if (line.length > SHIKI_VISIBLE_TEXT_BUDGET) continue;
-              if (line.length > remaining) break;
-              remaining -= line.length;
-              const tokens = tokenizeCode(highlighter, line.text, lang, themeName)[0] ?? [];
-              let offset = 0;
-              for (const token of tokens) {
-                const from = line.from + offset;
-                offset += token.content.length;
-                if (token.color && offset > from - line.from) {
-                  ranges.push(Decoration.mark({ attributes: { style: `color:${token.color}` } }).range(from, line.from + offset));
-                }
-              }
-            }
-          }
-          if (!destroyed && request === generation) {
-            view.dispatch({ effects: setShikiDecorations.of(Decoration.set(ranges, true)) });
-          }
-        };
-        idle =
-          typeof requestIdleCallback === "function"
-            ? requestIdleCallback(run, { timeout: 160 })
-            : setTimeout(run, 80);
-      });
+        void highlightVisible(view, request);
+      };
+      idle =
+        typeof requestIdleCallback === "function"
+          ? requestIdleCallback(run, { timeout: 160 })
+          : setTimeout(run, 80);
     }
 
     return [

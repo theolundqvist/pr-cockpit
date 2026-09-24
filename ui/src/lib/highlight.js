@@ -77,19 +77,3 @@ export async function ensureTheme(highlighter, themeName) {
   await highlighter.loadTheme(mod.default ?? mod);
   loadedThemes.add(themeName);
 }
-
-const tokenCache = new Map();
-
-export function tokenizeLine(highlighter, code, lang, themeName) {
-  const key = themeName + "\n" + lang + "\n" + code;
-  let tokens = tokenCache.get(key);
-  if (tokens === undefined) {
-    tokens = highlighter.codeToTokensBase(code, { lang, theme: themeName })[0] ?? [];
-    tokenCache.set(key, tokens);
-  }
-  return tokens;
-}
-
-export function tokenizeCode(highlighter, code, lang, themeName) {
-  return highlighter.codeToTokensBase(code, { lang, theme: themeName });
-}

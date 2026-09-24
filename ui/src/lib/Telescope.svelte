@@ -1,7 +1,8 @@
 <script>
   import { tick, untrack } from "svelte";
   import { repoSearch, repoFiles, repoFile, repoDefinition } from "./api.js";
-  import { getHighlighter, ensureTheme, langForPath, tokenizeLine } from "./highlight.js";
+  import { langForPath } from "./highlight.js";
+  import { tokenizeLines } from "./offThreadHighlight.js";
   import { theme } from "./theme.svelte.js";
   import { fuzzyRankWithPriority } from "./fuzzy.js";
   import { showFlash } from "./flash.svelte.js";
@@ -44,6 +45,8 @@
   let defsReturnMode = "search";
 
   const MAX_RESULTS = 200;
+  const SNIPPET_BATCH_LINES = 300;
+  const PREVIEW_MAX_HIGHLIGHT_LINES = 5000;
   const MAX_FETCH_RETRIES = 15;
   const MIN_SEARCH_QUERY = 2;
 
@@ -90,33 +93,42 @@
   let snipTokens = $state(new Map());
   const snipKey = (path, text, themeName) => `${themeName}\n${path}\n${text}`;
 
-  // up to 2000 match lines - tokenize once per (theme, path, line), cached across keystrokes, chunked so a keystroke never blocks
+  // up to 2000 match lines - tokenized in the highlight worker once per (theme, path, line), cached
+  // across keystrokes, in batches of one language so the first rows colour before the last are done
   $effect(() => {
     const rows = mode !== "files" ? results : null;
     const themeName = theme.shiki;
     if (!open || !rows || rows.length === 0) return;
     let cancelled = false;
     (async () => {
-      const h = await getHighlighter();
-      await ensureTheme(h, themeName);
-      if (cancelled) return;
-      const loaded = new Set(h.getLoadedLanguages());
-      const tokens = new Map(snipTokens);
-      let pending = 0;
+      const tokens = new Map(untrack(() => snipTokens));
+      const known = tokens.size;
+      const batches = [];
+      const filling = new Map();
       for (const r of rows) {
         if (r.line == null) continue;
         const key = snipKey(r.path, r.text, themeName);
         if (tokens.has(key)) continue;
         const lang = langForPath(r.path);
-        tokens.set(key, lang && loaded.has(lang) ? tokenizeLine(h, r.text, lang, themeName) : null);
-        if (++pending >= 300) {
-          snipTokens = new Map(tokens);
-          pending = 0;
-          await new Promise((res) => setTimeout(res));
-          if (cancelled) return;
+        if (!lang) {
+          tokens.set(key, null);
+          continue;
         }
+        let batch = filling.get(lang);
+        if (!batch || batch.rows.length >= SNIPPET_BATCH_LINES) {
+          batch = { lang, rows: [] };
+          filling.set(lang, batch);
+          batches.push(batch);
+        }
+        batch.rows.push({ key, text: r.text });
       }
-      if (!cancelled) snipTokens = new Map(tokens);
+      for (const { lang, rows: batchRows } of batches) {
+        const lineTokens = await tokenizeLines(batchRows.map((row) => row.text), lang, themeName).catch(() => null);
+        if (cancelled) return;
+        batchRows.forEach((row, index) => tokens.set(row.key, lineTokens?.[index] ?? null));
+        snipTokens = new Map(tokens);
+      }
+      if (batches.length === 0 && tokens.size !== known) snipTokens = tokens;
     })();
     return () => {
       cancelled = true;
@@ -245,21 +257,26 @@
         entry = { status: "missing" };
       } else {
         const lines = res.content.split("\n");
-        const highlighter = await getHighlighter();
-        await ensureTheme(highlighter, theme.shiki);
-        const lang = langForPath(path);
-        const loaded = new Set(highlighter.getLoadedLanguages());
-        const tokens =
-          lang && loaded.has(lang) && lines.length <= 5000
-            ? lines.map((l) => tokenizeLine(highlighter, l, lang, theme.shiki))
-            : null;
-        entry = { status: "ready", lines, tokens };
+        entry = { status: "ready", lines, tokens: null };
+        void colourPreview(path, entry);
       }
     } catch {
       entry = { status: "missing" };
     }
     const after = new Map(previews);
     after.set(path, entry);
+    previews = after;
+  }
+
+  // The file shows at once; its colours follow from the highlight worker, which can take a
+  // second for a file of a few thousand lines.
+  async function colourPreview(path, entry) {
+    const lang = langForPath(path);
+    if (!lang || entry.lines.length > PREVIEW_MAX_HIGHLIGHT_LINES) return;
+    const tokens = await tokenizeLines(entry.lines, lang, theme.shiki).catch(() => null);
+    if (!tokens || previews.get(path) !== entry) return;
+    const after = new Map(previews);
+    after.set(path, { ...entry, tokens });
     previews = after;
   }
 
@@ -281,10 +298,14 @@
     if (open && view) ensurePreview(view.path);
   });
 
+  // Scroll once per shown file and target; colours arriving later must not undo the reader's scroll.
+  let scrolled = { editor: null, view: null, lines: null };
   $effect(() => {
     const v = view;
     const p = v ? previews.get(v.path) : null;
     if (!open || !editorEl || !v || !p || p.status !== "ready") return;
+    if (scrolled.editor === editorEl && scrolled.view === v && scrolled.lines === p.lines) return;
+    scrolled = { editor: editorEl, view: v, lines: p.lines };
     requestAnimationFrame(() => {
       const target = v.line != null ? editorEl.querySelector(".pl.hit") : editorEl.querySelector(".pl");
       target?.scrollIntoView({ block: v.line != null ? "center" : "start" });
