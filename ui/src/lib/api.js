@@ -1,9 +1,21 @@
+// index.html starts the first screen's reads before this bundle evaluates. Each is adopted
+// once, and only during startup, so a view mounted later never renders a stale boot response.
+const BOOT_READ_WINDOW_MS = 10_000;
+
+function bootRead(path) {
+  const reads = globalThis.__cockpitBootReads;
+  const read = reads?.[path];
+  if (!read) return null;
+  delete reads[path];
+  return performance.now() < BOOT_READ_WINDOW_MS ? read : null;
+}
+
 export async function fetchInbox(archived = false, q = null) {
   const params = new URLSearchParams();
   if (archived) params.set("archived", "1");
   if (q) params.set("q", q);
   const qs = params.toString();
-  const res = await fetch(qs ? `/api/inbox?${qs}` : "/api/inbox");
+  const res = await (qs ? fetch(`/api/inbox?${qs}`) : bootRead("/api/inbox") ?? fetch("/api/inbox"));
   if (!res.ok) throw new Error(`inbox ${res.status}`);
   return res.json();
 }
@@ -344,7 +356,7 @@ let settingsInFlight = null;
 
 export async function fetchSettings() {
   if (!settingsInFlight) {
-    settingsInFlight = fetch("/api/settings")
+    settingsInFlight = (bootRead("/api/settings") ?? fetch("/api/settings"))
       .then((res) => {
         if (!res.ok) throw new Error(`settings ${res.status}`);
         return res.json();
