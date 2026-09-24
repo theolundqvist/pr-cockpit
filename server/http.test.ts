@@ -1283,6 +1283,45 @@ describe("agent PR summary", () => {
 });
 
 describe("PR detail refresh", () => {
+  test("a stale tracked read paints the stored snapshot, and ?fresh=1 joins its refresh", async () => {
+    const repo = "cockpit-test/stale-tracked";
+    const number = 987654326;
+    let refreshCalls = 0;
+    let releaseRefresh!: () => void;
+    const refreshGate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const fetchHandler = buildFetchHandler(4820, {
+      refreshPr: async () => {
+        refreshCalls += 1;
+        await refreshGate;
+        upsertPr(trackedPrRow({ repo, number, fetchedAt: new Date().toISOString(), mergeStateStatus: "BEHIND" }));
+      },
+    });
+    const url = `http://127.0.0.1:4820/api/pr/${repo}/${number}`;
+
+    try {
+      upsertPr(trackedPrRow({ repo, number, fetchedAt: new Date(Date.now() - 10 * 60_000).toISOString(), mergeStateStatus: "CLEAN" }));
+      const stale = await fetchHandler(new Request(url));
+      expect(stale.headers.get("x-cockpit-revalidating")).toBe("1");
+      expect((await stale.json() as { mergeStateStatus: string }).mergeStateStatus).toBe("CLEAN");
+
+      const freshResponse = fetchHandler(new Request(`${url}?fresh=1`));
+      releaseRefresh();
+      const fresh = await freshResponse;
+      expect(fresh.headers.get("x-cockpit-revalidating")).toBeNull();
+      expect((await fresh.json() as { mergeStateStatus: string }).mergeStateStatus).toBe("BEHIND");
+      expect(refreshCalls).toBe(1);
+
+      const current = await fetchHandler(new Request(url));
+      expect(current.headers.get("x-cockpit-revalidating")).toBeNull();
+      expect(refreshCalls).toBe(1);
+    } finally {
+      releaseRefresh();
+      db.query("DELETE FROM prs WHERE repo = ? AND number = ?").run(repo, number);
+    }
+  });
+
   test("an old normal tracked read revalidates transient mergeability without blocking", async () => {
     const repo = "cockpit-test/transient-mergeability";
     const number = 987654323;

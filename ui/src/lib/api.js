@@ -43,13 +43,18 @@ export async function reorderPr(repo, number, position) {
   if (!res.ok) throw new Error(`reorder ${res.status}`);
 }
 
-export async function fetchPrDetail(repo, number) {
-  const res = await fetch(`/api/pr/${repo}/${number}`);
+// A stale tracked snapshot comes back immediately and flagged; `fresh` waits for its refresh.
+export async function fetchPrDetailSnapshot(repo, number, { fresh = false } = {}) {
+  const res = await fetch(`/api/pr/${repo}/${number}${fresh ? "?fresh=1" : ""}`);
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.error || `detail ${res.status}`);
   }
-  return res.json();
+  return { detail: await res.json(), revalidating: res.headers.get("x-cockpit-revalidating") === "1" };
+}
+
+export async function fetchPrDetail(repo, number, { fresh = false } = {}) {
+  return (await fetchPrDetailSnapshot(repo, number, { fresh })).detail;
 }
 
 export async function fetchPendingReview(repo, number) {

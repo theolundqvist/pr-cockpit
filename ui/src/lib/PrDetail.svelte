@@ -5,6 +5,7 @@
     fetchPrDetail,
     fetchPendingReview,
     fetchPrDiff,
+    fetchPrDetailSnapshot,
     commitPrFileEdit,
     generateCommitMessage,
     fetchConflictFiles,
@@ -125,6 +126,7 @@
   let detailLoadPromise = null;
   let detailRefreshPromise = null;
   let detailRefreshQueued = false;
+  let detailRefreshFresh = false;
   let externalEditorBusy = $state(false);
   let preparedEditorKey = null;
 
@@ -180,13 +182,14 @@
       })
       .catch(() => {});
     const detailPending = pendingCommit;
-    const detailRequest = fetchPrDetail(repo, number);
+    const detailRequest = fetchPrDetailSnapshot(repo, number);
     detailLoadPromise = detailRequest;
     detailRequest.then(
-      (detail) => {
+      ({ detail, revalidating }) => {
         if (activeFetch !== token) return;
         if (loadingTimer) clearTimeout(loadingTimer);
         showLoading = false;
+        if (revalidating) refreshDetail({ fresh: true });
         if (!applyAsyncPrDetail(detail, detailPending)) return;
         cacheDetail(key, detail);
         setViewerLogin(pr.viewerLogin);
@@ -449,7 +452,7 @@
     const pending = pendingCommit;
     let detail;
     try {
-      detail = await fetchPrDetail(repo, number);
+      detail = await fetchPrDetail(repo, number, { fresh: true });
     } catch {
       if (token === activeFetch && pending === pendingCommit) location.hash = "#/";
       return;
@@ -467,7 +470,7 @@
     pendingCommit = pending;
     pr = { ...pr, headRefOid: result.commitOid };
     diffNonce++;
-    fetchPrDetail(repo, number).then(
+    fetchPrDetail(repo, number, { fresh: true }).then(
       (detail) => {
         if (token !== activeFetch) return;
         applyAsyncPrDetail(detail, pending);
@@ -479,15 +482,19 @@
     return result;
   }
 
-  function refreshDetail() {
+  function refreshDetail({ fresh = false } = {}) {
     if (detailRefreshPromise) {
       detailRefreshQueued = true;
+      detailRefreshFresh ||= fresh;
       return detailRefreshPromise;
     }
+    detailRefreshFresh = fresh;
     const refreshPromise = (async () => {
       do {
         detailRefreshQueued = false;
-        await refreshDetailOnce();
+        const freshOnce = detailRefreshFresh;
+        detailRefreshFresh = false;
+        await refreshDetailOnce(freshOnce);
       } while (detailRefreshQueued);
     })();
     detailRefreshPromise = refreshPromise;
@@ -497,7 +504,7 @@
     return refreshPromise;
   }
 
-  async function refreshDetailOnce() {
+  async function refreshDetailOnce(fresh) {
     const token = activeFetch;
     const initialLoad = detailLoadPromise;
     if (initialLoad) {
@@ -511,7 +518,7 @@
     const pending = pendingCommit;
     let next;
     try {
-      next = await fetchPrDetail(repo, number);
+      next = await fetchPrDetail(repo, number, { fresh });
     } catch {
       return;
     }

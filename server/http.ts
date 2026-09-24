@@ -142,10 +142,10 @@ import { claimNotifications } from "./notifications.ts";
 import type { NotificationSettings } from "../shared/notificationRules.ts";
 const cockpitRoot = process.cwd();
 
-function json(data: unknown, status = 200): Response {
+function json(data: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
   });
 }
 
@@ -603,6 +603,8 @@ async function handleGithubUsage(runtime: HttpRuntime): Promise<Response> {
 }
 
 
+const DETAIL_REVALIDATING_HEADER = "x-cockpit-revalidating";
+
 // Resolved threads bump neither updatedAt nor head SHA, so the poller's change gate misses them.
 const TRACKED_STALE_MS = 60_000;
 const AGENT_SNAPSHOT_RECENT_MS = 5 * 60_000;
@@ -719,6 +721,7 @@ async function handlePrDetail(
   number: string,
   runtime: HttpRuntime,
   agentRead = false,
+  awaitFresh = false,
 ): Promise<Response> {
   const repoName = `${owner}/${repo}`;
   const num = Number(number);
@@ -744,16 +747,20 @@ async function handlePrDetail(
       }
       return json({ ...withBaseBranchPr(repoName, num, detail), agentSnapshot });
     }
-    if (mergeabilityStale || (!snapshot.tracked && stale)) {
-      revalidate(repoName, num, "app detail");
-    } else if (stale) {
-      try {
-        await runtime.refreshPr(repoName, num, "app detail");
-        snapshot = cachedPrSnapshot(repoName, num);
-        if (snapshot) detail = JSON.parse(snapshot.row.detail_json);
-      } catch (err) {
-        console.error(`stale detail refresh failed for ${repoName}#${num}:`, err);
-      }
+    if (!stale && !mergeabilityStale) return json(withBaseBranchPr(repoName, num, detail));
+    // A tracked refresh also re-reads the Actions catalog and takes seconds, so paint the
+    // stored snapshot now. The UI follows up with ?fresh=1, which joins this revalidation.
+    const revalidation = revalidate(repoName, num, "app detail");
+    if (!stale || !snapshot.tracked) return json(withBaseBranchPr(repoName, num, detail));
+    if (!awaitFresh) {
+      return json(withBaseBranchPr(repoName, num, detail), 200, { [DETAIL_REVALIDATING_HEADER]: "1" });
+    }
+    try {
+      await revalidation;
+      snapshot = cachedPrSnapshot(repoName, num);
+      if (snapshot) detail = JSON.parse(snapshot.row.detail_json);
+    } catch (err) {
+      console.error(`stale detail refresh failed for ${repoName}#${num}:`, err);
     }
     return json(withBaseBranchPr(repoName, num, detail));
   }
@@ -3421,7 +3428,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       }
     }
     if (req.method === "GET" && parts.length === 5 && parts[0] === "api" && parts[1] === "pr") {
-      return handlePrDetail(parts[2]!, parts[3]!, parts[4]!, runtime);
+      return handlePrDetail(parts[2]!, parts[3]!, parts[4]!, runtime, false, url.searchParams.get("fresh") === "1");
     }
 
     const staticFile = Bun.file(`static${url.pathname === "/" ? "/index.html" : url.pathname}`);
