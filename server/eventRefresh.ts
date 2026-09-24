@@ -56,3 +56,38 @@ export function createEventRefreshThrottle(intervalMs = EVENT_REFRESH_THROTTLE_M
 }
 
 export const refreshPrFromEvent = createEventRefreshThrottle();
+
+// Repository-wide events arrive in bursts. Dropping the ones inside the debounce window left the
+// last change of a burst waiting for the scheduled poll, so a request during the window or during
+// a running poll earns exactly one trailing poll instead.
+export function createPollRequester(
+  poll: () => Promise<unknown>,
+  intervalMs: number,
+  onError: (error: unknown) => void,
+): () => void {
+  let lastStartedAt = Number.NEGATIVE_INFINITY;
+  let running = false;
+  let requestedWhileRunning = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const start = () => {
+    timer = null;
+    running = true;
+    requestedWhileRunning = false;
+    lastStartedAt = Date.now();
+    void poll().catch(onError).finally(() => {
+      running = false;
+      if (requestedWhileRunning) schedule();
+    });
+  };
+  const schedule = () => {
+    if (timer !== null) return;
+    const wait = lastStartedAt + intervalMs - Date.now();
+    if (wait <= 0) start();
+    else timer = setTimeout(start, wait);
+  };
+  return () => {
+    if (running) requestedWhileRunning = true;
+    else schedule();
+  };
+}

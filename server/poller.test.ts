@@ -22,7 +22,6 @@ const publishPollCompleted = mock((_lastPollAt: string) => {});
 const deps: PollDeps = {
   backgroundPollAllowed: async () => true,
   refreshWorktreeScan: async () => {},
-  settingsRepos: () => ["acme/tracked"],
   trackedRepos: async () => ["acme/tracked"],
   listWebhookRegistrations: () => [...registrations],
   searchOpenPrs: async (repos) => {
@@ -119,7 +118,6 @@ describe("poll-loop registration lifecycle", () => {
     const pruned: string[][] = [];
     const result = await createPollOnce({
       ...deps,
-      settingsRepos: () => [],
       trackedRepos: async () => [],
       evictReposNotIn: (repos) => {
         evicted.push(repos);
@@ -141,7 +139,6 @@ describe("poll-loop registration lifecycle", () => {
     let searches = 0;
     const poll = createPollOnce({
       ...deps,
-      settingsRepos: () => selected,
       trackedRepos: async () => [...selected],
       searchOpenPrs: async (repos) => {
         searches++;
@@ -162,6 +159,36 @@ describe("poll-loop registration lifecycle", () => {
     expect(await oldPoll).toEqual({ checked: 1, refreshed: 1 });
     expect(await firstRefresh).toEqual({ checked: 2, refreshed: 2 });
     expect(await secondRefresh).toEqual({ checked: 2, refreshed: 2 });
+    expect(searches).toBe(2);
+  });
+
+  test("callers arriving mid-poll share one trailing poll that searches after them", async () => {
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let searches = 0;
+    let hitsNow = [hit("acme/tracked", 1)];
+    const poll = createPollOnce({
+      ...deps,
+      searchOpenPrs: async () => {
+        searches++;
+        if (searches === 1) {
+          const snapshot = hitsNow;
+          started.resolve();
+          await release.promise;
+          return snapshot;
+        }
+        return hitsNow;
+      },
+    });
+    const running = poll();
+    await started.promise;
+    hitsNow = [hit("acme/tracked", 1), hit("acme/tracked", 2)];
+    const first = poll();
+    const second = poll();
+    release.resolve();
+    expect(await running).toEqual({ checked: 1, refreshed: 1 });
+    expect(await first).toEqual({ checked: 2, refreshed: 2 });
+    expect(await second).toEqual({ checked: 2, refreshed: 2 });
     expect(searches).toBe(2);
   });
 

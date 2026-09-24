@@ -1,5 +1,5 @@
 import { expect, mock, test } from "bun:test";
-import { createEventRefreshThrottle } from "./eventRefresh.ts";
+import { createEventRefreshThrottle, createPollRequester } from "./eventRefresh.ts";
 import type { PrDetailScope } from "./github.ts";
 
 test("coalesces repeated event refreshes for one PR", async () => {
@@ -26,4 +26,37 @@ test("does not throttle different PRs together", async () => {
   ]);
 
   expect(refresh).toHaveBeenCalledTimes(2);
+});
+
+test("a poll request inside the debounce window runs once at its end instead of being dropped", async () => {
+  const polls: number[] = [];
+  const started = Date.now();
+  const request = createPollRequester(async () => {
+    polls.push(Date.now() - started);
+  }, 40, (error) => { throw error; });
+
+  request();
+  request();
+  request();
+  expect(polls.length).toBe(1);
+  await Bun.sleep(80);
+  expect(polls.length).toBe(2);
+  expect(polls[1]!).toBeGreaterThanOrEqual(35);
+});
+
+test("a poll request during a running poll earns one trailing poll", async () => {
+  const release = Promise.withResolvers<void>();
+  let polls = 0;
+  const request = createPollRequester(async () => {
+    polls++;
+    if (polls === 1) await release.promise;
+  }, 0, (error) => { throw error; });
+
+  request();
+  request();
+  request();
+  expect(polls).toBe(1);
+  release.resolve();
+  await Bun.sleep(10);
+  expect(polls).toBe(2);
 });

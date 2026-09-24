@@ -1,7 +1,7 @@
 import { getPr, getSetting, setSetting } from "./db.ts";
 import { ghToken } from "./github.ts";
 import { backgroundPollAllowed, pollOnce, refreshPr, trackedRepos } from "./poller.ts";
-import { prDetailScopeForEvent, refreshPrFromEvent } from "./eventRefresh.ts";
+import { createPollRequester, prDetailScopeForEvent, refreshPrFromEvent } from "./eventRefresh.ts";
 import { relayConfig } from "./settings.ts";
 import { ingestActionsState, type CompactJob, type CompactRun } from "./runLogs.ts";
 
@@ -23,6 +23,7 @@ export interface RelayMarker {
 interface RelayPollDependencies {
   fetcher?: typeof fetch;
   ingest?: typeof ingestActionsState;
+  requestFullPoll?: () => void;
 }
 
 interface RelayWebSocket {
@@ -53,7 +54,6 @@ type RelayFrame =
 
 const RELAY_CURSOR_KEY = "relay_cursor";
 let backoffUntil = 0;
-let lastFullPollAt = 0;
 let lastOkAt: number | null = null;
 let lastEventAt: number | null = null;
 let lastError: string | null = null;
@@ -61,6 +61,22 @@ let lastError: string | null = null;
 export function relayStatus(): { lastOkAt: number | null; lastEventAt: number | null; lastError: string | null } {
   return { lastOkAt, lastEventAt, lastError };
 }
+
+const requestFullPoll = createPollRequester(
+  () => pollOnce(),
+  FULL_POLL_DEBOUNCE_MS,
+  (error) => console.error("relay-triggered poll failed:", error),
+);
+
+// Events that can put a PR into the viewer's queue: opening it, requesting a review, assigning,
+// or mentioning. The PR is not cached yet, so only the involves:@me search can place it.
+const QUEUE_MEMBERSHIP_EVENTS = new Set([
+  "pull_request",
+  "pull_request_review",
+  "pull_request_review_comment",
+  "pull_request_review_thread",
+  "issue_comment",
+]);
 
 function persistedCursor(): number | null {
   const raw = getSetting(RELAY_CURSOR_KEY);
@@ -78,16 +94,15 @@ async function processMarker(marker: RelayMarker, deps: RelayPollDependencies = 
   if (marker.run || marker.job) {
     await ingest(marker.repo, { run: marker.run, job: marker.job });
   } else if (marker.number === null) {
-    if (Date.now() - lastFullPollAt > FULL_POLL_DEBOUNCE_MS) {
-      lastFullPollAt = Date.now();
-      pollOnce().catch((error) => console.error("relay-triggered poll failed:", error));
-    }
+    (deps.requestFullPoll ?? requestFullPoll)();
   } else {
     const key = `${marker.repo}#${marker.number}`;
     if (getPr(marker.repo, marker.number) !== null) {
       void refreshPrFromEvent(marker.repo, marker.number, prDetailScopeForEvent(marker.event), async (repo, number, scope) => {
         if (await backgroundPollAllowed()) await refreshPr(repo, number, "relay", scope);
       }).catch((error) => console.error(`relay-triggered refresh failed for ${key}:`, error));
+    } else if (QUEUE_MEMBERSHIP_EVENTS.has(marker.event)) {
+      (deps.requestFullPoll ?? requestFullPoll)();
     }
   }
   saveCursor(marker.seq);

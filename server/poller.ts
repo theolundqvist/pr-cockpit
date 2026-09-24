@@ -207,7 +207,6 @@ export const refreshPr = createPrRefreshScheduler(refreshPrNow);
 export interface PollDeps {
   backgroundPollAllowed: typeof backgroundPollAllowed;
   refreshWorktreeScan: typeof refreshWorktreeScan;
-  settingsRepos: typeof settingsRepos;
   trackedRepos: typeof trackedRepos;
   listWebhookRegistrations: typeof listWebhookRegistrations;
   refreshRecentActions?: typeof refreshRecentActions;
@@ -228,10 +227,8 @@ export interface PollDeps {
 }
 
 export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number; refreshed: number }> {
-  let inFlightPoll: {
-    repos: Set<string>;
-    promise: Promise<{ checked: number; refreshed: number }>;
-  } | null = null;
+  let inFlightPoll: Promise<{ checked: number; refreshed: number }> | null = null;
+  let trailingPoll: Promise<{ checked: number; refreshed: number }> | null = null;
   let lastIndexSweepAt: number | null = null;
 
   async function pollOnceInner(): Promise<{ checked: number; refreshed: number }> {
@@ -343,19 +340,19 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
   }
 
   function poll(): Promise<{ checked: number; refreshed: number }> {
-    const repos = deps.settingsRepos();
     if (inFlightPoll) {
-      const current = inFlightPoll;
-      if (repos.length === current.repos.size && repos.every((repo) => current.repos.has(repo))) {
-        return current.promise;
-      }
-      return current.promise.then(poll);
+      // The running poll may already be past its search, so a caller asking now needs the next one;
+      // every caller that arrives meanwhile shares that single trailing poll.
+      trailingPoll ??= inFlightPoll.catch(() => {}).then(() => {
+        trailingPoll = null;
+        return poll();
+      });
+      return trailingPoll;
     }
-    const promise = pollOnceInner().finally(() => {
+    inFlightPoll = pollOnceInner().finally(() => {
       inFlightPoll = null;
     });
-    inFlightPoll = { repos: new Set(repos), promise };
-    return promise;
+    return inFlightPoll;
   }
   return poll;
 }
@@ -363,7 +360,6 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
 export const pollOnce = createPollOnce({
   backgroundPollAllowed,
   refreshWorktreeScan,
-  settingsRepos,
   trackedRepos,
   listWebhookRegistrations,
   refreshRecentActions,
