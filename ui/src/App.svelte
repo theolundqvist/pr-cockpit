@@ -18,6 +18,7 @@
   import SystemIssueModal from "./lib/SystemIssueModal.svelte";
   import { fetchSettings, fetchSystemIssues, retrySystemIssue } from "./lib/api.js";
   import { showFlash } from "./lib/flash.svelte.js";
+  import { burstGate } from "./lib/burstGate.js";
   import { prefs, setPrefs } from "./lib/prefs.svelte.js";
   import { NOTIFICATION_DRAIN_EVENT, canDeliverNotifications, drainNotifications } from "./lib/desktopNotifications.js";
   import { notificationDelivery } from "./lib/notificationDelivery.svelte.js";
@@ -28,6 +29,9 @@
   import { SETTINGS_SECTION_KEY, SETTINGS_SECTIONS, normalizeSettingsSection, settingsSectionHref } from "./lib/settingsSections.js";
 
   window.cockpitFlash = showFlash;
+
+  // One poll publishes an invalidation per refreshed PR; reload once per burst, not per event.
+  const EVENT_BURST_WINDOW_MS = 250;
 
   const isShell = navigator.userAgent.includes("Electron");
 
@@ -187,9 +191,21 @@
     let socket = null;
     let reconnectTimer = null;
     let stopped = false;
-    function refreshRoute() {
+    let burstPrKey = null;
+    const routePrKey = () => (route.name === "detail" ? `${route.repo}#${route.number}` : null);
+    const inboxRefresh = burstGate(() => {
       if (route.name === "inbox") inboxRevision++;
-      else if (route.name === "detail") detailRevision++;
+    }, EVENT_BURST_WINDOW_MS);
+    const detailRefresh = burstGate(() => {
+      if (burstPrKey !== null && routePrKey() === burstPrKey) detailRevision++;
+    }, EVENT_BURST_WINDOW_MS);
+    function refreshDetailRoute() {
+      burstPrKey = routePrKey();
+      detailRefresh.trigger();
+    }
+    function refreshRoute() {
+      if (route.name === "inbox") inboxRefresh.trigger();
+      else if (route.name === "detail") refreshDetailRoute();
       drainPending();
     }
 
@@ -214,14 +230,14 @@
         } else if (invalidation.type === "notification-settings") {
           fetchSettings().then(setPrefs).catch(() => {});
         } else if (invalidation.type === "inbox" && route.name === "inbox") {
-          inboxRevision++;
+          inboxRefresh.trigger();
         } else if (
           invalidation.type === "pr" &&
           route.name === "detail" &&
           invalidation.repo === route.repo &&
           invalidation.number === route.number
         ) {
-          detailRevision++;
+          refreshDetailRoute();
         }
       });
       socket.addEventListener("close", () => {
@@ -233,6 +249,8 @@
     connect();
     return () => {
       stopped = true;
+      inboxRefresh.cancel();
+      detailRefresh.cancel();
       if (reconnectTimer) clearTimeout(reconnectTimer);
       socket?.close();
     };
