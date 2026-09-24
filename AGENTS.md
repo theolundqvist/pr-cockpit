@@ -82,6 +82,8 @@ COCKPIT_PORT=4899 COCKPIT_DATA_DIR=/tmp/pr-cockpit-scratch bun server/main.ts
 
 Stop it when you are done. `COCKPIT_MOCK=1` seeds a fixture database instead of talking to GitHub and requires an explicit `COCKPIT_DATA_DIR`. For captured fixtures, point `COCKPIT_MOCK_DATA` at the directory containing `snapshot.json`; referenced attachment files belong in its `blobs/` directory.
 
+A scratch server on a copy of a real database is not isolated by its port: it starts `gh webhook forward` for each tracked repo, joins the relay, and runs enabled agents. Before starting it, set the copy's `relay_url` to empty, `cockpit_webhooks` to `false`, and `agents` to `[]`, and put a failing `gh` first on `PATH`; cached PRs, diffs (clone `mirrors/` with `cp -cR`), and Actions still serve for UI measurement.
+
 ## Known test flakes
 
 `bun test server/` runs the whole directory in one process and two tests flake there regardless of your change: `webhooks.test.ts` "migrates legacy window-keyed registrations" and `updateHandoff.test.ts` "new source launcher finishes an old updater's installation handoff once". Both pass when their file is run alone. Confirm a suspected regression by running the single file before believing the directory run.
