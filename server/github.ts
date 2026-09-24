@@ -2016,7 +2016,7 @@ export async function fetchPrDetail(
   if (!owner || !name) throw new GithubRequestError(`Invalid repository: ${repo}`, 404);
   const [checks, review, rest, viewerLogin] = await Promise.all([
     fetchDetailChecks(owner, name, number, previous, source),
-    fetchDetailReview(owner, name, number, source, previous?.reviewThreads.nodes.length ?? 0),
+    fetchDetailReview(owner, name, number, source, previous?.reviewThreads?.nodes.length ?? 0),
     fetchRestPrDetailBase(repo, number),
     getViewerLogin(),
   ]);
@@ -2052,7 +2052,7 @@ export async function fetchPrDetailPart(
   }
 
   const [review, viewerLogin] = await Promise.all([
-    fetchDetailReview(owner, name, number, source, current.reviewThreads.nodes.length),
+    fetchDetailReview(owner, name, number, source, current.reviewThreads?.nodes.length ?? 0),
     getViewerLogin(),
   ]);
   if (!review) throw new GithubRequestError(`${repo}#${number} was not found`, 404);
