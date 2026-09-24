@@ -38,19 +38,3 @@ export function shouldToggleHoveredViewed(event, tab, hoveredPath) {
     && !event.shiftKey
     && !isTypingTarget(event.target);
 }
-
-export function imageFallback(node) {
-  const replace = (img) => {
-    const chip = document.createElement("a");
-    chip.className = "broken-img mono";
-    chip.href = img.dataset.originalSrc || img.src;
-    chip.target = "_blank";
-    chip.rel = "noopener";
-    chip.textContent = "⤷ image";
-    img.replaceWith(chip);
-  };
-  for (const img of node.querySelectorAll("img")) {
-    if (img.complete && img.naturalWidth === 0) replace(img);
-    else img.addEventListener("error", () => replace(img), { once: true });
-  }
-}

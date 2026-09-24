@@ -27,11 +27,11 @@
   } from "./api.js";
   import { anchorThreads, fileDiffFingerprint } from "./diff.js";
   import { loadDiffDocument } from "./diffDocument.js";
-  import { renderMarkdown } from "./markdown.js";
+  import { imageFallback, renderMarkdown } from "./markdown.js";
   import { presentMutationError } from "./mutationError.js";
   import { isCodeScanningThread } from "../../../shared/codeScanning.js";
   import { loadPrIndex, prSummary } from "./prIndex.svelte.js";
-  import { imageFallback, prKeyOwner, shouldCopyPrCockpitUrl, shouldCopyPrUrl } from "./dom.js";
+  import { prKeyOwner, shouldCopyPrCockpitUrl, shouldCopyPrUrl } from "./dom.js";
   import { readLastViewed, writeLastViewed } from "./lastViewed.js";
   import { durationText, relativeTime } from "./time.js";
   import { mermaidDiagrams } from "./mermaid.js";

@@ -87,6 +87,29 @@ function videoPlayer(doc, src) {
   return player;
 }
 
+export function imageFallback(node) {
+  const replace = (element, src) => {
+    const chip = document.createElement("a");
+    chip.className = "broken-img mono";
+    chip.href = src;
+    chip.target = "_blank";
+    chip.rel = "noopener";
+    chip.textContent = "⤷ image";
+    element.replaceWith(chip);
+  };
+  for (const img of node.querySelectorAll("img")) {
+    const failed = () => {
+      const original = img.dataset.originalSrc || img.src;
+      if (!GH_VIDEO_RE.test(original)) return replace(img, original);
+      const player = videoPlayer(document, img.src);
+      player.querySelector("video").addEventListener("error", () => replace(player, original), { once: true });
+      img.replaceWith(player);
+    };
+    if (img.complete && img.naturalWidth === 0) failed();
+    else img.addEventListener("error", failed, { once: true });
+  }
+}
+
 // GitHub renders an uploaded video as its bare attachment URL on its own line.
 function embedVideos(doc) {
   for (const p of doc.querySelectorAll("p")) {
