@@ -319,11 +319,13 @@
       ? restoreKey ?? (visibleAllPrs[selected] ? prKey(visibleAllPrs[selected]) : allPrsSelectedKey)
       : null;
     const seq = ++allPrsSeq;
+    const previousScope = allPrsScope;
     allPrsScope = scope;
     allPrsSelectedKey = selectedKey;
     allPrsLoading = true;
     allPrsError = null;
-    allPrs = [];
+    // A same-scope reload (poll, refresh) keeps the current rows until GitHub answers.
+    if (scope !== previousScope) allPrs = [];
     try {
       const res = await fetchAllPrs(repos);
       if (seq !== allPrsSeq || !active || view !== "all" || scope !== JSON.stringify(selectedRepos)) return;
@@ -1116,7 +1118,7 @@
               <div>Couldn't load all PRs: {allPrsError}</div>
               <button class="view-save" type="button" onclick={loadAllPrs}>Retry</button>
             </div>
-          {:else if allPrsLoading}
+          {:else if allPrsLoading && allPrs.length === 0}
             <div class="empty" role="status">Loading all PRs…</div>
           {:else if visibleAllPrs.length === 0}
             <div class="empty">No open pull requests in {selectedRepos.length ? "the selected" : "tracked"} repositories</div>
