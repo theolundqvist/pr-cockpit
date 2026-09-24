@@ -87,7 +87,7 @@
 
   let pr = $state(null);
   let actionsRunUrl = $state(null);
-  let files = $state([]);
+  let files = $state.raw([]);
   let diffDocument = null;
   onDestroy(() => diffDocument?.dispose());
   let error = $state(null);
