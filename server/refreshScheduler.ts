@@ -10,6 +10,15 @@ export type PrRefresh = (
   scope?: PrDetailScope,
 ) => Promise<unknown>;
 
+// Resolves once the PR's detail is stored and published. `followUp` is the rest of the
+// refresh (the Actions catalog), which the next refresh of the same PR does not wait for.
+export type PrRefreshPhases = (
+  repo: string,
+  number: number,
+  source?: GithubUsageSource,
+  scope?: PrDetailScope,
+) => Promise<{ followUp: Promise<void> } | void>;
+
 interface RefreshState {
   trailing: boolean;
   trailingSource: GithubUsageSource | null;
@@ -22,7 +31,11 @@ function combineScopes(left: PrDetailScope | null, right: PrDetailScope): PrDeta
   if (left === null || left === right) return right;
   return "all";
 }
-export function createPrRefreshScheduler(refresh: PrRefresh): PrRefresh {
+
+// One detail refresh per PR at a time; signals that arrive meanwhile coalesce into a single
+// trailing refresh, which starts once the running one's detail phase is done. The returned
+// promise settles after every detail phase and follow-up it covers.
+export function createPrRefreshScheduler(refresh: PrRefreshPhases): PrRefresh {
   const refreshes = new Map<string, RefreshState>();
 
   return (repo, number, source = "app detail", scope = "all") => {
@@ -46,6 +59,7 @@ export function createPrRefreshScheduler(refresh: PrRefresh): PrRefresh {
       let failure: unknown;
       let nextSource = source;
       let nextScope = scope;
+      const followUps: Promise<void>[] = [];
       do {
         failed = false;
         failure = undefined;
@@ -53,7 +67,8 @@ export function createPrRefreshScheduler(refresh: PrRefresh): PrRefresh {
         state.trailingSource = null;
         state.trailingScope = null;
         try {
-          await refresh(repo, number, nextSource, nextScope);
+          const phases = await refresh(repo, number, nextSource, nextScope);
+          if (phases) followUps.push(phases.followUp);
         } catch (error) {
           failed = true;
           failure = error;
@@ -61,6 +76,9 @@ export function createPrRefreshScheduler(refresh: PrRefresh): PrRefresh {
         nextSource = state.trailingSource ?? nextSource;
         nextScope = state.trailingScope ?? nextScope;
       } while (state.trailing);
+      // A signal from here on starts a fresh refresh rather than waiting on these follow-ups.
+      if (refreshes.get(key) === state) refreshes.delete(key);
+      await Promise.all(followUps);
       if (failed) throw failure;
     })().finally(() => {
       if (refreshes.get(key) === state) refreshes.delete(key);

@@ -131,7 +131,7 @@ async function refreshPrNow(
   number: number,
   source: GithubUsageSource = "app detail",
   scope: PrDetailScope = "all",
-): Promise<void> {
+): Promise<{ followUp: Promise<void> } | void> {
   const previous = getPr(repo, number);
   const snapshotCutoffAt = new Date().toISOString();
   const current = previous ? JSON.parse(previous.detail_json) as PrDetail : null;
@@ -211,10 +211,12 @@ async function refreshPrNow(
     // Cache the native run catalog alongside check contexts, including queued runs
     // without jobs and run IDs that selected-run cache reads will advertise. It takes a
     // REST round trip or more, so the checks and status above are published first and the
-    // renderer is told again once the catalog lands; the refresh settles only after both.
-    await cacheGithubActionsForCommit(repo, number, detail.headRefOid, undefined, true)
-      .catch((error) => console.error(`Actions coverage refresh failed for ${repo}#${number}:`, error));
-    invalidatePr(repo, number);
+    // renderer is told again once the catalog lands; the refresh settles only after both,
+    // but the next refresh of this PR starts without waiting for it.
+    const followUp = cacheGithubActionsForCommit(repo, number, detail.headRefOid, undefined, true)
+      .catch((error) => console.error(`Actions coverage refresh failed for ${repo}#${number}:`, error))
+      .then(() => invalidatePr(repo, number));
+    return { followUp };
   }
 }
 

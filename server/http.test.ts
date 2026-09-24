@@ -1230,10 +1230,10 @@ describe("agent PR summary", () => {
         Bun.sleep(200).then(() => { throw new Error("detail waited for the Actions catalog"); }),
       ]);
       expect((await response.json()).headRefOid).toBe(detail.headRefOid);
-      expect(events.filter((event) => event.type === "pr")).toEqual([]);
+      expect(events.filter((event) => event.type === "pr" && event.repo === repo)).toEqual([]);
       finishCatalog();
       await Bun.sleep(0);
-      expect(events.filter((event) => event.type === "pr")).toEqual([{ type: "pr", repo, number }]);
+      expect(events.filter((event) => event.type === "pr" && event.repo === repo)).toEqual([{ type: "pr", repo, number }]);
     } finally {
       finishCatalog();
       setRendererInvalidationPublisher(() => {});
