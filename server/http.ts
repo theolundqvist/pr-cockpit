@@ -47,7 +47,7 @@ import {
 } from "./db.ts";
 import { localCheckoutBranchFor, localCheckoutPathFor, setLocalCheckoutBranch, worktreePathFor, worktreeWindowIdFor } from "./worktreeScan.ts";
 import { prKey } from "./prKey.ts";
-import { lastPollAt, pollOnce, refreshPr, trackedRepos } from "./poller.ts";
+import { isTransportFailure, lastPollAt, pollOnce, refreshPr, trackedRepos } from "./poller.ts";
 import {
   commitPrFileEdit,
   compactReviewHunks,
@@ -474,7 +474,9 @@ async function handleGithubQuota(runtime: HttpRuntime): Promise<Response> {
   try {
     return json(await runtime.fetchGithubQuota());
   } catch (err) {
-    console.error("GitHub quota fetch failed:", err);
+    // The renderer polls quota; while offline a stack trace per poll buries everything else.
+    if (isTransportFailure(err)) console.warn(`GitHub quota fetch failed: ${(err as Error).message}`);
+    else console.error("GitHub quota fetch failed:", err);
     return json({ error: "GitHub quota unavailable" }, 502);
   }
 }
