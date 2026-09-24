@@ -4,6 +4,7 @@
   import { isTypingTarget } from "./dom.js";
   import { isRecordingShortcut } from "./shortcutCapture.js";
   import Kbd from "./Kbd.svelte";
+  import Avatar from "./Avatar.svelte";
 
   let panel = $state();
   let trigger = $state();
@@ -116,8 +117,8 @@
     {#each setAside.items as pr, index (`${pr.repo}#${pr.number}`)}
       <div class="aside-row">
         <a class="pr-link" href={`#/pr/${pr.repo}/${pr.number}`} onclick={() => close(false)}>
-          <span class="pr-mark">{@render asideIcon()}</span>
-          <span class="pr-copy"><span class="pr-title" title={pr.title}>{pr.title}</span><span class="pr-meta">{pr.repo} <span>#{pr.number}</span></span></span>
+          <Avatar login={pr.author} url={pr.author ? `https://github.com/${pr.author}.png?size=64` : undefined} size={30} />
+          <span class="pr-copy"><span class="pr-title" title={pr.title}>{pr.title}</span><span class="pr-meta mono">{pr.repo} <span>#{pr.number}</span></span></span>
         </a>
         <button class="restore" type="button" aria-label={`Bring back ${pr.title}`} title="Bring back to the main view" onclick={() => restore(pr, index)}>
           <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 5-4 4 4 4M4 9h8a4 4 0 0 1 0 8" /></svg>
@@ -130,14 +131,14 @@
 </div>
 
 <style>
-  .aside-pill { position: fixed; bottom: calc(var(--keybar-height, 38px) + 18px); left: 18px; z-index: 35; display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 14px; border: 1px solid var(--border); border-radius: 24px; background: var(--panel); color: var(--text); box-shadow: 0 4px 18px #00000016; font: 13px var(--sans); cursor: pointer; }
+  .aside-pill { position: fixed; bottom: calc(var(--keybar-height, 38px) + 18px); right: 18px; z-index: 35; display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 14px; border: 1px solid var(--border); border-radius: 24px; background: var(--panel); color: var(--text); box-shadow: 0 4px 18px #00000016; font: 13px var(--sans); cursor: pointer; }
   .aside-pill strong { font-weight: 650; font-variant-numeric: tabular-nums; }
   svg { width: 20px; height: 20px; flex: none; }
   .chevron { width: 14px; height: 14px; color: var(--text-dim); }
   button:hover, .aside-pill.expanded { background: var(--surface); }
   button:active { transform: scale(.98); }
   button:focus-visible, a:focus-visible { outline: 2px solid var(--link); outline-offset: -3px; }
-  .aside-tray { position: fixed; inset: auto auto calc(var(--keybar-height, 38px) + 74px) 18px; margin: 0; padding: 0; width: min(500px, calc(100vw - 36px)); max-height: min(620px, calc(100dvh - 150px)); border: 1px solid var(--border); border-radius: 16px; background: var(--panel); color: var(--text); box-shadow: var(--shadow-dialog); font-family: var(--sans); overflow: hidden; }
+  .aside-tray { position: fixed; inset: auto 18px calc(var(--keybar-height, 38px) + 74px) auto; margin: 0; padding: 0; width: min(500px, calc(100vw - 36px)); max-height: min(620px, calc(100dvh - 150px)); border: 1px solid var(--border); border-radius: 16px; background: var(--panel); color: var(--text); box-shadow: var(--shadow-dialog); font-family: var(--sans); overflow: hidden; }
   .aside-tray:popover-open { display: flex; flex-direction: column; }
   header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 20px 20px 16px; }
   h2 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 15px; font-weight: 650; }
@@ -149,9 +150,8 @@
   .aside-row { display: flex; align-items: center; border-radius: 9px; }
   .aside-row:hover, .aside-row:focus-within { background: var(--surface); }
   .pr-link { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; padding: 13px 10px; border-radius: 9px; color: inherit; text-decoration: none; }
-  .pr-mark { display: flex; color: var(--text-faint); }
   .pr-copy { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
-  .pr-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 550; }
+  .pr-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 500; letter-spacing: -0.01em; }
   .pr-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); font-size: 11px; }
   .pr-meta span { color: var(--text-faint); margin-left: 5px; }
   .restore { display: flex; align-items: center; gap: 4px; flex: none; margin-right: 8px; padding: 7px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel); color: var(--text-dim); font: 11px var(--sans); cursor: pointer; }
@@ -160,8 +160,8 @@
   footer > span { display: flex; gap: 6px; align-items: center; color: var(--text-faint); font-size: 11px; }
   footer button { border: 0; background: transparent; border-radius: 6px; padding: 5px 7px; color: var(--text-dim); font: 12px var(--sans); cursor: pointer; }
   @media (max-width: 700px), (pointer: coarse) and (max-height: 500px) {
-    .aside-pill { bottom: calc(74px + env(safe-area-inset-bottom)); left: 12px; }
-    .aside-tray { left: 12px; bottom: calc(130px + env(safe-area-inset-bottom)); width: calc(100vw - 24px); max-height: calc(100dvh - 160px - env(safe-area-inset-bottom)); }
+    .aside-pill { bottom: calc(74px + env(safe-area-inset-bottom)); right: 12px; }
+    .aside-tray { right: 12px; bottom: calc(130px + env(safe-area-inset-bottom)); width: calc(100vw - 24px); max-height: calc(100dvh - 160px - env(safe-area-inset-bottom)); }
     .restore span { display: none; }
     .restore { min-width: 36px; min-height: 36px; justify-content: center; }
   }

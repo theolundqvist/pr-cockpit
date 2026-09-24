@@ -101,8 +101,15 @@ function setAsideScenario(roundtrip) {
     description: "Set aside from the keyboard, retain across reloads, inspect and restore from the tray.",
     ready: ".inbox-layout .queue-group",
     verify: async (page) => {
-      if (roundtrip || page.viewportSize().width > 700) return;
+      if (roundtrip) return;
+      const width = page.viewportSize().width;
       const pill = await page.locator(".aside-pill").boundingBox();
+      const tray = await page.locator(".aside-tray").boundingBox();
+      const gutter = width <= 700 ? 12 : 18;
+      if (Math.abs(width - pill.x - pill.width - gutter) > 1 || Math.abs(width - tray.x - tray.width - gutter) > 1) throw new Error("Set Aside is not aligned to the right edge");
+      await page.waitForFunction(() => [...document.querySelectorAll(".aside-tray img.avatar")].every((img) => img.complete && img.naturalWidth > 0));
+      if (await page.locator(".aside-tray img.avatar").count() !== 3) throw new Error("Set-aside rows are missing author avatars");
+      if (width > 700) return;
       const nav = await page.locator(".app-sidebar").boundingBox();
       if (pill.y + pill.height > nav.y - 8) throw new Error("Set Aside overlaps phone navigation");
     },
