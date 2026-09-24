@@ -664,6 +664,10 @@ export interface SearchHit {
   ciState: string;
 }
 
+// The poll compares ciState with the rollup state stored from the PR detail. GitHub computes
+// that state differently when the rollup's contexts are not selected: with cancelled and
+// queued runs it answers PENDING where the detail query sees FAILURE, and the mismatch
+// refreshed such PRs on every poll. Selecting one context makes both agree at the same cost.
 const SEARCH_QUERY = `
 query($searchQuery: String!) {
   search(query: $searchQuery, type: ISSUE, first: 50) {
@@ -674,7 +678,7 @@ query($searchQuery: String!) {
         updatedAt
         headRefOid
         repository { nameWithOwner }
-        commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+        commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 1) { totalCount } } } } }
       }
     }
   }

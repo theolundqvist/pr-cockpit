@@ -10,6 +10,7 @@ import {
   requestReviewers,
   searchClosedPrs,
   searchPrs,
+  searchOpenPrs,
   searchRecentPrs,
   postIssueComment,
   updatePullRequestBody,
@@ -351,6 +352,23 @@ describe("REST PR detail parity", () => {
       "POST /repos/acme/repo/pulls/42/requested_reviewers",
     ]);
   });
+});
+
+test("the open-PR search asks for the rollup state the way the detail query does", async () => {
+  // Without contexts selected, GitHub answers PENDING for a rollup the detail sees as FAILURE,
+  // and the poll refreshed such PRs every time.
+  const originalFetch = globalThis.fetch;
+  let query = "";
+  globalThis.fetch = (async (_input, init) => {
+    query = JSON.parse(String(init?.body)).query;
+    return Response.json({ data: { search: { nodes: [] } } });
+  }) as typeof fetch;
+  try {
+    await searchOpenPrs(["acme/repo"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  expect(query.replace(/\s+/g, " ")).toContain("statusCheckRollup { state contexts(first: 1) { totalCount } }");
 });
 
 describe("review thread pagination", () => {
