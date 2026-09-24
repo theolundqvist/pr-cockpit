@@ -447,6 +447,14 @@ CREATE INDEX IF NOT EXISTS diffs_fetched_idx ON diffs (fetched_at);
 CREATE INDEX IF NOT EXISTS run_jobs_fetched_idx ON run_jobs (fetched_at);
 CREATE INDEX IF NOT EXISTS workflow_runs_fetched_idx ON workflow_runs (fetched_at);
 `);
+
+// Per-run, per-commit, and per-branch Actions lookups sit on every PR refresh and Actions read.
+// Without these each one walks every row the repository has ever cached (~70-200ms apiece).
+db.exec(`
+CREATE INDEX IF NOT EXISTS run_jobs_run_idx ON run_jobs (repo, run_id, run_attempt);
+CREATE INDEX IF NOT EXISTS workflow_runs_sha_idx ON workflow_runs (repo, head_sha, run_id, run_attempt);
+CREATE INDEX IF NOT EXISTS workflow_runs_branch_idx ON workflow_runs (repo, head_branch, event_at DESC, run_id DESC, run_attempt DESC);
+`);
 db.exec("DELETE FROM pr_detail_cache WHERE fetched_at < datetime('now', '-30 days')");
 db.exec("DELETE FROM pr_webhook_activity WHERE received_at < datetime('now', '-30 days')");
 // Diffs are a pure re-fetchable cache and were insert-only until this column existed;
@@ -1179,8 +1187,9 @@ export function listRunJobsForPrBranch(repo: string, number: number, headBranch:
       j.workflow_name, j.name, j.status, j.conclusion, j.started_at, j.completed_at,
       j.html_url, j.runner_name, j.runner_group_name, j.labels_json, j.failed_step, j.steps_json,
       j.log_bytes, j.log_truncated, j.log_error, j.log_format_version, j.fetched_at
-    FROM run_jobs j
-    JOIN workflow_runs r
+    FROM workflow_runs r
+    -- CROSS JOIN pins the branch's few runs as the outer loop; otherwise SQLite scans every job in the repo.
+    CROSS JOIN run_jobs j
       ON r.repo = j.repo AND r.run_id = j.run_id AND r.run_attempt = j.run_attempt
     WHERE r.repo = ? AND r.head_branch = ? AND (r.pr_number IS NULL OR r.pr_number = ?)
       AND r.fetched_at >= datetime('now', '-72 hours')

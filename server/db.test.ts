@@ -440,3 +440,36 @@ test("startup removes retired generated score tables", async () => {
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test("Actions lookups by run, commit, and branch are served by their indexes", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-actions-indexes-"));
+  const scenario = `
+    const { db } = await import(${JSON.stringify(dbModuleUrl)});
+    const plan = (sql) => db.query("EXPLAIN QUERY PLAN " + sql).all().map((row) => row.detail).join(" | ");
+    console.log(JSON.stringify({
+      run: plan("SELECT * FROM run_jobs WHERE repo = 'r' AND run_id = 1 AND run_attempt = 1"),
+      commit: plan("SELECT * FROM workflow_runs WHERE repo = 'r' AND head_sha = 's' ORDER BY run_id, run_attempt"),
+      branch: plan("SELECT * FROM workflow_runs WHERE repo = 'r' AND head_branch = 'b' ORDER BY event_at DESC, run_id DESC, run_attempt DESC"),
+    }));
+    db.close();
+  `;
+  try {
+    const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(stderr);
+    const plans = JSON.parse(stdout) as Record<string, string>;
+    expect(plans.run).toContain("run_jobs_run_idx (repo=? AND run_id=? AND run_attempt=?)");
+    expect(plans.commit).toContain("workflow_runs_sha_idx (repo=? AND head_sha=?)");
+    expect(plans.branch).toContain("workflow_runs_branch_idx (repo=? AND head_branch=?)");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
