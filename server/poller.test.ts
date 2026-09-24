@@ -337,6 +337,29 @@ test("a poll completes without waiting for the repo-wide Actions listing, and ne
   expect(listings).toBe(2);
 });
 
+test("a poll searches without waiting for mirror pruning, and never stacks two prunes", async () => {
+  const prune = Promise.withResolvers<void>();
+  let prunes = 0;
+  const poll = createPollOnce({
+    ...deps,
+    listWebhookRegistrations: () => [],
+    pruneMirrors: async () => {
+      prunes++;
+      await prune.promise;
+    },
+  });
+  try {
+    await poll();
+    await poll();
+    expect(prunes).toBe(1);
+  } finally {
+    prune.resolve();
+  }
+  await Bun.sleep(1);
+  await poll();
+  expect(prunes).toBe(2);
+});
+
 test("a poll completes without waiting for the PR-index sweep, and never stacks two", async () => {
   const order: string[] = [];
   let releaseSweep!: () => void;

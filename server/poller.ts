@@ -253,6 +253,7 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
   let closedSweptAt: number | null = null;
   let actionsListing: Promise<void> | null = null;
   let indexSweep: Promise<void> | null = null;
+  let mirrorPrune: Promise<void> | null = null;
 
   async function pollOnceInner(): Promise<{ checked: number; refreshed: number }> {
     await deps.refreshWorktreeScan();
@@ -262,7 +263,13 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
     const searchableRegistrations = registrations.filter((registration) => repositoryAvailable(registration.repo));
     const keepRepos = [...new Set([...configuredRepos, ...registrations.map((registration) => registration.repo)])];
     deps.evictReposNotIn(keepRepos);
-    await deps.pruneMirrors(keepRepos);
+    // Sizing the mirrors walks every file in them (~0.1-0.25s on a 1GB cache), which held
+    // each poll's search; pruning only frees disk, so it runs beside the poll, one at a time.
+    mirrorPrune ??= deps.pruneMirrors(keepRepos)
+      .catch((error) => console.error("mirror prune failed:", error))
+      .finally(() => {
+        mirrorPrune = null;
+      });
     if (!await deps.backgroundPollAllowed()) return { checked: 0, refreshed: 0 };
     const tracked = new Set(repos);
     const registered = new Set(searchableRegistrations.map((registration) => prKeyOf(registration.repo, registration.number)));
