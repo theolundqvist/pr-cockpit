@@ -42,6 +42,8 @@ async function git(
   return { ok: exitCode === 0, exitCode, stdout, stderr };
 }
 
+const MIRROR_STALL_SECONDS = 60;
+
 async function authedGit(args: string[], timeoutMs?: number): Promise<{ ok: boolean; stdout: string; stderr: string; timedOut: boolean }> {
   ensureAskpass();
   const token = await ghToken();
@@ -50,7 +52,17 @@ async function authedGit(args: string[], timeoutMs?: number): Promise<{ ok: bool
     stdout: "pipe",
     stderr: "pipe",
     detached: timeoutMs !== undefined,
-    env: { ...Bun.env, GIT_ASKPASS: askpassPath, GIT_MIRROR_TOKEN: token, GIT_TERMINAL_PROMPT: "0" },
+    env: {
+      ...Bun.env,
+      GIT_ASKPASS: askpassPath,
+      GIT_MIRROR_TOKEN: token,
+      GIT_TERMINAL_PROMPT: "0",
+      // Background fetches carry no deadline, and a transfer whose socket died in sleep never ends:
+      // the in-flight fetch every later diff request joins would then stay stale until restart.
+      // Abort only a transfer that moved no bytes for a minute, so slow large clones still finish.
+      GIT_HTTP_LOW_SPEED_LIMIT: "1",
+      GIT_HTTP_LOW_SPEED_TIME: String(MIRROR_STALL_SECONDS),
+    },
   });
   let timedOut = false;
   const timer =
@@ -89,7 +101,7 @@ function mirrorFetchError(operation: "clone" | "fetch", repo: string, result: { 
     .replace(/https:\/\/[^/@\s]+@/g, "https://[redacted]@")
     .replace(/\b(?:github_pat_|gh[pousr]_)[A-Za-z0-9_]+\b/g, "[redacted]")
     .slice(0, 1024);
-  const kind = /Could not resolve host|Failed to connect|Connection (?:timed out|reset)|network is unreachable|TLS connection|SSL_connect|remote end hung up|early EOF/i.test(result.stderr)
+  const kind = /Could not resolve host|Failed to connect|Connection (?:timed out|reset)|network is unreachable|TLS connection|SSL_connect|remote end hung up|early EOF|Operation too slow/i.test(result.stderr)
     ? "network"
     : "git";
   return new MirrorFetchError(`mirror ${operation} failed for ${repo}${detail ? `: ${detail}` : ""}`, kind);
