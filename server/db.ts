@@ -439,6 +439,14 @@ if (storedEpoch !== SCHEMA_EPOCH) {
   db.exec(`PRAGMA user_version = ${SCHEMA_EPOCH}`);
 }
 
+// The retention sweeps below run on every start. Without these indexes each fetched_at filter
+// reads every row's overflow pages (patches, gzipped logs): seconds of startup on a cold cache.
+db.exec(`
+CREATE INDEX IF NOT EXISTS pr_detail_cache_fetched_idx ON pr_detail_cache (fetched_at);
+CREATE INDEX IF NOT EXISTS diffs_fetched_idx ON diffs (fetched_at);
+CREATE INDEX IF NOT EXISTS run_jobs_fetched_idx ON run_jobs (fetched_at);
+CREATE INDEX IF NOT EXISTS workflow_runs_fetched_idx ON workflow_runs (fetched_at);
+`);
 db.exec("DELETE FROM pr_detail_cache WHERE fetched_at < datetime('now', '-30 days')");
 db.exec("DELETE FROM pr_webhook_activity WHERE received_at < datetime('now', '-30 days')");
 // Diffs are a pure re-fetchable cache and were insert-only until this column existed;
