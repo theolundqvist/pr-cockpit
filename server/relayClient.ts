@@ -5,6 +5,8 @@ import { createPollRequester, prDetailScopeForEvent, refreshPrFromEvent } from "
 import { relayConfig } from "./settings.ts";
 import { ingestActionsState, type CompactJob, type CompactRun } from "./runLogs.ts";
 import { watchForWake } from "./wake.ts";
+import { refreshCachedPrDetail } from "./cachedPrDetail.ts";
+import { prViewedRecently } from "./recentPrViews.ts";
 
 const POLL_MS = 5_000;
 const ERROR_BACKOFF_MS = 60_000;
@@ -27,6 +29,9 @@ interface RelayPollDependencies {
   fetcher?: typeof fetch;
   ingest?: typeof ingestActionsState;
   requestFullPoll?: () => void;
+  viewedRecently?: typeof prViewedRecently;
+  refreshViewedPr?: typeof refreshCachedPrDetail;
+  backgroundAllowed?: typeof backgroundPollAllowed;
 }
 
 interface RelayWebSocket {
@@ -109,8 +114,16 @@ async function processMarker(marker: RelayMarker, deps: RelayPollDependencies = 
       void refreshPrFromEvent(marker.repo, marker.number, prDetailScopeForEvent(marker.event), async (repo, number, scope) => {
         if (await backgroundPollAllowed()) await refreshPr(repo, number, "relay", scope);
       }).catch((error) => console.error(`relay-triggered refresh failed for ${key}:`, error));
-    } else if (QUEUE_MEMBERSHIP_EVENTS.has(marker.event)) {
-      (deps.requestFullPoll ?? requestFullPoll)();
+    } else {
+      // Not in the inbox, but open (or recently opened) in the app: without this its detail
+      // stayed up to five minutes stale, and a reload inside that window showed the same snapshot.
+      if ((deps.viewedRecently ?? prViewedRecently)(marker.repo, marker.number)) {
+        const refreshViewed = deps.refreshViewedPr ?? refreshCachedPrDetail;
+        void refreshPrFromEvent(marker.repo, marker.number, prDetailScopeForEvent(marker.event), async (repo, number, scope) => {
+          if (await (deps.backgroundAllowed ?? backgroundPollAllowed)()) await refreshViewed(repo, number, "relay", scope);
+        }).catch((error) => console.error(`relay-triggered refresh failed for ${key}:`, error));
+      }
+      if (QUEUE_MEMBERSHIP_EVENTS.has(marker.event)) (deps.requestFullPoll ?? requestFullPoll)();
     }
   }
   saveCursor(marker.seq);

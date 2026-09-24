@@ -123,6 +123,51 @@ test("events that can queue an uncached PR request a poll; uncached check noise 
   }
 });
 
+test("events refresh an uncached PR the user recently viewed, with the event's scope", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-relay-viewed-"));
+  try {
+    const script = `
+      const { pollRelayOnce } = await import(${JSON.stringify(relayClientUrl)});
+      const { db, setSetting } = await import(${JSON.stringify(dbUrl)});
+      setSetting("relay_cursor", "0");
+      const refreshed = [];
+      const requested = [];
+      const events = [
+        { seq: 1, ts: 1, repo: "acme/app", number: 7, event: "check_run" },
+        { seq: 2, ts: 2, repo: "acme/app", number: 8, event: "check_run" },
+        { seq: 3, ts: 3, repo: "acme/app", number: 9, event: "issue_comment" },
+      ];
+      await pollRelayOnce("https://relay.test", "token", {
+        fetcher: async () => Response.json({ latest: 3, events }),
+        requestFullPoll: () => requested.push(true),
+        ingest: async () => true,
+        viewedRecently: (_repo, number) => number !== 8,
+        backgroundAllowed: async () => true,
+        refreshViewedPr: async (repo, number, source, scope) => { refreshed.push([repo, number, source, scope]); },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      console.log(JSON.stringify({ refreshed, requested: requested.length }));
+      db.close();
+    `;
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_MOCK: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([process.exited, new Response(process.stdout).text(), new Response(process.stderr).text()]);
+    if (exitCode !== 0) throw new Error(stderr);
+    const result = JSON.parse(stdout);
+    expect(result.refreshed).toEqual([
+      ["acme/app", 7, "relay", "checks"],
+      ["acme/app", 9, "relay", "review"],
+    ]);
+    // A viewed PR can still enter the queue through the event, so membership polls continue.
+    expect(result.requested).toBe(1);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("relay negotiates legacy polling and creates authenticated WebSocket sessions", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-relay-negotiation-"));
   try {

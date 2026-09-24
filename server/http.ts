@@ -104,6 +104,8 @@ import { claudeBinPath, codexBinPath, ompBinPath } from "./harness.ts";
 import { CommitMessageError, generateCommitMessage } from "./commitMessage.ts";
 import { relayStatus } from "./relayClient.ts";
 import { relayCoverage } from "./relayCoverage.ts";
+import { refreshCachedPrDetail } from "./cachedPrDetail.ts";
+import { notePrViewed } from "./recentPrViews.ts";
 import {
   clearRepositoryIssues,
   retrySystemIssue,
@@ -372,28 +374,6 @@ async function handleInbox(url: URL): Promise<Response> {
 }
 
 const UNTRACKED_STALE_MS = 5 * 60_000;
-
-async function revalidateCachedPrDetail(
-  repo: string,
-  number: number,
-  fetchDetail: typeof fetchPrDetail,
-  source: GithubUsageSource,
-  cacheActions: typeof cacheGithubActionsForCommit,
-): Promise<void> {
-  const snapshotCutoffAt = new Date().toISOString();
-  const cached = getCachedPrDetail(repo, number);
-  const detail = await fetchDetail(repo, number, source, cached ? JSON.parse(cached.detail_json) as PrDetail : null);
-  await cacheActions(repo, number, detail.headRefOid, undefined, true)
-    .catch((error) => console.error(`Actions coverage refresh failed for ${repo}#${number}:`, error));
-  upsertCachedPrDetail({
-    repo,
-    number,
-    head_sha: detail.headRefOid,
-    detail_json: JSON.stringify(detail),
-    fetched_at: snapshotCutoffAt,
-  });
-  invalidatePr(repo, number);
-}
 
 function createPrDetailRevalidator(
   refresh: (repo: string, number: number, source: GithubUsageSource) => Promise<void>,
@@ -729,6 +709,7 @@ async function handlePrDetail(
   const repoName = `${owner}/${repo}`;
   const num = Number(number);
   void fetchMirror(repoName).catch(() => {});
+  if (!agentRead) notePrViewed(repoName, num);
 
   let snapshot = cachedPrSnapshot(repoName, num);
   if (snapshot) {
@@ -2929,7 +2910,10 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     allPrsCache: new Map(),
     allPrsRefreshes: new Map(),
     revalidateCachedPrDetail: createPrDetailRevalidator((repo, number, source) =>
-      revalidateCachedPrDetail(repo, number, dependencies.fetchPrDetail, source, dependencies.cacheGithubActionsForCommit)
+      refreshCachedPrDetail(repo, number, source, "all", {
+        fetchPrDetail: dependencies.fetchPrDetail,
+        cacheGithubActionsForCommit: dependencies.cacheGithubActionsForCommit,
+      })
     ),
     revalidateTrackedPr: createPrDetailRevalidator(async (repo, number, source) => {
       await dependencies.refreshPr(repo, number, source);
