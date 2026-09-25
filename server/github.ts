@@ -268,6 +268,7 @@ async function githubApiResponse(
     accept?: string;
     redirect?: RequestRedirect;
     authentication?: { token: string; generation: number };
+    ifNoneMatch?: string;
   } = {},
 ): Promise<Response> {
   const resource = quotaResource(path);
@@ -280,6 +281,7 @@ async function githubApiResponse(
         Authorization: `bearer ${token}`,
         Accept: options.accept ?? "application/vnd.github+json",
         ...(options.body === undefined ? {} : { "Content-Type": "application/json" }),
+        ...(options.ifNoneMatch === undefined ? {} : { "If-None-Match": options.ifNoneMatch }),
       },
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
       redirect: options.redirect,
@@ -2525,10 +2527,39 @@ async function githubRestResponse(method: string, path: string, body?: unknown):
   return githubApiResponse(method, path, { body });
 }
 
+// A 304 answer to a conditional request does not count against the REST rate limit.
+const restEtags = new Map<string, { etag: string; text: string }>();
+const REST_ETAG_TOTAL_LIMIT = 32 * 1024 * 1024;
+const REST_ETAG_BODY_LIMIT = 4 * 1024 * 1024;
+let restEtagBytes = 0;
+
+function forgetRestEtag(path: string): void {
+  const entry = restEtags.get(path);
+  if (!entry) return;
+  restEtags.delete(path);
+  restEtagBytes -= entry.text.length;
+}
+
 async function githubRestJson<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const response = await githubRestResponse(method, path, body);
+  const cached = method === "GET" ? restEtags.get(path) : undefined;
+  const response = await githubApiResponse(method, path, { body, ifNoneMatch: cached?.etag });
+  if (response.status === 304 && cached) {
+    restEtags.delete(path);
+    restEtags.set(path, cached);
+    return JSON.parse(cached.text) as T;
+  }
   if (!response.ok) throw await githubResponseError("GitHub REST request failed", response);
-  return response.json() as Promise<T>;
+  const text = await response.text();
+  const etag = method === "GET" ? response.headers.get("etag") : null;
+  if (etag) {
+    forgetRestEtag(path);
+    if (text.length <= REST_ETAG_BODY_LIMIT) {
+      restEtags.set(path, { etag, text });
+      restEtagBytes += text.length;
+      while (restEtagBytes > REST_ETAG_TOTAL_LIMIT) forgetRestEtag(restEtags.keys().next().value!);
+    }
+  }
+  return JSON.parse(text) as T;
 }
 
 function encodedRepo(repo: string): string {
