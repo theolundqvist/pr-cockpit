@@ -44,43 +44,46 @@ async function git(
 
 const MIRROR_STALL_SECONDS = 60;
 
-async function authedGit(args: string[], timeoutMs?: number): Promise<{ ok: boolean; stdout: string; stderr: string; timedOut: boolean }> {
+function githubRemote(repo: string): string {
+  return `https://github.com/${repo}.git`;
+}
+
+async function authedGit(repo: string, args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   ensureAskpass();
   const token = await ghToken();
-  // detached + group kill below - git's network transport is a git-remote-https grandchild a single-pid kill misses
-  const proc = Bun.spawn(["git", ...args], {
+  const remote = githubRemote(repo);
+  const proc = Bun.spawn([
+    "git",
+    // The mirror authenticates with Cockpit's token over HTTPS. An ambient credential helper answers before
+    // GIT_ASKPASS with whatever it stores for github.com (and would store Cockpit's token in turn), and a user's
+    // url.*.insteadOf can reroute the remote over SSH. The empty helper resets the helper list; the exact-URL
+    // rewrite outranks any shorter user rewrite.
+    "-c",
+    "credential.helper=",
+    "-c",
+    `url.${remote}.insteadOf=${remote}`,
+    ...args,
+  ], {
     stdout: "pipe",
     stderr: "pipe",
-    detached: timeoutMs !== undefined,
     env: {
       ...Bun.env,
       GIT_ASKPASS: askpassPath,
       GIT_MIRROR_TOKEN: token,
       GIT_TERMINAL_PROMPT: "0",
-      // Background fetches carry no deadline, and a transfer whose socket died in sleep never ends:
+      // No fetch carries a deadline, and a transfer whose socket died in sleep never ends:
       // the in-flight fetch every later diff request joins would then stay stale until restart.
       // Abort only a transfer that moved no bytes for a minute, so slow large clones still finish.
       GIT_HTTP_LOW_SPEED_LIMIT: "1",
       GIT_HTTP_LOW_SPEED_TIME: String(MIRROR_STALL_SECONDS),
     },
   });
-  let timedOut = false;
-  const timer =
-    timeoutMs !== undefined
-      ? setTimeout(() => {
-          timedOut = true;
-          try {
-            process.kill(-proc.pid, "SIGKILL");
-          } catch {}
-        }, timeoutMs)
-      : null;
   const [stdout, stderr] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
   ]);
   const exitCode = await proc.exited;
-  if (timer) clearTimeout(timer);
-  return { ok: !timedOut && exitCode === 0, stdout, stderr, timedOut };
+  return { ok: exitCode === 0, stdout, stderr };
 }
 
 export type MirrorFetchFailureKind = "credentials" | "network" | "deadline" | "git";
@@ -91,8 +94,7 @@ export class MirrorFetchError extends Error {
   }
 }
 
-function mirrorFetchError(operation: "clone" | "fetch", repo: string, result: { stderr: string; timedOut: boolean }): MirrorFetchError {
-  if (result.timedOut) return new MirrorFetchError(`mirror ${operation} deadline exceeded for ${repo}`, "deadline");
+function mirrorFetchError(operation: "clone" | "fetch", repo: string, result: { stderr: string }): MirrorFetchError {
   if (/Invalid username or password|Invalid username or token|Authentication failed/i.test(result.stderr)) {
     return new MirrorFetchError(`GitHub rejected mirror credentials for ${repo}`, "credentials");
   }
@@ -109,11 +111,11 @@ function mirrorFetchError(operation: "clone" | "fetch", repo: string, result: { 
 
 const FETCH_REFSPECS = ["+refs/heads/*:refs/heads/*", "+refs/pull/*/head:refs/remotes/origin/pr/*"];
 
-async function ensureMirror(repo: string, timeoutMs?: number): Promise<void> {
+async function ensureMirror(repo: string): Promise<void> {
   const dir = mirrorDir(repo);
   if (await Bun.file(`${dir}/HEAD`).exists()) return;
   mkdirSync(mirrorsRoot, { recursive: true });
-  const clone = await authedGit(["clone", "--bare", `https://github.com/${repo}.git`, dir], timeoutMs);
+  const clone = await authedGit(repo, ["clone", "--bare", githubRemote(repo), dir]);
   if (!clone.ok) throw mirrorFetchError("clone", repo, clone);
 }
 
@@ -218,7 +220,10 @@ async function maintainMirror(repo: string): Promise<void> {
   }
 }
 
-// bound for in-request cache fetches; background ingestion stays unbounded
+// Bounds how long an in-request caller waits; the fetch itself always runs to completion. Killing git inside
+// its ref transaction orphans refs/**/*.lock, after which every fetch of that mirror fails with "cannot lock
+// ref ... File exists", and unbounded callers that joined the fetch still need its result. Git's low-speed
+// limit aborts a dead transfer instead.
 export const INCREMENTAL_FETCH_TIMEOUT_MS = 15_000;
 
 async function waitForFetch(fetch: Promise<void>, ms: number): Promise<void> {
@@ -242,10 +247,10 @@ export function fetchMirror(repo: string, timeoutMs?: number): Promise<void> {
   const previousMutation = mutationTails.get(entry) ?? Promise.resolve();
   const fetched = withMirrorOperation(repo, async () => {
     await previousMutation;
-    await ensureMirror(repo, timeoutMs);
+    await ensureMirror(repo);
     touch(repo);
     const dir = mirrorDir(repo);
-    const result = await authedGit(["--git-dir", dir, "fetch", "--no-auto-maintenance", "--prune", "origin", ...FETCH_REFSPECS], timeoutMs);
+    const result = await authedGit(repo, ["--git-dir", dir, "fetch", "--no-auto-maintenance", "--prune", "origin", ...FETCH_REFSPECS]);
     if (!result.ok) throw mirrorFetchError("fetch", repo, result);
   });
   const ready = fetched.finally(() => inFlightFetch.delete(repo));

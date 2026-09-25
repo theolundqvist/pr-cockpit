@@ -514,6 +514,83 @@ test("post-fetch maintenance compacts excess packs without losing fetched refs",
   expect(outcome.head).toMatch(/^[0-9a-f]{40}$/);
 });
 
+test("a caller's expired deadline leaves the shared fetch to finish its ref transaction", () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-mirror-deadline-"));
+  cleanup.push(dataDir);
+  const moduleUrl = pathToFileURL(join(import.meta.dir, "mirror.ts")).href;
+  const scenario = `
+    import { chmodSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+    import { join } from "node:path";
+    const dataDir = process.env.COCKPIT_DATA_DIR;
+    const source = join(dataDir, "source");
+    const mirror = join(dataDir, "mirrors", "acme__repo");
+    const hooks = join(dataDir, "hooks");
+    const release = join(dataDir, "release");
+    function git(cwd, ...args) {
+      const result = Bun.spawnSync(["git", "-C", cwd, ...args], { stdout: "pipe", stderr: "pipe" });
+      if (!result.success) throw new Error(result.stderr.toString());
+      return result.stdout.toString().trim();
+    }
+    mkdirSync(source, { recursive: true });
+    git(source, "init", "-b", "main");
+    git(source, "config", "user.name", "PR Cockpit Test");
+    git(source, "config", "user.email", "pr-cockpit@example.test");
+    await Bun.write(join(source, "source.ts"), "export const value = 1;\\n");
+    git(source, "add", "source.ts");
+    git(source, "commit", "-m", "base");
+    mkdirSync(join(dataDir, "mirrors"), { recursive: true });
+    git(dataDir, "clone", "--bare", source, mirror);
+    await Bun.write(join(source, "source.ts"), "export const value = 2;\\n");
+    git(source, "commit", "-am", "next");
+    const next = git(source, "rev-parse", "HEAD");
+    // Parks the fetch inside its ref transaction, with the ref locks held, and tells this process so.
+    mkdirSync(hooks);
+    writeFileSync(join(hooks, "reference-transaction"), [
+      "#!/bin/sh",
+      "cat >/dev/null",
+      "[ \\"$1\\" = prepared ] || exit 0",
+      "kill -USR2 \\"$SCENARIO_PID\\"",
+      "i=0",
+      "while [ ! -e '" + release + "' ] && [ $i -lt 600 ]; do sleep 0.05; i=$((i + 1)); done",
+      "",
+    ].join("\\n"));
+    chmodSync(join(hooks, "reference-transaction"), 0o755);
+    git(mirror, "config", "core.hooksPath", hooks);
+    process.env.SCENARIO_PID = String(process.pid);
+    const { promise: parked, resolve: markParked } = Promise.withResolvers();
+    process.once("SIGUSR2", markParked);
+    // Deadline timers fire on demand, so the deadline expires exactly while the transaction is parked.
+    const DEADLINE_MS = 43_210;
+    const deadlines = [];
+    const nativeSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = (callback, delay, ...args) => {
+      if (delay !== DEADLINE_MS) return nativeSetTimeout(callback, delay, ...args);
+      deadlines.push(() => callback(...args));
+      return 0;
+    };
+    // The subprocess must bind its isolated data directory before mirror.ts is evaluated.
+    const { fetchMirror, MirrorFetchError } = await import(${JSON.stringify(moduleUrl)});
+    const bounded = fetchMirror("acme/repo", DEADLINE_MS).then(() => null, (error) => {
+      if (!(error instanceof MirrorFetchError)) throw error;
+      return error.kind;
+    });
+    await parked;
+    for (const expire of deadlines.splice(0)) expire();
+    const kind = await bounded;
+    writeFileSync(release, "");
+    await fetchMirror("acme/repo");
+    const locks = readdirSync(join(mirror, "refs"), { recursive: true }).filter((name) => String(name).endsWith(".lock"));
+    process.stdout.write(JSON.stringify({ kind, locks, updated: git(mirror, "rev-parse", "refs/heads/main") === next }));
+  `;
+  const result = Bun.spawnSync([process.execPath, "-e", scenario], {
+    env: { ...process.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_MOCK: "1" },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+  expect(JSON.parse(result.stdout.toString())).toEqual({ kind: "deadline", locks: [], updated: true });
+});
+
 test("cache pruning evicts the oldest idle tracked mirror and reports protected overflow", () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-mirror-prune-"));
   cleanup.push(dataDir);
