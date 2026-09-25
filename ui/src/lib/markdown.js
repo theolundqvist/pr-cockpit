@@ -65,12 +65,12 @@ function proxyImages(doc) {
 const GH_VIDEO_RE = /^https:\/\/github\.com\/user-attachments\/assets\/[0-9a-f-]+$/i;
 
 const VIDEO_CONTROLS = `<media-control-bar>
-  <media-play-button></media-play-button>
+  <media-play-button notooltip></media-play-button>
   <media-time-range></media-time-range>
   <media-time-display showduration></media-time-display>
-  <media-mute-button></media-mute-button>
-  <media-playback-rate-button rates="1 1.5 2"></media-playback-rate-button>
-  <media-fullscreen-button></media-fullscreen-button>
+  <media-mute-button notooltip></media-mute-button>
+  <media-playback-rate-button notooltip rates="1 1.5 2"></media-playback-rate-button>
+  <media-fullscreen-button notooltip></media-fullscreen-button>
 </media-control-bar>`;
 let mediaChrome;
 
@@ -147,6 +147,16 @@ document.addEventListener("error", (event) => {
   img.alt = video.dataset.gifAlt;
   video.closest("media-controller")?.replaceWith(img);
 }, true);
+
+// A player's tooltips measure layout on every media state change, so they stay off until the
+// pointer or focus first reaches that player.
+function enableTooltips(event) {
+  const player = event.target.closest?.("media-controller");
+  if (!player) return;
+  for (const button of player.querySelectorAll("[notooltip]")) button.removeAttribute("notooltip");
+}
+document.addEventListener("pointerover", enableTooltips, true);
+document.addEventListener("focus", enableTooltips, true);
 
 const MARKDOWN_CACHE_MAX = 400;
 const markdownCache = new Map();
@@ -267,12 +277,22 @@ export function renderMarkdown(source) {
   return storeMarkdown(source, context, doc.body.innerHTML);
 }
 
+const SUMMARY_CACHE_MAX = 2000;
+const summaryCache = new Map();
+
 export function summarize(source) {
   if (!source) return "";
+  const cached = summaryCache.get(source);
+  if (cached !== undefined) {
+    summaryCache.delete(source);
+    summaryCache.set(source, cached);
+    return cached;
+  }
   const doc = new DOMParser().parseFromString(marked.parse(source), "text/html");
   for (const node of doc.querySelectorAll("script, style, template")) node.remove();
   const text = doc.body.textContent.replace(/\s+/g, " ").trim();
-  if (text) return text;
-  const alt = doc.body.querySelector("img")?.getAttribute("alt")?.trim();
-  return alt || "(image)";
+  const summary = text || doc.body.querySelector("img")?.getAttribute("alt")?.trim() || "(image)";
+  summaryCache.set(source, summary);
+  if (summaryCache.size > SUMMARY_CACHE_MAX) summaryCache.delete(summaryCache.keys().next().value);
+  return summary;
 }

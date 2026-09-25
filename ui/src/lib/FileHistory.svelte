@@ -2,6 +2,7 @@
   import DiffView from "./DiffView.svelte";
   import { parseDiff } from "./diff.js";
   import { fetchFileHistory, fetchFileHistoryDiff } from "./api.js";
+  import { cachedView, cacheView } from "./detailCache.js";
   import { relativeTime } from "./time.js";
   import Kbd from "./Kbd.svelte";
 
@@ -10,6 +11,7 @@
   let status = $state("loading");
   let commits = $state([]);
   let diffs = $state(new Map());
+  let cachedDiffs = $state(new Map());
   let selectedIndex = $state(0);
   let railEl = $state(null);
   let loadToken;
@@ -47,9 +49,14 @@
   let selected = $derived(entries[selectedIndex] ?? null);
   let selectedCol = $derived.by(() => {
     if (!selected) return null;
-    if (!selected.currentPr) return diffs.get(selected.sha) ?? null;
+    if (!selected.currentPr) return shownDiff(selected.sha);
     return currentCol;
   });
+
+  function shownDiff(sha) {
+    const col = diffs.get(sha);
+    return !col || col.status === "loading" ? (cachedDiffs.get(sha) ?? col ?? null) : col;
+  }
 
   function close() {
     onClose();
@@ -77,14 +84,21 @@
   $effect(() => {
     if (!open) return;
     const token = {};
+    const args = { repo, path, base, symbol, baseSha, currentPrSha: currentPr.sha };
+    const key = `fileHistory:${JSON.stringify(args)}`;
+    const snapshot = cachedView(key);
     loadToken = token;
-    status = "loading";
-    commits = [];
+    status = snapshot ? "ready" : "loading";
+    commits = snapshot?.commits ?? [];
+    cachedDiffs = snapshot?.diffs ?? new Map();
     diffs = new Map();
     selectedIndex = 0;
-    loadHistory(token, { repo, path, base, symbol, baseSha, currentPrSha: currentPr.sha });
+    loadHistory(token, args);
     return () => {
       loadToken = null;
+      if (status !== "ready") return;
+      const settled = [...diffs].filter(([, col]) => col.status !== "loading" && col.status !== "error");
+      cacheView(key, { commits, diffs: new Map([...cachedDiffs, ...settled]) });
     };
   });
 
@@ -193,7 +207,7 @@
       <div class="fh-body">
         <div class="fh-rail" bind:this={railEl}>
           {#each entries as commit, i (commit.sha)}
-            {@const col = commit.currentPr ? currentCol : diffs.get(commit.sha)}
+            {@const col = commit.currentPr ? currentCol : shownDiff(commit.sha)}
             <button class="fh-row" class:active={i === selectedIndex} class:current={commit.currentPr} onclick={() => (selectedIndex = i)}>
               <span class="fh-spine"><span class="fh-dot"></span></span>
               <span class="fh-row-body">

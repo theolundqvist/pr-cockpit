@@ -1,18 +1,15 @@
 import { indexDiff, parseDiff } from "./diff.js";
 
-let text = "";
-let indexedByPath = new Map();
+const decoder = new TextDecoder();
+let bytes = new Uint8Array();
 
 self.onmessage = ({ data }) => {
-  if (data.type === "index") {
-    text = new TextDecoder().decode(data.bytes);
-    const files = indexDiff(text);
-    indexedByPath = new Map(files.map((file) => [file.path, file]));
-    self.postMessage({ type: "index", bytes: data.bytes, files }, [data.bytes]);
+  if (data.type === "load") {
+    bytes = data.bytes;
+    if (data.index) self.postMessage({ type: "index", files: indexDiff(decoder.decode(bytes)) });
     return;
   }
 
-  const indexed = indexedByPath.get(data.path);
-  const file = parseDiff(text.slice(indexed.patchStart, indexed.patchEnd))[0];
+  const file = parseDiff(decoder.decode(bytes.subarray(data.byteStart, data.byteEnd)))[0];
   self.postMessage({ type: "file", id: data.id, file });
 };

@@ -1,13 +1,18 @@
 <script>
+  import { untrack } from "svelte";
   import ActionsGraph from "./ActionsGraph.svelte";
   import ActionLog from "./ActionLog.svelte";
   import ActionStatusIcon from "./ActionStatusIcon.svelte";
   import {
     actionLogKey,
+    cachePrActionData,
     cachedActionLog,
+    cachedPrActionData,
+    cachedRepoRunSnapshot,
     chooseDefaultActionJob,
     loadActionLog,
     loadRepoRunSnapshot,
+    prActionKey,
     prefetchActionLogs,
   } from "./actionPrefetch.js";
   import { fetchActionCommits, fetchActionGraph, fetchActionLog, fetchActions, fetchRepoActionGraph, fetchRepoActionLog } from "./api.js";
@@ -44,7 +49,7 @@
   let logs = $state({});
   let logErrors = $state({});
   let logLoadingId = $state(null);
-  let commits = $state([]);
+  let commits = $state.raw([]);
   let commitError = $state("");
   let commitLoading = $state(true);
   let commitNonce = $state(0);
@@ -57,6 +62,9 @@
     }
     return options;
   });
+  // a long PR has thousands of commits; the fixed-width picker only needs the selected one until it is used
+  let commitPickerUsed = $state(false);
+  let renderedCommitOptions = $derived(commitPickerUsed ? commitOptions : commitOptions.filter((commit) => commit.sha === activeSha));
 
   const terminalFailures = new Set(["failure", "timed_out", "action_required", "startup_failure", "stale"]);
 
@@ -199,12 +207,16 @@
       return;
     }
     const key = `${repo}#${number}:${headSha}:${commitNonce}`;
+    const cacheKey = prActionKey(repo, number, headSha);
     let stopped = false;
     const controller = new AbortController();
-    commitLoading = true;
+    const cached = cachedPrActionData("commits", cacheKey);
+    if (cached) commits = cached.commits;
+    commitLoading = !cached;
     fetchActionCommits(repo, number, controller.signal).then(
       (next) => {
         if (stopped || key !== `${repo}#${number}:${headSha}:${commitNonce}`) return;
+        cachePrActionData("commits", cacheKey, next);
         commits = next.commits;
         commitError = "";
       },
@@ -236,8 +248,48 @@
   $effect(() => {
     if (!active) return;
     const key = `${repo}#${number}:${activeSha}:${refreshNonce}:${refreshRevision}`;
+    const cacheKey = number === null ? null : prActionKey(repo, number, activeSha);
     let stopped = false;
     const controller = new AbortController();
+
+    function show(next) {
+      snapshot = next;
+      loadError = "";
+      const preferredJobs = preferredRunId === null
+        ? next.jobs
+        : next.jobs.filter((job) =>
+            job.runId === preferredRunId
+            && (preferredRunAttempt === null || job.attempt === preferredRunAttempt)
+          );
+      const defaultJob = chooseDefaultJob(preferredJobs) ?? chooseDefaultJob(next.jobs);
+      if (!next.jobs.some((job) => job.id === selectedJobId)) selectedJobId = defaultJob?.id ?? null;
+      const targetJob = next.jobs.find((job) => job.id === selectedJobId) ?? defaultJob;
+      const targetJobs = targetJob
+        ? next.jobs.filter((job) => job.runId === targetJob.runId && job.attempt === targetJob.attempt)
+        : [];
+      const cached = {};
+      for (const job of targetJobs) {
+        const result = cachedActionLog(actionLogKey(repo, activeSha, job.id));
+        if (result) cached[job.id] = result;
+      }
+      if (Object.keys(cached).length > 0) logs = { ...logs, ...cached };
+      void prefetchActionLogs(
+        targetJobs,
+        (job) => actionLogKey(repo, activeSha, job.id),
+        (job) => number === null
+          ? fetchRepoActionLog(repo, activeSha, job.id, null, true)
+          : fetchActionLog(repo, number, job.id, activeSha, null, true),
+        () => !stopped,
+      ).then(() => {
+        if (stopped) return;
+        const prefetched = {};
+        for (const job of targetJobs) {
+          const result = cachedActionLog(actionLogKey(repo, activeSha, job.id));
+          if (result) prefetched[job.id] = result;
+        }
+        if (Object.keys(prefetched).length > 0) logs = { ...logs, ...prefetched };
+      });
+    }
 
     async function refresh(initial) {
       if (initial) loading = true;
@@ -250,42 +302,8 @@
             )
           : await fetchActions(repo, number, activeSha, controller.signal);
         if (stopped || key !== `${repo}#${number}:${activeSha}:${refreshNonce}:${refreshRevision}`) return;
-        snapshot = next;
-        loadError = "";
-        const preferredJobs = preferredRunId === null
-          ? next.jobs
-          : next.jobs.filter((job) =>
-              job.runId === preferredRunId
-              && (preferredRunAttempt === null || job.attempt === preferredRunAttempt)
-            );
-        const defaultJob = chooseDefaultJob(preferredJobs) ?? chooseDefaultJob(next.jobs);
-        if (!next.jobs.some((job) => job.id === selectedJobId)) selectedJobId = defaultJob?.id ?? null;
-        const targetJob = next.jobs.find((job) => job.id === selectedJobId) ?? defaultJob;
-        const targetJobs = targetJob
-          ? next.jobs.filter((job) => job.runId === targetJob.runId && job.attempt === targetJob.attempt)
-          : [];
-        const cached = {};
-        for (const job of targetJobs) {
-          const result = cachedActionLog(actionLogKey(repo, activeSha, job.id));
-          if (result) cached[job.id] = result;
-        }
-        if (Object.keys(cached).length > 0) logs = { ...logs, ...cached };
-        void prefetchActionLogs(
-          targetJobs,
-          (job) => actionLogKey(repo, activeSha, job.id),
-          (job) => number === null
-            ? fetchRepoActionLog(repo, activeSha, job.id, null, true)
-            : fetchActionLog(repo, number, job.id, activeSha, null, true),
-          () => !stopped,
-        ).then(() => {
-          if (stopped) return;
-          const prefetched = {};
-          for (const job of targetJobs) {
-            const result = cachedActionLog(actionLogKey(repo, activeSha, job.id));
-            if (result) prefetched[job.id] = result;
-          }
-          if (Object.keys(prefetched).length > 0) logs = { ...logs, ...prefetched };
-        });
+        if (cacheKey) cachePrActionData("actions", cacheKey, next);
+        show(next);
       } catch (error) {
         if (!stopped) loadError = error instanceof Error ? error.message : String(error);
       } finally {
@@ -293,6 +311,10 @@
       }
     }
 
+    const cached = cacheKey
+      ? cachedPrActionData("actions", cacheKey)
+      : cachedRepoRunSnapshot({ repo, headSha: activeSha, id: preferredRunId });
+    if (cached) untrack(() => show(cached));
     void refresh(true);
     const activeTimer = setInterval(() => {
       if (hasActiveJobs) void refresh(false);
@@ -310,14 +332,18 @@
   $effect(() => {
     if (!active) return;
     const key = `${repo}#${number}:${activeSha}:${refreshNonce}:${refreshRevision}`;
+    const cacheKey = number === null ? null : prActionKey(repo, number, activeSha);
     let stopped = false;
     const controller = new AbortController();
+    const cached = cacheKey ? cachedPrActionData("graph", cacheKey) : null;
+    if (cached) graphSnapshot = cached;
     const request = number === null
       ? fetchRepoActionGraph(repo, activeSha, controller.signal)
       : fetchActionGraph(repo, number, activeSha, controller.signal);
     request.then(
       (next) => {
         if (stopped || key !== `${repo}#${number}:${activeSha}:${refreshNonce}:${refreshRevision}`) return;
+        if (cacheKey) cachePrActionData("graph", cacheKey, next);
         graphSnapshot = next;
         graphError = "";
       },
@@ -423,8 +449,10 @@
           value={activeSha}
           disabled={commitLoading && commits.length === 0}
           onchange={selectCommit}
+          onpointerdown={() => (commitPickerUsed = true)}
+          onfocus={() => (commitPickerUsed = true)}
         >
-          {#each commitOptions as commit (commit.sha)}
+          {#each renderedCommitOptions as commit (commit.sha)}
             <option value={commit.sha}>{commit.sha.slice(0, 7)} · {commit.headline}</option>
           {/each}
         </select>

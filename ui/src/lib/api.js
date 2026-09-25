@@ -56,8 +56,10 @@ export async function reorderPr(repo, number, position) {
 }
 
 // A stale tracked snapshot comes back immediately and flagged; `fresh` waits for its refresh.
-export async function fetchPrDetailSnapshot(repo, number, { fresh = false } = {}) {
-  const res = await fetch(`/api/pr/${repo}/${number}${fresh ? "?fresh=1" : ""}`);
+// `prefetch` reads only what the server already holds locally: 204 (null here) when it has nothing.
+export async function fetchPrDetailSnapshot(repo, number, { fresh = false, prefetch = false } = {}) {
+  const res = await fetch(`/api/pr/${repo}/${number}${prefetch ? "?prefetch=1" : fresh ? "?fresh=1" : ""}`, requestInit(null, prefetch));
+  if (prefetch && res.status === 204) return null;
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.error || `detail ${res.status}`);
@@ -83,21 +85,25 @@ function actionCommitQuery(sha, prefetch = false) {
   return query ? `?${query}` : "";
 }
 
-export async function fetchActions(repo, number, sha = null, signal = null) {
-  const res = await fetch(`/api/pr/${repo}/${number}/actions${actionCommitQuery(sha)}`, { signal });
+function requestInit(signal, prefetch) {
+  return prefetch ? { signal, priority: "low" } : { signal };
+}
+
+export async function fetchActions(repo, number, sha = null, signal = null, prefetch = false) {
+  const res = await fetch(`/api/pr/${repo}/${number}/actions${actionCommitQuery(sha, prefetch)}`, requestInit(signal, prefetch));
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new Error(body?.error || `actions ${res.status}`);
   return body;
 }
-export async function fetchActionGraph(repo, number, sha = null, signal = null) {
-  const res = await fetch(`/api/pr/${repo}/${number}/actions/graph${actionCommitQuery(sha)}`, { signal });
+export async function fetchActionGraph(repo, number, sha = null, signal = null, prefetch = false) {
+  const res = await fetch(`/api/pr/${repo}/${number}/actions/graph${actionCommitQuery(sha, prefetch)}`, requestInit(signal, prefetch));
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new Error(body?.error || `action graph ${res.status}`);
   return body;
 }
 
-export async function fetchActionCommits(repo, number, signal = null) {
-  const res = await fetch(`/api/pr/${repo}/${number}/actions/commits`, { signal });
+export async function fetchActionCommits(repo, number, signal = null, prefetch = false) {
+  const res = await fetch(`/api/pr/${repo}/${number}/actions/commits${actionCommitQuery(null, prefetch)}`, requestInit(signal, prefetch));
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new Error(body?.error || `action commits ${res.status}`);
   return body;
@@ -105,7 +111,7 @@ export async function fetchActionCommits(repo, number, signal = null) {
 
 
 export async function fetchActionLog(repo, number, jobId, sha = null, signal = null, prefetch = false) {
-  const res = await fetch(`/api/pr/${repo}/${number}/actions/jobs/${jobId}/log${actionCommitQuery(sha, prefetch)}`, { signal });
+  const res = await fetch(`/api/pr/${repo}/${number}/actions/jobs/${jobId}/log${actionCommitQuery(sha, prefetch)}`, requestInit(signal, prefetch));
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new Error(body?.error || `action log ${res.status}`);
   return body;
@@ -167,13 +173,15 @@ export async function fetchPrDetails(keys) {
   return (await res.json()).details;
 }
 
-export async function fetchPrDiff(repo, number, range = null, signal = null) {
+export async function fetchPrDiff(repo, number, range = null, signal = null, prefetch = false) {
   try {
     const params = new URLSearchParams();
     if (range?.base) params.set("base", range.base);
     if (range?.head) params.set("head", range.head);
+    if (prefetch) params.set("prefetch", "1");
     const qs = params.size ? `?${params}` : "";
-    const res = await fetch(`/api/pr/${repo}/${number}/diff${qs}`, { signal });
+    const res = await fetch(`/api/pr/${repo}/${number}/diff${qs}`, requestInit(signal, prefetch));
+    if (prefetch && res.status === 204) return { ok: false, building: false, status: 204, error: "not available locally" };
     if (res.ok) return { ok: true, bytes: await res.arrayBuffer() };
     const body = await res.json().catch(() => null);
     const error = body?.error || `Diff request failed (${res.status})`;

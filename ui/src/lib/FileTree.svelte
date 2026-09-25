@@ -1,5 +1,5 @@
 <script>
-  import { tick, untrack } from "svelte";
+  import { tick } from "svelte";
   import Chevron from "./Chevron.svelte";
 
   let { files, selectedPath, hoveredPath = null, onSelect } = $props();
@@ -117,24 +117,25 @@
     collapsedDirs = next;
   }
 
+  let windowFrame = null;
+  function scheduleWindow() {
+    if (windowFrame !== null) cancelAnimationFrame(windowFrame);
+    windowFrame = requestAnimationFrame(() => {
+      windowFrame = null;
+      updateWindow();
+    });
+  }
+
   $effect(() => {
     const element = treeEl;
     if (!element) return;
     const root = element.parentElement;
-    let frame = null;
-    const scheduleWindow = () => {
-      if (frame !== null) cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        frame = null;
-        updateWindow();
-      });
-    };
     const resize = new ResizeObserver(scheduleWindow);
     root.addEventListener("scroll", scheduleWindow, { passive: true });
     resize.observe(root);
-    untrack(scheduleWindow);
     return () => {
-      if (frame !== null) cancelAnimationFrame(frame);
+      if (windowFrame !== null) cancelAnimationFrame(windowFrame);
+      windowFrame = null;
       root.removeEventListener("scroll", scheduleWindow);
       resize.disconnect();
     };
@@ -142,7 +143,7 @@
 
   $effect(() => {
     rows.length;
-    void tick().then(updateWindow);
+    scheduleWindow();
   });
 
   $effect(() => {
@@ -151,7 +152,7 @@
     lastSelectedPath = path;
     const index = rows.findIndex((row) => row.kind === "file" && row.value.path === path);
     if (index < 0) return;
-    void tick().then(async () => {
+    requestAnimationFrame(async () => {
       if (!treeEl) return;
       const root = treeEl.parentElement;
       const treeTop = treeEl.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop;

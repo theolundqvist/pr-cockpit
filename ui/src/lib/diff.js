@@ -94,15 +94,23 @@ function compactNewLines(rows) {
   return ranges;
 }
 
+// Offsets are into the UTF-8 bytes, so a file's patch is decoded on its own without the whole diff as a string.
 export function indexDiff(text) {
   const starts = [];
   const marker = /^diff --git /gm;
   for (let match = marker.exec(text); match; match = marker.exec(text)) starts.push(match.index);
+  let charOffset = 0;
+  let byteOffset = 0;
+  const byteOffsetAt = (index) => {
+    byteOffset += utf8Length(text, charOffset, index);
+    charOffset = index;
+    return byteOffset;
+  };
   return parseDiff(text).map((file, index) => ({
     ...file,
     fingerprint: fileDiffFingerprint(file),
-    patchStart: starts[index],
-    patchEnd: starts[index + 1] ?? text.length,
+    byteStart: byteOffsetAt(starts[index]),
+    byteEnd: byteOffsetAt(starts[index + 1] ?? text.length),
     hydrated: false,
     hunks: file.hunks.map((hunk) => ({
       range: hunk.range,
@@ -115,6 +123,15 @@ export function indexDiff(text) {
       rows: null,
     })),
   }));
+}
+
+function utf8Length(text, start, end) {
+  let length = end - start;
+  for (let index = start; index < end; index++) {
+    const code = text.charCodeAt(index);
+    if (code >= 0x80) length += code < 0x800 || (code >= 0xd800 && code <= 0xdfff) ? 1 : 2;
+  }
+  return length;
 }
 
 export function splitDiffRows(rows) {

@@ -1,5 +1,5 @@
 <script>
-  import { tick } from "svelte";
+  import { flushSync, tick, untrack } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import Thread from "./Thread.svelte";
   import MutationBadge from "./MutationBadge.svelte";
@@ -11,6 +11,7 @@
   import { theme } from "./theme.svelte.js";
   import { buildGapPage, buildWholeFile, fileUsesSplitLayout, hunkOldOffset, revertChange, revertFile, splitDiffRows } from "./diff.js";
   import { fetchFileContents } from "./api.js";
+  import { whenIdle } from "./preload.js";
   import { shouldToggleHoveredViewed } from "./dom.js";
   import { columnWithin, createDefinitionHover, tokenAtPoint } from "./wordAtPoint.js";
   import Chevron from "./Chevron.svelte";
@@ -143,9 +144,11 @@
   }
 
   function scrollParent(el) {
+    // An IntersectionObserver root outside a fixed overlay's containing block never intersects it.
     for (let node = el.parentElement; node; node = node.parentElement) {
-      const overflowY = getComputedStyle(node).overflowY;
-      if ((overflowY === "auto" || overflowY === "scroll") && node.scrollHeight > node.clientHeight) return node;
+      const style = getComputedStyle(node);
+      if ((style.overflowY === "auto" || style.overflowY === "scroll") && node.scrollHeight > node.clientHeight) return node;
+      if (style.position === "fixed") return node;
     }
     return null;
   }
@@ -632,6 +635,178 @@
     return measuredFiles.get(file.path) ?? estimateHeight(file, false, whole);
   }
 
+  // Sections mount in idle batches after the first screen: files[0, head) grows from the top and
+  // files[from, to) is a window around a far jump until the two meet. Spacers hold the height of
+  // the rest. Anything that looks a section up by id reveals it first.
+  const FILE_GAP = 24;
+  const FIRST_FILE_BATCH = 60;
+  const FILE_BATCH = 200;
+  const NEAR_FILES = 100;
+  let mounted = $derived({ head: Math.min(files.length, FIRST_FILE_BATCH), from: 0, to: 0 });
+  let fileIndexes = $derived(new Map(files.map((file, index) => [file.path, index])));
+  let renderedFiles = $derived.by(() => {
+    const { head, from, to } = mounted;
+    if (to > from) return files.slice(0, head).concat(files.slice(from, to));
+    return head < files.length ? files.slice(0, head) : files;
+  });
+  let gapFile = $derived(mounted.to > mounted.from ? files[mounted.from] : null);
+  let gapHeight = $derived(mounted.to > mounted.from ? spacerHeight(mounted.head, mounted.from) : 0);
+  let tailStart = $derived(mounted.to > mounted.from ? mounted.to : mounted.head);
+  let tailHeight = $derived(spacerHeight(tailStart, files.length));
+
+  $effect(() => {
+    const { head } = mounted;
+    if (head >= files.length) return;
+    return whenIdle(() => remount(headThrough(head + FILE_BATCH)));
+  });
+
+  $effect(() => {
+    mounted;
+    untrack(revealScrolledFiles);
+  });
+
+  function sectionHeight(file) {
+    if (collapsed.has(file.path)) return HEAD_H + FILE_GAP;
+    return (untrack(() => measuredFiles.get(file.path)) ?? estimateHeight(file, false, wholeFile.get(file.path))) + FILE_GAP;
+  }
+
+  function spacerHeight(from, to) {
+    let height = 0;
+    for (let index = from; index < to; index++) height += sectionHeight(files[index]);
+    return height;
+  }
+
+  function mountedRanges() {
+    const { head, from, to } = mounted;
+    return to > from ? [[0, head], [from, to]] : [[0, head]];
+  }
+
+  function headThrough(end) {
+    const { head, from, to } = mounted;
+    if (end <= head) return null;
+    if (to > from && end >= from) return { head: Math.max(end, to), from: 0, to: 0 };
+    return { head: Math.min(end, files.length), from, to };
+  }
+
+  function windowAround(index) {
+    const viewport = observerRoot?.clientHeight ?? innerHeight;
+    let lo = index;
+    for (let above = 0; lo > 0 && above < viewport; ) above += sectionHeight(files[--lo]);
+    let hi = index + 1;
+    for (let below = sectionHeight(files[index]); hi < files.length && below < 2 * viewport; ) below += sectionHeight(files[hi++]);
+    const { head, from, to } = mounted;
+    if (lo <= head + NEAR_FILES) return headThrough(hi);
+    if (to > from && lo <= to + NEAR_FILES && hi >= from - NEAR_FILES) {
+      return lo < from || hi > to ? { head, from: Math.min(from, lo), to: Math.max(to, hi) } : null;
+    }
+    return lo !== from || hi !== to ? { head, from: lo, to: hi } : null;
+  }
+
+  // The sticky file tree beside the diff wins native scroll anchoring, so sections mounting above
+  // the reader, and rendering over their estimated heights in the frames after, would move the
+  // page; the first visible section keeps its place instead, re-picked whenever the reader scrolls.
+  const HOLD_FRAMES = 20;
+  let heldSection = null;
+  let heldFrames = 0;
+
+  function remount(next) {
+    if (!next) return;
+    holdVisibleSection();
+    mounted = next;
+    void tick().then(keepHeldSection);
+  }
+
+  function anchorOf(node) {
+    return node && { node, top: node.getBoundingClientRect().top + observerRoot.scrollTop };
+  }
+
+  function holdVisibleSection() {
+    heldSection = anchorOf(visibleSection());
+    if (!heldSection) return;
+    if (heldFrames === 0) requestAnimationFrame(countHeldFrames);
+    heldFrames = HOLD_FRAMES;
+  }
+
+  function countHeldFrames() {
+    if (--heldFrames > 0) requestAnimationFrame(countHeldFrames);
+    else heldSection = null;
+  }
+
+  function keepHeldSection() {
+    if (!heldSection?.node.isConnected) return;
+    const top = heldSection.node.getBoundingClientRect().top + observerRoot.scrollTop;
+    if (top !== heldSection.top) observerRoot.scrollTop += top - heldSection.top;
+    heldSection.top = top;
+  }
+
+  export function revealFile(index) {
+    heldSection = null;
+    const { head, from, to } = mounted;
+    if (index < head || (index >= from && index < to) || !files[index]) return;
+    const next = windowAround(index);
+    if (!next) return;
+    mounted = next;
+    flushSync();
+  }
+
+  function firstSectionBelow(from, to, y) {
+    let low = from;
+    let high = to;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      const node = observedFileNodes[middle];
+      if (node && node.getBoundingClientRect().bottom < y) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  }
+
+  function visibleSection() {
+    if (!observerRoot) return null;
+    const rootRect = observerRoot.getBoundingClientRect();
+    for (const [from, to] of mountedRanges()) {
+      const node = observedFileNodes[firstSectionBelow(from, to, rootRect.top)];
+      if (node && node.getBoundingClientRect().top < rootRect.bottom) return node;
+    }
+    return null;
+  }
+
+  export function fileIndexAt(y) {
+    let found = 0;
+    for (const [from, to] of mountedRanges()) {
+      let low = from;
+      let high = to - 1;
+      while (low <= high) {
+        const middle = (low + high) >> 1;
+        const node = observedFileNodes[middle];
+        if (node && node.getBoundingClientRect().top <= y) {
+          found = middle;
+          low = middle + 1;
+        } else {
+          high = middle - 1;
+        }
+      }
+    }
+    return found;
+  }
+
+  function revealScrolledFiles() {
+    if (!observerRoot) return;
+    const rootRect = observerRoot.getBoundingClientRect();
+    const { head, from, to } = mounted;
+    const spans = to > from ? [[head, from, gapHeight], [to, files.length, tailHeight]] : [[head, files.length, tailHeight]];
+    for (const [first, end, height] of spans) {
+      const before = observedFileNodes[first - 1];
+      if (first >= end || !before) continue;
+      const top = before.getBoundingClientRect().bottom + FILE_GAP;
+      if (top >= rootRect.bottom + rootRect.height || top + height <= rootRect.top - rootRect.height) continue;
+      let index = first;
+      for (let bottom = top + sectionHeight(files[index]); index < end - 1 && bottom <= rootRect.top; ) bottom += sectionHeight(files[++index]);
+      remount(windowAround(index));
+      return;
+    }
+  }
+
   function hunkNewBounds(hunk) {
     let first = null;
     let last = null;
@@ -937,6 +1112,7 @@
     if (!editable) return false;
     const index = Math.max(0, target ? files.findIndex((file) => file.path === target.path) : 0);
     const file = files[index];
+    revealFile(index);
     const section = document.getElementById(`diff-file-${index}`);
     if (!file || !section || file.isBinary || file.isDeleted) return false;
     if (collapsed.has(file.path)) {
@@ -955,6 +1131,7 @@
     if (!normalized) return false;
     const index = files.findIndex((file) => file.path === target.path);
     const file = files[index];
+    revealFile(index);
     const section = document.getElementById(`diff-file-${index}`);
     if (!file || !section || file.isBinary || file.isDeleted) return false;
     if (collapsed.has(file.path)) {
@@ -1084,27 +1261,12 @@
     const rootRect = observerRoot.getBoundingClientRect();
     const top = Math.max(rootRect.top, 0);
     const bottom = Math.min(rootRect.bottom, window.innerHeight);
-    let low = 0;
-    let high = files.length;
-    while (low < high) {
-      const middle = (low + high) >>> 1;
-      const node = observedFileNodes[middle];
-      if (node && node.getBoundingClientRect().bottom < top) low = middle + 1;
-      else high = middle;
+    const visible = [];
+    for (const [from, to] of mountedRanges()) {
+      for (let index = firstSectionBelow(from, to, top); index < to && observedFileNodes[index]?.getBoundingClientRect().top < bottom; index++) visible.push(files[index].path);
     }
-    let last = low;
-    while (last < files.length && observedFileNodes[last]?.getBoundingClientRect().top < bottom) last++;
-    let ready = true;
-    for (let index = low; index < last; index++) {
-      const path = files[index].path;
-      if (!hotPaths.has(path) || !hydratedFiles.has(path)) {
-        ready = false;
-        break;
-      }
-    }
-    if (ready) return;
-    for (let index = low; index < last; index++) {
-      const path = files[index].path;
+    if (visible.every((path) => hotPaths.has(path) && hydratedFiles.has(path))) return;
+    for (const path of visible) {
       hotPaths.add(path);
       retainFile(path, true);
     }
@@ -1165,6 +1327,8 @@
   }
 
   function onDiffScroll() {
+    if (heldSection) heldSection = anchorOf(visibleSection());
+    revealScrolledFiles();
     warmVisibleFiles();
     warmVisibleRowChunks();
   }
@@ -1175,6 +1339,7 @@
       const path = observedFiles.get(entry.target);
       if (path && hotPaths.has(path)) measuredFiles.set(path, entry.borderBoxSize[0]?.blockSize ?? entry.contentRect.height);
     }
+    keepHeldSection();
   }
 
   function updateHotPaths(entries) {
@@ -1216,6 +1381,7 @@
       fileResizeObserver.observe(node);
     }
     observerRoot?.addEventListener("scroll", onDiffScroll, { passive: true });
+    revealScrolledFiles();
     warmVisibleFiles();
   }
   function nearViewport(node, path) {
@@ -1576,15 +1742,18 @@
 {/snippet}
 
 <div class="diff" class:file-editing={!!fileEditor}>
-  {#each files as indexedFile, i (indexedFile.path)}
+  {#each renderedFiles as indexedFile (indexedFile.path)}
     {@const file = hydratedFiles.get(indexedFile.path) ?? indexedFile}
     {@const isCollapsed = collapsed.has(file.path)}
     {@const isViewed = viewed.has(file.path)}
     {@const whole = wholeFile.get(file.path)}
+    {#if indexedFile === gapFile}
+      <div style="height:{gapHeight}px"></div>
+    {/if}
     <section
       class="file"
       class:collapsed={isCollapsed}
-      id="diff-file-{i}"
+      id="diff-file-{fileIndexes.get(indexedFile.path)}"
       style="--est-h:{fileHeight(file, isCollapsed, whole)}px"
       use:nearViewport={file.path}
       onmouseenter={(event) => hoverFile(file.path, event.currentTarget)}
@@ -1828,6 +1997,9 @@
     {/if}
     </section>
   {/each}
+  {#if tailStart < files.length}
+    <div style="height:{tailHeight}px"></div>
+  {/if}
   {#if editMenu}
     <div
       class="edit-context-menu"

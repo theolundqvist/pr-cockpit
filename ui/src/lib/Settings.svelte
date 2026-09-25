@@ -1,6 +1,7 @@
 <script>
   import { normalizePrGrouping } from "../../../shared/prGrouping.ts";
   import { fetchRelayCoverage, fetchRelayStatus, fetchSettings, saveSettings } from "./api.js";
+  import { cachedView, cacheView } from "./detailCache.js";
   import { setCodeTheme, setFonts, setScales, setTheme } from "./theme.svelte.js";
   import { setPrefs } from "./prefs.svelte.js";
   import { BUILTIN_TEST_PATH } from "./testPath.js";
@@ -50,8 +51,8 @@
   let desktopPlatform = $state("darwin");
   let replicaSshHost = $state("");
   let notifications = $state(defaultNotificationSettings());
-  let relayInfo = $state(null);
-  let relayCoverage = $state(null);
+  let relayInfo = $state(cachedView("relayStatus"));
+  let relayCoverage = $state(cachedView("relayCoverage"));
   let health = $state(null);
   let loaded = $state(false);
   let saving = $state(false);
@@ -192,20 +193,34 @@
   async function loadSettings() {
     error = null;
     try {
-      apply(await fetchSettings());
+      const settings = await fetchSettings();
+      cacheView("settings", settings);
+      apply(settings);
       loaded = true;
     } catch (e) {
       error = String(e);
     }
   }
 
+  const settingsSnapshot = cachedView("settings");
+  if (settingsSnapshot) {
+    apply(settingsSnapshot);
+    loaded = true;
+  }
+
   $effect(() => {
     loadSettings();
     fetchRelayStatus()
-      .then((s) => (relayInfo = s))
+      .then((s) => {
+        cacheView("relayStatus", s);
+        relayInfo = s;
+      })
       .catch(() => {});
     fetchRelayCoverage()
-      .then((c) => (relayCoverage = c))
+      .then((c) => {
+        cacheView("relayCoverage", c);
+        relayCoverage = c;
+      })
       .catch(() => {});
   });
 
@@ -253,6 +268,7 @@
         relay_url: relayUrl.trim(),
         notifications: serializeNotificationSettings(notifications),
       });
+      cacheView("settings", next);
       apply(next);
       setTheme(themeName);
       setFonts(fontInterface, fontUi, fontCode, fontComments);

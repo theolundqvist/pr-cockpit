@@ -1,6 +1,8 @@
 import { parseDiff } from "./diff.js";
 
-export function createDiffDocument(text, indexedFiles, worker = null) {
+const decoder = new TextDecoder();
+
+export function createDiffDocument(bytes, indexedFiles, worker = null) {
   const indexed = new Map(indexedFiles.map((file) => [file.path, file]));
   const current = new Map(indexed);
   const generations = new Map();
@@ -26,8 +28,8 @@ export function createDiffDocument(text, indexedFiles, worker = null) {
     const original = indexed.get(file?.path);
     if (!original) return original;
     file.fingerprint = original.fingerprint;
-    file.patchStart = original.patchStart;
-    file.patchEnd = original.patchEnd;
+    file.byteStart = original.byteStart;
+    file.byteEnd = original.byteEnd;
     file.hydrated = true;
     current.set(file.path, file);
     return file;
@@ -38,7 +40,7 @@ export function createDiffDocument(text, indexedFiles, worker = null) {
     hydrate(path) {
       const file = current.get(path);
       if (!file || file.hydrated) return file;
-      return storeHydrated(parseDiff(text.slice(file.patchStart, file.patchEnd))[0]);
+      return storeHydrated(parseDiff(decoder.decode(bytes.subarray(file.byteStart, file.byteEnd)))[0]);
     },
     prefetch(path) {
       const file = current.get(path);
@@ -49,7 +51,7 @@ export function createDiffDocument(text, indexedFiles, worker = null) {
       const id = ++requestId;
       const promise = new Promise((resolve, reject) => {
         pending.set(id, { resolve, reject });
-        worker.postMessage({ type: "hydrate", id, path });
+        worker.postMessage({ type: "hydrate", id, byteStart: file.byteStart, byteEnd: file.byteEnd });
       }).then((hydrated) => {
         if ((generations.get(path) ?? 0) !== generation) return null;
         return current.get(path)?.hydrated ? current.get(path) : storeHydrated(hydrated);
@@ -76,18 +78,19 @@ export function createDiffDocument(text, indexedFiles, worker = null) {
   };
 }
 
-export function loadDiffDocument(bytes) {
-  if (bytes.byteLength === 0) return Promise.resolve(createDiffDocument("", []));
+// The worker gets a copy of the bytes, so the caller's buffer stays intact for the diff cache.
+// An index from an earlier load of the same bytes skips re-indexing.
+export function loadDiffDocument(buffer, files = null) {
+  const bytes = new Uint8Array(buffer);
+  if (bytes.byteLength === 0) return Promise.resolve(createDiffDocument(bytes, []));
   const worker = new Worker(new URL("./diff.worker.js", import.meta.url), { type: "module" });
+  worker.postMessage({ type: "load", bytes, index: !files });
+  if (files) return Promise.resolve(createDiffDocument(bytes, files, worker));
   return new Promise((resolve, reject) => {
-    worker.onmessage = ({ data }) => {
-      const text = new TextDecoder().decode(data.bytes);
-      resolve(createDiffDocument(text, data.files, worker));
-    };
+    worker.onmessage = ({ data }) => resolve(createDiffDocument(bytes, data.files, worker));
     worker.onerror = (event) => {
       worker.terminate();
       reject(event.error ?? new Error(event.message));
     };
-    worker.postMessage({ type: "index", bytes }, [bytes]);
   });
 }

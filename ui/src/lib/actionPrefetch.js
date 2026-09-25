@@ -2,12 +2,14 @@ import { fetchRepoActionLog, fetchRepoActions } from "./api.js";
 
 const MAX_RUNS = 20;
 const MAX_LOGS = 100;
+const MAX_PR_ACTION_DATA = 100;
 const RUN_CACHE_MS = 15_000;
 const runSnapshots = new Map();
 const runSnapshotRequests = new Map();
 const rememberedRuns = new Map();
 const actionLogs = new Map();
 const actionLogRequests = new Map();
+const prActionData = { actions: new Map(), graph: new Map(), commits: new Map() };
 
 const terminalFailures = new Set(["failure", "timed_out", "action_required", "startup_failure", "stale"]);
 const runningStatuses = new Set(["in_progress", "pending", "waiting", "requested"]);
@@ -24,6 +26,18 @@ function runKey(run) {
 
 export function actionLogKey(repo, headSha, jobId) {
   return `${repo}:${headSha}:${jobId}`;
+}
+
+export function prActionKey(repo, number, sha) {
+  return `${repo}#${number}:${sha}`;
+}
+
+export function cachedPrActionData(kind, key) {
+  return prActionData[kind].get(key) ?? null;
+}
+
+export function cachePrActionData(kind, key, value) {
+  boundedSet(prActionData[kind], key, value, MAX_PR_ACTION_DATA);
 }
 
 export function rememberActionRun(run) {
@@ -87,6 +101,10 @@ export async function prefetchActionLogs(jobs, keyForJob, loaderForJob, isCurren
     }
   }
   await Promise.all([worker(), worker(), worker()]);
+}
+
+export function cachedRepoRunSnapshot(run) {
+  return runSnapshots.get(runKey(run))?.snapshot ?? null;
 }
 
 export function loadRepoRunSnapshot(run, background = false, force = false) {

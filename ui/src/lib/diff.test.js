@@ -298,6 +298,7 @@ describe("lazy diff document", () => {
     makeDiff(" context\n-old\n+new"),
     "diff --git a/bar.ts b/bar.ts\nnew file mode 100644\n--- /dev/null\n+++ b/bar.ts\n@@ -0,0 +1,2 @@\n+one\n+two\n",
   ].join("");
+  const bytes = new TextEncoder().encode(text);
 
   test("indexes compact file metadata without retaining rows", () => {
     const indexed = indexDiff(text);
@@ -314,7 +315,7 @@ describe("lazy diff document", () => {
 
   test("hydrates one file without changing its indexed identity", () => {
     const indexed = indexDiff(text);
-    const document = createDiffDocument(text, indexed);
+    const document = createDiffDocument(bytes, indexed);
     const hydrated = document.hydrate("bar.ts");
 
     expect(hydrated.hydrated).toBe(true);
@@ -326,7 +327,7 @@ describe("lazy diff document", () => {
 
   test("releases hydrated rows back to compact metadata", async () => {
     const indexed = indexDiff(text);
-    const document = createDiffDocument(text, indexed);
+    const document = createDiffDocument(bytes, indexed);
     const hydrated = await document.prefetch("bar.ts");
 
     expect(hydrated.hydrated).toBe(true);
@@ -338,7 +339,7 @@ describe("lazy diff document", () => {
     const indexed = indexDiff(text);
     const messages = [];
     const worker = { postMessage: (message) => messages.push(message), terminate() {} };
-    const document = createDiffDocument(text, indexed, worker);
+    const document = createDiffDocument(bytes, indexed, worker);
 
     const obsolete = document.prefetch("bar.ts");
     document.release("bar.ts");
@@ -355,12 +356,23 @@ describe("lazy diff document", () => {
 
   test("anchors threads identically before and after hydration", () => {
     const indexed = indexDiff(text);
-    const document = createDiffDocument(text, indexed);
+    const document = createDiffDocument(bytes, indexed);
     const thread = { path: "bar.ts", line: 2, diffSide: "RIGHT" };
 
     expect(anchorThreads(indexed, [thread]).anchored.get("bar.ts:2")).toEqual([thread]);
     const hydrated = indexed.map((file) => (file.path === "bar.ts" ? document.hydrate(file.path) : file));
     expect(anchorThreads(hydrated, [thread]).anchored.get("bar.ts:2")).toEqual([thread]);
+  });
+
+  test("hydrates files that follow multi-byte text from their own byte range", () => {
+    const multiByte = [
+      makeDiff(" café 😀\n-old ü\n+new 中"),
+      "diff --git a/bar.ts b/bar.ts\nnew file mode 100644\n--- /dev/null\n+++ b/bar.ts\n@@ -0,0 +1,2 @@\n+one\n+two ✓\n",
+    ].join("");
+    const document = createDiffDocument(new TextEncoder().encode(multiByte), indexDiff(multiByte));
+
+    expect(document.hydrate("foo.ts").hunks[0].rows.map((row) => row.text)).toEqual(["café 😀", "old ü", "new 中"]);
+    expect(document.hydrate("bar.ts").hunks[0].rows.map((row) => row.text)).toEqual(["one", "two ✓"]);
   });
 });
 

@@ -1,7 +1,8 @@
 <script>
   import { fetchGithubUsage } from "./api.js";
+  import { cachedView, cacheView } from "./detailCache.js";
 
-  let data = $state(null);
+  let data = $state(cachedView("usage"));
   let error = $state(false);
 
   const number = new Intl.NumberFormat();
@@ -20,7 +21,10 @@
 
   $effect(() => {
     fetchGithubUsage()
-      .then((next) => (data = next))
+      .then((next) => {
+        cacheView("usage", next);
+        data = next;
+      })
       .catch(() => (error = true));
   });
 </script>

@@ -1,6 +1,6 @@
 <script>
   import { isSetAside, putAside, bringBack } from "./setAside.svelte.js";
-  import { onDestroy, tick, untrack } from "svelte";
+  import { flushSync, onDestroy, tick, untrack } from "svelte";
   import {
     fetchPrDetail,
     fetchPendingReview,
@@ -45,7 +45,8 @@
   import Chevron from "./Chevron.svelte";
   import { greptileReviewMeta, greptileStatus, KNOWN_BOT_LOGINS } from "./greptileStatus.js";
   import { prKeyOf } from "./prKey.js";
-  import { getDetail, cacheDetail } from "./detailCache.js";
+  import { getDetail, cacheDetail, cacheDiff, cacheDiffIndex, cachedDiff, cachedDiffIndex, diffCacheKey } from "./detailCache.js";
+  import { preloadPr, whenIdle } from "./preload.js";
   import { buildChecks, countChecks, summarizeChecks, sectionizeChecks, ciFixPrompt } from "./checks.js";
   import { mergeGate as evalMergeGate, forceMergeAvailable as evalForceMerge, forceMergeShortcutAction, mergeabilityPending } from "./mergeGate.js";
   import { quota } from "./quota.svelte.js";
@@ -84,11 +85,16 @@
   const branchCopied = timedFlag(1200);
   const fixPromptCopied = timedFlag(1200);
 
-  let pr = $state(null);
+  let pr = $state.raw(null);
   let actionsRunUrl = $state(null);
   let files = $state.raw([]);
   let diffDocument = null;
-  onDestroy(() => diffDocument?.dispose());
+  onDestroy(() => {
+    diffDocument?.dispose();
+    dropHeldDiff();
+    diffController?.abort();
+    clearTimeout(diffRetryTimer);
+  });
   let error = $state(null);
   let showLoading = $state(false);
   let loadingSummary = $derived(prSummary(repo, number));
@@ -134,6 +140,9 @@
     const key = prKeyOf(repo, number);
     if (key === loadedKey) return;
     loadedKey = key;
+    // The page element outlives a PR-to-PR navigation; a cached PR would open at the old offset.
+    const scroller = document.querySelector(".page");
+    if (scroller) scroller.scrollTop = 0;
     const token = {};
     activeFetch = token;
     const cachedDetail = getDetail(key);
@@ -147,6 +156,11 @@
     files = [];
     diffDocument?.dispose();
     diffDocument = null;
+    dropHeldDiff();
+    diffController?.abort();
+    diffFetch = null;
+    clearTimeout(diffRetryTimer);
+    diffWarm = false;
     error = null;
     mutations = [];
     pendingReview = null;
@@ -287,36 +301,93 @@
   }
 
   let diffFetch;
+  let diffController = null;
+  let diffRetryTimer;
+  let diffWarm = $state(false);
+  let heldDiff = null;
   let loadedDiffKey = null;
   let displayedDiffKey = $state(null);
   let diffError = $state("");
   let buildingKey = "";
   let buildingDeadline = 0;
   const BUILD_CAP_MS = 120_000;
+
+  function loadPrDiff(key, range, signal, background = false) {
+    const bytes = cachedDiff(key);
+    if (bytes) return Promise.resolve({ ok: true, bytes, key });
+    return fetchPrDiff(repo, number, range, signal, background).then((res) => {
+      if (res.ok) cacheDiff(key, res.bytes);
+      return { ...res, key };
+    });
+  }
+
+  async function openDiffDocument({ bytes, key }) {
+    const document = await loadDiffDocument(bytes, cachedDiffIndex(key, bytes));
+    cacheDiffIndex(key, bytes, document.files);
+    return document;
+  }
+
+  function showDiff(diff) {
+    churnBaseRef = diff.churnBase;
+    diffDocument?.dispose();
+    diffDocument = diff.document;
+    syncViewedFiles(diff.files);
+    displayedDiffKey = diff.dkey;
+    files = diff.files;
+    fileIndex = 0;
+    diffState = "ready";
+    buildingKey = "";
+  }
+
+  // Reading scrollTop lays out the "Preparing diff…" state first, clamping the page scroll the
+  // way it is when a diff arrives after the tab opens, so a held diff opens at the same place.
+  function showHeldDiff() {
+    void document.querySelector(".page")?.scrollTop;
+    const diff = heldDiff;
+    heldDiff = null;
+    showDiff(diff);
+  }
+
+  function dropHeldDiff() {
+    heldDiff?.document.dispose();
+    heldDiff = null;
+  }
+
+  // A load started in the background keeps running when the Files tab opens, so switching tabs
+  // never aborts it; only a new diff key, another PR, or unmounting does. Its result stays out of
+  // the page until the Files tab shows it, so Conversation looks the same as before any diff loaded.
   $effect(() => {
-    if (!pr || tab !== "files") return;
+    if (!pr || (tab !== "files" && !diffWarm)) return;
+    const background = tab !== "files";
     const r = range;
+    if (background && r) return;
     const rewrittenSince = rangeKey === "since" && anchorRewritten;
     const head = pr.headRefOid;
-    const baseKey = `${repo}#${number}#${r?.base ?? head}#${r?.head ?? head}`;
+    const baseKey = diffCacheKey(repo, number, r?.base ?? head, r?.head ?? head);
     const dkey = `${baseKey}#${diffNonce}`;
-    if (dkey === loadedDiffKey) return;
+    if (dkey === loadedDiffKey) {
+      if (!background && heldDiff?.dkey === dkey) untrack(showHeldDiff);
+      return;
+    }
     loadedDiffKey = dkey;
+    dropHeldDiff();
     diffState = "building";
     const token = {};
     diffFetch = token;
+    diffController?.abort();
+    clearTimeout(diffRetryTimer);
     const controller = new AbortController();
-    let retryTimer;
+    diffController = controller;
     const isSince = rangeKey === "since" && r;
     Promise.all([
-      fetchPrDiff(repo, number, r, controller.signal),
-      isSince ? fetchPrDiff(repo, number, null, controller.signal) : Promise.resolve(null),
+      loadPrDiff(baseKey, background ? { head } : r, controller.signal, background),
+      isSince ? loadPrDiff(diffCacheKey(repo, number, head, head), null, controller.signal) : Promise.resolve(null),
     ]).then(async ([res, prRes]) => {
       if (diffFetch !== token) return;
       if (res.ok) {
         const [document, prDocument] = await Promise.all([
-          loadDiffDocument(res.bytes),
-          isSince && prRes?.ok ? loadDiffDocument(prRes.bytes) : Promise.resolve(null),
+          openDiffDocument(res),
+          isSince && prRes?.ok ? openDiffDocument(prRes) : Promise.resolve(null),
         ]);
         if (diffFetch !== token) {
           document.dispose();
@@ -324,23 +395,19 @@
           return;
         }
         let parsed = document.files;
+        let churnBase = null;
         if (prDocument) {
           const ownPaths = new Set(prDocument.files.map((file) => file.path));
           const own = parsed.filter((file) => ownPaths.has(file.path));
-          churnBaseRef = own.length < parsed.length ? pr.baseRefName : null;
+          churnBase = own.length < parsed.length ? pr.baseRefName : null;
           parsed = own;
           prDocument.dispose();
-        } else {
-          churnBaseRef = null;
         }
-        diffDocument?.dispose();
-        diffDocument = document;
-        syncViewedFiles(parsed);
-        displayedDiffKey = dkey;
-        files = parsed;
-        fileIndex = 0;
-        diffState = "ready";
-        buildingKey = "";
+        const diff = { dkey, document, files: parsed, churnBase };
+        if (tab === "files") showDiff(diff);
+        else heldDiff = diff;
+      } else if (background) {
+        missedBackgroundDiff();
       } else if (res.building) {
         if (buildingKey !== baseKey) {
           buildingKey = baseKey;
@@ -352,7 +419,7 @@
           buildingKey = "";
         } else {
           diffState = "building";
-          retryTimer = setTimeout(() => diffNonce++, res.retryAfterMs);
+          diffRetryTimer = setTimeout(() => diffNonce++, res.retryAfterMs);
         }
       } else if (rewrittenSince && res.status === 404) {
         rangeKey = "all";
@@ -365,15 +432,32 @@
       }
     }).catch((error) => {
       if (diffFetch !== token) return;
+      if (background) {
+        missedBackgroundDiff();
+        return;
+      }
       diffState = "error";
       diffError = error instanceof Error ? error.message : "Couldn’t load this diff.";
       buildingKey = "";
     });
-    return () => {
-      controller.abort();
-      if (diffFetch === token) diffFetch = null;
-      clearTimeout(retryTimer);
-    };
+  });
+
+  function missedBackgroundDiff() {
+    loadedDiffKey = null;
+    diffWarm = false;
+    if (tab === "files") diffNonce++;
+    else diffState = "idle";
+  }
+
+  let detailHead = $derived(pr?.headRefOid ?? null);
+  $effect(() => {
+    if (!detailHead) return;
+    const headSha = detailHead;
+    return whenIdle(() => {
+      const { additions, deletions, changedFiles } = pr;
+      preloadPr({ repo, number, headSha, additions, deletions, changedFiles }, { urgent: true, diff: false });
+      diffWarm = true;
+    });
   });
 
   function retryDiff() {
@@ -1692,6 +1776,27 @@
     const pendingEvents = pendingComments.map((mutation) => ({ kind: "pending-comment", id: `pending-comment-${mutation.id}`, mutation }));
     return prefs.newestCommentsFirst ? [...pendingEvents, ...orderedEvents.reverse()] : [...orderedEvents, ...pendingEvents];
   });
+
+  // The first screen of the timeline mounts with the tab; later events follow in idle batches.
+  const TIMELINE_FIRST_BATCH = 30;
+  const TIMELINE_BATCH = 40;
+  let timelineShown = $derived.by(() => {
+    tab;
+    repo;
+    number;
+    return TIMELINE_FIRST_BATCH;
+  });
+  let shownTimeline = $derived(timeline.length > timelineShown ? timeline.slice(0, timelineShown) : timeline);
+  $effect(() => {
+    if (timelineShown >= timeline.length) return;
+    return whenIdle(() => (timelineShown += TIMELINE_BATCH));
+  });
+
+  function showTimelineThrough(index) {
+    if (index < timelineShown) return;
+    timelineShown = index + 1;
+    flushSync();
+  }
   const FAILED_CI_STATES = new Set(["FAILURE", "ERROR"]);
   const RUNNING_CI_STATES = new Set(["PENDING", "EXPECTED"]);
 
@@ -1870,9 +1975,14 @@
     }
   }
 
+  function fileSection(i) {
+    diffView?.revealFile(i);
+    return document.getElementById(`diff-file-${i}`);
+  }
+
   function revealAnchoredReply(path, replyId, tries = 20) {
     const i = files.findIndex((f) => f.path === path);
-    const el = i >= 0 ? document.getElementById(`diff-file-${i}`) : null;
+    const el = i >= 0 ? fileSection(i) : null;
     if (el) {
       el.scrollIntoView({ block: "start" });
       focusWhenReady(`[data-reply-for="${replyId}"]`);
@@ -1893,20 +2003,30 @@
       revealAnchoredReply(firstUnresolved.path, firstUnresolved.id);
     } else {
       if (tab !== "conversation") goToTab("conversation");
-      focusWhenReady(`[data-reply-for="${firstUnresolved.id}"]`);
+      revealTimelineReply(firstUnresolved.id);
+    }
+  }
+
+  function revealTimelineReply(threadId, tries = 20) {
+    if (tab === "conversation") {
+      showTimelineThrough(timeline.findIndex((event) => event.id === `thread-${threadId}`));
+      focusWhenReady(`[data-reply-for="${threadId}"]`);
+    } else if (tries > 0) {
+      requestAnimationFrame(() => revealTimelineReply(threadId, tries - 1));
     }
   }
 
   function scrollToFile(i) {
-    const el = document.getElementById(`diff-file-${i}`);
+    const el = fileSection(i);
     if (!el) return;
     spyHoldUntil = performance.now() + 400;
     el.scrollIntoView({ block: "start" });
     // estimated placeholder heights (content-visibility) shift as neighbors render; re-align for a few frames
     let frames = 12;
     const page = el.closest(".page");
+    const started = performance.now();
     const settle = () => {
-      if (scrollAnimating(page)) {
+      if (scrollAnimating(page) || userScrollAt > started) {
         spyHoldUntil = 0;
         return;
       }
@@ -1919,22 +2039,10 @@
   }
 
   let spyHoldUntil = 0;
+  let userScrollAt = 0;
 
   function fileAtViewportTop(page) {
-    const probeY = page.getBoundingClientRect().top + 60;
-    let lo = 0;
-    let hi = files.length - 1;
-    let found = 0;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      const el = document.getElementById(`diff-file-${mid}`);
-      if (!el) return -1;
-      if (el.getBoundingClientRect().top <= probeY) {
-        found = mid;
-        lo = mid + 1;
-      } else hi = mid - 1;
-    }
-    return found;
+    return diffView?.fileIndexAt(page.getBoundingClientRect().top + 60) ?? -1;
   }
 
   $effect(() => {
@@ -1951,9 +2059,14 @@
         if (i >= 0 && i !== fileIndex) fileIndex = i;
       });
     };
+    const onUserScroll = () => {
+      userScrollAt = performance.now();
+    };
     page.addEventListener("scroll", onScroll, { passive: true });
+    for (const type of ["wheel", "touchstart", "pointerdown"]) page.addEventListener(type, onUserScroll, { passive: true });
     return () => {
       page.removeEventListener("scroll", onScroll);
+      for (const type of ["wheel", "touchstart", "pointerdown"]) page.removeEventListener(type, onUserScroll);
       cancelAnimationFrame(raf);
     };
   });
@@ -1975,7 +2088,7 @@
     if (tab !== "files") goToTab("files");
     let tries = 20;
     const reveal = () => {
-      if (document.getElementById(`diff-file-${i}`)) scrollToFile(i);
+      if (fileSection(i)) scrollToFile(i);
       else if (--tries > 0) requestAnimationFrame(reveal);
     };
     requestAnimationFrame(reveal);
@@ -2003,7 +2116,10 @@
   let diffView = $state(null);
   let telescopeOpen = $state(false);
   let historyOpen = $derived(historyPath !== null);
-  let historyFile = $derived(historyPath ? files.find((file) => file.path === historyPath) ?? null : null);
+  let historyFile = $derived.by(() => {
+    const file = historyPath ? files.find((candidate) => candidate.path === historyPath) : null;
+    return file ? (diffDocument?.hydrate(file.path) ?? file) : null;
+  });
   function openFileHistory(path, symbol = null) {
     if (!finishFileEdit()) return;
     if (rangeKey !== "all") {
@@ -2155,6 +2271,7 @@
       } else if (tab === "files" && e.key === "c") {
         rangeOpen = true;
       } else if (tab === "conversation" && e.key === "c") {
+        if (!prefs.newestCommentsFirst) showTimelineThrough(timeline.length - 1);
         focusTarget("#composer-input");
       } else if (tab === "conversation" && e.key === "v" && canReview) {
         focusTarget("#verdict-control");
@@ -2873,7 +2990,7 @@
             {#if prefs.newestCommentsFirst}
               {@render commentComposer(true)}
             {/if}
-            {#each timeline as event (event.id)}
+            {#each shownTimeline as event (event.id)}
               {#if event.kind === "commit"}
                 {@const lines = commitLineCounts[event.oid] ?? (event.additions === null ? null : { additions: event.additions, deletions: event.deletions, skippedTests: false, testsOnly: false })}
                 {@const when = relativeTime(event.at)}

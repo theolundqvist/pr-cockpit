@@ -9,7 +9,8 @@
   import { isSetAside, putAside } from "./setAside.svelte.js";
   import { tick, untrack } from "svelte";
   import { fetchInbox, fetchRecentClosed, fetchAllPrs, fetchPrDetails, setArchived, saveSettings, reorderPr, fetchSettings, fetchRelayStatus, fetchRelayCoverage, autofixAgent, customAgent } from "./api.js";
-  import { cacheDetail, cachedHeadSha } from "./detailCache.js";
+  import { cacheDetail, cachedHeadSha, cachedView, cacheView } from "./detailCache.js";
+  import { preloadPr } from "./preload.js";
   import { filterPrs, countMatches, wantsHistory } from "./prFilter.js";
   import { relativeTime } from "./time.js";
   import { classify, GROUP_ORDER, GROUP_TITLES } from "./whoseMove.js";
@@ -32,11 +33,12 @@
   let { active = true, refreshRevision = 0, pollCompletedAt = null, onFindPr = () => {} } = $props();
   let handledRefreshRevision = refreshRevision;
 
-  let prs = $state([]);
-  let viewerLogin = $state(null);
+  const inboxSnapshot = cachedView("inbox");
+  let prs = $state(inboxSnapshot?.prs ?? []);
+  let viewerLogin = $state(inboxSnapshot?.viewerLogin ?? null);
   let error = $state(null);
-  let loaded = $state(false);
-  let lastPollAt = $state(null);
+  let loaded = $state(inboxSnapshot !== null);
+  let lastPollAt = $state(inboxSnapshot?.lastPollAt ?? null);
   let selected = $state(0);
   let multiAnchor = $state(null);
   const bulkAutofixFlash = timedFlag(3000);
@@ -63,7 +65,9 @@
     lastMouseY = e.screenY;
   }
   function onRowHover(e, index) {
-    if (e.screenX !== lastMouseX || e.screenY !== lastMouseY) selected = index;
+    if (e.screenX === lastMouseX && e.screenY === lastMouseY) return;
+    selected = index;
+    if (ordered[index]) preloadPr(ordered[index], { urgent: true });
   }
   let showArchived = $state(false);
   let archivedPrs = $state([]);
@@ -129,18 +133,32 @@
     }
   }
 
-  let savedViews = $state([]);
-  let configuredRepos = $state([]);
+  const settingsSnapshot = cachedView("settings");
+  let savedViews = $state(settingsSnapshot ? cachedSavedViews(settingsSnapshot) : []);
+  let configuredRepos = $state(settingsSnapshot ? repoList(settingsSnapshot) : []);
   let selectedRepos = $state(storedRepositories());
   let repoPickerOpen = $state(false);
-  let pollIntervalS = $state(180);
+  let pollIntervalS = $state(Number.isFinite(settingsSnapshot?.poll_interval_s) ? settingsSnapshot.poll_interval_s : 180);
   const inboxMountedAt = Date.now();
+
+  function repoList(settings) {
+    return settings.repos.split(",").map((repo) => repo.trim()).filter(Boolean);
+  }
+
+  function cachedSavedViews(settings) {
+    try {
+      return JSON.parse(settings.saved_views || "[]");
+    } catch {
+      return [];
+    }
+  }
 
   async function loadViews() {
     try {
       const settings = await fetchSettings();
+      cacheView("settings", settings);
       savedViews = JSON.parse(settings.saved_views || "[]");
-      configuredRepos = settings.repos.split(",").map((repo) => repo.trim()).filter(Boolean);
+      configuredRepos = repoList(settings);
       pollIntervalS = Number.isFinite(settings.poll_interval_s) ? settings.poll_interval_s : 180;
     } catch {
       savedViews = [];
@@ -211,6 +229,7 @@
     try {
       const res = await fetchInbox();
       if (seq !== inboxSeq) return;
+      cacheView("inbox", res);
       const selectedKey = ordered[selected] ? prKey(ordered[selected]) : null;
       prs = res.prs;
       viewerLogin = res.viewerLogin ?? null;
@@ -235,20 +254,27 @@
     }
   }
 
-  let relayOkAt = $state(null);
-  let relayCovered = $state(false);
+  const relayStatusSnapshot = cachedView("relayStatus");
+  let relayOkAt = $state(relayStatusSnapshot?.url ? relayStatusSnapshot.lastOkAt : null);
+  let relayCovered = $state(Boolean(relayStatusSnapshot?.url) && relayCoverageLive(cachedView("relayCoverage")));
+
+  function relayCoverageLive(coverage) {
+    return coverage?.repos != null && Object.values(coverage.repos).some(Boolean);
+  }
 
   async function loadRelayLive() {
     try {
       const status = await fetchRelayStatus();
+      cacheView("relayStatus", status);
       if (!status.url) {
         relayOkAt = null;
         relayCovered = false;
         return;
       }
       const coverage = await fetchRelayCoverage();
+      cacheView("relayCoverage", coverage);
       relayOkAt = status.lastOkAt;
-      relayCovered = coverage.repos !== null && Object.values(coverage.repos).some(Boolean);
+      relayCovered = relayCoverageLive(coverage);
     } catch {
       relayOkAt = null;
       relayCovered = false;
@@ -311,9 +337,11 @@
 
   async function loadArchived() {
     const seq = ++archivedSeq;
+    if (!archivedPrs.length) archivedPrs = cachedView("inbox:archived") ?? [];
     try {
       const res = await fetchInbox(true);
       if (seq === archivedSeq) {
+        cacheView("inbox:archived", res.prs);
         archivedPrs = res.prs;
         warmDetails(res.prs);
       }
@@ -336,9 +364,15 @@
 
   async function loadClosed() {
     const seq = ++closedSeq;
+    const closedSnapshot = closedLoaded ? null : cachedView("inbox:closed");
+    if (closedSnapshot) {
+      closedPrs = closedSnapshot;
+      closedLoaded = true;
+    }
     try {
       const res = await fetchRecentClosed();
       if (seq !== closedSeq) return;
+      cacheView("inbox:closed", res.prs);
       // a merge landing mid-navigation prepends a row; keep the same PR selected, not the same index
       const selectedKey = view === "closed" && ordered[selected] ? prKey(ordered[selected]) : null;
       closedPrs = res.prs;
@@ -367,10 +401,11 @@
     allPrsLoading = true;
     allPrsError = null;
     // A same-scope reload (poll, refresh) keeps the current rows until GitHub answers.
-    if (scope !== previousScope) allPrs = [];
+    if (scope !== previousScope) allPrs = cachedView(`allPrs:${scope}`) ?? [];
     try {
       const res = await fetchAllPrs(repos);
       if (seq !== allPrsSeq || !active || view !== "all" || scope !== JSON.stringify(selectedRepos)) return;
+      cacheView(`allPrs:${scope}`, res.prs);
       allPrs = res.prs;
       allPrsRepos = [...new Set([...allPrsRepos, ...res.prs.map((pr) => pr.repo)])];
       restoreKey = null;
@@ -565,6 +600,26 @@
   });
 
   let openOrdered = $derived(groups.flatMap((g) => g.items.filter((i) => i.pr).map((i) => i.pr)));
+
+  // warm each queued PR's tabs in idle time; a row the cursor moves to (hover or j/k) jumps the queue
+  $effect(() => {
+    if (!active || view !== "open") return;
+    const rows = openOrdered;
+    untrack(() => {
+      for (const pr of rows) preloadPr(pr);
+    });
+  });
+  let initialCursor = true;
+  $effect(() => {
+    const index = selected;
+    if (initialCursor) {
+      initialCursor = false;
+      return;
+    }
+    untrack(() => {
+      if (active && ordered[index]) preloadPr(ordered[index], { urgent: true });
+    });
+  });
 
   let dragKey = $state(null);
   let dropHint = $state(null);
