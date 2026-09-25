@@ -24,6 +24,14 @@ interface Coverage {
 const CAP = 1000;
 const PAGE = 500;
 const ACCESS_TTL_MS = 60 * 60 * 1000;
+// Each marker is stored under its own key, so a webhook writes one small entry instead of
+// rewriting the whole backlog. Padded sequence numbers make storage.list() return them in order.
+const MARKER_PREFIX = "marker:";
+const STORAGE_BATCH = 128;
+
+function markerKey(seq: number): string {
+  return MARKER_PREFIX + String(seq).padStart(16, "0");
+}
 
 export class Events extends DurableObject<Env> {
   seq = 0;
@@ -35,24 +43,37 @@ export class Events extends DurableObject<Env> {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
       this.seq = (await ctx.storage.get<number>("seq")) ?? 0;
-      this.events = (await ctx.storage.get<Marker[]>("events")) ?? [];
       this.coverage = (await ctx.storage.get<Record<string, Coverage>>("coverage")) ?? {};
+      // Earlier deployments stored the backlog as one array value. Issued without an intervening
+      // await, the split and the removal of the array commit atomically.
+      const legacy = await ctx.storage.get<Marker[]>("events");
+      if (legacy !== undefined) {
+        const writes: Promise<unknown>[] = [ctx.storage.delete("events")];
+        for (let start = 0; start < legacy.length; start += STORAGE_BATCH) {
+          const batch = legacy.slice(start, start + STORAGE_BATCH);
+          writes.push(ctx.storage.put(Object.fromEntries(batch.map((marker) => [markerKey(marker.seq), marker]))));
+        }
+        await Promise.all(writes);
+      }
+      this.events = [...(await ctx.storage.list<Marker>({ prefix: MARKER_PREFIX })).values()];
     });
   }
 
   async append(marker: Omit<Marker, "seq">): Promise<void> {
     this.seq++;
-    this.events.push({ seq: this.seq, ...marker });
-    if (this.events.length > CAP) this.events.splice(0, this.events.length - CAP);
+    const stored = { seq: this.seq, ...marker };
+    this.events.push(stored);
+    const evicted = this.events.length > CAP ? this.events.splice(0, this.events.length - CAP) : [];
     const owner = marker.repo.split("/")[0];
     const entry = (this.coverage[owner] ??= { all: false, repos: [] });
     const seed = !entry.all && !entry.repos.includes(marker.repo);
     if (seed) entry.repos.push(marker.repo);
-    await this.ctx.storage.put(
-      seed
-        ? { seq: this.seq, events: this.events, coverage: this.coverage }
-        : { seq: this.seq, events: this.events },
-    );
+    const entries: Record<string, unknown> = { seq: this.seq, [markerKey(stored.seq)]: stored };
+    if (seed) entries.coverage = this.coverage;
+    // Issued without an intervening await, the write and the eviction commit atomically.
+    const writes: Promise<unknown>[] = [this.ctx.storage.put(entries)];
+    if (evicted.length > 0) writes.push(this.ctx.storage.delete(evicted.map((old) => markerKey(old.seq))));
+    await Promise.all(writes);
   }
 
   async installation(event: string, payload: any): Promise<void> {
@@ -175,6 +196,18 @@ async function repoReadable(token: string, repo: string): Promise<boolean | "bad
   return res.status === 200;
 }
 
+// Checked one at a time, a backlog spanning many repositories outlasted the client's request
+// timeout; the cancelled request never stored its verdicts, so every retry started over.
+async function verifyRepos(token: string, repos: string[]): Promise<Record<string, boolean> | "bad-token"> {
+  const results = await Promise.all(repos.map(async (repo) => [repo, await repoReadable(token, repo)] as const));
+  const verdicts: Record<string, boolean> = {};
+  for (const [repo, readable] of results) {
+    if (readable === "bad-token") return "bad-token";
+    verdicts[repo] = readable;
+  }
+  return verdicts;
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -216,12 +249,8 @@ export default {
       const { latest, events, verdicts } = await stub.list(since, tokenHash);
       const unverified = [...new Set(events.map((e) => e.repo))].filter((r) => !(r in verdicts));
       if (unverified.length > 0) {
-        const fresh: Record<string, boolean> = {};
-        for (const repo of unverified) {
-          const readable = await repoReadable(token, repo);
-          if (readable === "bad-token") return new Response("unauthorized", { status: 401 });
-          fresh[repo] = readable;
-        }
+        const fresh = await verifyRepos(token, unverified);
+        if (fresh === "bad-token") return new Response("unauthorized", { status: 401 });
         await stub.putVerdicts(tokenHash, fresh);
         Object.assign(verdicts, fresh);
       }
@@ -241,12 +270,8 @@ export default {
       const { covered, verdicts } = await stub.coverageFor(repos, tokenHash);
       const unverified = [...new Set(repos)].filter((r) => covered[r] && !(r in verdicts));
       if (unverified.length > 0) {
-        const fresh: Record<string, boolean> = {};
-        for (const repo of unverified) {
-          const readable = await repoReadable(token, repo);
-          if (readable === "bad-token") return new Response("unauthorized", { status: 401 });
-          fresh[repo] = readable;
-        }
+        const fresh = await verifyRepos(token, unverified);
+        if (fresh === "bad-token") return new Response("unauthorized", { status: 401 });
         await stub.putVerdicts(tokenHash, fresh);
         Object.assign(verdicts, fresh);
       }

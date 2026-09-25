@@ -131,6 +131,7 @@ The slower direct GitHub poller remains active as a repair path if the relay is 
 | Repository says `polling only` | Configure the app installation to include that repository, then redeliver the installation event or reinstall the app. |
 | Run state updates but job state does not | Enable **Workflow job** and **Workflow run** events and grant **Actions: Read-only**. |
 | Private-repository events never appear locally | Run `gh auth status` and confirm that login can read the repository. The relay filters every event against the caller's GitHub access. |
+| Relay status shows `relay responded 500` or `503`, or relay polls time out | Update the Worker as described below, then check its logs in the Cloudflare dashboard. |
 
 ## Update or remove it
 
