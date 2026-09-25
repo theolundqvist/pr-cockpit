@@ -7,6 +7,12 @@ if [[ "$#" -gt 1 || ( "$#" -eq 1 && "${1:-}" != "--open" ) ]]; then
   echo "usage: scripts/update-linux [--open]" >&2
   exit 2
 fi
+# Activation restarts pr-cockpit.service, and systemd stops a unit by killing every process in its
+# cgroup. An update requested through the server inherits that cgroup, so move into a transient
+# scope first; otherwise the restart kills this updater before it verifies health and records the manifest.
+if grep -Eq '/user@[0-9]+\.service/(.+/)?pr-cockpit\.service$' /proc/self/cgroup; then
+  exec systemd-run --user --scope --quiet --collect -- "${BASH_SOURCE[0]}" "$@"
+fi
 
 data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
 state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
