@@ -72,6 +72,44 @@ test("closed PR search isolates inaccessible repositories", async () => {
   }
 });
 
+test("a null GraphQL response is reported as an invalid upstream response", async () => {
+  const fakeGhDir = mkdtempSync(join(tmpdir(), "pr-cockpit-null-graphql-"));
+  const fakeGh = join(fakeGhDir, "gh");
+  writeFileSync(fakeGh, "#!/bin/sh\nprintf 'fixture-token\\n'\n");
+  chmodSync(fakeGh, 0o755);
+  try {
+    const script = `
+      const { searchOpenPrs } = await import(${JSON.stringify(githubModuleUrl)});
+      globalThis.fetch = async () => Response.json(null);
+      try {
+        await searchOpenPrs(["acme/repo"]);
+        console.log(JSON.stringify({ error: null }));
+      } catch (error) {
+        console.log(JSON.stringify({ name: error.name, kind: error.kind, status: error.status, message: error.message }));
+      }
+    `;
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: { ...Bun.env, COCKPIT_GH_BIN: fakeGh, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      process.exited,
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+    ]);
+    expect(exitCode, stderr).toBe(0);
+    expect(JSON.parse(stdout)).toEqual({
+      name: "GithubRequestError",
+      kind: "graphql",
+      status: 502,
+      message: "GraphQL response missing data",
+    });
+  } finally {
+    rmSync(fakeGhDir, { recursive: true, force: true });
+  }
+});
+
 test("quota readings are shared by concurrent callers and reusable for pacing until stale or reset", async () => {
   const fakeGhDir = mkdtempSync(join(tmpdir(), "pr-cockpit-quota-reuse-"));
   const fakeGh = join(fakeGhDir, "gh");

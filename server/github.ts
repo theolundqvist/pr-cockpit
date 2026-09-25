@@ -444,7 +444,11 @@ async function graphql<T>(
   const body = (await res.json()) as {
     data?: T & Record<string, unknown>;
     errors?: GithubGraphqlError[];
-  };
+  } | null;
+  if (!body || typeof body !== "object") {
+    record(null, "error");
+    throw new GithubRequestError("GraphQL response missing data", 502, [], "graphql", "graphql");
+  }
   const rateLimit = body.data?.[RATE_LIMIT_ALIAS] as {
     cost: number;
     used: number;
