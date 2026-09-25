@@ -95,14 +95,14 @@ import { tailscaleServeStatus } from "./tailscaleServe.ts";
 import { runtimeSupervisor } from "./supervisor.ts";
 import type { GithubUsageSource } from "./githubUsage.ts";
 import type { GithubAuthStatus } from "./githubAuth.ts";
-import { commitsFromMirror, commitStatsFromMirror, conflictFilesFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError, summarizeCommitStats, type PullRequestCommit } from "./mirror.ts";
+import { commitsFromMirror, commitStatsFromMirror, conflictFilesFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError, summarizeCommitStats, type MirrorDiffResult, type PullRequestCommit } from "./mirror.ts";
 import { checkState, currentChecks, type CheckState } from "./checkState.ts";
 import { currentBaseRef, discardMutation, enqueueMutation, mutationsForPr, retryMutation, type MutationPayload } from "./mutations.ts";
 import { isMergeMethod, mergeMethodFor, mergeMethodSourceFor, setMergeMethodPreference } from "./mergeMethod.ts";
 import { AGENT_DEFAULTS, pendingReviewsEnabled, readSettings, relayConfig, RELAY_APP_INSTALL_URL, RELAY_APP_SLUG, settingsRepos, writeSettings, type AgentSetting, type Settings } from "./settings.ts";
 import { claudeBinPath, codexBinPath, ompBinPath } from "./harness.ts";
 import { CommitMessageError, generateCommitMessage } from "./commitMessage.ts";
-import { relayStatus } from "./relayClient.ts";
+import { relayStatus, webhookCoveredSince } from "./relayClient.ts";
 import { relayCoverage } from "./relayCoverage.ts";
 import { refreshCachedPrDetail } from "./cachedPrDetail.ts";
 import { notePrViewed } from "./recentPrViews.ts";
@@ -139,7 +139,7 @@ import { createTmuxFocusHandler } from "./tmuxFocus.ts";
 import type { TmuxFocusHandler } from "./tmuxFocus.ts";
 import { needsMeRank } from "./rank.ts";
 import { invalidateInbox, invalidatePr } from "./rendererInvalidation.ts";
-import { actionJobLog, actionWorkflowGraphs, activateActionsLease, cacheActionsRun, cacheGithubActionsForCommit, cacheRepoActionsRunJobs, cachedJobLogs, formatJobLogs, formatRunJobs, reconciliationError, refreshWorkflowRuns, repoActionWorkflowGraphs, type CompactStep } from "./runLogs.ts";
+import { actionJobLog, actionWorkflowGraphs, activateActionsLease, cacheActionsRun, cacheGithubActionsForCommit, cacheRepoActionsRunJobs, cachedJobLogs, formatJobLogs, formatRunJobs, reconciliationError, refreshWorkflowRuns, repoActionWorkflowGraphs, storedActionWorkflowGraphs, type CompactStep } from "./runLogs.ts";
 import { claimNotifications } from "./notifications.ts";
 import type { NotificationSettings } from "../shared/notificationRules.ts";
 const cockpitRoot = process.cwd();
@@ -418,6 +418,7 @@ type HttpDependencies = {
   actionJobLog: typeof actionJobLog;
   rerunFailedJobs: typeof rerunFailedJobs;
   pollOnce: typeof pollOnce;
+  webhookCoveredSince: typeof webhookCoveredSince;
 };
 
 type HttpRuntime = HttpDependencies & {
@@ -450,6 +451,7 @@ const defaultHttpDependencies: HttpDependencies = {
   actionJobLog,
   rerunFailedJobs,
   pollOnce,
+  webhookCoveredSince,
 };
 async function handleGithubQuota(runtime: HttpRuntime): Promise<Response> {
   try {
@@ -589,11 +591,22 @@ async function handleGithubUsage(runtime: HttpRuntime): Promise<Response> {
 const DETAIL_REVALIDATING_HEADER = "x-cockpit-revalidating";
 
 // Resolved threads bump neither updatedAt nor head SHA, so the poller's change gate misses them.
+// With live webhook coverage every PR event is recorded in pr_webhook_activity, so only a newer
+// event (or the safety net) makes the detail stale.
 const TRACKED_STALE_MS = 60_000;
+const COVERED_STALE_MS = 10 * 60_000;
 const AGENT_SNAPSHOT_RECENT_MS = 5 * 60_000;
 
-export function trackedDetailIsStale(fetchedAt: string, nowMs: number): boolean {
-  return nowMs - new Date(fetchedAt).getTime() > TRACKED_STALE_MS;
+export function trackedDetailIsStale(
+  fetchedAt: string,
+  nowMs: number,
+  lastWebhookAt: string | null = null,
+  coveredSince: number | null = null,
+): boolean {
+  const fetchedAtMs = new Date(fetchedAt).getTime();
+  if (coveredSince === null || coveredSince > fetchedAtMs) return nowMs - fetchedAtMs > TRACKED_STALE_MS;
+  if (lastWebhookAt !== null && Date.parse(lastWebhookAt) > fetchedAtMs) return true;
+  return nowMs - fetchedAtMs > COVERED_STALE_MS;
 }
 
 type MergeabilityDetail = {
@@ -705,9 +718,14 @@ async function handlePrDetail(
   runtime: HttpRuntime,
   agentRead = false,
   awaitFresh = false,
+  prefetch = false,
 ): Promise<Response> {
   const repoName = `${owner}/${repo}`;
   const num = Number(number);
+  if (prefetch) {
+    const cached = cachedPrSnapshot(repoName, num);
+    return cached ? json(withBaseBranchPr(repoName, num, JSON.parse(cached.row.detail_json))) : notPreloaded();
+  }
   void fetchMirror(repoName).catch(() => {});
   if (!agentRead) notePrViewed(repoName, num);
 
@@ -715,9 +733,10 @@ async function handlePrDetail(
   if (snapshot) {
     let detail = JSON.parse(snapshot.row.detail_json);
     const nowMs = Date.now();
-    const agentSnapshot = snapshotStatus(snapshot.row.fetched_at, lastWebhookAtForPr(repoName, num));
+    const lastWebhookAt = lastWebhookAtForPr(repoName, num);
+    const agentSnapshot = snapshotStatus(snapshot.row.fetched_at, lastWebhookAt);
     const stale = snapshot.tracked
-      ? trackedDetailIsStale(snapshot.row.fetched_at, nowMs)
+      ? trackedDetailIsStale(snapshot.row.fetched_at, nowMs, lastWebhookAt, runtime.webhookCoveredSince(repoName))
       : nowMs - Date.parse(snapshot.row.fetched_at) > UNTRACKED_STALE_MS;
     const mergeabilityStale = mergeabilityNeedsRefresh(
       snapshot.row.fetched_at,
@@ -1450,89 +1469,103 @@ async function handlePrCommitStats(owner: string, repo: string, number: string, 
   return json({ commits: summarizeCommitStats(result.commits, testPattern) });
 }
 
+function notPreloaded(): Response {
+  return new Response(null, { status: 204 });
+}
+
+function diffResponse(patch: Uint8Array | string): Response {
+  return new Response(patch, { headers: { "content-type": "text/x-diff" } });
+}
+
+const diffComputations = new Map<string, Promise<MirrorDiffResult>>();
+
+// A background preload and the interactive open of the same diff share one git process and one write.
+function computeMirrorDiff(repo: string, key: string, base: string, head: string, mode: "two-dot" | "three-dot"): Promise<MirrorDiffResult> {
+  const computationKey = `${repo}\0${key}`;
+  let computation = diffComputations.get(computationKey);
+  if (!computation) {
+    computation = diffFromMirror(repo, base, head, mode)
+      .then((result) => {
+        if (result.status === "ok") saveDiff(key, result.patch);
+        return result;
+      })
+      .finally(() => diffComputations.delete(computationKey));
+    diffComputations.set(computationKey, computation);
+  }
+  return computation;
+}
+
+async function mirrorDiffResponse(
+  repo: string,
+  key: string,
+  base: string,
+  head: string,
+  mode: "two-dot" | "three-dot",
+  prefetch: boolean,
+  unavailable: string,
+): Promise<Response> {
+  const cached = getDiff(key);
+  if (cached !== null) return diffResponse(cached);
+
+  let result = await computeMirrorDiff(repo, key, base, head, mode);
+  if (prefetch && result.status !== "ok") return notPreloaded();
+  if (result.status === "missing-commit") {
+    // mirror exists but hasn't seen these commits yet - bounded incremental fetch, retry once in-request
+    try {
+      await fetchMirror(repo, INCREMENTAL_FETCH_TIMEOUT_MS);
+      result = await computeMirrorDiff(repo, key, base, head, mode);
+    } catch (err) {
+      return mirrorErrorResponse(repo, err);
+    }
+  }
+  if (result.status === "ok") return diffResponse(result.patch);
+  if (result.status === "no-mirror") {
+    // no mirror yet at all - a cold clone can take minutes, so kick it off async and tell the client to retry
+    fetchMirror(repo).catch((err) => console.error(`on-demand mirror clone failed for ${repo}:`, err));
+    return new Response(JSON.stringify({ building: true }), {
+      status: 503,
+      headers: { "content-type": "application/json", "retry-after": "5" },
+    });
+  }
+  return new Response(unavailable, { status: 502 });
+}
+
 async function handlePrDiff(owner: string, repo: string, number: string, url: URL): Promise<Response> {
   if (!validPrReference(owner, repo, number)) return json({ error: "invalid PR reference" }, 400);
   const repoName = `${owner}/${repo}`;
   const num = Number(number);
   const base = url.searchParams.get("base");
   const head = url.searchParams.get("head");
+  const prefetch = url.searchParams.get("prefetch") === "1";
 
   if (base !== null) {
     if (!base || !head || !FULL_SHA_RE.test(base) || !FULL_SHA_RE.test(head)) {
       return new Response("base and head must be 40-char commit shas", { status: 400 });
     }
     if (isMockGithub) return new Response("range diffs unavailable in mock mode", { status: 404 });
-    const rangeKey = `${base}..${head}`;
-    const cached = getDiff(rangeKey);
-    if (cached !== null) return new Response(cached, { headers: { "content-type": "text/x-diff" } });
-
-    let result = await diffFromMirror(repoName, base, head, "two-dot");
-    if (result.status === "missing-commit") {
-      // mirror exists but hasn't seen these commits yet - bounded incremental fetch, retry once in-request
-      try {
-        await fetchMirror(repoName, INCREMENTAL_FETCH_TIMEOUT_MS);
-        result = await diffFromMirror(repoName, base, head, "two-dot");
-      } catch (err) {
-        return mirrorErrorResponse(repoName, err);
-      }
-    }
-    if (result.status === "ok") {
-      saveDiff(rangeKey, result.patch);
-      return new Response(result.patch, { headers: { "content-type": "text/x-diff" } });
-    }
-    if (result.status === "no-mirror") {
-      // no mirror yet at all - a cold clone can take minutes, so kick it off async and tell the client to retry
-      fetchMirror(repoName).catch((err) => console.error(`on-demand mirror clone failed for ${repoName}:`, err));
-      return new Response(JSON.stringify({ building: true }), {
-        status: 503,
-        headers: { "content-type": "application/json", "retry-after": "5" },
-      });
-    }
     // mirror is the only backend that can serve true two-dot; GitHub's compare API is three-dot
-    return new Response("mirror unavailable for this range", { status: 502 });
+    return mirrorDiffResponse(repoName, `${base}..${head}`, base, head, "two-dot", prefetch, "mirror unavailable for this range");
   }
   if (head !== null && !FULL_SHA_RE.test(head)) {
     return new Response("head must be a 40-char commit sha", { status: 400 });
   }
 
   const ctx = resolvePrContext(repoName, num);
-  if (head !== null && !ctx) return json({ error: "PR is not cached yet" }, 404);
+  if (head !== null && !ctx) return prefetch ? notPreloaded() : json({ error: "PR is not cached yet" }, 404);
   const baseCommit = ctx ? ctx.baseSha ?? `refs/heads/${ctx.baseRef}` : null;
   const diffHead = head ?? ctx?.headSha ?? null;
   const diffKey = baseCommit && diffHead ? `${baseCommit}...${diffHead}` : null;
   if (ctx && baseCommit && diffHead && !isMockGithub) {
-    const patch = getDiff(diffKey!);
-    if (patch !== null) return new Response(patch, { headers: { "content-type": "text/x-diff" } });
-
-    let mirrored = await diffFromMirror(repoName, baseCommit, diffHead, "three-dot");
-    if (mirrored.status === "missing-commit") {
-      try {
-        await fetchMirror(repoName, INCREMENTAL_FETCH_TIMEOUT_MS);
-        mirrored = await diffFromMirror(repoName, baseCommit, diffHead, "three-dot");
-      } catch (err) {
-        return mirrorErrorResponse(repoName, err);
-      }
-    }
-    if (mirrored.status === "ok") {
-      saveDiff(diffKey!, mirrored.patch);
-      return new Response(mirrored.patch, { headers: { "content-type": "text/x-diff" } });
-    }
-    if (mirrored.status === "no-mirror") {
-      fetchMirror(repoName).catch((err) => console.error(`on-demand mirror clone failed for ${repoName}:`, err));
-      return new Response(JSON.stringify({ building: true }), {
-        status: 503,
-        headers: { "content-type": "application/json", "retry-after": "5" },
-      });
-    }
-    return new Response("mirror unavailable for this pull request", { status: 502 });
+    return mirrorDiffResponse(repoName, diffKey!, baseCommit, diffHead, "three-dot", prefetch, "mirror unavailable for this pull request");
   }
+  if (prefetch) return notPreloaded();
 
   try {
     const patch = head !== null && baseCommit
       ? await fetchDiff(repoName, num, baseCommit, head)
       : await fetchDiff(repoName, num);
     if (diffKey) saveDiff(diffKey, patch);
-    return new Response(patch, { headers: { "content-type": "text/x-diff" } });
+    return diffResponse(patch);
   } catch (error) {
     return githubErrorResponse(error, "GitHub diff fetch failed");
   }
@@ -1554,12 +1587,12 @@ type CachedActionsContext = {
   commits: PullRequestCommit[];
 };
 
-function cachedActionsContext(owner: string, repo: string, number: string): CachedActionsContext | Response {
+function cachedActionsContext(owner: string, repo: string, number: string, prefetch = false): CachedActionsContext | Response {
   if (!validPrReference(owner, repo, number)) return json({ error: "invalid PR reference" }, 400);
   const repoName = `${owner}/${repo}`;
   const num = Number(number);
   const cached = cachedPrSnapshot(repoName, num)?.row;
-  if (!cached) return json({ error: "PR is not cached yet" }, 404);
+  if (!cached) return prefetch ? notPreloaded() : json({ error: "PR is not cached yet" }, 404);
   const detail = JSON.parse(cached.detail_json) as PrDetail;
   const commits = (detail.commitList?.nodes ?? []).map(({ commit }) => ({
     sha: commit.oid,
@@ -1577,10 +1610,18 @@ function cachedActionsContext(owner: string, repo: string, number: string): Cach
   };
 }
 
-async function mirroredActionCommits(context: CachedActionsContext) {
+// A long-lived branch lists thousands of commits and git log spends ~40 ms walking them on every
+// Actions request; a base..head range of commit SHAs never changes, so recent ranges are kept.
+const MIRRORED_COMMIT_RANGES = 16;
+const mirroredCommitRanges = new Map<string, PullRequestCommit[]>();
+
+async function mirroredActionCommits(context: CachedActionsContext, prefetch = false) {
   if (!context.baseSha) return null;
+  const range = `${context.repoName}\0${context.baseSha}..${context.currentHeadSha}`;
+  const known = mirroredCommitRanges.get(range);
+  if (known) return known;
   let result = await commitsFromMirror(context.repoName, context.baseSha, context.currentHeadSha);
-  if (result.status === "no-mirror" || result.status === "missing-commit") {
+  if (!prefetch && (result.status === "no-mirror" || result.status === "missing-commit")) {
     try {
       await fetchMirror(context.repoName, INCREMENTAL_FETCH_TIMEOUT_MS);
       result = await commitsFromMirror(context.repoName, context.baseSha, context.currentHeadSha);
@@ -1588,7 +1629,10 @@ async function mirroredActionCommits(context: CachedActionsContext) {
       return mirrorErrorResponse(context.repoName, error);
     }
   }
-  return result.status === "ok" ? result.commits : null;
+  if (result.status !== "ok") return null;
+  mirroredCommitRanges.set(range, result.commits);
+  if (mirroredCommitRanges.size > MIRRORED_COMMIT_RANGES) mirroredCommitRanges.delete(mirroredCommitRanges.keys().next().value!);
+  return result.commits;
 }
 
 async function selectedActionsContext(
@@ -1596,28 +1640,31 @@ async function selectedActionsContext(
   repo: string,
   number: string,
   url: URL,
+  prefetch = false,
 ): Promise<CachedActionsContext | Response> {
-  const context = cachedActionsContext(owner, repo, number);
+  const context = cachedActionsContext(owner, repo, number, prefetch);
   if (context instanceof Response) return context;
   const requested = url.searchParams.get("sha");
   if (requested === null || requested === context.currentHeadSha) return context;
   if (!FULL_SHA_RE.test(requested)) return json({ error: "invalid commit SHA" }, 400);
   if (context.commits.some((commit) => commit.sha === requested)) return { ...context, headSha: requested };
   if (!isMockGithub) {
-    const commits = await mirroredActionCommits(context);
+    const commits = await mirroredActionCommits(context, prefetch);
     if (commits instanceof Response) return commits;
     if (commits?.some((commit) => commit.sha === requested)) return { ...context, headSha: requested };
+    if (prefetch && !commits) return notPreloaded();
   }
   return json({ error: "commit is not part of this pull request" }, 400);
 }
 
-async function handleActionCommits(owner: string, repo: string, number: string): Promise<Response> {
-  const context = cachedActionsContext(owner, repo, number);
+async function handleActionCommits(owner: string, repo: string, number: string, url: URL): Promise<Response> {
+  const prefetch = url.searchParams.get("prefetch") === "1";
+  const context = cachedActionsContext(owner, repo, number, prefetch);
   if (context instanceof Response) return context;
   if (isMockGithub) return json({ headSha: context.currentHeadSha, commits: context.commits });
-  const commits = await mirroredActionCommits(context);
+  const commits = await mirroredActionCommits(context, prefetch);
   if (commits instanceof Response) return commits;
-  if (!commits) return json({ error: "Pull request commits are still loading" }, 503);
+  if (!commits) return prefetch ? notPreloaded() : json({ error: "Pull request commits are still loading" }, 503);
   return json({ headSha: context.currentHeadSha, commits });
 }
 
@@ -1924,13 +1971,15 @@ async function refreshActionsContext(context: CachedActionsContext, runtime: Htt
   });
 }
 async function handleActions(owner: string, repo: string, number: string, url: URL, runtime: HttpRuntime): Promise<Response> {
-  const context = await selectedActionsContext(owner, repo, number, url);
+  const prefetch = url.searchParams.get("prefetch") === "1";
+  const context = await selectedActionsContext(owner, repo, number, url, prefetch);
   if (context instanceof Response) return context;
   try {
-    await refreshActionsContext(context, runtime);
+    if (!prefetch) await refreshActionsContext(context, runtime);
     const currentRuns = latestActionRunAttempts(
       workflowRunsForLease(context.repoName, context.num, context.headSha),
     );
+    if (prefetch && currentRuns.length === 0) return notPreloaded();
     const catalog = listActionWorkflows([context.repoName]);
     const workflowNameFor = (run: WorkflowRunRow): string =>
       catalog.find((workflow) => workflow.path === staticWorkflowPath(run.workflow_path))?.name
@@ -1946,9 +1995,14 @@ async function handleActions(owner: string, repo: string, number: string, url: U
   }
 }
 async function handleActionGraphs(owner: string, repo: string, number: string, url: URL, runtime: HttpRuntime): Promise<Response> {
-  const context = await selectedActionsContext(owner, repo, number, url);
+  const prefetch = url.searchParams.get("prefetch") === "1";
+  const context = await selectedActionsContext(owner, repo, number, url, prefetch);
   if (context instanceof Response) return context;
   try {
+    if (prefetch) {
+      const workflows = await storedActionWorkflowGraphs(context.repoName, context.num, context.headSha);
+      return workflows ? json({ headSha: context.headSha, workflows }) : notPreloaded();
+    }
     await refreshActionsContext(context, runtime);
     const workflows = await runtime.actionWorkflowGraphs(context.repoName, context.num, context.headSha);
     return json({ headSha: context.headSha, workflows });
@@ -3259,7 +3313,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       parts[5] === "actions" &&
       parts[6] === "commits"
     ) {
-      return handleActionCommits(parts[2]!, parts[3]!, parts[4]!);
+      return handleActionCommits(parts[2]!, parts[3]!, parts[4]!, url);
     }
     if (
       req.method === "GET" &&
@@ -3420,7 +3474,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       }
     }
     if (req.method === "GET" && parts.length === 5 && parts[0] === "api" && parts[1] === "pr") {
-      return handlePrDetail(parts[2]!, parts[3]!, parts[4]!, runtime, false, url.searchParams.get("fresh") === "1");
+      return handlePrDetail(parts[2]!, parts[3]!, parts[4]!, runtime, false, url.searchParams.get("fresh") === "1", url.searchParams.get("prefetch") === "1");
     }
 
     const staticFile = Bun.file(`static${url.pathname === "/" ? "/index.html" : url.pathname}`);

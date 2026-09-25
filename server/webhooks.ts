@@ -2,6 +2,7 @@ import {
   deleteWebhookRegistrationsForWindow,
   deleteWebhookRegistration,
   deleteWebhookRegistrationsForPr,
+  getPr,
   getPrByBranch,
   listWebhookRegistrations,
   listPrs,
@@ -141,19 +142,24 @@ async function handleHook(
   }
 
   const receivedAt = new Date().toISOString();
-  if (event === "push") {
-    const ref = typeof body.ref === "string" ? body.ref : "";
-    if (!ref.startsWith("refs/heads/")) return new Response("ignored");
-    for (const affectedNumber of openPrNumbersForBranch(repo, ref.slice("refs/heads/".length))) {
+  const branches = event === "push"
+    ? typeof body.ref === "string" && body.ref.startsWith("refs/heads/") ? [body.ref.slice("refs/heads/".length)] : []
+    : event === "status" ? ((body.branches ?? []) as Array<{ name?: string }>).flatMap((branch) => branch.name ?? []) : null;
+  if (branches !== null) {
+    // Neither carries a PR number: a push names its branch (head or base), a status the branches
+    // holding its commit, which counts only for PRs whose head is that commit.
+    const affected = new Set(branches.flatMap((branch) => openPrNumbersForBranch(repo, branch)));
+    if (event === "status") for (const n of affected) if (getPr(repo, n)?.head_sha !== body.sha) affected.delete(n);
+    for (const affectedNumber of affected) {
       recordPrWebhookActivity(repo, affectedNumber, receivedAt);
       touchWebhookRegistrations(repo, affectedNumber, receivedAt);
-      void refreshPrFromEvent(repo, affectedNumber, "all", async (targetRepo, targetNumber, scope) => {
+      void refreshPrFromEvent(repo, affectedNumber, prDetailScopeForEvent(event), async (targetRepo, targetNumber, scope) => {
         if (await refreshAllowed()) await refresh(targetRepo, targetNumber, "webhook", scope);
       }).catch((e) =>
         console.error(`hook-triggered refresh failed for ${repo}#${affectedNumber}:`, e)
       );
     }
-    return new Response("ok");
+    return new Response(branches.length > 0 ? "ok" : "ignored");
   }
   if (number === null) return new Response("ignored");
 

@@ -11,6 +11,7 @@ interface Forwarder {
   backoffMs: number;
   restartTimer: Timer | null;
   stopped: boolean;
+  coveredSince: number | null;
 }
 const forwarders = new Map<string, Forwarder>();
 let boundPort: number | null = null;
@@ -36,20 +37,27 @@ function spawnForwarder(repo: string, port: number): void {
     { stdout: "inherit", stderr: "pipe" },
   );
   f.proc = proc;
+  f.coveredSince = null;
   let errHead = "";
   let errTail = "";
+  let line = "";
   const stderrDrained = (async () => {
     const dec = new TextDecoder();
     for await (const chunk of proc.stderr) {
       const s = dec.decode(chunk);
       errHead = (errHead + s).slice(0, 2048);
       errTail = (errTail + s).slice(-2048);
+      // gh prints this on every (re)connect; events sent while it was disconnected are lost.
+      const lines = (line + s).split("\n");
+      line = lines.pop()!.slice(-256);
+      if (lines.some((l) => l.includes("Forwarding Webhook events from GitHub")) && f.proc === proc) f.coveredSince = Date.now();
     }
   })();
   const startedAt = Date.now();
   log(`forwarder up: ${repo} (pid ${proc.pid})`);
   proc.exited.then(async (code) => {
     await stderrDrained.catch(() => {});
+    if (f.proc === proc) f.coveredSince = null;
     if (f.stopped) return;
     if (f.proc === proc) f.proc = null;
     const uptimeMs = Date.now() - startedAt;
@@ -98,7 +106,7 @@ export function reconcileForwarders(): void {
   const wanted = wantedRepos();
   for (const repo of wanted) {
     if (!forwarders.has(repo)) {
-      forwarders.set(repo, { repo, proc: null, backoffMs: 5_000, restartTimer: null, stopped: false });
+      forwarders.set(repo, { repo, proc: null, backoffMs: 5_000, restartTimer: null, stopped: false, coveredSince: null });
       spawnForwarder(repo, port);
     }
   }
@@ -125,4 +133,8 @@ export function forwarderStatuses(): ForwarderStatus[] {
     pid: f.proc?.pid ?? null,
     alive: f.proc != null && f.proc.killed === false && f.proc.exitCode === null,
   }));
+}
+
+export function forwarderCoveredSince(repo: string): number | null {
+  return forwarders.get(repo)?.coveredSince ?? null;
 }

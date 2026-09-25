@@ -39,6 +39,7 @@ import {
   type WorkflowRun,
   fetchWorkflowRunsForWorkflow,
 } from "./github.ts";
+import { fileFromMirror, type MirrorFileResult } from "./mirror.ts";
 
 import { createConcurrencyLimit, forEachWithConcurrency } from "./concurrency.ts";
 
@@ -279,36 +280,67 @@ export function parseWorkflowGraph(path: string, source: string): WorkflowGraph 
 type WorkflowGraphFetchers = {
   fetchWorkflowRuns: typeof fetchWorkflowRuns;
   fetchFileContents: typeof fetchFileContents;
+  fileFromMirror: typeof fileFromMirror;
 };
 
-const liveWorkflowGraphFetchers: WorkflowGraphFetchers = { fetchWorkflowRuns, fetchFileContents };
+const liveWorkflowGraphFetchers: WorkflowGraphFetchers = { fetchWorkflowRuns, fetchFileContents, fileFromMirror };
 
 function workflowFilePath(path: string): string {
   const refMarker = path.indexOf("@refs/");
   return refMarker === -1 ? path : path.slice(0, refMarker);
 }
 
-async function workflowGraphsForRuns(
+function workflowPaths(runs: WorkflowRunRow[]): string[] {
+  return [...new Set(runs.map((run) => workflowFilePath(run.workflow_path)).filter(Boolean))];
+}
+
+// A definition is fixed by its commit, so the local mirror answers before GitHub's contents API;
+// "not-found" is definitive because mirrors are full clones.
+async function localWorkflowSource(
+  repo: string,
+  headSha: string,
+  path: string,
+  readMirror: typeof fileFromMirror,
+): Promise<MirrorFileResult> {
+  const cached = getFileContents(headSha, path);
+  if (cached !== null) return { status: "ok", content: cached };
+  const mirrored = await readMirror(repo, headSha, path);
+  if (mirrored.status === "ok") saveFileContents(headSha, path, mirrored.content);
+  return mirrored;
+}
+
+async function workflowGraphs(
+  repo: string,
+  headSha: string,
+  paths: string[],
+  loadSource: (path: string) => Promise<string>,
+): Promise<WorkflowGraph[]> {
+  const settled = await Promise.allSettled(paths.map(async (path) => parseWorkflowGraph(path, await loadSource(path))));
+  return settled.map((result, index) => {
+    if (result.status === "fulfilled") return result.value;
+    console.error(`Workflow graph load failed for ${repo}:${paths[index]}@${headSha}:`, result.reason);
+    return { path: paths[index]!, name: null, jobs: [], error: "Workflow definition unavailable" };
+  });
+}
+
+function localSourceContent(path: string, local: MirrorFileResult): string {
+  if (local.status === "ok") return local.content;
+  throw new Error(`${path} is not in the commit`);
+}
+
+function workflowGraphsForRuns(
   repo: string,
   headSha: string,
   runs: WorkflowRunRow[],
   fetchers: WorkflowGraphFetchers,
 ): Promise<WorkflowGraph[]> {
-  const paths = [...new Set(runs.map((run) => workflowFilePath(run.workflow_path)).filter(Boolean))];
-  const settled = await Promise.allSettled(paths.map(async (path) => {
-    let source = getFileContents(headSha, path);
-    if (source === null) {
-      const result = await fetchers.fetchFileContents(repo, path, headSha);
-      if ("tooLarge" in result) throw new Error("workflow definition is too large");
-      source = result.content;
-      saveFileContents(headSha, path, source);
-    }
-    return parseWorkflowGraph(path, source);
-  }));
-  return settled.map((result, index) => {
-    if (result.status === "fulfilled") return result.value;
-    console.error(`Workflow graph load failed for ${repo}:${paths[index]}@${headSha}:`, result.reason);
-    return { path: paths[index]!, name: null, jobs: [], error: "Workflow definition unavailable" };
+  return workflowGraphs(repo, headSha, workflowPaths(runs), async (path) => {
+    const local = await localWorkflowSource(repo, headSha, path, fetchers.fileFromMirror);
+    if (local.status === "ok" || local.status === "not-found") return localSourceContent(path, local);
+    const result = await fetchers.fetchFileContents(repo, path, headSha);
+    if ("tooLarge" in result) throw new Error("workflow definition is too large");
+    saveFileContents(headSha, path, result.content);
+    return result.content;
   });
 }
 
@@ -325,6 +357,21 @@ export async function actionWorkflowGraphs(
     runs = workflowRunsForLease(repo, number, headSha);
   }
   return workflowGraphsForRuns(repo, headSha, runs, fetchers);
+}
+
+// Preloads use only stored runs and local definitions; null when completing the graph needs GitHub.
+export async function storedActionWorkflowGraphs(
+  repo: string,
+  number: number,
+  headSha: string,
+  readMirror: typeof fileFromMirror = fileFromMirror,
+): Promise<WorkflowGraph[] | null> {
+  const runs = workflowRunsForLease(repo, number, headSha);
+  if (runs.length === 0 || runs.some((run) => !run.workflow_path)) return null;
+  const paths = workflowPaths(runs);
+  const sources = await Promise.all(paths.map((path) => localWorkflowSource(repo, headSha, path, readMirror)));
+  if (sources.some((local) => local.status !== "ok" && local.status !== "not-found")) return null;
+  return workflowGraphs(repo, headSha, paths, async (path) => localSourceContent(path, sources[paths.indexOf(path)]!));
 }
 
 export async function repoActionWorkflowGraphs(

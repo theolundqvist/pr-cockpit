@@ -12,6 +12,11 @@ mkdirSync(dataDir, { recursive: true });
 export const RUN_JOB_LOG_FORMAT_VERSION = 2;
 export const db = new Database(`${dataDir}/cockpit.db`);
 db.exec("PRAGMA journal_mode = WAL;");
+// WAL keeps the database consistent without an fsync per commit; FULL cost ~18 ms per write on the
+// host disk, stalling the event loop for every lease renewal and background upsert. mmap serves large
+// cached diffs and details without copying pages through SQLite's small page cache.
+db.exec("PRAGMA synchronous = NORMAL;");
+db.exec("PRAGMA mmap_size = 2147418112;");
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS prs (
@@ -762,11 +767,12 @@ export function listPrs(): PrRow[] {
   return listPrsStmt.all();
 }
 
-const getDiffStmt = db.prepare<{ patch: string }, [string]>(
-  "SELECT patch FROM diffs WHERE head_sha = ?",
+// UTF-8 bytes as stored: a 30 MB diff skips the string decode here and the re-encode in the response
+const getDiffStmt = db.prepare<{ patch: Uint8Array }, [string]>(
+  "SELECT CAST(patch AS BLOB) AS patch FROM diffs WHERE head_sha = ?",
 );
 
-export function getDiff(headSha: string): string | null {
+export function getDiff(headSha: string): Uint8Array | null {
   return getDiffStmt.get(headSha)?.patch ?? null;
 }
 
@@ -1066,12 +1072,12 @@ export function markWorkflowRunReconciled(repo: string, runId: number, runAttemp
 }
 
 export function workflowRunsForLease(repo: string, number: number, headSha: string): WorkflowRunRow[] {
-  return db.prepare<WorkflowRunRow, [string, number, string]>(
+  return db.query<WorkflowRunRow, [string, number, string]>(
     "SELECT * FROM workflow_runs WHERE repo = ? AND pr_number = ? AND head_sha = ? ORDER BY run_id, run_attempt",
   ).all(repo, number, headSha);
 }
 export function workflowRunsForCommit(repo: string, headSha: string): WorkflowRunRow[] {
-  return db.prepare<WorkflowRunRow, [string, string]>(
+  return db.query<WorkflowRunRow, [string, string]>(
     "SELECT * FROM workflow_runs WHERE repo = ? AND head_sha = ? ORDER BY run_id, run_attempt",
   ).all(repo, headSha);
 }
@@ -1211,13 +1217,13 @@ export interface ActionsLeaseRow {
 }
 
 export function actionsLease(repo: string, number: number): ActionsLeaseRow | null {
-  return db.prepare<ActionsLeaseRow, [string, number]>(
+  return db.query<ActionsLeaseRow, [string, number]>(
     "SELECT * FROM actions_leases WHERE repo = ? AND number = ? AND expires_at > datetime('now')",
   ).get(repo, number) ?? null;
 }
 
 export function renewActionsLease(repo: string, number: number, headSha: string): ActionsLeaseRow {
-  db.prepare(`
+  db.query(`
     INSERT INTO actions_leases (repo, number, head_sha, expires_at, bootstrapped_at)
     VALUES (?, ?, ?, datetime('now', '+2 minutes'), NULL)
     ON CONFLICT (repo, number) DO UPDATE SET

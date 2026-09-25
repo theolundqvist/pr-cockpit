@@ -1,4 +1,4 @@
-import { getPr, getSetting, setSetting } from "./db.ts";
+import { getPr, getSetting, recordPrWebhookActivity, setSetting } from "./db.ts";
 import { ghToken } from "./github.ts";
 import { backgroundPollAllowed, pollOnce, refreshPr, trackedRepos } from "./poller.ts";
 import { createPollRequester, prDetailScopeForEvent, refreshPrFromEvent } from "./eventRefresh.ts";
@@ -7,6 +7,7 @@ import { ingestActionsState, type CompactJob, type CompactRun } from "./runLogs.
 import { watchForWake } from "./wake.ts";
 import { refreshCachedPrDetail } from "./cachedPrDetail.ts";
 import { prViewedRecently } from "./recentPrViews.ts";
+import { forwarderCoveredSince } from "./forwarders.ts";
 
 const POLL_MS = 5_000;
 const ERROR_BACKOFF_MS = 60_000;
@@ -68,9 +69,32 @@ let backoffUntil = 0;
 let lastOkAt: number | null = null;
 let lastEventAt: number | null = null;
 let lastError: string | null = null;
+// Markers are replayed from the persisted cursor, so coverage holds from the moment the relay is
+// reachable until it fails. A repository counts once the relay proves it delivers for it: the
+// stream session names it, or a legacy poll returned one of its markers.
+let relayCoveredSince: number | null = null;
+let relayCoveredRepos = new Set<string>();
 
 export function relayStatus(): { lastOkAt: number | null; lastEventAt: number | null; lastError: string | null } {
   return { lastOkAt, lastEventAt, lastError };
+}
+
+function relayLive(at: number, repos?: Iterable<string>): void {
+  if (relayCoveredSince === null) relayCoveredSince = at;
+  if (repos) relayCoveredRepos = new Set(repos);
+}
+
+function relayLost(): void {
+  relayCoveredSince = null;
+  relayCoveredRepos = new Set();
+}
+
+// Earliest moment since which every webhook for the repository has reached pr_webhook_activity.
+export function webhookCoveredSince(repo: string): number | null {
+  const relay = relayCoveredRepos.has(repo) ? relayCoveredSince : null;
+  const forwarder = forwarderCoveredSince(repo);
+  if (relay === null || forwarder === null) return relay ?? forwarder;
+  return Math.min(relay, forwarder);
 }
 
 const requestFullPoll = createPollRequester(
@@ -102,6 +126,7 @@ function saveCursor(value: number): void {
 
 async function processMarker(marker: RelayMarker, deps: RelayPollDependencies = {}): Promise<void> {
   const ingest = deps.ingest ?? ingestActionsState;
+  relayCoveredRepos.add(marker.repo);
   if (marker.run || marker.job) {
     // Log downloads for a watched PR would otherwise hold every later marker, including the
     // check and review events that refresh what the user is looking at.
@@ -110,6 +135,7 @@ async function processMarker(marker: RelayMarker, deps: RelayPollDependencies = 
     (deps.requestFullPoll ?? requestFullPoll)();
   } else {
     const key = `${marker.repo}#${marker.number}`;
+    recordPrWebhookActivity(marker.repo, marker.number, new Date().toISOString());
     if (getPr(marker.repo, marker.number) !== null) {
       void refreshPrFromEvent(marker.repo, marker.number, prDetailScopeForEvent(marker.event), async (repo, number, scope) => {
         if (await backgroundPollAllowed()) await refreshPr(repo, number, "relay", scope);
@@ -264,6 +290,8 @@ export async function streamRelayOnce(
         if (frame.type === "reset") {
           await fullPoll();
           saveCursor(frame.latest);
+          // Markers past the relay's backlog are gone, so details fetched before now saw no event.
+          if (relayCoveredSince !== null) relayCoveredSince = Date.now();
           return;
         }
         if (frame.type !== "marker") throw new Error("relay sent an unsupported frame");
@@ -320,7 +348,10 @@ class RelayConnection {
   // A stream opened before the machine slept is presumed dead; the next tick opens a fresh one
   // and replays everything after the persisted cursor.
   reconnect(): void {
-    if (this.mode === "websocket") this.dropStream();
+    if (this.mode === "websocket") {
+      this.dropStream();
+      relayLost();
+    }
     backoffUntil = 0;
   }
 
@@ -331,6 +362,7 @@ class RelayConnection {
       this.url = url;
       this.mode = "unknown";
       this.dropStream();
+      relayLost();
     }
     if (!url) return;
     if (this.mode === "websocket" && this.running) {
@@ -338,6 +370,7 @@ class RelayConnection {
       const signature = [...new Set(sessionRepos)].sort().join("\n");
       if (signature === this.repoSignature) return;
       this.dropStream();
+      relayLost();
     } else if (this.running) {
       return;
     }
@@ -349,8 +382,10 @@ class RelayConnection {
         const eventCount = await pollRelayOnce(url, token, this.deps);
         lastOkAt = now();
         lastError = null;
+        relayLive(lastOkAt);
         if (eventCount > 0) lastEventAt = now();
       } catch (error) {
+        relayLost();
         backoffUntil = now() + ERROR_BACKOFF_MS;
         lastError = error instanceof Error ? error.message : String(error);
         console.error("relay poll failed:", error);
@@ -390,6 +425,7 @@ class RelayConnection {
         },
         onOpen: () => {
           this.reconnectAttempt = 0;
+          relayLive(now(), Object.keys(session.repos ?? {}).filter((repo) => session.repos[repo]));
           this.deps.onOpen?.();
         },
         expectedClose: () => generation !== this.generation,
@@ -403,7 +439,10 @@ class RelayConnection {
       // Abnormal closes (1006) are routine for a long-lived stream; the stack trace says nothing.
       console.warn(`relay stream ended: ${lastError}; reconnecting in ${Math.ceil(delayMs / 1000)}s`);
     } finally {
-      if (generation === this.generation) this.running = false;
+      if (generation === this.generation) {
+        this.running = false;
+        if (this.mode === "websocket") relayLost();
+      }
     }
   }
 }

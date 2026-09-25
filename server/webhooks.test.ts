@@ -23,7 +23,7 @@ Bun.env.COCKPIT_DATA_DIR = dataDir;
 const refreshPr = mock(async (_repo: string, _number: number) => {});
 
 // Modules load after the legacy database is in place so the migration sees it.
-const { db, listWebhookRegistrations } = await import("./db.ts");
+const { db, lastWebhookAtForPr, listWebhookRegistrations } = await import("./db.ts");
 const { buildWebhookRoutes } = await import("./webhooks.ts");
 const route = buildWebhookRoutes(refreshPr, async () => true);
 const migratedRows = listWebhookRegistrations().sort((a, b) => a.number - b.number);
@@ -166,6 +166,28 @@ describe("webhook registrations", () => {
     clearRegistrations();
     expect(await (await checkEvent("other/widget", 42))?.text()).toBe("ignored");
     expect(refreshPr).not.toHaveBeenCalled();
+  });
+
+  test("attributes a commit status only to the open PR whose head is that commit", async () => {
+    clearRegistrations();
+    await request("/register", { repo: "acme/widget", number: 51 });
+    const insert = db.query(`INSERT INTO prs (repo, number, head_sha, head_ref, base_ref, state, is_draft, title, author, updated_at,
+      additions, deletions, changed_files, commit_count, mergeable, ci_status, unresolved_count, needs_me_rank, detail_json, fetched_at)
+      VALUES ('acme/widget', ?1, ?2, ?3, 'main', 'OPEN', 0, 't', 'a', ?4, 0, 0, 0, 1, 'MERGEABLE', 'SUCCESS', 0, 0, '{}', ?4)`);
+    insert.run(51, "b".repeat(40), "feature-b", "2026-08-24T10:00:00Z");
+    insert.run(52, "c".repeat(40), "feature-c", "2026-08-24T10:00:00Z");
+    try {
+      const response = await route(new Request("http://127.0.0.1/hook", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-github-event": "status" },
+        body: JSON.stringify({ repository: { full_name: "acme/widget" }, sha: "b".repeat(40), branches: [{ name: "feature-b" }, { name: "main" }] }),
+      }), new URL("http://127.0.0.1/hook"));
+      expect(await response?.text()).toBe("ok");
+      expect(lastWebhookAtForPr("acme/widget", 51)).toEqual(expect.any(String));
+      expect(lastWebhookAtForPr("acme/widget", 52)).toBeNull();
+    } finally {
+      db.exec("DELETE FROM prs WHERE repo = 'acme/widget'");
+    }
   });
 });
 

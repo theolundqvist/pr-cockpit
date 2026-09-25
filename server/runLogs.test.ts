@@ -948,6 +948,7 @@ test("workflow graphs parse dependencies and reuse cached definitions", async ()
         calls.files++;
         return { content: "name: CI\\njobs:\\n  lint:\\n    name: Lint\\n    runs-on: ubuntu-latest\\n  test:\\n    name: Test\\n    needs: lint\\n    runs-on: ubuntu-latest\\n  deploy:\\n    needs: [lint, test]\\n    uses: acme/workflows/.github/workflows/deploy.yml@main\\n" };
       },
+      fileFromMirror: async () => ({ status: "no-mirror" }),
     };
     const first = await actions.actionWorkflowGraphs("acme/app", 7, head, fetchers);
     const second = await actions.actionWorkflowGraphs("acme/app", 7, head, fetchers);
@@ -964,6 +965,37 @@ test("workflow graphs parse dependencies and reuse cached definitions", async ()
       { id: "deploy", name: "deploy", needs: ["lint", "test"], uses: "acme/workflows/.github/workflows/deploy.yml@main" },
     ],
   }]);
+});
+
+test("workflow graphs read definitions from the mirror before GitHub and preload only local ones", async () => {
+  const result = await runScenario("pr-cockpit-actions-graph-mirror-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    let contentFetches = 0;
+    const mirror = (status) => async (_repo, _sha, path) => path === ".github/workflows/ci.yml"
+      ? { status: "ok", content: "name: CI\\njobs:\\n  lint:\\n    runs-on: ubuntu-latest\\n" }
+      : { status };
+    const run = (id, path) => ({
+      id, run_attempt: 1, head_sha: head, head_branch: "feature", name: path, path,
+      status: "completed", conclusion: "success", updated_at: "2026-08-24T10:04:00Z", html_url: null,
+    });
+    const graphs = await actions.actionWorkflowGraphs("acme/app", 7, head, {
+      fetchWorkflowRuns: async () => [run(80, ".github/workflows/ci.yml"), run(81, "dynamic/github-code-scanning/codeql")],
+      fetchFileContents: async () => { contentFetches++; return { content: "" }; },
+      fileFromMirror: mirror("not-found"),
+    });
+    const unknown = await actions.storedActionWorkflowGraphs("acme/app", 7, head, mirror("missing-commit"));
+    const preloaded = await actions.storedActionWorkflowGraphs("acme/app", 7, head, mirror("not-found"));
+    console.log(JSON.stringify({ contentFetches, graphs, unknown, same: JSON.stringify(preloaded) === JSON.stringify(graphs) }));
+  `);
+  expect(result.contentFetches).toBe(0);
+  expect(result.graphs).toEqual([
+    { path: ".github/workflows/ci.yml", name: "CI", jobs: [{ id: "lint", name: "lint", needs: [], uses: null }] },
+    { path: "dynamic/github-code-scanning/codeql", name: null, jobs: [], error: "Workflow definition unavailable" },
+  ]);
+  expect(result.unknown).toBeNull();
+  expect(result.same).toBe(true);
 });
 
 test("concurrent cold workflow requests wait for the same persisted runs", async () => {

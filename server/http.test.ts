@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, setSystemTime, spyOn, test } from "bun:test";
 import { buildFetchHandler as buildLiveFetchHandler, buildPrAgentSummary, checkoutTargetFor, formatPrAgentSummary, mergeabilityNeedsRefresh, normalizeAgentMutation, reviewThreadHandle, snapshotStatus, statsExcludingTests, trackedDetailIsStale } from "./http.ts";
 import { GithubRequestError, StalePrHeadError, type PrDetail } from "./github.ts";
-import { db, getCachedPrDetail, getPr, getSetting, listRunJobs, markActionsLeaseBootstrapped, markWorkflowRunJobsFetched, renewActionsLease, saveDiff, saveFileContents, saveRunJobLog, setSetting, upsertCachedPrDetail, upsertPr, upsertPrIndex, upsertRunJob, upsertWorkflowRun } from "./db.ts";
+import { db, getCachedPrDetail, getPr, getSetting, listRunJobs, markActionsLeaseBootstrapped, markWorkflowRunJobsFetched, recordPrWebhookActivity, renewActionsLease, saveDiff, saveFileContents, saveRunJobLog, setSetting, upsertCachedPrDetail, upsertPr, upsertPrIndex, upsertRunJob, upsertWorkflowRun } from "./db.ts";
 import { testMatcher } from "../ui/src/lib/testPath.js";
 import { setRendererInvalidationPublisher, type RendererInvalidation } from "./rendererInvalidation.ts";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -131,6 +131,17 @@ describe("trackedDetailIsStale", () => {
 
   test("boundary: exactly at the TTL is not stale", () => {
     expect(trackedDetailIsStale("2026-07-06T09:59:00Z", now)).toBe(false);
+  });
+
+  test("with webhook coverage only a newer webhook or the ten-minute net makes it stale", () => {
+    const coveredSince = Date.parse("2026-07-06T09:00:00Z");
+    expect(trackedDetailIsStale("2026-07-06T09:55:00Z", now, "2026-07-06T09:54:00Z", coveredSince)).toBe(false);
+    expect(trackedDetailIsStale("2026-07-06T09:55:00Z", now, "2026-07-06T09:56:00Z", coveredSince)).toBe(true);
+    expect(trackedDetailIsStale("2026-07-06T09:49:00Z", now, null, coveredSince)).toBe(true);
+  });
+
+  test("coverage that began after the fetch cannot vouch for it", () => {
+    expect(trackedDetailIsStale("2026-07-06T09:55:00Z", now, null, Date.parse("2026-07-06T09:56:00Z"))).toBe(true);
   });
 });
 
@@ -1348,6 +1359,74 @@ describe("PR detail refresh", () => {
       expect(refreshCalls).toBe(1);
     } finally {
       releaseRefresh();
+      db.query("DELETE FROM prs WHERE repo = ? AND number = ?").run(repo, number);
+    }
+  });
+
+  test("with webhook coverage, reopening details refreshes only PRs with a newer webhook", async () => {
+    const repo = "cockpit-test/covered-walk";
+    const numbers = [987654401, 987654402, 987654403];
+    const refreshed: number[] = [];
+    const fetchHandler = buildFetchHandler(4820, {
+      refreshPr: async (_repo, number) => {
+        refreshed.push(number);
+        upsertPr(trackedPrRow({ repo, number, fetchedAt: new Date().toISOString() }));
+      },
+      webhookCoveredSince: () => Date.now() - 60 * 60_000,
+    });
+    const walk = async () => {
+      for (const number of numbers) {
+        const response = await fetchHandler(new Request(`http://127.0.0.1:4820/api/pr/${repo}/${number}?fresh=1`));
+        expect(response.status).toBe(200);
+      }
+    };
+
+    try {
+      for (const number of numbers) {
+        upsertPr(trackedPrRow({ repo, number, fetchedAt: new Date(Date.now() - 5 * 60_000).toISOString() }));
+      }
+      recordPrWebhookActivity(repo, numbers[0]!, new Date(Date.now() - 6 * 60_000).toISOString());
+      await walk();
+      await walk();
+      expect(refreshed).toEqual([]);
+
+      recordPrWebhookActivity(repo, numbers[1]!, new Date().toISOString());
+      await walk();
+      await walk();
+      expect(refreshed).toEqual([numbers[1]!]);
+    } finally {
+      db.query("DELETE FROM prs WHERE repo = ?").run(repo);
+      db.query("DELETE FROM pr_webhook_activity WHERE repo = ?").run(repo);
+    }
+  });
+
+  test("a prefetch serves only the stored detail and never reaches GitHub", async () => {
+    const repo = "cockpit-test/prefetch-detail";
+    const number = 987654404;
+    let githubCalls = 0;
+    const fetchHandler = buildFetchHandler(4820, {
+      fetchPrDetail: async () => {
+        githubCalls++;
+        throw new Error("prefetch reached GitHub");
+      },
+      refreshPr: async () => {
+        githubCalls++;
+      },
+    });
+    const url = `http://127.0.0.1:4820/api/pr/${repo}/${number}?prefetch=1`;
+
+    try {
+      const missing = await fetchHandler(new Request(url));
+      expect(missing.status).toBe(204);
+      expect(await missing.text()).toBe("");
+
+      upsertPr(trackedPrRow({ repo, number, fetchedAt: new Date(Date.now() - 60 * 60_000).toISOString() }));
+      const stored = await fetchHandler(new Request(url));
+      expect(stored.status).toBe(200);
+      expect(stored.headers.get("x-cockpit-revalidating")).toBeNull();
+      expect((await stored.json() as { number: number }).number).toBe(number);
+      expect(githubCalls).toBe(0);
+    } finally {
       db.query("DELETE FROM prs WHERE repo = ? AND number = ?").run(repo, number);
     }
   });
