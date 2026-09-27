@@ -37,7 +37,7 @@ Press <kbd>r</kbd> to filter repositories. Use arrows to highlight one, <kbd>Ent
 
 ### Bring up a PR without leaving your editor
 
-Press <kbd>⌥⌘K</kbd> on macOS or <kbd>Super+Alt+K</kbd> on Linux X11 to search from another app. Open the result in Cockpit, with the cached PR ready to read.
+Press <kbd>⌥⌘K</kbd> on macOS or <kbd>Super+Alt+K</kbd> on Linux X11 to search from another app. Move the pointer or use the arrow keys to select a result; Enter opens that highlighted result in Cockpit, with the cached PR ready to read.
 
 ![Searching for a public rust-lang/rust pull request from the desktop and opening it in PR Cockpit](docs/screenshots/landing-search.gif)
 

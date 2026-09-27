@@ -291,7 +291,7 @@
             class="palette-result"
             data-result-key={resultKey(result)}
             class:active={i === selected}
-            onmouseenter={() => (selected = i)}
+            onpointermove={() => (selected = i)}
             onclick={() => choose(result)}
           >
             {#if result.kind === "command"}
@@ -518,11 +518,6 @@
     padding: 8px 10px;
     border: 1px solid transparent;
     border-radius: 9px;
-  }
-  @media (hover: hover) and (pointer: fine) {
-    .palette-result:hover {
-      background: var(--surface);
-    }
   }
   .palette-result.active {
     background: var(--link-bg);
