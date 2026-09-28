@@ -4,7 +4,7 @@
 </script>
 
 <script>
-  import { categoryForPr, PR_TYPES, TYPE_TITLES } from "../../../shared/prGrouping.ts";
+  import { categoryForPr, orderQueueUnits, PR_TYPES, TYPE_TITLES } from "../../../shared/prGrouping.ts";
   import { assignments, assignPr, syncAssignments, onAssignmentStorage } from "./prAssignments.svelte.js";
   import { isSetAside, putAside } from "./setAside.svelte.js";
   import { tick, untrack } from "svelte";
@@ -529,7 +529,7 @@
     }
   }
 
-  function orderGroup(rows) {
+  function orderGroup(rows, sortUnits = (units) => units) {
     const inGroup = new Set(rows.map(prKey));
     const childrenOf = new Map();
     const topUnits = [];
@@ -546,7 +546,7 @@
       for (const child of childrenOf.get(prKey(pr)) ?? []) out.push(...subtree(child));
       return out;
     };
-    const unranked = topUnits.filter((pr) => pr.rank == null);
+    const unranked = sortUnits(topUnits.filter((pr) => pr.rank == null));
     const ranked = topUnits.filter((pr) => pr.rank != null).sort((a, b) => a.rank - b.rank);
     const items = [];
     for (const pr of unranked) for (const p of subtree(pr)) items.push({ pr: p });
@@ -590,8 +590,10 @@
       : [...(prefs.prGrouping.mode === "type" ? PR_TYPES.map((type) => ({ id: `type:${type}`, title: TYPE_TITLES[type] }))
         : prefs.prGrouping.groups.map((group) => ({ id: `group:${group.id}`, title: group.name }))),
         { id: "other", title: prefs.prGrouping.mode === "manual" ? "Ungrouped" : "Other" }];
+    // A stack sorts by its root row; feature groups also order by status, then type.
+    const statusRank = prefs.prGrouping.mode === "feature" ? (pr) => GROUP_ORDER.indexOf(classify(pr, viewerLogin).group) : undefined;
     const statusGroups = categories.filter(({ id }) => buckets.has(id)).map(({ id, title }) => {
-      const { units, unrankedCount, items } = orderGroup(buckets.get(id));
+      const { units, unrankedCount, items } = orderGroup(buckets.get(id), (units) => orderQueueUnits(units, statusRank));
       return { id, title, units, unrankedCount, items };
     });
     if (!pinned.length) return statusGroups;
