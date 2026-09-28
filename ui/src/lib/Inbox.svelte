@@ -20,6 +20,7 @@
   import { scrollEdge } from "./scroll.js";
   import KeyBar from "./KeyBar.svelte";
   import Avatar from "./Avatar.svelte";
+  import RowMedia from "./RowMedia.svelte";
   import UpdateButton from "./UpdateButton.svelte";
   import { timedFlag } from "./timedFlag.svelte.js";
   import { prKey } from "./prKey.js";
@@ -1169,6 +1170,7 @@
             {pr.reviewScore}/5
           </span>
         {/if}
+        {#if pr.media?.length}<RowMedia urls={pr.media} count={pr.mediaCount} />{/if}
         <span class="row-age mono">{relativeTime(pr.updatedAt)}</span>
         {#if index === selected}<Kbd keys="s" label={pr.rank == null ? "Pin" : "Unpin"} /><Kbd keys="enter" />{/if}
       </a>
