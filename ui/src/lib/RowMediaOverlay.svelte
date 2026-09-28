@@ -36,18 +36,21 @@
       placePeek(stack, url, peekSizes.get(url));
       return;
     }
-    // The aspect ratio is unknown until the image arrives; showing nothing beats a peek that jumps.
-    peek = null;
+    // The aspect ratio is unknown until the image arrives, so nothing shows before it and a peek already up
+    // stays until its successor is ready: the box never opens at a guessed size and jumps.
     const image = new Image();
     image.src = mediaSrc(url, "peek");
     peekLoading = image;
     image.decode().then(() => {
       peekSizes.set(url, [image.naturalWidth, image.naturalHeight]);
       if (peekLoading === image && hovered === stack && !viewer) placePeek(stack, url, peekSizes.get(url));
-    }, () => {});
+    }, () => {
+      if (peekLoading === image) hidePeek();
+    });
   }
 
   function placePeek(stack, url, [naturalWidth, naturalHeight]) {
+    peekLoading = null;
     const scale = Number.parseFloat(getComputedStyle(stack.closest("#app") ?? document.documentElement).zoom) || 1;
     const long = Math.max(naturalWidth, naturalHeight);
     const fit = Math.min(PEEK_LONG_SIDE / long, (innerWidth / scale - 2 * EDGE) / naturalWidth, (innerHeight / scale - 2 * EDGE) / naturalHeight);
