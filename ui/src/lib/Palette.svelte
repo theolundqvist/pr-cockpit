@@ -5,6 +5,7 @@
   import { isRecordingShortcut } from "./shortcutCapture.js";
   import { prKey } from "./prKey.js";
   import { pageNavigationResults } from "./navigationShortcuts.js";
+  import { isOpenState, paletteTokens, rankByNumber } from "./paletteRank.js";
   import Kbd from "./Kbd.svelte";
 
   let { standalone = false } = $props();
@@ -33,54 +34,55 @@
   const matches = (hay, tokens) => tokens.every((t) => hay.includes(t));
   const resultKey = (result) => result.kind === "command" ? `command:${result.id}` : prKey(result);
 
+  let tokens = $derived(paletteTokens(query));
+
   let instant = $derived.by(() => {
-    const q = query.trim().toLowerCase();
-    const tokens = q.split(/\s+/);
-    const rows = q
+    const rows = tokens.length
       ? cached.filter((pr) => matches(`${pr.title} ${pr.number} ${pr.headRef}`.toLowerCase(), tokens))
       : cached;
-    return rows.slice(0, 20).map((pr) => ({
+    const mapped = rows.map((pr) => ({
       repo: pr.repo,
       number: pr.number,
       title: pr.title,
+      open: isOpenState(pr.state),
       chip: stateChip(pr.state, pr.isDraft),
       rankTone: RANK_TONE[pr.needsMeRank],
     }));
+    return rankByNumber(mapped, tokens).slice(0, 20);
   });
 
   let indexInstant = $derived.by(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return [];
-    const tokens = q.split(/\s+/);
-    return indexed
+    if (!tokens.length) return [];
+    const mapped = indexed
       .filter((pr) => matches(`${pr.title} ${pr.number} ${pr.author}`.toLowerCase(), tokens))
-      .slice(0, 20)
       .map((pr) => ({
         repo: pr.repo,
         number: pr.number,
         title: pr.title,
+        open: isOpenState(pr.state),
         chip: stateChip(pr.state, pr.isDraft),
         rankTone: null,
       }));
+    return rankByNumber(mapped, tokens).slice(0, 20);
   });
 
   let results = $derived.by(() => {
     const commands = pageNavigationResults(query);
     const seen = new Set();
-    const merged = [...commands];
+    const prs = [];
     for (const row of [...instant, ...indexInstant]) {
       const key = prKey(row);
       if (seen.has(key)) continue;
       seen.add(key);
-      merged.push(row);
+      prs.push(row);
     }
     for (const hit of live) {
       const key = prKey(hit);
       if (seen.has(key)) continue;
       seen.add(key);
-      merged.push({ repo: hit.repo, number: hit.number, title: hit.title, chip: stateChip(hit.state, false), rankTone: null });
+      prs.push({ repo: hit.repo, number: hit.number, title: hit.title, open: isOpenState(hit.state), chip: stateChip(hit.state, false), rankTone: null });
     }
-    return merged;
+    return [...commands, ...rankByNumber(prs, tokens)];
   });
   let selectedResult = $derived(results[selected] ?? null);
 
