@@ -80,7 +80,7 @@ export async function fetchAllowedImage(raw: string, fetcher: typeof fetch = fet
   return null;
 }
 
-async function serveBody(body: Bun.BunFile | Uint8Array, range: string | null): Promise<Response> {
+async function serveBody(body: Bun.BunFile | Uint8Array, range: string | null, extra: Record<string, string> = {}): Promise<Response> {
   const head = body instanceof Uint8Array ? body : await body.slice(0, 256).bytes();
   const headers = {
     "content-type": sniffContentType(head),
@@ -88,6 +88,7 @@ async function serveBody(body: Bun.BunFile | Uint8Array, range: string | null): 
     "content-disposition": "inline",
     "content-security-policy": "default-src 'none'; sandbox",
     "accept-ranges": "bytes",
+    ...extra,
   };
   const match = range?.match(/^bytes=(\d*)-(\d*)$/);
   if (!match || (!match[1] && !match[2])) return new Response(body, { headers });
@@ -135,7 +136,9 @@ function cacheKey(raw: string): string {
   return new Bun.CryptoHasher("sha256").update(raw).digest("hex");
 }
 
-type ImageResult = { file: Bun.BunFile | Uint8Array } | { error: string; status: number };
+// A card or poster is always a still, so `kind` tells the UI what its source was.
+type MediaKind = "image" | "gif" | "video";
+type ImageResult = { file: Bun.BunFile | Uint8Array; kind?: MediaKind } | { error: string; status: number };
 const imageRequests = new Map<string, Promise<ImageResult>>();
 
 function getImage(raw: string): Promise<ImageResult> {
@@ -197,14 +200,23 @@ async function storeCached(key: string, bytes: Uint8Array): Promise<Bun.BunFile>
   return Bun.file(`${dir}/${key}`);
 }
 
+// Conversions yield the CPU to the app and its renderer, which usually share this machine, and at most two
+// run at once however many rows or viewer steps ask.
+const conversionSlots = createConcurrencyLimit(2);
+const niced = Bun.which("nice") ? ["nice", "-n", "10"] : [];
+
 const gifConversions = new Map<string, Promise<ImageResult>>();
 
-// GIFs become seekable H.264 so the player can scrub them; the conversion is cached beside other videos.
-function gifAsVideo(raw: string, gif: Bun.BunFile | Uint8Array): Promise<ImageResult> {
+// The viewer plays GIFs and videos in <video> so they can be paused and scrubbed: a GIF becomes seekable
+// H.264, cached beside other videos, and a video attachment plays as is.
+async function playableVideo(raw: string, source: Bun.BunFile | Uint8Array): Promise<ImageResult> {
+  const type = sniffContentType(source instanceof Uint8Array ? source : await source.slice(0, 256).bytes());
+  if (type.startsWith("video/")) return { file: source };
+  if (type !== "image/gif") return { error: "not a GIF or video", status: 415 };
   const path = `${videoCacheDir}/${cacheKey(raw)}.mp4`;
   const pending = gifConversions.get(path);
   if (pending) return pending;
-  const conversion = convertGif(gif, path).finally(() => gifConversions.delete(path));
+  const conversion = convertGif(source, path).finally(() => gifConversions.delete(path));
   gifConversions.set(path, conversion);
   return conversion;
 }
@@ -212,20 +224,20 @@ function gifAsVideo(raw: string, gif: Bun.BunFile | Uint8Array): Promise<ImageRe
 async function convertGif(gif: Bun.BunFile | Uint8Array, path: string): Promise<ImageResult> {
   const cached = Bun.file(path);
   if (await cached.exists()) return { file: cached };
-  const head = gif instanceof Uint8Array ? gif : await gif.slice(0, 16).bytes();
-  if (sniffContentType(head) !== "image/gif") return { error: "not a GIF", status: 415 };
   const ffmpeg = Bun.which("ffmpeg");
   if (!ffmpeg) return { error: "ffmpeg unavailable", status: 501 };
   mkdirSync(videoCacheDir, { recursive: true });
   const tmp = `${path}.${process.pid}.tmp.mp4`;
   const input = gif instanceof Uint8Array ? `${tmp}.gif` : gif.name!;
   if (gif instanceof Uint8Array) await Bun.write(input, gif);
-  const proc = Bun.spawn([
-    ffmpeg, "-loglevel", "error", "-y", "-i", input, "-an", "-threads", "2",
-    "-vf", "scale=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-    "-pix_fmt", "yuv420p", "-movflags", "+faststart", tmp,
-  ], { stdout: "ignore", stderr: "pipe" });
-  const [code, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
+  const [code, stderr] = await conversionSlots(async () => {
+    const proc = Bun.spawn([
+      ...niced, ffmpeg, "-loglevel", "error", "-y", "-i", input, "-an", "-threads", "2",
+      "-vf", "scale=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+      "-pix_fmt", "yuv420p", "-movflags", "+faststart", tmp,
+    ], { stdout: "ignore", stderr: "pipe" });
+    return Promise.all([proc.exited, new Response(proc.stderr).text()]);
+  });
   if (gif instanceof Uint8Array) rmSync(input, { force: true });
   if (code !== 0) {
     rmSync(tmp, { force: true });
@@ -237,16 +249,15 @@ async function convertGif(gif: Bun.BunFile | Uint8Array, path: string): Promise<
 }
 
 // Queue rows show media in a 52x32 CSS px card, cover-cropped. Hovering a stack peeks at the whole front
-// attachment in its own aspect ratio at 8x the card, 416 CSS px on its long side. Each variant is dense
-// enough to stay sharp on Retina without shipping originals, and the peek never upscales a small original.
+// attachment in its own aspect ratio at 8x the card, 416 CSS px on its long side, from the poster, which is
+// also what the viewer shows while an item loads. Each variant is dense enough to stay sharp on Retina without
+// shipping originals, and the poster never upscales a small original. Both are the first frame: GIFs and
+// videos move only in the viewer. They replaced the animated as=thumb and as=peek, whose immutable responses
+// renderers still cache under those URLs.
 const THUMB_VARIANTS: Record<string, { name: string; filter: string }> = {
-  thumb: { name: "208x128", filter: "scale=208:128:force_original_aspect_ratio=increase,crop=208:128" },
-  peek: { name: "fit832", filter: "scale='min(832,iw)':'min(832,ih)':force_original_aspect_ratio=decrease" },
+  card: { name: "card208x128", filter: "scale=208:128:force_original_aspect_ratio=increase,crop=208:128" },
+  poster: { name: "poster832", filter: "scale='min(832,iw)':'min(832,ih)':force_original_aspect_ratio=decrease" },
 };
-// Animated thumbnails loop the opening seconds at a low frame rate, so a long recording stays a small file.
-const THUMB_SECONDS = 10;
-const THUMB_FPS = 12;
-const thumbnailSlots = createConcurrencyLimit(2);
 const thumbnailConversions = new Map<string, Promise<ImageResult>>();
 
 function thumbnail(raw: string, source: Bun.BunFile | Uint8Array, variant: { name: string; filter: string }): Promise<ImageResult> {
@@ -258,26 +269,24 @@ function thumbnail(raw: string, source: Bun.BunFile | Uint8Array, variant: { nam
   return conversion;
 }
 
-// Stills, GIFs, and videos all become WebP so a row renders every kind with one <img>: Chromium animates
-// images off the main thread and drops an animation as soon as the row unloads its source.
 async function convertThumbnail(source: Bun.BunFile | Uint8Array, path: string, filter: string): Promise<ImageResult> {
-  const cached = Bun.file(path);
-  if (await cached.exists()) return { file: cached };
   const type = sniffContentType(source instanceof Uint8Array ? source : await source.slice(0, 256).bytes());
-  const animated = type === "image/gif" || type.startsWith("video/");
-  // A still or GIF still renders at full size when it cannot be converted; a video cannot render in <img>.
-  const fallback: ImageResult = type.startsWith("video/") ? { error: "video thumbnail unavailable", status: 502 } : { file: source };
+  const kind: MediaKind = type === "image/gif" ? "gif" : type.startsWith("video/") ? "video" : "image";
+  const cached = Bun.file(path);
+  if (await cached.exists()) return { file: cached, kind };
+  // Only a still may stand in at full size: a GIF would animate in the list and a video cannot render in <img>.
+  const fallback: ImageResult = kind === "image" ? { file: source, kind } : { error: `${kind} thumbnail unavailable`, status: 502 };
   const ffmpeg = Bun.which("ffmpeg");
   if (!ffmpeg || type === "image/svg+xml" || type === "application/octet-stream") return fallback;
   mkdirSync(thumbnailCacheDir, { recursive: true });
   const tmp = `${path}.${process.pid}.tmp.webp`;
   const input = source instanceof Uint8Array ? `${tmp}.source` : source.name!;
   if (source instanceof Uint8Array) await Bun.write(input, source);
-  const encode = animated
-    ? ["-t", String(THUMB_SECONDS), "-vf", `fps=${THUMB_FPS},${filter}`, "-c:v", "libwebp_anim", "-loop", "0", "-q:v", "75"]
-    : ["-frames:v", "1", "-vf", filter, "-c:v", "libwebp", "-q:v", "85"];
-  const [code, stderr] = await thumbnailSlots(async () => {
-    const proc = Bun.spawn([ffmpeg, "-loglevel", "error", "-y", "-i", input, "-an", "-threads", "1", ...encode, tmp], { stdout: "ignore", stderr: "pipe" });
+  const [code, stderr] = await conversionSlots(async () => {
+    const proc = Bun.spawn([
+      ...niced, ffmpeg, "-loglevel", "error", "-y", "-i", input, "-an", "-threads", "1",
+      "-frames:v", "1", "-vf", filter, "-c:v", "libwebp", "-q:v", "85", tmp,
+    ], { stdout: "ignore", stderr: "pipe" });
     return Promise.all([proc.exited, new Response(proc.stderr).text()]);
   });
   if (source instanceof Uint8Array) rmSync(input, { force: true });
@@ -288,20 +297,23 @@ async function convertThumbnail(source: Bun.BunFile | Uint8Array, path: string, 
   }
   renameSync(tmp, path);
   evictOverCap(thumbnailCacheDir);
-  return { file: Bun.file(path) };
+  return { file: Bun.file(path), kind };
 }
 
 async function serveResult(result: ImageResult, range: string | null): Promise<Response> {
   if ("error" in result) return new Response(result.error, { status: result.status });
-  return serveBody(result.file, range);
+  return serveBody(result.file, range, result.kind ? { "x-media-kind": result.kind } : {});
 }
 
-// `as=video` plays a GIF as seekable video; `as=thumb` and `as=peek` serve the queue-row card and its hover peek.
+// `as=video` plays a GIF or video in the viewer; `as=card` and `as=poster` serve the queue-row card and the
+// still for the hover peek and viewer, with `x-media-kind` naming what the still was taken from.
 function convertedImage(raw: string, as: string | null, source: Bun.BunFile | Uint8Array): Promise<ImageResult> | null {
-  if (as === "video") return gifAsVideo(raw, source);
-  const variant = as && Object.hasOwn(THUMB_VARIANTS, as) ? THUMB_VARIANTS[as] : undefined;
+  if (as === null) return null;
+  if (as === "video") return playableVideo(raw, source);
+  const variant = Object.hasOwn(THUMB_VARIANTS, as) ? THUMB_VARIANTS[as] : undefined;
   if (variant) return thumbnail(raw, source, variant);
-  return null;
+  // An unknown or retired variant must not fall back to the full-size original a card exists to avoid.
+  return Promise.resolve({ error: `unknown image variant: ${as}`, status: 400 });
 }
 
 export async function handleImage(url: URL, range: string | null = null): Promise<Response> {

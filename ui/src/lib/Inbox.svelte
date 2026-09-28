@@ -1127,7 +1127,7 @@
         <!-- No title: its native tooltip would cover the hover peek, and "+N" already counts the rest. -->
         <span class="row-media" style:--cards={pr.media.length}>
           {#if mediaReady}
-            {#each pr.media as url (url)}<img alt="" width="52" height="32" decoding="async" draggable="false" use:lazyThumbnail={`/api/image?as=thumb&url=${encodeURIComponent(url)}`} />{/each}
+            {#each pr.media as url (url)}<img alt="" width="52" height="32" decoding="async" draggable="false" use:lazyThumbnail={`/api/image?as=card&url=${encodeURIComponent(url)}`} />{/each}
           {/if}
           {#if pr.mediaCount > pr.media.length}<span class="media-more mono">+{pr.mediaCount - pr.media.length}</span>{/if}
         </span>
@@ -1989,9 +1989,24 @@
     z-index: 1;
     transform: rotate(10deg) scale(0.8);
   }
+  /* lazyThumbnail sets data-failed and data-kind, which the compiler cannot see, so those selectors are global. */
   .row-media img:not([src]),
-  .row-media img[data-failed] {
+  .row-media :global(img[data-failed]) {
     visibility: hidden;
+  }
+  /* Cards are stills; a GIF or video in the stack gets a play glyph on the front card and moves only in the viewer. */
+  .row-media:has(> :global(img[data-kind][src]:not([data-failed])))::after {
+    content: "";
+    position: absolute;
+    top: 9px;
+    left: 19px;
+    z-index: 4;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: rgb(0 0 0 / 0.6) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M5.2 3.8v6.4L10.4 7z' fill='white'/%3E%3C/svg%3E") center / 14px no-repeat;
+    box-shadow: 0 0 0 1px rgb(255 255 255 / 0.35);
+    pointer-events: none;
   }
   .media-more {
     min-width: 22px;

@@ -128,16 +128,55 @@ test("image proxy serves byte ranges so video players do not download the whole 
   expect(result).toEqual({ status: 206, range: "bytes 100-199/1000", length: 100, first: 100 });
 });
 
-test.skipIf(!Bun.which("ffmpeg"))("GIFs requested as video are transcoded to seekable MP4 and other images are refused", async () => {
+test.skipIf(!Bun.which("ffmpeg"))("GIFs requested as video are transcoded to seekable MP4, videos play as is, and stills are refused", async () => {
   const result = await imageScenario(`
     const gifPath = ${JSON.stringify(join(tmpdir(), `pr-cockpit-${process.pid}.gif`))};
     Bun.spawnSync(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=33x17:rate=10:duration=1", gifPath]);
     const gif = new Uint8Array(await Bun.file(gifPath).arrayBuffer());
-    globalThis.fetch = async (input) => new Response(String(input).endsWith(".gif") ? gif : png);
+    const mp4 = new Uint8Array([0, 0, 0, 0x20, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    globalThis.fetch = async (input) => new Response(String(input).endsWith(".gif") ? gif : String(input).endsWith(".mp4") ? mp4 : png);
     const asVideo = (raw) => handleImage(new URL("http://localhost/api/image?as=video&url=" + encodeURIComponent(raw)), "bytes=0-");
     const video = await asVideo("https://raw.githubusercontent.com/acme/app/main/flow.gif");
+    const original = await asVideo("https://raw.githubusercontent.com/acme/app/main/demo.mp4");
     const still = await asVideo(raw);
-    console.log(JSON.stringify({ video: [video.status, video.headers.get("content-type")], still: still.status }));
+    console.log(JSON.stringify({
+      video: [video.status, video.headers.get("content-type")],
+      original: [original.status, (await original.arrayBuffer()).byteLength],
+      still: still.status,
+    }));
   `);
-  expect(result).toEqual({ video: [206, "video/mp4"], still: 415 });
+  expect(result).toEqual({ video: [206, "video/mp4"], original: [206, 12], still: 415 });
+});
+
+// Looping cards kept the compositor redrawing an idle list, so every card and poster is one frame, and the
+// retired animated variants never fall back to the full-size original.
+test.skipIf(!Bun.which("ffmpeg"))("row cards and posters of a GIF are single-frame stills that name their source", async () => {
+  const result = await imageScenario(`
+    const gifPath = ${JSON.stringify(join(tmpdir(), `pr-cockpit-card-${process.pid}.gif`))};
+    Bun.spawnSync(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=10:duration=1", gifPath]);
+    const gif = new Uint8Array(await Bun.file(gifPath).arrayBuffer());
+    const pngPath = ${JSON.stringify(join(tmpdir(), `pr-cockpit-card-${process.pid}.png`))};
+    Bun.spawnSync(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180", "-frames:v", "1", pngPath]);
+    const still = new Uint8Array(await Bun.file(pngPath).arrayBuffer());
+    globalThis.fetch = async (input) => new Response(String(input).endsWith(".gif") ? gif : still);
+    const variant = async (as, name) => {
+      const response = await handleImage(new URL("http://localhost/api/image?as=" + as + "&url=" + encodeURIComponent("https://raw.githubusercontent.com/acme/app/main/" + name)));
+      const head = new TextDecoder("latin1").decode(new Uint8Array(await response.arrayBuffer()).subarray(0, 64));
+      return [response.status, response.headers.get("content-type"), response.headers.get("x-media-kind"), head.includes("ANIM")];
+    };
+    console.log(JSON.stringify({
+      card: await variant("card", "flow.gif"),
+      poster: await variant("poster", "flow.gif"),
+      cachedCard: await variant("card", "flow.gif"),
+      image: await variant("card", "shot.png"),
+      retired: (await variant("thumb", "flow.gif"))[0],
+    }));
+  `);
+  expect(result).toEqual({
+    card: [200, "image/webp", "gif", false],
+    poster: [200, "image/webp", "gif", false],
+    cachedCard: [200, "image/webp", "gif", false],
+    image: [200, "image/webp", "image", false],
+    retired: 400,
+  });
 });
