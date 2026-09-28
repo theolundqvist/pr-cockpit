@@ -1975,6 +1975,46 @@ describe("recently closed PRs", () => {
   });
 });
 
+describe("PR description media", () => {
+  test("lists every stored description attachment in order, beyond the three a row carries", async () => {
+    const repo = "cockpit-test/description-media";
+    const asset = (id: number) => `https://github.com/user-attachments/assets/0000000${id}-aaaa-bbbb-cccc-dddddddddddd`;
+    const withMedia = trackedPrRow({ repo, number: 1, fetchedAt: new Date().toISOString() });
+    withMedia.detail_json = JSON.stringify({
+      ...JSON.parse(withMedia.detail_json),
+      body: [
+        `![before](${asset(1)})`,
+        `<img width="400" src="${asset(2)}" />`,
+        "```md",
+        `![not rendered](${asset(9)})`,
+        "```",
+        asset(3),
+        `![after](${asset(4)}) and ![again](${asset(1)})`,
+        `<video src="${asset(5)}"></video>`,
+      ].join("\n"),
+    });
+    upsertPr(withMedia);
+    upsertPr(trackedPrRow({ repo, number: 2, fetchedAt: new Date().toISOString() }));
+    const fetchHandler = buildFetchHandler(4820);
+    const get = (path: string) => fetchHandler(new Request(`http://127.0.0.1:4820/api/pr/${path}/media`));
+
+    try {
+      const listed = await get(`${repo}/1`);
+      expect(listed.status).toBe(200);
+      expect(await listed.json()).toEqual({ media: [asset(1), asset(2), asset(3), asset(4), asset(5)] });
+
+      const empty = await get(`${repo}/2`);
+      expect(empty.status).toBe(200);
+      expect(await empty.json()).toEqual({ media: [] });
+
+      expect((await get(`${repo}/3`)).status).toBe(404);
+      expect((await get(`${repo}/0`)).status).toBe(400);
+    } finally {
+      db.query("DELETE FROM prs WHERE repo = ?").run(repo);
+    }
+  });
+});
+
 describe("merge method preference", () => {
   test("stores an explicit preference for the PR base branch", async () => {
     const repo = "cockpit-test/merge-method";

@@ -529,6 +529,17 @@ export function listBodyMedia(): Map<string, string[]> {
   return new Map(bodyMediaStmt.all().map((row) => [prKey(row), JSON.parse(row.body_media) as string[]]));
 }
 
+const prBodyMediaStmt = db.prepare<{ body_media: string | null }, [string, number]>(
+  "SELECT body_media FROM prs WHERE repo = ? AND number = ?",
+);
+
+// One stored PR's description media in document order; null when the PR is not stored.
+export function getBodyMedia(repo: string, number: number): string[] | null {
+  const row = prBodyMediaStmt.get(repo, number);
+  if (!row) return null;
+  return row.body_media ? JSON.parse(row.body_media) as string[] : [];
+}
+
 const upsertStmt = db.prepare(`
 INSERT INTO prs (
   repo, number, state, is_draft, title, author, base_ref, head_ref, head_sha,

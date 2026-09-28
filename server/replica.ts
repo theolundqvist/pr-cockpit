@@ -9,6 +9,8 @@ const SOURCE_PORT = Number(Bun.env.COCKPIT_PROXY_PORT ?? 4820);
 const TUNNEL_PORT = Number(Bun.env.COCKPIT_REPLICA_LOCAL_PORT ?? 48203);
 const SYNC_INTERVAL_MS = 5_000;
 const PENDING_REVIEW_PATH_RE = /^\/api\/pr\/[^/]+\/[^/]+\/[1-9][0-9]*\/pending-review$/;
+// Rows render media from the replicated PR table, so their viewer reads the same copy.
+const PR_MEDIA_PATH_RE = /^\/api\/pr\/[^/]+\/[^/]+\/[1-9][0-9]*\/media$/;
 const PENDING_MUTATION_KINDS: Record<string, true> = {
   "pending-inline-comment": true,
   "edit-pending-comment": true,
@@ -265,7 +267,7 @@ export function replicaSnapshotResponse(request: Request): Response {
 }
 
 export function isLocalReplicaRequest(request: Request, url: URL): boolean {
-  if (LOCAL_API_PATHS.has(url.pathname)) return true;
+  if (LOCAL_API_PATHS.has(url.pathname) || PR_MEDIA_PATH_RE.test(url.pathname)) return true;
   if (url.pathname.startsWith("/api/tmux/")) return true;
   if (url.pathname === "/api/switch-branch") return true;
   return request.method === "OPTIONS";

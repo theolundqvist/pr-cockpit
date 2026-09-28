@@ -10,6 +10,7 @@ import {
   getFileContents,
   githubGraphqlUsage,
   listRunJobsForPrBranch,
+  getBodyMedia,
   getPr,
   getPrByBranch,
   getRanks,
@@ -285,6 +286,13 @@ export function statsExcludingTests(pr: PrRow, detail: any, testRe: RegExp): { a
 // Rows show at most three description thumbnails and count the rest.
 function mediaFields(media: string[] = []): { media: string[]; mediaCount: number } {
   return { media: media.slice(0, 3), mediaCount: media.length };
+}
+
+// A row's media viewer asks for the whole list only when it opens; rows carry just the first three.
+function handlePrMedia(owner: string, repo: string, number: string): Response {
+  if (!validPrReference(owner, repo, number)) return json({ error: "invalid PR reference" }, 400);
+  const media = getBodyMedia(`${owner}/${repo}`, Number(number));
+  return media ? json({ media }) : json({ error: "PR is not cached yet" }, 404);
 }
 
 function handleClosed(url: URL): Response {
@@ -3363,6 +3371,15 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       parts[5] === "commit-stats"
     ) {
       return handlePrCommitStats(parts[2]!, parts[3]!, parts[4]!, url);
+    }
+    if (
+      req.method === "GET" &&
+      parts.length === 6 &&
+      parts[0] === "api" &&
+      parts[1] === "pr" &&
+      parts[5] === "media"
+    ) {
+      return handlePrMedia(parts[2]!, parts[3]!, parts[4]!);
     }
     if (
       req.method === "GET" &&
