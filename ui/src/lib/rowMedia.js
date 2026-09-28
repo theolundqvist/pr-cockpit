@@ -1,6 +1,7 @@
-// Queue thumbnails load only while their row is near the viewport and unload once it leaves, which also
-// stops animations nobody can see. A few loads run at once, so first-time conversions never hold every
-// connection the API needs.
+// Queue thumbnails load only while their row is near the viewport and unload once it scrolls away, which
+// also stops animations nobody can see. A hidden list keeps its sources: nothing paints there, and showing
+// it again must not reload every thumbnail. A few loads run at once, so first-time conversions never hold
+// every connection the API needs.
 const MAX_LOADING = 3;
 const pending = [];
 const loading = new Set();
@@ -35,7 +36,10 @@ function hide(img) {
 export function lazyThumbnail(img, src) {
   sources.set(img, src);
   observer ??= new IntersectionObserver((entries) => {
-    for (const entry of entries) (entry.isIntersecting ? show : hide)(entry.target);
+    for (const entry of entries) {
+      if (entry.isIntersecting) show(entry.target);
+      else if (entry.target.getClientRects().length) hide(entry.target);
+    }
   }, { rootMargin: "240px 0px" });
   const loaded = () => {
     delete img.dataset.failed;

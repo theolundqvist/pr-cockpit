@@ -20,7 +20,7 @@
   import { scrollEdge } from "./scroll.js";
   import KeyBar from "./KeyBar.svelte";
   import Avatar from "./Avatar.svelte";
-  import RowMedia from "./RowMedia.svelte";
+  import { lazyThumbnail } from "./rowMedia.js";
   import UpdateButton from "./UpdateButton.svelte";
   import { timedFlag } from "./timedFlag.svelte.js";
   import { prKey } from "./prKey.js";
@@ -88,6 +88,17 @@
   let contextMenu = $state(null);
   let contextMenuNode = $state();
   let lastG = 0;
+  // Row thumbnails mount one task after the list's first paint, so opening the queue never waits on them;
+  // each row reserves the deck's width up front, so nothing shifts when they arrive.
+  let mediaReady = $state(false);
+  $effect(() => {
+    let timer;
+    const frame = requestAnimationFrame(() => (timer = setTimeout(() => (mediaReady = true))));
+    return () => {
+      cancelAnimationFrame(frame);
+      clearTimeout(timer);
+    };
+  });
 
   $effect(() => {
     if (!contextMenu) return;
@@ -476,7 +487,7 @@
   let queryFilteredPrs = $derived(wantsHistory(filterQuery) ? (historyQuery === filterQuery.trim() ? historyPrs : []) : filterPrs(prs, filterQuery, showArchived));
   let availableRepos = $derived(availableRepositories(view === "all" ? [...configuredRepos, ...allPrsRepos, ...selectedRepos] : configuredRepos, prs, archivedPrs, closedPrs));
   let filteredPrs = $derived(filterByRepositories(queryFilteredPrs.filter((pr) => !isSetAside(pr)), selectedRepos));
-  let filteredClosedPrs = $derived(filterByRepositories(closedPrs.filter((pr) => !isSetAside(pr)), selectedRepos));
+  let filteredClosedPrs = $derived(orderQueueUnits(filterByRepositories(closedPrs.filter((pr) => !isSetAside(pr)), selectedRepos)));
   let actionsHref = $derived.by(() => {
     const params = new URLSearchParams();
     if (selectedRepos.length === 0) params.append("repo", "");
@@ -744,7 +755,7 @@
     const pr = prs.find((p) => prKey(p) === dragKey);
     return pr ? groupId(pr) : null;
   });
-  let visibleAllPrs = $derived(allPrs.filter((pr) => !isSetAside(pr)));
+  let visibleAllPrs = $derived(orderQueueUnits(allPrs.filter((pr) => !isSetAside(pr))));
   let visibleArchivedPrs = $derived(archivedPrs.filter((pr) => !isSetAside(pr)));
   let ordered = $derived(view === "all" ? visibleAllPrs : view === "closed" ? filteredClosedPrs : showArchived ? [...openOrdered, ...visibleArchivedPrs] : openOrdered);
   let archivedSet = $derived(new Set(archivedPrs.map((pr) => prKey(pr))));
@@ -1096,12 +1107,27 @@
       </div>
     {/if}
 
+    {#snippet rowTitle(pr)}
+      {#if isDraftPr(pr)}<span class="badge wait row-draft">Draft</span>{/if}
+      <span class="row-title-text">{pr.title.startsWith(DRAFT_PREFIX) ? pr.title.slice(DRAFT_PREFIX.length) : pr.title}</span>
+    {/snippet}
+
+    {#snippet rowMedia(pr)}
+      {#if pr.media?.length}
+        <span class="row-media" style:--cards={pr.media.length} title={`${pr.mediaCount} ${pr.mediaCount === 1 ? "attachment" : "attachments"} in the description`}>
+          {#if mediaReady}
+            {#each pr.media as url (url)}<img alt="" width="52" height="32" decoding="async" draggable="false" use:lazyThumbnail={`/api/image?as=thumb&url=${encodeURIComponent(url)}`} />{/each}
+          {/if}
+          {#if pr.mediaCount > pr.media.length}<span class="media-more mono">+{pr.mediaCount - pr.media.length}</span>{/if}
+        </span>
+      {/if}
+    {/snippet}
+
     {#snippet row(pr)}
       {@const status = classify(pr, viewerLogin)}
       {@const index = ordered.indexOf(pr)}
       {@const info = stack.get(prKey(pr))}
       {@const statsDiffer = pr.additions !== pr.rawAdditions || pr.deletions !== pr.rawDeletions}
-      {@const titlePrefixed = pr.title.startsWith(DRAFT_PREFIX)}
       <a
         class="row {status.tone}"
         class:selected={index === selected}
@@ -1128,10 +1154,7 @@
         <span class="row-badge-slot"><span class="row-badge badge {status.tone}">{status.label}</span></span>
         <div class="row-main">
           <div class="row-title">
-            {#if isDraftPr(pr) && pr.state !== "MERGED" && pr.state !== "CLOSED"}
-              <span class="badge wait row-draft">Draft</span>
-            {/if}
-            <span class="row-title-text">{titlePrefixed ? pr.title.slice(DRAFT_PREFIX.length) : pr.title}</span>
+            {@render rowTitle(pr)}
             {#if pr.rank != null}
               <span class="pinned-mark" title="Pinned until merged or archived" aria-label="Pinned">
                 <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -1170,9 +1193,9 @@
             {pr.reviewScore}/5
           </span>
         {/if}
-        {#if pr.media?.length}<RowMedia urls={pr.media} count={pr.mediaCount} />{/if}
+        <span class="row-keys">{#if index === selected}<Kbd keys="s" label={pr.rank == null ? "Pin" : "Unpin"} /><Kbd keys="enter" />{/if}</span>
+        {@render rowMedia(pr)}
         <span class="row-age mono">{relativeTime(pr.updatedAt)}</span>
-        {#if index === selected}<Kbd keys="s" label={pr.rank == null ? "Pin" : "Unpin"} /><Kbd keys="enter" />{/if}
       </a>
     {/snippet}
 
@@ -1231,7 +1254,7 @@
         </span>
         <span class="row-badge-slot"><span class="row-badge badge {status.tone}">{status.label}</span></span>
         <div class="row-main">
-          <div class="row-title">{pr.title}</div>
+          <div class="row-title">{@render rowTitle(pr)}</div>
           <div class="row-meta mono">
             <span class="num">#{pr.number}</span>
             <span class="sep">·</span>
@@ -1240,8 +1263,9 @@
             <span>{pr.author}</span>
           </div>
         </div>
+        <span class="row-keys">{#if index === selected}<Kbd keys="enter" />{/if}</span>
+        {@render rowMedia(pr)}
         <span class="row-age mono" title={pr.terminalAt}>{relativeTime(pr.terminalAt)}</span>
-        {#if index === selected}<Kbd keys="enter" />{/if}
       </a>
     {/snippet}
 
@@ -1257,9 +1281,9 @@
         <span class="row-avatar">
           <Avatar login={pr.author} url={`https://github.com/${pr.author}.png?size=64`} size={30} />
         </span>
-        <span class="cow-badge-slot"><span class="cow-badge wait">{pr.isDraft ? "Draft" : "Open"}</span></span>
+        <span class="cow-badge-slot"><span class="cow-badge wait">Open</span></span>
         <div class="row-main">
-          <div class="row-title">{pr.title}</div>
+          <div class="row-title">{@render rowTitle(pr)}</div>
           <div class="row-meta mono">
             <span class="num">#{pr.number}</span>
             <span class="sep">·</span>
@@ -1268,8 +1292,9 @@
             <span>{pr.author}</span>
           </div>
         </div>
+        <span class="row-keys">{#if index === selected}<Kbd keys="enter" />{/if}</span>
+        {@render rowMedia(pr)}
         <span class="row-age mono" title={pr.updatedAt}>{relativeTime(pr.updatedAt)}</span>
-        {#if index === selected}<Kbd keys="enter" />{/if}
       </a>
     {/snippet}
 
@@ -1907,6 +1932,57 @@
     font-size: 12px;
     color: var(--text-faint);
     margin-top: 2px;
+  }
+  /* Key hints get reserved space left of the media, so selecting a row never moves its deck or age. */
+  .row-keys {
+    flex: none;
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+    width: 56px;
+  }
+  /* A fixed-size deck: later cards sit behind the first, fanned out to the right. */
+  .row-media {
+    position: relative;
+    flex: none;
+    align-self: center;
+    display: flex;
+    align-items: center;
+    height: 32px;
+    padding-left: calc(58px + (var(--cards) - 1) * 8px);
+    contain: layout;
+  }
+  .row-media img {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 3;
+    width: 52px;
+    height: 32px;
+    object-fit: cover;
+    border-radius: 5px;
+    background: var(--panel-raised);
+    box-shadow: 0 0 0 1px var(--border), -2px 0 5px rgb(0 0 0 / 0.22);
+    transform-origin: right center;
+  }
+  .row-media img:nth-child(2) {
+    left: 8px;
+    z-index: 2;
+    transform: rotate(5deg) scale(0.9);
+  }
+  .row-media img:nth-child(3) {
+    left: 16px;
+    z-index: 1;
+    transform: rotate(10deg) scale(0.8);
+  }
+  .row-media img:not([src]),
+  .row-media img[data-failed] {
+    visibility: hidden;
+  }
+  .media-more {
+    min-width: 22px;
+    font-size: 11px;
+    color: var(--text-faint);
   }
 
   /* Workspace composition: the queue becomes a clear working surface instead

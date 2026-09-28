@@ -17,6 +17,7 @@ import {
   upsertMergedPrAnalyticsCache,
   lastWebhookAtForPr,
   listArchivedKeys,
+  listBodyMedia,
   listClosedPrs,
   listPrIndex,
   listActionWorkflows,
@@ -281,11 +282,17 @@ export function statsExcludingTests(pr: PrRow, detail: any, testRe: RegExp): { a
   return { additions, deletions };
 }
 
+// Rows show at most three description thumbnails and count the rest.
+function mediaFields(media: string[] = []): { media: string[]; mediaCount: number } {
+  return { media: media.slice(0, 3), mediaCount: media.length };
+}
+
 function handleClosed(url: URL): Response {
   const requestedLimit = Number(url.searchParams.get("limit"));
   const limit = Number.isSafeInteger(requestedLimit) && requestedLimit > 0
     ? Math.min(requestedLimit, 200)
     : 100;
+  const media = listBodyMedia();
   const prs = listClosedPrs(limit).map((pr) => ({
     repo: pr.repo,
     number: pr.number,
@@ -297,6 +304,7 @@ function handleClosed(url: URL): Response {
     mergedAt: pr.merged_at,
     closedAt: pr.closed_at,
     terminalAt: pr.merged_at ?? pr.closed_at ?? pr.updated_at,
+    ...(media.has(prKey(pr)) ? mediaFields(media.get(prKey(pr))) : {}),
   }));
   return json({ prs });
 }
@@ -329,7 +337,6 @@ async function handleInbox(url: URL): Promise<Response> {
     const reviewScore = aggregateReviewScore(perReviewer, pr.greptile_confidence);
     const reviewScoreStale = aggregateReviewStale(perReviewer, reviewScore);
     const stats = statsExcludingTests(pr, detail, testRe);
-    const media = pr.body_media ? JSON.parse(pr.body_media) as string[] : [];
     return {
       repo: pr.repo,
       number: pr.number,
@@ -367,9 +374,7 @@ async function handleInbox(url: URL): Promise<Response> {
       rank: ranks.get(prKey(pr)) ?? null,
       fixerAgentState: agentByPr.get(prKey(pr))?.state ?? null,
       fixerAgentExitReason: agentByPr.get(prKey(pr))?.exit_reason ?? null,
-      // Rows show at most three description thumbnails and count the rest.
-      media: media.slice(0, 3),
-      mediaCount: media.length,
+      ...mediaFields(pr.body_media ? JSON.parse(pr.body_media) as string[] : undefined),
     };
   });
 
@@ -572,7 +577,8 @@ async function handleAllPrs(url: URL, runtime: HttpRuntime): Promise<Response> {
       || left.repo.localeCompare(right.repo)
       || left.number - right.number
     );
-    return json({ prs });
+    const media = listBodyMedia();
+    return json({ prs: prs.map((pr) => media.has(prKey(pr)) ? { ...pr, ...mediaFields(media.get(prKey(pr))) } : pr) });
   } catch (err) {
     return githubErrorResponse(err);
   }

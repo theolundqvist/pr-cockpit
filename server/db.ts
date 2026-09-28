@@ -520,6 +520,15 @@ function bodyMediaJson(detailJson: string): string {
   return JSON.stringify(typeof body === "string" ? extractGithubMedia(body, { videos: true }) : []);
 }
 
+const bodyMediaStmt = db.prepare<{ repo: string; number: number; body_media: string }, []>(
+  "SELECT repo, number, body_media FROM prs WHERE body_media IS NOT NULL AND body_media != '[]'",
+);
+
+// Description media for every stored PR that has any, keyed by prKey.
+export function listBodyMedia(): Map<string, string[]> {
+  return new Map(bodyMediaStmt.all().map((row) => [prKey(row), JSON.parse(row.body_media) as string[]]));
+}
+
 const upsertStmt = db.prepare(`
 INSERT INTO prs (
   repo, number, state, is_draft, title, author, base_ref, head_ref, head_sha,

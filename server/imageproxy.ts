@@ -236,27 +236,27 @@ async function convertGif(gif: Bun.BunFile | Uint8Array, path: string): Promise<
   return { file: Bun.file(path) };
 }
 
-// Queue rows show media in a 52x32 CSS px card; twice that stays sharp on Retina without shipping originals.
-const THUMB_WIDTH = 104;
-const THUMB_HEIGHT = 64;
+// Queue rows show media in a 52x32 CSS px card and enlarge it 4x on hover; each variant is rendered dense
+// enough to stay sharp on Retina without shipping originals.
+const THUMB_SIZES: Record<string, [number, number]> = { thumb: [208, 128], preview: [416, 256] };
 // Animated thumbnails loop the opening seconds at a low frame rate, so a long recording stays a small file.
 const THUMB_SECONDS = 10;
 const THUMB_FPS = 12;
 const thumbnailSlots = createConcurrencyLimit(2);
 const thumbnailConversions = new Map<string, Promise<ImageResult>>();
 
-function thumbnail(raw: string, source: Bun.BunFile | Uint8Array): Promise<ImageResult> {
-  const path = `${thumbnailCacheDir}/${cacheKey(raw)}-${THUMB_WIDTH}x${THUMB_HEIGHT}.webp`;
+function thumbnail(raw: string, source: Bun.BunFile | Uint8Array, [width, height]: [number, number]): Promise<ImageResult> {
+  const path = `${thumbnailCacheDir}/${cacheKey(raw)}-${width}x${height}.webp`;
   const pending = thumbnailConversions.get(path);
   if (pending) return pending;
-  const conversion = convertThumbnail(source, path).finally(() => thumbnailConversions.delete(path));
+  const conversion = convertThumbnail(source, path, width, height).finally(() => thumbnailConversions.delete(path));
   thumbnailConversions.set(path, conversion);
   return conversion;
 }
 
 // Stills, GIFs, and videos all become WebP so a row renders every kind with one <img>: Chromium animates
 // images off the main thread and drops an animation as soon as the row unloads its source.
-async function convertThumbnail(source: Bun.BunFile | Uint8Array, path: string): Promise<ImageResult> {
+async function convertThumbnail(source: Bun.BunFile | Uint8Array, path: string, width: number, height: number): Promise<ImageResult> {
   const cached = Bun.file(path);
   if (await cached.exists()) return { file: cached };
   const type = sniffContentType(source instanceof Uint8Array ? source : await source.slice(0, 256).bytes());
@@ -269,10 +269,10 @@ async function convertThumbnail(source: Bun.BunFile | Uint8Array, path: string):
   const tmp = `${path}.${process.pid}.tmp.webp`;
   const input = source instanceof Uint8Array ? `${tmp}.source` : source.name!;
   if (source instanceof Uint8Array) await Bun.write(input, source);
-  const cover = `scale=${THUMB_WIDTH}:${THUMB_HEIGHT}:force_original_aspect_ratio=increase,crop=${THUMB_WIDTH}:${THUMB_HEIGHT}`;
+  const cover = `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height}`;
   const encode = animated
-    ? ["-t", String(THUMB_SECONDS), "-vf", `fps=${THUMB_FPS},${cover}`, "-c:v", "libwebp_anim", "-loop", "0", "-q:v", "60"]
-    : ["-frames:v", "1", "-vf", cover, "-c:v", "libwebp", "-q:v", "75"];
+    ? ["-t", String(THUMB_SECONDS), "-vf", `fps=${THUMB_FPS},${cover}`, "-c:v", "libwebp_anim", "-loop", "0", "-q:v", "75"]
+    : ["-frames:v", "1", "-vf", cover, "-c:v", "libwebp", "-q:v", "85"];
   const [code, stderr] = await thumbnailSlots(async () => {
     const proc = Bun.spawn([ffmpeg, "-loglevel", "error", "-y", "-i", input, "-an", "-threads", "1", ...encode, tmp], { stdout: "ignore", stderr: "pipe" });
     return Promise.all([proc.exited, new Response(proc.stderr).text()]);
@@ -293,10 +293,11 @@ async function serveResult(result: ImageResult, range: string | null): Promise<R
   return serveBody(result.file, range);
 }
 
-// `as=video` plays a GIF as seekable video; `as=thumb` serves the queue-row thumbnail.
+// `as=video` plays a GIF as seekable video; `as=thumb` and `as=preview` serve the queue-row card and its hover preview.
 function convertedImage(raw: string, as: string | null, source: Bun.BunFile | Uint8Array): Promise<ImageResult> | null {
   if (as === "video") return gifAsVideo(raw, source);
-  if (as === "thumb") return thumbnail(raw, source);
+  const size = as ? THUMB_SIZES[as] : undefined;
+  if (size) return thumbnail(raw, source, size);
   return null;
 }
 
