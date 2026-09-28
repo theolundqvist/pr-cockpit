@@ -199,6 +199,7 @@ test("listen returns immediately for current review blockers", async () => {
     { ci: { state: "SUCCESS", failed: 0 }, openComments: [{ path: "src/a.ts", comments: [] }] },
     { ci: { state: "FAILURE", failed: 1 }, openComments: [] },
     { ci: { state: "SUCCESS", failed: 0, cancelled: 1 }, openComments: [] },
+    { merge: "DIRTY", ci: { state: "SUCCESS", failed: 0 }, openComments: [] },
   ];
 
   for (const blocker of blockers) {
@@ -314,6 +315,45 @@ test("listen --comments-only ignores failed CI and unrelated changes, then exits
   }
 });
 
+test("listen --conflicts-only ignores failed CI and open comments, then exits once the PR conflicts", async () => {
+  let reads = 0;
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      if (new URL(request.url).searchParams.get("format") === "json") {
+        reads += 1;
+        return Response.json({
+          title: reads === 1 ? "before" : "after",
+          merge: reads >= 4 ? "DIRTY" : "CLEAN",
+          ci: { state: "FAILURE", failed: 1 },
+          openComments: [{ path: "src/a.ts", comments: [] }],
+        });
+      }
+      return new Response("conflicting\n");
+    },
+  });
+  const process = Bun.spawn([join(import.meta.dir, "pr-cockpit"), "listen", "--conflicts-only", "owner/repo#1"], {
+    env: { ...Bun.env, COCKPIT_PORT: String(server.port), COCKPIT_LISTEN_INTERVAL: "0.01" },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  try {
+    const [output, error, exitCode] = await Promise.all([
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+      process.exited,
+    ]);
+    expect(exitCode).toBe(0);
+    expect(error).toBe("");
+    expect(output).toBe("conflicting\n");
+    expect(reads).toBe(4);
+  } finally {
+    process.kill();
+    server.stop(true);
+  }
+});
+
 test("every listen scope stops polling once the PR is merged or closed", async () => {
   const cases = [
     { scope: [], finishedAt: 1, state: "MERGED" },
@@ -321,6 +361,8 @@ test("every listen scope stops polling once the PR is merged or closed", async (
     { scope: ["--comments-only"], finishedAt: 1, state: "MERGED" },
     { scope: ["--ci-only"], finishedAt: 3, state: "MERGED" },
     { scope: ["--comments-only"], finishedAt: 3, state: "CLOSED" },
+    { scope: ["--conflicts-only"], finishedAt: 1, state: "CLOSED" },
+    { scope: ["--conflicts-only"], finishedAt: 3, state: "MERGED" },
   ];
   for (const { scope, finishedAt, state } of cases) {
     let reads = 0;

@@ -53,6 +53,7 @@ Options:
   --new-since DATE    only comments at or after DATE
   --ci-only           with listen REF, wake only for CI changes or current failure
   --comments-only     with listen REF, wake only for comment changes or current open comments
+  --conflicts-only    with listen REF, wake only for merge state changes or current conflicts
   --use-as-proxy HOST
                       reach the authoritative Cockpit server through SSH
   -h, --help          show this help
@@ -68,6 +69,7 @@ Read options:
   --new-since DATE     only comments at or after DATE
   --ci-only            with listen REF, wake only for CI changes or current failure
   --comments-only      with listen REF, wake only for comment changes or current open comments
+  --conflicts-only     with listen REF, wake only for merge state changes or current conflicts
 
 Mutation options:
   --body-file FILE     read exact comment, review, or body text; use - for stdin
@@ -251,6 +253,10 @@ while (($#)); do
       [[ "$command" = "listen" && "$listen_scope" = "all" ]] || usage
       listen_scope="comments"
       ;;
+    --conflicts-only)
+      [[ "$command" = "listen" && "$listen_scope" = "all" ]] || usage
+      listen_scope="conflicts"
+      ;;
     --comments=0) comments="0" ;;
     --body-file)
       [[ $# -gt 1 ]] || usage
@@ -433,6 +439,10 @@ switch (operation) {
       }));
       break;
     }
+    if (argument === "conflicts") {
+      console.log(stable({ state: input.state ?? null, merge: input.merge ?? null }));
+      break;
+    }
     delete input.snapshot;
     delete input.quota;
     delete input.newCommentsSince;
@@ -443,8 +453,14 @@ switch (operation) {
     // a cancelled check never produced a verdict, so it blocks the same way a failure does
     const failedCi = Number(input.ci?.failed) > 0 || Number(input.ci?.cancelled) > 0 || /^(FAILURE|ERROR)$/i.test(String(input.ci?.state ?? ""));
     const openComments = Array.isArray(input.openComments) && input.openComments.length > 0;
+    const conflicting = String(input.merge ?? "").toUpperCase() === "DIRTY";
     const finished = input.state === "MERGED" || input.state === "CLOSED";
-    console.log(Number(finished || (argument === "ci" ? failedCi : argument === "comments" ? openComments : failedCi || openComments)));
+    const blocked = {
+      ci: failedCi,
+      comments: openComments,
+      conflicts: conflicting,
+    }[argument] ?? (failedCi || openComments || conflicting);
+    console.log(Number(finished || blocked));
     break;
   }
   case "run-state": {
@@ -622,7 +638,7 @@ activate_actions_lease() {
   curl --noproxy '*' -sS --fail-with-body -X POST -H "X-PR-Cockpit-CLI: 1" "$base_url/actions-lease" >/dev/null
 }
 
-if [[ "$mode" = "jobs" || "$mode" = "logs" || ( "$command" = "listen" && "$listen_scope" != "comments" ) ]]; then
+if [[ "$mode" = "jobs" || "$mode" = "logs" || ( "$command" = "listen" && "$listen_scope" != "comments" && "$listen_scope" != "conflicts" ) ]]; then
   activate_actions_lease
 fi
 

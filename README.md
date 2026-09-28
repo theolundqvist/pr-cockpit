@@ -96,7 +96,7 @@ pr-cockpit owner/repo#123 --logs verify --run 987 --attempt 2
 pr-cockpit listen owner/repo#123
 ```
 
-`listen` waits for substantive cached state changes—a push, check result, review, or comment—then prints what changed and exits. `--ci-only` and `--comments-only` narrow the wake signal.
+`listen` waits for substantive cached state changes—a push, check result, review, comment, or merge conflict—then prints what changed and exits. It returns at once when the PR already has failing checks, open comments, or merge conflicts. `--ci-only`, `--comments-only`, and `--conflicts-only` narrow the wake signal.
 
 `pr-cockpit listen owner/repo#123 --run 987` waits for a specific run and reconciles it about every 30 seconds at the default interval, so missed webhooks cannot leave completion unobserved. A failed reconciliation exits with an error.
 
