@@ -89,9 +89,11 @@
   let contextMenuNode = $state();
   let lastG = 0;
   // Row thumbnails mount one task after the list's first paint, so opening the queue never waits on them;
-  // each row reserves the deck's width up front, so nothing shifts when they arrive.
+  // each row reserves the deck's width up front, so nothing shifts when they arrive. A cold open has no
+  // rows until the inbox answers, so the wait starts with the first rows.
   let mediaReady = $state(false);
   $effect(() => {
+    if (mediaReady || !ordered.length) return;
     let timer;
     const frame = requestAnimationFrame(() => (timer = setTimeout(() => (mediaReady = true))));
     return () => {
