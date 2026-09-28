@@ -329,6 +329,7 @@ async function handleInbox(url: URL): Promise<Response> {
     const reviewScore = aggregateReviewScore(perReviewer, pr.greptile_confidence);
     const reviewScoreStale = aggregateReviewStale(perReviewer, reviewScore);
     const stats = statsExcludingTests(pr, detail, testRe);
+    const media = pr.body_media ? JSON.parse(pr.body_media) as string[] : [];
     return {
       repo: pr.repo,
       number: pr.number,
@@ -366,6 +367,9 @@ async function handleInbox(url: URL): Promise<Response> {
       rank: ranks.get(prKey(pr)) ?? null,
       fixerAgentState: agentByPr.get(prKey(pr))?.state ?? null,
       fixerAgentExitReason: agentByPr.get(prKey(pr))?.exit_reason ?? null,
+      // Rows show at most three description thumbnails and count the rest.
+      media: media.slice(0, 3),
+      mediaCount: media.length,
     };
   });
 

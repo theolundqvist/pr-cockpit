@@ -20,7 +20,7 @@ import {
   type FileHistoryDiff,
   type PrDetail,
 } from "../server/github.ts";
-import { extractGithubImageUrls } from "../server/imageproxy.ts";
+import { extractGithubMedia } from "../server/githubMedia.ts";
 
 interface Args {
   repo: string;
@@ -94,7 +94,7 @@ function bodyImageUrls(detail: PrDetail): string[] {
   for (const thread of detail.reviewThreads.nodes) {
     for (const comment of thread.comments.nodes) bodies.push(comment.body);
   }
-  return [...new Set(bodies.flatMap(extractGithubImageUrls))];
+  return [...new Set(bodies.flatMap((body) => extractGithubMedia(body, { videos: false })))];
 }
 
 function ext(bytes: Uint8Array): string {

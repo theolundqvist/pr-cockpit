@@ -1,12 +1,8 @@
 import { accessSync, constants, mkdirSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { mockGithub } from "./mockGithub.ts";
 import { mockScreenshotSvg } from "./mockImages.ts";
-
-const ALLOWED_HOSTS = new Set([
-  "github.com",
-  "private-user-images.githubusercontent.com",
-  "raw.githubusercontent.com",
-]);
+import { GITHUB_MEDIA_HOSTS } from "./githubMedia.ts";
+import { createConcurrencyLimit } from "./concurrency.ts";
 
 const CACHE_BYTES_PER_KIND = 2 * 1024 * 1024 * 1024;
 
@@ -25,6 +21,7 @@ const ghImgBin =
 const dataDir = Bun.env.COCKPIT_DATA_DIR ?? "data";
 const imageCacheDir = `${dataDir}/images`;
 const videoCacheDir = `${dataDir}/videos`;
+const thumbnailCacheDir = `${dataDir}/thumbnails`;
 
 function sniffContentType(bytes: Uint8Array): string {
   if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return "image/png";
@@ -61,7 +58,7 @@ export async function fetchAllowedImage(raw: string, fetcher: typeof fetch = fet
     return null;
   }
   for (let redirect = 0; redirect < 4; redirect++) {
-    if (target.protocol !== "https:" || !ALLOWED_HOSTS.has(target.host)) return null;
+    if (target.protocol !== "https:" || !GITHUB_MEDIA_HOSTS.has(target.host)) return null;
     const response = await fetcher(target, { redirect: "manual", headers: { accept: "image/*" } });
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get("location");
@@ -131,7 +128,7 @@ function cacheKey(raw: string): string {
   return new Bun.CryptoHasher("sha256").update(raw).digest("hex");
 }
 
-type ImageResult = { file: Bun.BunFile } | { error: string; status: number };
+type ImageResult = { file: Bun.BunFile | Uint8Array } | { error: string; status: number };
 const imageRequests = new Map<string, Promise<ImageResult>>();
 
 function getImage(raw: string): Promise<ImageResult> {
@@ -149,7 +146,7 @@ async function loadImage(raw: string): Promise<ImageResult> {
   } catch {
     return { error: "invalid url", status: 400 };
   }
-  if (target.protocol !== "https:" || !ALLOWED_HOSTS.has(target.host)) {
+  if (target.protocol !== "https:" || !GITHUB_MEDIA_HOSTS.has(target.host)) {
     return { error: "host not allowed", status: 400 };
   }
 
@@ -227,44 +224,84 @@ async function convertGif(gif: Bun.BunFile | Uint8Array, path: string): Promise<
   return { file: Bun.file(path) };
 }
 
+// Queue rows show media in a 52x32 CSS px card; twice that stays sharp on Retina without shipping originals.
+const THUMB_WIDTH = 104;
+const THUMB_HEIGHT = 64;
+// Animated thumbnails loop the opening seconds at a low frame rate, so a long recording stays a small file.
+const THUMB_SECONDS = 10;
+const THUMB_FPS = 12;
+const thumbnailSlots = createConcurrencyLimit(2);
+const thumbnailConversions = new Map<string, Promise<ImageResult>>();
+
+function thumbnail(raw: string, source: Bun.BunFile | Uint8Array): Promise<ImageResult> {
+  const path = `${thumbnailCacheDir}/${cacheKey(raw)}-${THUMB_WIDTH}x${THUMB_HEIGHT}.webp`;
+  const pending = thumbnailConversions.get(path);
+  if (pending) return pending;
+  const conversion = convertThumbnail(source, path).finally(() => thumbnailConversions.delete(path));
+  thumbnailConversions.set(path, conversion);
+  return conversion;
+}
+
+// Stills, GIFs, and videos all become WebP so a row renders every kind with one <img>: Chromium animates
+// images off the main thread and drops an animation as soon as the row unloads its source.
+async function convertThumbnail(source: Bun.BunFile | Uint8Array, path: string): Promise<ImageResult> {
+  const cached = Bun.file(path);
+  if (await cached.exists()) return { file: cached };
+  const type = sniffContentType(source instanceof Uint8Array ? source : await source.slice(0, 256).bytes());
+  const animated = type === "image/gif" || type.startsWith("video/");
+  // A still or GIF still renders at full size when it cannot be converted; a video cannot render in <img>.
+  const fallback: ImageResult = type.startsWith("video/") ? { error: "video thumbnail unavailable", status: 502 } : { file: source };
+  const ffmpeg = Bun.which("ffmpeg");
+  if (!ffmpeg || type === "image/svg+xml" || type === "application/octet-stream") return fallback;
+  mkdirSync(thumbnailCacheDir, { recursive: true });
+  const tmp = `${path}.${process.pid}.tmp.webp`;
+  const input = source instanceof Uint8Array ? `${tmp}.source` : source.name!;
+  if (source instanceof Uint8Array) await Bun.write(input, source);
+  const cover = `scale=${THUMB_WIDTH}:${THUMB_HEIGHT}:force_original_aspect_ratio=increase,crop=${THUMB_WIDTH}:${THUMB_HEIGHT}`;
+  const encode = animated
+    ? ["-t", String(THUMB_SECONDS), "-vf", `fps=${THUMB_FPS},${cover}`, "-c:v", "libwebp_anim", "-loop", "0", "-q:v", "60"]
+    : ["-frames:v", "1", "-vf", cover, "-c:v", "libwebp", "-q:v", "75"];
+  const [code, stderr] = await thumbnailSlots(async () => {
+    const proc = Bun.spawn([ffmpeg, "-loglevel", "error", "-y", "-i", input, "-an", "-threads", "1", ...encode, tmp], { stdout: "ignore", stderr: "pipe" });
+    return Promise.all([proc.exited, new Response(proc.stderr).text()]);
+  });
+  if (source instanceof Uint8Array) rmSync(input, { force: true });
+  if (code !== 0) {
+    rmSync(tmp, { force: true });
+    console.error(`thumbnail conversion failed: ${stderr.trim() || `ffmpeg exited ${code}`}`);
+    return fallback;
+  }
+  renameSync(tmp, path);
+  evictOverCap(thumbnailCacheDir);
+  return { file: Bun.file(path) };
+}
+
 async function serveResult(result: ImageResult, range: string | null): Promise<Response> {
   if ("error" in result) return new Response(result.error, { status: result.status });
   return serveBody(result.file, range);
+}
+
+// `as=video` plays a GIF as seekable video; `as=thumb` serves the queue-row thumbnail.
+function convertedImage(raw: string, as: string | null, source: Bun.BunFile | Uint8Array): Promise<ImageResult> | null {
+  if (as === "video") return gifAsVideo(raw, source);
+  if (as === "thumb") return thumbnail(raw, source);
+  return null;
 }
 
 export async function handleImage(url: URL, range: string | null = null): Promise<Response> {
   const raw = url.searchParams.get("url");
   if (!raw) return new Response("url query param required", { status: 400 });
   const result = await getImage(raw);
-  if (url.searchParams.get("as") !== "video" || "error" in result) return serveResult(result, range);
-  return serveResult(await gifAsVideo(raw, result.file), range);
+  const converted = "error" in result ? null : convertedImage(raw, url.searchParams.get("as"), result.file);
+  return serveResult(converted ? await converted : result, range);
 }
 
-export function handleMockImage(url: URL, range: string | null = null): Promise<Response> {
+export async function handleMockImage(url: URL, range: string | null = null): Promise<Response> {
   const raw = url.searchParams.get("url");
-  if (!raw) return Promise.resolve(new Response("url query param required", { status: 400 }));
+  if (!raw) return new Response("url query param required", { status: 400 });
   const body = mockGithub?.image?.(raw) ?? new TextEncoder().encode(mockScreenshotSvg(raw));
-  if (url.searchParams.get("as") === "video") return gifAsVideo(raw, body).then((result) => serveResult(result, range));
-  return serveBody(body, range);
-}
-
-const MD_IMAGE_RE = /!\[[^\]]*\]\(\s*<?([^)\s>]+)>?/g;
-const HTML_IMAGE_RE = /<img\b[^>]*?\bsrc\s*=\s*["']([^"']+)["']/gi;
-
-export function extractGithubImageUrls(text: string): string[] {
-  if (!text) return [];
-  const urls = new Set<string>();
-  for (const re of [MD_IMAGE_RE, HTML_IMAGE_RE]) {
-    for (const match of text.matchAll(re)) {
-      const raw = match[1];
-      if (!raw) continue;
-      try {
-        const target = new URL(raw);
-        if (target.protocol === "https:" && ALLOWED_HOSTS.has(target.host)) urls.add(raw);
-      } catch {}
-    }
-  }
-  return [...urls];
+  const converted = convertedImage(raw, url.searchParams.get("as"), body);
+  return converted ? serveResult(await converted, range) : serveBody(body, range);
 }
 
 export async function prefetchImages(urls: string[]): Promise<void> {

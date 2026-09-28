@@ -5,6 +5,7 @@ import { setGithubGraphqlUsageRecorder, type GithubGraphqlUsageEvent } from "./g
 import type { PrIndexEntry } from "./github.ts";
 import { SCHEMA_EPOCH } from "./schemaEpoch.ts";
 import { prKey } from "./prKey.ts";
+import { extractGithubMedia } from "./githubMedia.ts";
 
 const dataDir = Bun.env.COCKPIT_DATA_DIR ?? "data";
 mkdirSync(dataDir, { recursive: true });
@@ -368,6 +369,16 @@ if (!prsColumns.some((c) => c.name === "greptile_reviewed_sha")) {
 if (!prsColumns.some((c) => c.name === "greptile_unresolved_count")) {
   db.exec("ALTER TABLE prs ADD COLUMN greptile_unresolved_count INTEGER NOT NULL DEFAULT 0");
 }
+// Nullable: a replica copying rows from an older source leaves it empty rather than failing.
+if (!prsColumns.some((c) => c.name === "body_media")) {
+  db.exec("ALTER TABLE prs ADD COLUMN body_media TEXT");
+  const backfill = db.prepare("UPDATE prs SET body_media = ? WHERE repo = ? AND number = ?");
+  db.transaction(() => {
+    for (const row of db.query<{ repo: string; number: number; detail_json: string }, []>("SELECT repo, number, detail_json FROM prs").all()) {
+      backfill.run(bodyMediaJson(row.detail_json), row.repo, row.number);
+    }
+  })();
+}
 
 const prIndexColumns = db.query("PRAGMA table_info(pr_index)").all() as Array<{ name: string }>;
 if (!prIndexColumns.some((c) => c.name === "merged_at")) {
@@ -499,6 +510,14 @@ export interface PrRow {
   greptile_unresolved_count: number;
   detail_json: string;
   fetched_at: string;
+  // JSON array of the body's GitHub media URLs, derived from detail_json on every write.
+  body_media?: string | null;
+}
+
+// Parsed once when a detail is stored, so serving the inbox never scans PR bodies.
+function bodyMediaJson(detailJson: string): string {
+  const body = (JSON.parse(detailJson) as { body?: unknown }).body;
+  return JSON.stringify(typeof body === "string" ? extractGithubMedia(body, { videos: true }) : []);
 }
 
 const upsertStmt = db.prepare(`
@@ -507,13 +526,13 @@ INSERT INTO prs (
   updated_at, additions, deletions, changed_files, commit_count, mergeable, merge_state_status,
   auto_merge_enabled, viewer_is_author, viewer_review_requested, viewer_review_state,
   ci_status, review_decision, unresolved_count, needs_me_rank, greptile_confidence, greptile_reviewed_sha,
-  greptile_unresolved_count, detail_json, fetched_at
+  greptile_unresolved_count, detail_json, fetched_at, body_media
 ) VALUES (
   $repo, $number, $state, $is_draft, $title, $author, $base_ref, $head_ref, $head_sha,
   $updated_at, $additions, $deletions, $changed_files, $commit_count, $mergeable, $merge_state_status,
   $auto_merge_enabled, $viewer_is_author, $viewer_review_requested, $viewer_review_state,
   $ci_status, $review_decision, $unresolved_count, $needs_me_rank, $greptile_confidence, $greptile_reviewed_sha,
-  $greptile_unresolved_count, $detail_json, $fetched_at
+  $greptile_unresolved_count, $detail_json, $fetched_at, $body_media
 )
 ON CONFLICT (repo, number) DO UPDATE SET
   state = excluded.state,
@@ -542,7 +561,8 @@ ON CONFLICT (repo, number) DO UPDATE SET
   greptile_reviewed_sha = excluded.greptile_reviewed_sha,
   greptile_unresolved_count = excluded.greptile_unresolved_count,
   detail_json = excluded.detail_json,
-  fetched_at = excluded.fetched_at
+  fetched_at = excluded.fetched_at,
+  body_media = excluded.body_media
 WHERE excluded.fetched_at >= prs.fetched_at
 `);
 
@@ -577,6 +597,7 @@ export function upsertPr(row: PrRow): void {
     $greptile_unresolved_count: row.greptile_unresolved_count,
     $detail_json: row.detail_json,
     $fetched_at: row.fetched_at,
+    $body_media: bodyMediaJson(row.detail_json),
   });
 }
 

@@ -14,7 +14,8 @@ import {
 } from "./db.ts";
 import { reconcileForwarders } from "./forwarders.ts";
 import { prKeyOf } from "./prKey.ts";
-import { extractGithubImageUrls, prefetchImages } from "./imageproxy.ts";
+import { prefetchImages } from "./imageproxy.ts";
+import { extractGithubMedia } from "./githubMedia.ts";
 import { fetchMirror, pruneMirrors } from "./mirror.ts";
 import { needsMeRank } from "./rank.ts";
 import { refreshRepoUsers } from "./repoUsers.ts";
@@ -121,7 +122,7 @@ function prefetchDetailImages(detail: PrDetail): void {
   for (const review of detail.reviews.nodes) bodies.push(review.body);
   for (const comment of detail.comments.nodes) bodies.push(comment.body);
   for (const thread of detail.reviewThreads.nodes) for (const comment of thread.comments.nodes) bodies.push(comment.body);
-  const urls = [...new Set(bodies.flatMap(extractGithubImageUrls))];
+  const urls = [...new Set(bodies.flatMap((body) => extractGithubMedia(body, { videos: false })))];
   if (urls.length === 0) return;
   prefetchImages(urls).catch((err) => console.error(`image prefetch failed for ${detail.url}:`, err));
 }
