@@ -27,6 +27,23 @@ test("native image fetch follows only allowed GitHub redirects", async () => {
   ))).toBeNull();
 });
 
+test("a token reaches only github.com and unlocks its signed attachment redirect", async () => {
+  const seen: Array<[string, string | null]> = [];
+  const asset = "https://github-production-user-asset-6210df.s3.amazonaws.com/1/2.png?X-Amz-Signature=abc";
+  const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    seen.push([url, new Headers(init?.headers).get("authorization")]);
+    return url.startsWith("https://github.com/")
+      ? new Response(null, { status: 302, headers: { location: asset } })
+      : new Response(png);
+  };
+  const raw = "https://github.com/user-attachments/assets/0000aaaa-0000-0000-0000-000000000001";
+  expect(await fetchAllowedImage(raw, fetcher as typeof fetch, "secret")).toEqual(png);
+  expect(seen).toEqual([[raw, "Bearer secret"], [asset, null]]);
+  // The bucket is reachable only through a github.com redirect, never as a requested URL.
+  expect(await fetchAllowedImage(asset, fetcher as typeof fetch, "secret")).toBeNull();
+});
+
 async function imageScenario(scenario: string): Promise<Record<string, any>> {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-images-"));
   try {
@@ -37,7 +54,7 @@ async function imageScenario(scenario: string): Promise<Record<string, any>> {
       const url = new URL("http://localhost/api/image?url=" + encodeURIComponent(raw));
       ${scenario}
     `], {
-      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_GH_IMG: join(dataDir, "missing-gh-img"), COCKPIT_MOCK: "" },
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_GH_IMG: join(dataDir, "missing-gh-img"), COCKPIT_GH_BIN: join(dataDir, "missing-gh"), COCKPIT_MOCK: "" },
       stdout: "pipe",
       stderr: "pipe",
     });

@@ -3,6 +3,7 @@ import { mockGithub } from "./mockGithub.ts";
 import { mockScreenshotSvg } from "./mockImages.ts";
 import { GITHUB_MEDIA_HOSTS } from "./githubMedia.ts";
 import { createConcurrencyLimit } from "./concurrency.ts";
+import { ghToken } from "./github.ts";
 
 const CACHE_BYTES_PER_KIND = 2 * 1024 * 1024 * 1024;
 
@@ -50,7 +51,10 @@ function ghImgAvailable(): boolean {
   }
 }
 
-export async function fetchAllowedImage(raw: string, fetcher: typeof fetch = fetch): Promise<Uint8Array | null> {
+// github.com answers an authenticated attachment request with a signed redirect into its asset bucket.
+const GITHUB_ASSET_BUCKET_RE = /^github-production-user-asset-[0-9a-f]+\.s3\.amazonaws\.com$/;
+
+export async function fetchAllowedImage(raw: string, fetcher: typeof fetch = fetch, token: string | null = null): Promise<Uint8Array | null> {
   let target: URL;
   try {
     target = new URL(raw);
@@ -58,8 +62,11 @@ export async function fetchAllowedImage(raw: string, fetcher: typeof fetch = fet
     return null;
   }
   for (let redirect = 0; redirect < 4; redirect++) {
-    if (target.protocol !== "https:" || !GITHUB_MEDIA_HOSTS.has(target.host)) return null;
-    const response = await fetcher(target, { redirect: "manual", headers: { accept: "image/*" } });
+    const allowed = GITHUB_MEDIA_HOSTS.has(target.host) || (redirect > 0 && GITHUB_ASSET_BUCKET_RE.test(target.host));
+    if (target.protocol !== "https:" || !allowed) return null;
+    // Only github.com gets the token; the signed bucket URL must not carry other credentials.
+    const headers: Record<string, string> = token && target.host === "github.com" ? { accept: "image/*", authorization: `Bearer ${token}` } : { accept: "image/*" };
+    const response = await fetcher(target, { redirect: "manual", headers });
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get("location");
       if (!location) return null;
@@ -156,7 +163,12 @@ async function loadImage(raw: string): Promise<ImageResult> {
     if (await cached.exists()) return { file: cached };
   }
 
-  const fetched = await fetchAllowedImage(raw).catch(() => null);
+  let fetched = await fetchAllowedImage(raw).catch(() => null);
+  // Private attachments answer 404 anonymously; the CLI token opens them wherever GitHub access is allowed.
+  if (!fetched) {
+    const token = await ghToken().catch(() => null);
+    if (token) fetched = await fetchAllowedImage(raw, fetch, token).catch(() => null);
+  }
   if (fetched) return { file: await storeCached(key, fetched) };
 
   if (!ghImgAvailable()) {
