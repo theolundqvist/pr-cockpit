@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
 import { categoryForPr, normalizePrGrouping, orderQueueUnits, parsePrTitle } from "./prGrouping.ts";
 
-test("feature scopes win over title keywords and matching respects words", () => {
-  const config = normalizePrGrouping({ mode: "feature" });
-  expect(categoryForPr("feat(billing)!: Add settings", config)).toBe("group:billing");
-  expect(categoryForPr("Fix workspace PREFERENCES", config)).toBe("group:settings");
-  expect(categoryForPr("Fix queueing", config)).toBe("other");
-  expect(categoryForPr("Fix inbox", config)).toBe("group:inbox");
+test("feature groups come only from the title scope, ignoring keyword configuration", () => {
+  const config = normalizePrGrouping({ mode: "feature", groups: [{ id: "billing", name: "Billing", keywords: "billing" }] });
+  expect(categoryForPr("DRAFT feat( Billing )!: Add settings", config)).toBe("feature:billing");
+  expect(categoryForPr("fix: Correct billing totals", config)).toBe("other");
+  expect(categoryForPr("Fix billing", config)).toBe("other");
+  expect(categoryForPr("chore(other): Tidy", config)).toBe("other");
 });
 
 test("types follow the title contract, including drafts and scoped breaking changes", () => {
@@ -72,6 +72,7 @@ test("removed manual groups fall back without losing PRs", () => {
 test("missing and malformed configuration preserve the default mode", () => {
   expect(normalizePrGrouping(null).mode).toBe("status");
   expect(normalizePrGrouping({ mode: "unexpected" }).mode).toBe("status");
-  expect(normalizePrGrouping({ groups: [null, { id: "one", name: " First " }, { id: "one", name: "Duplicate" }, { id: "bad/id", name: "Invalid" }] }).groups)
-    .toEqual([{ id: "one", name: "First", keywords: "" }]);
+  // Stored keyword lists from the retired keyword grouping are dropped.
+  expect(normalizePrGrouping({ groups: [null, { id: "one", name: " First ", keywords: "a, b" }, { id: "one", name: "Duplicate" }, { id: "bad/id", name: "Invalid" }] }).groups)
+    .toEqual([{ id: "one", name: "First" }]);
 });

@@ -1,5 +1,5 @@
 export type GroupingMode = "status" | "manual" | "feature" | "type";
-export type PrGrouping = { mode: GroupingMode; groups: { id: string; name: string; keywords: string }[] };
+export type PrGrouping = { mode: GroupingMode; groups: { id: string; name: string }[] };
 
 export function normalizePrGrouping(value: unknown): PrGrouping {
   const raw = value as Partial<PrGrouping> | null;
@@ -9,11 +9,11 @@ export function normalizePrGrouping(value: unknown): PrGrouping {
     if (!group || typeof group.id !== "string" || !/^[a-zA-Z0-9-]{1,80}$/.test(group.id)
       || seen.has(group.id) || typeof group.name !== "string" || !group.name.trim()) return [];
     seen.add(group.id);
-    return [{ id: group.id, name: group.name.trim().slice(0, 80), keywords: typeof group.keywords === "string" ? group.keywords.slice(0, 1000) : "" }];
+    return [{ id: group.id, name: group.name.trim().slice(0, 80) }];
   }) : [
-    { id: "settings", name: "Settings", keywords: "settings, preferences" },
-    { id: "billing", name: "Billing", keywords: "billing, payment, subscription" },
-    { id: "inbox", name: "Inbox", keywords: "inbox, queue" },
+    { id: "settings", name: "Settings" },
+    { id: "billing", name: "Billing" },
+    { id: "inbox", name: "Inbox" },
   ];
   return { mode, groups };
 }
@@ -23,7 +23,7 @@ export const TYPE_TITLES = { feat: "Features", fix: "Fixes", refactor: "Refactor
 
 // The PR title contract shared with title linting: `DRAFT ` marks work that is not ready for review yet.
 const TITLE_RE = /^(DRAFT )?(?<type>[a-z]+)(\((?<scope>[^)]+)\))?(?<breaking>!)?: (?<summary>.+)$/;
-const DRAFT_PREFIX = "DRAFT ";
+export const DRAFT_PREFIX = "DRAFT ";
 
 export type PrTitle = { draft: boolean; type: string | null; scope: string | null; breaking: boolean; summary: string };
 
@@ -59,19 +59,10 @@ export function orderQueueUnits<T extends { title: string; isDraft?: boolean }>(
     .map(({ unit }) => unit);
 }
 
-const words = (text: string) => text.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu)?.join(" ") ?? "";
+// Feature groups key on the lowercased title scope; titles without one fall into "other".
 export function categoryForPr(title: string, config: PrGrouping, assignment?: string): string {
   if (config.mode === "manual") return config.groups.some((group) => group.id === assignment) ? `group:${assignment}` : "other";
   const parsed = parsePrTitle(title);
   if (config.mode === "type") return parsed.type && PR_TYPES.includes(parsed.type) ? `type:${parsed.type}` : "other";
-  // Prefer an explicit scope to incidental title words. First configured match wins.
-  for (const source of [parsed.scope ?? "", parsed.summary]) {
-    const text = ` ${words(source)} `;
-    const match = config.groups.find((group) => [group.name, ...group.keywords.split(",")].some((term) => {
-      const normalized = words(term);
-      return normalized && text.includes(` ${normalized} `);
-    }));
-    if (match) return `group:${match.id}`;
-  }
-  return "other";
+  return parsed.scope && parsed.scope !== "other" ? `feature:${parsed.scope}` : "other";
 }

@@ -100,7 +100,7 @@
     }
     return issues;
   });
-  let groupIssues = $derived((grouping.mode === "manual" || grouping.mode === "feature") && grouping.groups.some((group, index) => !group.name.trim() || grouping.groups.some((other, otherIndex) => otherIndex < index && other.name.trim().toLowerCase() === group.name.trim().toLowerCase())));
+  let groupIssues = $derived(grouping.mode === "manual" && grouping.groups.some((group, index) => !group.name.trim() || grouping.groups.some((other, otherIndex) => otherIndex < index && other.name.trim().toLowerCase() === group.name.trim().toLowerCase())));
   let saveBlocked = $derived(keybindClash || agentKeybindIssues.size > 0 || notificationIssues.size > 0 || groupIssues);
 
   function addAgent() {
@@ -352,7 +352,7 @@
     {/if}
 
     {#if loaded}
-      <div class="settings-panel" class:grouping-settings={activeTab === "general" && (grouping.mode === "manual" || grouping.mode === "feature")} id={`settings-panel-${activeTab}`} aria-label={`${activeSection?.label ?? "Workspace"} settings`}>
+      <div class="settings-panel" class:grouping-settings={activeTab === "general" && grouping.mode === "manual"} id={`settings-panel-${activeTab}`} aria-label={`${activeSection?.label ?? "Workspace"} settings`}>
       <fieldset class="settings-controls" disabled={saving}>
       <legend class="sr-only">{activeSection?.label ?? "Workspace"} settings</legend>
       {#if activeTab === "general"}
@@ -396,21 +396,22 @@
             </select>
             <span class="hint">Pinned PRs stay at the top.</span>
           </label>
-          {#if grouping.mode === "manual" || grouping.mode === "feature"}
+          {#if grouping.mode === "manual"}
             <div class="field field-wide group-editor">
               <span class="label">Groups</span>
-              <span class="hint">{grouping.mode === "manual" ? "Select a PR in your queue, then choose its group. Assignments stay on this device. Stacked PRs follow their parent." : "Match titles and scopes like feat(settings). Comma-separated keywords; the first matching group wins. Stacked PRs follow their parent."}</span>
+              <span class="hint">Select a PR in your queue, then choose its group. Assignments stay on this device. Stacked PRs follow their parent.</span>
               {#each grouping.groups as group, index (group.id)}
                 <div class="group-editor-row">
                   <input class="input" aria-label={`Group ${index + 1} name`} maxlength="80" placeholder="Group name" bind:value={group.name} />
-                  {#if grouping.mode === "feature"}<input class="input" aria-label={`Group ${index + 1} keywords`} maxlength="1000" placeholder="Keywords, separated by commas" bind:value={group.keywords} />{/if}
                   <button class="btn" type="button" aria-label={`Remove group ${group.name || index + 1}`} onclick={() => grouping.groups = grouping.groups.filter((item) => item.id !== group.id)}>Remove</button>
                 </div>
               {/each}
               {#if groupIssues}<span class="hint invalid-hint">Give each group a unique, nonempty name.</span>{/if}
-              <span class="hint">Unmatched PRs appear in {grouping.mode === "manual" ? "Ungrouped" : "Other"}. Removing a group keeps its PRs.</span>
-              <button class="btn" type="button" disabled={grouping.groups.length >= 50} onclick={() => grouping.groups = [...grouping.groups, { id: crypto.randomUUID(), name: "", keywords: "" }]}>Add group</button>
+              <span class="hint">Unmatched PRs appear in Ungrouped. Removing a group keeps its PRs.</span>
+              <button class="btn" type="button" disabled={grouping.groups.length >= 50} onclick={() => grouping.groups = [...grouping.groups, { id: crypto.randomUUID(), name: "" }]}>Add group</button>
             </div>
+          {:else if grouping.mode === "feature"}
+            <span class="hint field-wide">Uses the title scope, such as settings in feat(settings):. Titles without a scope appear in Other. Drafts sort last in each group.</span>
           {:else if grouping.mode === "type"}
             <span class="hint field-wide">Uses title prefixes such as feat:, fix:, and refactor:. Titles without a recognized prefix appear in Other.</span>
           {/if}

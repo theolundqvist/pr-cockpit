@@ -4,7 +4,7 @@
 </script>
 
 <script>
-  import { categoryForPr, orderQueueUnits, PR_TYPES, TYPE_TITLES } from "../../../shared/prGrouping.ts";
+  import { categoryForPr, DRAFT_PREFIX, isDraftPr, orderQueueUnits, PR_TYPES, TYPE_TITLES } from "../../../shared/prGrouping.ts";
   import { assignments, assignPr, syncAssignments, onAssignmentStorage } from "./prAssignments.svelte.js";
   import { isSetAside, putAside } from "./setAside.svelte.js";
   import { tick, untrack } from "svelte";
@@ -586,12 +586,14 @@
       if (!buckets.has(id)) buckets.set(id, []);
       buckets.get(id).push(pr);
     }
-    const categories = prefs.prGrouping.mode === "status" ? GROUP_ORDER.map((id) => ({ id, title: GROUP_TITLES[id] }))
-      : [...(prefs.prGrouping.mode === "type" ? PR_TYPES.map((type) => ({ id: `type:${type}`, title: TYPE_TITLES[type] }))
+    const mode = prefs.prGrouping.mode;
+    const categories = mode === "status" ? GROUP_ORDER.map((id) => ({ id, title: GROUP_TITLES[id] }))
+      : [...(mode === "type" ? PR_TYPES.map((type) => ({ id: `type:${type}`, title: TYPE_TITLES[type] }))
+        : mode === "feature" ? [...buckets.keys()].filter((id) => id.startsWith("feature:")).sort().map((id) => ({ id, title: id.slice("feature:".length) }))
         : prefs.prGrouping.groups.map((group) => ({ id: `group:${group.id}`, title: group.name }))),
-        { id: "other", title: prefs.prGrouping.mode === "manual" ? "Ungrouped" : "Other" }];
+        { id: "other", title: mode === "manual" ? "Ungrouped" : "Other" }];
     // A stack sorts by its root row; feature groups also order by status, then type.
-    const statusRank = prefs.prGrouping.mode === "feature" ? (pr) => GROUP_ORDER.indexOf(classify(pr, viewerLogin).group) : undefined;
+    const statusRank = mode === "feature" ? (pr) => GROUP_ORDER.indexOf(classify(pr, viewerLogin).group) : undefined;
     const statusGroups = categories.filter(({ id }) => buckets.has(id)).map(({ id, title }) => {
       const { units, unrankedCount, items } = orderGroup(buckets.get(id), (units) => orderQueueUnits(units, statusRank));
       return { id, title, units, unrankedCount, items };
@@ -1098,6 +1100,7 @@
       {@const index = ordered.indexOf(pr)}
       {@const info = stack.get(prKey(pr))}
       {@const statsDiffer = pr.additions !== pr.rawAdditions || pr.deletions !== pr.rawDeletions}
+      {@const titlePrefixed = pr.title.startsWith(DRAFT_PREFIX)}
       <a
         class="row {status.tone}"
         class:selected={index === selected}
@@ -1124,10 +1127,10 @@
         <span class="row-badge-slot"><span class="row-badge badge {status.tone}">{status.label}</span></span>
         <div class="row-main">
           <div class="row-title">
-            {#if pr.isDraft && pr.state === "OPEN"}
+            {#if isDraftPr(pr) && pr.state !== "MERGED" && pr.state !== "CLOSED"}
               <span class="badge wait row-draft">Draft</span>
             {/if}
-            <span class="row-title-text">{pr.title}</span>
+            <span class="row-title-text">{titlePrefixed ? pr.title.slice(DRAFT_PREFIX.length) : pr.title}</span>
             {#if pr.rank != null}
               <span class="pinned-mark" title="Pinned until merged or archived" aria-label="Pinned">
                 <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

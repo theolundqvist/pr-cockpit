@@ -32,17 +32,16 @@ export function groupingScenarios() {
     },
     interact: async (page) => {
       const select = page.getByLabel("Group review queue by");
-      await select.selectOption(mode === "settings" ? "feature" : mode);
+      await select.selectOption(mode === "settings" ? "manual" : mode);
       if (mode === "manual" || mode === "settings") {
         await page.getByRole("button", { name: "Add group", exact: true }).click();
         await page.getByLabel("Group 4 name", { exact: true }).fill("Release planning");
-        if (mode === "settings") await page.getByLabel("Group 4 keywords", { exact: true }).fill("release, rollout");
       }
       await page.getByRole("button", { name: /^Save changes/ }).click();
       await page.getByText("Changes saved.", { exact: true }).waitFor();
       await page.reload();
       await select.waitFor();
-      if (await select.inputValue() !== (mode === "settings" ? "feature" : mode)) throw new Error("Grouping mode was not persisted");
+      if (await select.inputValue() !== (mode === "settings" ? "manual" : mode)) throw new Error("Grouping mode was not persisted");
       if (mode === "settings") {
         if (page.viewportSize().width < 700) await page.getByLabel("Group 1 name", { exact: true }).scrollIntoViewIfNeeded();
         return;
@@ -51,7 +50,7 @@ export function groupingScenarios() {
       await page.locator(".grouping-toolbar").waitFor();
       await page.locator(".group-label").getByText("Pinned", { exact: true }).waitFor();
       if (mode !== "manual") {
-        for (const title of mode === "feature" ? ["Settings", "Billing"] : ["Features", "Fixes"]) {
+        for (const title of mode === "feature" ? ["settings", "billing"] : ["Features", "Fixes"]) {
           await page.locator(".group-label").getByText(title, { exact: true }).waitFor();
         }
         return;
