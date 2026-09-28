@@ -21,6 +21,7 @@
   import KeyBar from "./KeyBar.svelte";
   import Avatar from "./Avatar.svelte";
   import { lazyThumbnail } from "./rowMedia.js";
+  import RowMediaOverlay from "./RowMediaOverlay.svelte";
   import UpdateButton from "./UpdateButton.svelte";
   import { timedFlag } from "./timedFlag.svelte.js";
   import { prKey } from "./prKey.js";
@@ -101,6 +102,13 @@
       clearTimeout(timer);
     };
   });
+
+  let queueList = $state();
+  // Media stacks share one delegated overlay, so a row's link href is what names its PR.
+  function prForMedia(stack) {
+    const match = stack.closest("a.row")?.getAttribute("href")?.match(/^#\/pr\/([^/]+\/[^/]+)\/(\d+)$/);
+    return match ? (ordered.find((pr) => pr.repo === match[1] && pr.number === Number(match[2])) ?? null) : null;
+  }
 
   $effect(() => {
     if (!contextMenu) return;
@@ -1301,7 +1309,7 @@
     {/snippet}
 
     <div class="inbox-layout">
-      <div class="queue-list">
+      <div class="queue-list" bind:this={queueList}>
         {#if view === "all"}
           {#if allPrsError}
             <div class="empty" role="alert">
@@ -1437,6 +1445,7 @@
     </div>
   </div>
 </div>
+<RowMediaOverlay list={queueList} prFor={prForMedia} />
 {#if contextMenu}
   <div
     class="pr-context-menu"
@@ -1943,7 +1952,8 @@
     gap: 6px;
     width: 56px;
   }
-  /* A fixed-size deck: later cards sit behind the first, fanned out to the right. */
+  /* A fixed-size deck: later cards sit behind the first, fanned out to the right. Hovering peeks at the
+     front card and clicking browses every attachment (RowMediaOverlay). */
   .row-media {
     position: relative;
     flex: none;
@@ -1953,6 +1963,7 @@
     height: 32px;
     padding-left: calc(58px + (var(--cards) - 1) * 8px);
     contain: layout;
+    cursor: zoom-in;
   }
   .row-media img {
     position: absolute;

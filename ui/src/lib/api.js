@@ -167,6 +167,12 @@ export async function fetchPrCommitStats(repo, number, testPattern, signal = nul
   return res.json();
 }
 
+export async function fetchPrMedia(repo, number) {
+  const res = await fetch(`/api/pr/${repo}/${number}/media`);
+  if (!res.ok) throw new Error(`media ${res.status}`);
+  return (await res.json()).media;
+}
+
 export async function fetchPrDetails(keys) {
   const res = await fetch(`/api/pr-details?keys=${encodeURIComponent(keys.join(","))}`);
   if (!res.ok) throw new Error(`pr-details ${res.status}`);
