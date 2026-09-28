@@ -9,10 +9,10 @@
   // `prFor` names the PR behind a hovered or clicked `.row-media` stack.
   let { list = null, prFor } = $props();
 
-  // The peek is the 52x32 front card at 4x, the as=preview variant's 1x box.
+  // The peek shows the whole front attachment in its own aspect ratio, 8x the 52 px card on its long side,
+  // from the as=peek variant (832 px long side, so it stays sharp on Retina).
   const CARD_WIDTH = 52;
-  const PEEK_WIDTH = 208;
-  const PEEK_HEIGHT = 128;
+  const PEEK_LONG_SIDE = 416;
   const EDGE = 8;
   // A short hover intent keeps a pointer sweeping the list from flashing previews. Once one shows,
   // other stacks switch at once, and the grace keeps it up while the pointer crosses between rows.
@@ -22,34 +22,50 @@
   const mediaSrc = (url, as = null) => `/api/image?${as ? `as=${as}&` : ""}url=${encodeURIComponent(url)}`;
 
   let peek = $state.raw(null);
-  let peekSharp = $state(false);
   let peeking = $derived(peek !== null);
-  const sharpPeeks = new Set();
+  // Natural sizes of peek images already loaded, so a repeat hover opens at its final size at once.
+  const peekSizes = new Map();
+  let peekLoading = null;
   let hovered = null;
   let peekTimer = 0;
 
   function showPeek(stack) {
     const url = prFor(stack)?.media?.[0];
     if (!url || viewer || stack.querySelector("img")?.hasAttribute("data-failed")) return;
+    if (peekSizes.has(url)) {
+      placePeek(stack, url, peekSizes.get(url));
+      return;
+    }
+    // The aspect ratio is unknown until the image arrives; showing nothing beats a peek that jumps.
+    peek = null;
+    const image = new Image();
+    image.src = mediaSrc(url, "peek");
+    peekLoading = image;
+    image.decode().then(() => {
+      peekSizes.set(url, [image.naturalWidth, image.naturalHeight]);
+      if (peekLoading === image && hovered === stack && !viewer) placePeek(stack, url, peekSizes.get(url));
+    }, () => {});
+  }
+
+  function placePeek(stack, url, [naturalWidth, naturalHeight]) {
     const scale = Number.parseFloat(getComputedStyle(stack.closest("#app") ?? document.documentElement).zoom) || 1;
+    const long = Math.max(naturalWidth, naturalHeight);
+    const fit = Math.min(PEEK_LONG_SIDE / long, (innerWidth / scale - 2 * EDGE) / naturalWidth, (innerHeight / scale - 2 * EDGE) / naturalHeight);
+    const width = naturalWidth * fit;
+    const height = naturalHeight * fit;
     const rect = stack.getBoundingClientRect();
     const centerX = rect.left + (CARD_WIDTH / 2) * scale;
     const centerY = rect.top + rect.height / 2;
-    const left = Math.max(EDGE, Math.min(centerX - (PEEK_WIDTH / 2) * scale, innerWidth - PEEK_WIDTH * scale - EDGE));
-    const top = Math.max(EDGE, Math.min(centerY - (PEEK_HEIGHT / 2) * scale, innerHeight - PEEK_HEIGHT * scale - EDGE));
+    const left = Math.max(EDGE, Math.min(centerX - (width / 2) * scale, innerWidth - width * scale - EDGE));
+    const top = Math.max(EDGE, Math.min(centerY - (height / 2) * scale, innerHeight - height * scale - EDGE));
     // Fixed descendants of a zoomed #app use pre-zoom coordinates while rects use viewport coordinates.
-    peek = { url, x: left / scale, y: top / scale, originX: (centerX - left) / scale, originY: (centerY - top) / scale };
-    peekSharp = sharpPeeks.has(url);
+    peek = { url, width, height, x: left / scale, y: top / scale, originX: (centerX - left) / scale, originY: (centerY - top) / scale };
   }
 
   function hidePeek() {
     clearTimeout(peekTimer);
+    peekLoading = null;
     peek = null;
-  }
-
-  function onPeekLoaded(url) {
-    sharpPeeks.add(url);
-    if (peek?.url === url) peekSharp = true;
   }
 
   $effect(() => {
@@ -200,17 +216,16 @@
 </script>
 
 {#if peek}
-  <div
+  <img
     class="media-peek"
+    src={mediaSrc(peek.url, "peek")}
+    alt=""
+    style:width="{peek.width}px"
+    style:height="{peek.height}px"
     style:translate="{peek.x}px {peek.y}px"
     style:transform-origin="{peek.originX}px {peek.originY}px"
     aria-hidden="true"
-  >
-    {#each [peek.url] as url (url)}
-      {#if !peekSharp}<img src={mediaSrc(url, "thumb")} alt="" />{/if}
-      <img src={mediaSrc(url, "preview")} alt="" onload={() => onPeekLoaded(url)} />
-    {/each}
-  </div>
+  />
 {/if}
 
 {#if viewer}
@@ -274,25 +289,15 @@
     top: 0;
     left: 0;
     z-index: 30;
-    width: 208px;
-    height: 128px;
-    overflow: hidden;
     border-radius: 8px;
     background: var(--panel-raised);
     box-shadow: 0 0 0 1px var(--border), 0 12px 32px rgb(0 0 0 / 0.35);
     pointer-events: none;
     animation: peek-grow 120ms var(--ease-out, ease-out);
   }
-  .media-peek img {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-  }
   @keyframes peek-grow {
     from {
-      scale: 0.25;
+      scale: 0.125;
       opacity: 0.4;
     }
   }

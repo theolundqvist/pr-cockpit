@@ -1124,7 +1124,8 @@
 
     {#snippet rowMedia(pr)}
       {#if pr.media?.length}
-        <span class="row-media" style:--cards={pr.media.length} title={`${pr.mediaCount} ${pr.mediaCount === 1 ? "attachment" : "attachments"} in the description`}>
+        <!-- No title: its native tooltip would cover the hover peek, and "+N" already counts the rest. -->
+        <span class="row-media" style:--cards={pr.media.length}>
           {#if mediaReady}
             {#each pr.media as url (url)}<img alt="" width="52" height="32" decoding="async" draggable="false" use:lazyThumbnail={`/api/image?as=thumb&url=${encodeURIComponent(url)}`} />{/each}
           {/if}
