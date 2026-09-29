@@ -188,3 +188,79 @@ test("applied mutations remain pending through refresh without becoming retryabl
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test("inbox flags an open PR only while its latest merge attempt has failed", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-merge-failure-"));
+  const scenario = `
+    const db = await import(${JSON.stringify(new URL("./db.ts", import.meta.url).href)});
+    const { discardMutation, processMutation } = await import(${JSON.stringify(new URL("./mutations.ts", import.meta.url).href)});
+    const { buildFetchHandler } = await import(${JSON.stringify(new URL("./http.ts", import.meta.url).href)});
+    const repo = "fixture/cockpit";
+    for (const number of [201, 202]) {
+      db.db.query(\`INSERT INTO prs (
+        repo, number, state, is_draft, title, author, base_ref, head_ref, head_sha,
+        updated_at, additions, deletions, changed_files, commit_count, mergeable,
+        ci_status, unresolved_count, needs_me_rank, detail_json, fetched_at
+      ) VALUES (?, ?, 'OPEN', 0, 'open PR', 'author', 'main', 'feature', ?, ?, 0, 0, 0, 1,
+        'MERGEABLE', 'SUCCESS', 0, 0, ?, ?)\`).run(
+        repo, number, "a".repeat(40), "2026-09-21T20:00:00Z",
+        JSON.stringify({ body: "", comments: { nodes: [] } }), "2026-09-21T20:00:00Z",
+      );
+    }
+    const merge = { kind: "merge", force: false, baseRef: "main", method: "squash", source: "default" };
+    const insert = (number, payload) => {
+      const id = db.insertMutation({ repo, number, kind: payload.kind, payload_json: JSON.stringify(payload), created_at: new Date().toISOString() });
+      return db.listMutationsForPr(repo, number).find((row) => row.id === id);
+    };
+    const fail = (row, message) => processMutation(row, {
+      executeMutation: async () => { throw new Error(message); },
+      refreshPr: async () => {},
+      pollOnce: async () => {},
+      deleteMutation: db.deleteMutation,
+      setMutationRefreshing: db.setMutationRefreshing,
+      setMutationState: db.setMutationState,
+    });
+    const handler = buildFetchHandler(4820);
+    const flags = async () => {
+      const { prs } = await (await handler(new Request("http://127.0.0.1:4820/api/inbox"))).json();
+      return Object.fromEntries(prs.map((pr) => [pr.number, pr.mergeFailed]));
+    };
+
+    const initial = await flags();
+    await fail(insert(202, { kind: "update-branch" }), "update refused");
+    const first = insert(201, merge);
+    await fail(first, "Pull request is not mergeable");
+    const afterFailure = await flags();
+    const second = insert(201, merge);
+    const whileRetrying = await flags();
+    await fail(second, "Required status check is failing");
+    const afterSecondFailure = await flags();
+    const failedMerges = db.listMutationsForPr(repo, 201).map((row) => row.id);
+    discardMutation(second.id);
+    const afterDiscard = await flags();
+    console.log(JSON.stringify({ initial, afterFailure, whileRetrying, afterSecondFailure, failedMerges, secondId: second.id, afterDiscard }));
+  `;
+
+  try {
+    const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_MOCK: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(stderr);
+    const result = JSON.parse(stdout.trim());
+    expect(result.initial).toEqual({ 201: false, 202: false });
+    expect(result.afterFailure).toEqual({ 201: true, 202: false });
+    expect(result.whileRetrying).toEqual({ 201: false, 202: false });
+    expect(result.afterSecondFailure).toEqual({ 201: true, 202: false });
+    expect(result.failedMerges).toEqual([result.secondId]);
+    expect(result.afterDiscard).toEqual({ 201: false, 202: false });
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});

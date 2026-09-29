@@ -121,3 +121,91 @@ test("a local server imports inbox state and proxies GitHub-backed APIs through 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a replica mirrors the source's failed merges without touching its local mutation queue", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pr-cockpit-replica-merges-"));
+  const sourcePort = reservePort();
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "ssh"), "#!/usr/bin/env bash\nwhile kill -0 \"$PPID\" 2>/dev/null; do sleep 0.1; done\n");
+  chmodSync(join(bin, "ssh"), 0o755);
+  const scenario = `
+    const db = await import(${JSON.stringify(new URL("./db.ts", import.meta.url).href)});
+    const { replicaFailedMergeKeys, replicaStatus, startReplicaSync } = await import(${JSON.stringify(new URL("./replica.ts", import.meta.url).href)});
+    const { buildFetchHandler } = await import(${JSON.stringify(new URL("./http.ts", import.meta.url).href)});
+    const repo = "fixture/cockpit";
+    db.setSetting("replica_ssh_host", "fixture-source");
+    db.db.query(\`INSERT INTO prs (
+      repo, number, state, is_draft, title, author, base_ref, head_ref, head_sha,
+      updated_at, additions, deletions, changed_files, commit_count, mergeable,
+      ci_status, unresolved_count, needs_me_rank, detail_json, fetched_at
+    ) VALUES (?, 301, 'OPEN', 0, 'open PR', 'author', 'main', 'feature', ?, ?, 0, 0, 0, 1,
+      'MERGEABLE', 'SUCCESS', 0, 0, ?, ?)\`).run(
+      repo, "a".repeat(40), "2026-09-21T20:00:00Z",
+      JSON.stringify({ body: "", comments: { nodes: [] } }), "2026-09-21T20:00:00Z",
+    );
+    const tables = db.readInboxReplica();
+    const localId = db.insertMutation({
+      repo, number: 301, kind: "merge", created_at: new Date().toISOString(),
+      payload_json: JSON.stringify({ kind: "merge", force: false, baseRef: "main", method: "squash", source: "default" }),
+    });
+    db.setMutationState(localId, "failed", "local failure");
+
+    let snapshot = { revision: '"old"', lastPollAt: null, viewerLogin: null, tables };
+    const source = Bun.serve({
+      port: ${sourcePort},
+      fetch: (request) => new URL(request.url).pathname === "/healthz" ? new Response("ok") : Response.json(snapshot),
+    });
+    const handler = buildFetchHandler(4820);
+    const sync = async () => {
+      (await startReplicaSync())();
+      const { prs } = await (await handler(new Request("http://127.0.0.1:4820/api/inbox"))).json();
+      return {
+        mergeFailed: prs.find((pr) => pr.number === 301)?.mergeFailed,
+        mirrored: [...replicaFailedMergeKeys()],
+        localErrors: db.listMutationsForPr(repo, 301).map((row) => row.error),
+        lastError: replicaStatus().lastError,
+      };
+    };
+    const oldSource = await sync();
+    snapshot = { ...snapshot, revision: '"failed"', failedMergeKeys: [repo + "#301"] };
+    const failedSource = await sync();
+    snapshot = { ...snapshot, revision: '"malformed"', failedMergeKeys: [301] };
+    const malformedSource = await sync();
+    source.stop(true);
+    console.log(JSON.stringify({ oldSource, failedSource, malformedSource }));
+    process.exit(0);
+  `;
+
+  try {
+    const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], {
+      env: {
+        ...Bun.env,
+        PATH: `${bin}:${Bun.env.PATH}`,
+        COCKPIT_DATA_DIR: join(root, "replica"),
+        COCKPIT_MOCK: "",
+        COCKPIT_REPLICA_SSH_HOST: "fixture-source",
+        COCKPIT_REPLICA_LOCAL_PORT: String(sourcePort),
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(stderr);
+    const result = JSON.parse(stdout.trim().split("\n").at(-1)!);
+    expect(result.oldSource).toEqual({ mergeFailed: false, mirrored: [], localErrors: ["local failure"], lastError: null });
+    expect(result.failedSource).toEqual({ mergeFailed: true, mirrored: ["fixture/cockpit#301"], localErrors: ["local failure"], lastError: null });
+    expect(result.malformedSource).toEqual({
+      mergeFailed: true,
+      mirrored: ["fixture/cockpit#301"],
+      localErrors: ["local failure"],
+      lastError: "Replica source returned invalid failed merges",
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

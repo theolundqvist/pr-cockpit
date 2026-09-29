@@ -1,5 +1,5 @@
 import type { Subprocess } from "bun";
-import { getPr, readInboxReplica, replaceInboxReplica, type InboxReplica, type PrRow } from "./db.ts";
+import { getPr, getSetting, listFailedMergeKeys, readInboxReplica, replaceInboxReplica, setSetting, type InboxReplica, type PrRow } from "./db.ts";
 import { observePrNotifications } from "./notifications.ts";
 import { setLastPollAt, lastPollAt } from "./poller.ts";
 import { invalidateInbox, publishPollCompleted } from "./rendererInvalidation.ts";
@@ -34,10 +34,14 @@ const LOCAL_API_PATHS = new Set([
   "/api/replica/status",
 ]);
 
+// Replicas never copy the source's executable mutation queue; they mirror only which PRs' latest merge failed.
+const FAILED_MERGES_SETTING = "replica_failed_merges";
+
 type ReplicaSnapshot = {
   revision: string;
   lastPollAt: string | null;
   viewerLogin: string | null;
+  failedMergeKeys: string[];
   tables: InboxReplica;
 };
 
@@ -70,6 +74,11 @@ function parseReplicaSnapshot(value: unknown): ReplicaSnapshot {
     || !("tables" in value) || !value.tables || typeof value.tables !== "object") {
     throw new Error("Replica source returned an invalid snapshot");
   }
+  // Sources predating failed-merge mirroring omit the field; their inbox still imports.
+  const failedMergeKeys = "failedMergeKeys" in value ? value.failedMergeKeys : [];
+  if (!Array.isArray(failedMergeKeys) || !failedMergeKeys.every((key) => typeof key === "string")) {
+    throw new Error("Replica source returned invalid failed merges");
+  }
   const tables = value.tables;
   if (!("prs" in tables) || !isReplicaRows(tables.prs)
     || !("archived_prs" in tables) || !isReplicaRows(tables.archived_prs)
@@ -83,6 +92,7 @@ function parseReplicaSnapshot(value: unknown): ReplicaSnapshot {
     revision: value.revision,
     lastPollAt: value.lastPollAt,
     viewerLogin: value.viewerLogin,
+    failedMergeKeys,
     tables: {
       prs: tables.prs,
       archived_prs: tables.archived_prs,
@@ -111,6 +121,10 @@ export function replicaViewerLogin(): string | null {
 
 export function replicaStatus(): ReplicaState {
   return { ...state };
+}
+
+export function replicaFailedMergeKeys(): Set<string> {
+  return new Set(JSON.parse(getSetting(FAILED_MERGES_SETTING) ?? "[]") as string[]);
 }
 
 function sourceUrl(path: string): string {
@@ -194,6 +208,7 @@ async function syncReplica(): Promise<void> {
       if (!response.ok) throw new Error(`replica source returned ${response.status}: ${await response.text()}`);
       const snapshot = parseReplicaSnapshot(await response.json());
       importInboxReplica(snapshot.tables);
+      setSetting(FAILED_MERGES_SETTING, JSON.stringify(snapshot.failedMergeKeys));
       setLastPollAt(snapshot.lastPollAt);
       state = {
         host: replicaSshHost(),
@@ -245,7 +260,8 @@ export function replicaSnapshotResponse(request: Request): Response {
   if (replicaEnabled()) return Response.json({ error: "A replica cannot serve as a replica source" }, { status: 409 });
   const tables = readInboxReplica();
   const viewerLogin = snapshotViewerLogin(tables);
-  const revision = `"${Bun.hash(JSON.stringify({ tables, viewerLogin })).toString(16)}"`;
+  const failedMergeKeys = [...listFailedMergeKeys()];
+  const revision = `"${Bun.hash(JSON.stringify({ tables, viewerLogin, failedMergeKeys })).toString(16)}"`;
   const headers = {
     etag: revision,
     "x-pr-cockpit-last-poll-at": lastPollAt ?? "",
@@ -255,6 +271,7 @@ export function replicaSnapshotResponse(request: Request): Response {
     revision,
     lastPollAt,
     viewerLogin,
+    failedMergeKeys,
     tables,
   };
   const body = new Blob([JSON.stringify(snapshot)]).stream().pipeThrough(new CompressionStream("gzip"));

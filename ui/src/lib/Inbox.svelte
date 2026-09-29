@@ -584,7 +584,9 @@
     return () => window.removeEventListener("storage", onAssignmentStorage);
   });
 
+  // A failed merge outranks pinning and grouping; stacks never pull a failed PR under a healthy ancestor.
   function groupId(pr) {
+    if (pr.mergeFailed === true) return "merge-failed";
     if (pr.rank != null) return "pinned";
     const root = topUnit(pr);
     return prefs.prGrouping.mode === "status" ? classify(root, viewerLogin).group
@@ -600,13 +602,17 @@
   }
 
   let groups = $derived.by(() => {
-    const pinned = filteredPrs.filter((pr) => pr.rank != null);
+    const failed = [];
+    const pinned = [];
     const buckets = new Map();
     for (const pr of filteredPrs) {
-      if (pr.rank != null) continue;
       const id = groupId(pr);
-      if (!buckets.has(id)) buckets.set(id, []);
-      buckets.get(id).push(pr);
+      if (id === "merge-failed") failed.push(pr);
+      else if (id === "pinned") pinned.push(pr);
+      else {
+        if (!buckets.has(id)) buckets.set(id, []);
+        buckets.get(id).push(pr);
+      }
     }
     const mode = prefs.prGrouping.mode;
     const categories = mode === "status" ? GROUP_ORDER.map((id) => ({ id, title: GROUP_TITLES[id] }))
@@ -620,9 +626,16 @@
       const { units, unrankedCount, items } = orderGroup(buckets.get(id), (units) => orderQueueUnits(units, statusRank));
       return { id, title, units, unrankedCount, items };
     });
-    if (!pinned.length) return statusGroups;
-    const { units, unrankedCount, items } = orderGroup(pinned);
-    return [{ id: "pinned", title: "Pinned", units, unrankedCount, items }, ...statusGroups];
+    const leading = [];
+    if (failed.length) {
+      const { units, unrankedCount, items } = orderGroup(failed, (units) => orderQueueUnits(units, statusRank));
+      leading.push({ id: "merge-failed", title: "FAILED TO MERGE", units, unrankedCount, items });
+    }
+    if (pinned.length) {
+      const { units, unrankedCount, items } = orderGroup(pinned);
+      leading.push({ id: "pinned", title: "Pinned", units, unrankedCount, items });
+    }
+    return [...leading, ...statusGroups];
   });
 
   let openOrdered = $derived(groups.flatMap((g) => g.items.filter((i) => i.pr).map((i) => i.pr)));
@@ -1228,7 +1241,7 @@
       {/if}
       {#each group.items as item (item.divider ? group.id + ":div" : prKey(item.pr))}
         {#if item.divider}
-          {#if group.id !== "pinned"}
+          {#if group.id !== "pinned" && group.id !== "merge-failed"}
             <div
               class="rank-divider"
               class:drop-active={dropHint?.key === "div:" + group.id}

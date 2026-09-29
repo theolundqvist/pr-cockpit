@@ -1,6 +1,7 @@
 import { codeScanningAlertNumber, isCodeScanningThread, validateCodeScanningDismissal } from "../shared/codeScanning.js";
 import {
   deleteMutation,
+  deleteSupersededFailedMerges,
   getCachedPrDetail,
   getPr,
   insertMutation,
@@ -43,6 +44,7 @@ import { killFixerAgent, launchFixerAgent } from "./agents.ts";
 import { refreshRepoUsers } from "./repoUsers.ts";
 import { isMergeMethod, isMergeMethodSource, mergeAllowedNow, MERGEABLE_NOW_STATES, mergeWithLearning, mergeWithSelection, type MergeMethod, type MergeMethodSource } from "./mergeMethod.ts";
 import { pendingReviewsEnabled } from "./settings.ts";
+import { invalidateInbox } from "./rendererInvalidation.ts";
 
 export type MutationPayload =
   | { kind: "comment"; body: string; commentNodeId?: string }
@@ -211,6 +213,10 @@ export function enqueueMutation(params: {
     payload_json: JSON.stringify(params.payload),
     created_at: new Date().toISOString(),
   });
+  if (params.payload.kind === "merge") {
+    deleteSupersededFailedMerges(params.repo, params.number, id);
+    invalidateInbox();
+  }
   kickWorker();
   return id;
 }
@@ -219,15 +225,18 @@ export function mutationsForPr(repo: string, number: number): MutationRow[] {
   return listMutationsForPr(repo, number);
 }
 
+// Inbox rows flag PRs whose latest merge attempt failed, so leaving the failed state refreshes them.
 export function retryMutation(id: number): void {
   cancelMutationRefresh(id);
   setMutationState(id, "pending", null);
+  invalidateInbox();
   kickWorker();
 }
 
 export function discardMutation(id: number): void {
   cancelMutationRefresh(id);
   deleteMutation(id);
+  invalidateInbox();
 }
 
 // untracked PRs opened in the detail view live in pr_detail_cache, not the tracked prs table
@@ -466,6 +475,10 @@ export async function processMutation(row: MutationRow, dependencies = mutationP
     merged = await dependencies.executeMutation(row);
   } catch (err) {
     dependencies.setMutationState(row.id, "failed", String(err));
+    if (row.kind === "merge") {
+      deleteSupersededFailedMerges(row.repo, row.number, row.id);
+      invalidateInbox();
+    }
     return;
   }
   dependencies.setMutationRefreshing(row.id, row.payload_json);

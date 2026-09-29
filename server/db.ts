@@ -1368,6 +1368,28 @@ export function failInterruptedMutations(): void {
   db.prepare("UPDATE mutations SET state = 'failed', error = 'interrupted' WHERE state = 'pending'").run();
 }
 
+// Only a PR's newest merge attempt counts, so a fresh attempt after a failure supersedes it.
+const listFailedMergeKeysStmt = db.prepare<{ repo: string; number: number }, []>(`
+SELECT attempt.repo, attempt.number FROM mutations attempt
+WHERE attempt.kind = 'merge' AND attempt.state = 'failed' AND attempt.id = (
+  SELECT MAX(latest.id) FROM mutations latest
+  WHERE latest.repo = attempt.repo AND latest.number = attempt.number AND latest.kind = 'merge'
+)
+`);
+
+export function listFailedMergeKeys(): Set<string> {
+  return new Set(listFailedMergeKeysStmt.all().map(prKey));
+}
+
+const deleteSupersededFailedMergesStmt = db.prepare(
+  "DELETE FROM mutations WHERE repo = ? AND number = ? AND kind = 'merge' AND state = 'failed' AND id < ?",
+);
+
+// A newer merge attempt is the PR's merge intent; older failures must not resurface after it resolves.
+export function deleteSupersededFailedMerges(repo: string, number: number, attemptId: number): void {
+  deleteSupersededFailedMergesStmt.run(repo, number, attemptId);
+}
+
 export interface PrIndexRow {
   repo: string;
   number: number;
