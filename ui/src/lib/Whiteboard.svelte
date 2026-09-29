@@ -97,8 +97,7 @@
   function wheel(event) {
     if (!doc || editor || gesture) return;
     event.preventDefault();
-    if (event.ctrlKey || event.metaKey) zoomAt(Math.exp(-event.deltaY * .008), local(event));
-    else { setView({ ...view, x: view.x - event.deltaX, y: view.y - event.deltaY }); queueSave(); }
+    zoomAt(Math.exp(-event.deltaY * .008), local(event));
   }
   function targetNode(event) { return nodes.find((n) => n.id === event.target.closest?.("[data-node]")?.dataset.node); }
   function pointerDown(event) {
@@ -347,7 +346,7 @@
         {#if marquee}<div class="marquee" style={`left:${marquee.x}px;top:${marquee.y}px;width:${marquee.w}px;height:${marquee.h}px`}></div>{/if}
       </div>
       {#if !nodes.length}<div class="empty-board"><strong>Your review space</strong><p>PRs from your queue will appear here. Draw a section or add a note to get started.</p></div>{/if}
-      {#if help}<div class="help-panel"><strong>Make room for your review</strong><button aria-label="Close shortcuts" onclick={() => help = false}>×</button><p>Drag to move · Shift-click or drag empty space to select</p><p>Space-drag to pan · Ctrl/⌘ + scroll to zoom at cursor</p><p>V select · H pan · F section · P pen · T note · C connector</p><p>Drag a connector between cards to keep it attached.</p><p>Double-click labels and notes to edit. Enter opens a selected PR.</p><p>Arrows nudge 16 px · Shift-arrows 80 px · Delete removes</p><p>⌘/Ctrl Z undo · Shift ⌘/Ctrl Z redo · 1 fit all · 0 actual size</p><p>Move a section to carry its contents. Deleting a section keeps them.</p><p>Everything here is personal. No approvals, merges or queue changes.</p></div>{/if}
+      {#if help}<div class="help-panel"><strong>Make room for your review</strong><button aria-label="Close shortcuts" onclick={() => help = false}>×</button><p>Drag to move · Shift-click or drag empty space to select</p><p>Space-drag to pan · Scroll to zoom at cursor</p><p>V select · H pan · F section · P pen · T note · C connector</p><p>Drag a connector between cards to keep it attached.</p><p>Double-click labels and notes to edit. Enter opens a selected PR.</p><p>Arrows nudge 16 px · Shift-arrows 80 px · Delete removes</p><p>⌘/Ctrl Z undo · Shift ⌘/Ctrl Z redo · 1 fit all · 0 actual size</p><p>Move a section to carry its contents. Deleting a section keeps them.</p><p>Everything here is personal. No approvals, merges or queue changes.</p></div>{/if}
     </div>
     <div class="board-footer"><span class="selection-info">{selection.size ? `${selection.size} selected` : `${nodes.filter((n) => n.type === "pr").length} PRs`} <span class="footer-sep">·</span> {tool === "select" ? "Drag to arrange · Space to pan" : `${tools.find((t) => t.id === tool)?.label} tool · Esc to select`}</span>
       {#if selectedNodes.some((n) => n.type === "pr")}<button onclick={remember} title="Remember this head locally. Does not submit a GitHub approval.">Mark current head seen</button>{/if}

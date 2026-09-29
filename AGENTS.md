@@ -20,6 +20,7 @@ This repository is worked on by humans and coding agents alike. Leave it easier 
 - `bun test server/<file>.test.ts` for a targeted test. Prefer targeted runs over the whole suite while iterating.
 - Screenshot harnesses render at `1600x1200`; keep their default viewport and PNG dimension checks aligned.
 - PR detail headers and tabs use the standard width; Conversation centers its 816px primary column and adjacent sidebar beneath them, and Files alone expands to full width.
+- Whiteboard scroll zooms at the cursor without modifiers; Space-drag and the Pan tool preserve explicit panning.
 - Verify landing-page search queries against live GitHub results; captured PR titles can disappear from the search index while the fixture remains valid.
 - Match existing style. Keep the homepage dark and speed-first, with brief subtext and FAQ answers; link to details. Comments explain hidden constraints.
 - Pull-request actions follow GitHub semantics: merge green, update neutral, and destructive actions red.
