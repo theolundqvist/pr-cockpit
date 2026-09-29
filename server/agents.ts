@@ -2,7 +2,7 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync
 import { db, getCachedPrDetail, getPr, lastWebhookAtForPr, type PrRow } from "./db.ts";
 import { unsatisfiedRequiredChecks } from "./checkState.ts";
 import { refreshCachedPrDetail } from "./cachedPrDetail.ts";
-import { getViewerLogin, type PrDetail } from "./github.ts";
+import { GithubRequestError, type PrDetail } from "./github.ts";
 import type { PrAgentSummary } from "./http.ts";
 import type { GithubUsageSource } from "./githubUsage.ts";
 import { agentEnabled, agentModel, agentPromptTemplate, agentSettings, CUSTOM_AGENT_ID_PREFIX, forceMergeEnabled, type AgentSetting } from "./settings.ts";
@@ -181,17 +181,16 @@ const PROMPT_STATUS_FILE = ".prompt-status";
 const AUTOFIX_STATUS_FILE = ".autofix-status";
 const TERMINAL_STATUSES = ["merged", "waiting-review", "gave-up"];
 
-// Cockpit has no checkout command, so the clone is the one gh call left; it touches no PR state. The push target
-// comes only from GitHub's head repository - a matching branch name or SHA doesn't prove which repository it is.
+// Clone through Git; gh only supplies local credentials, so checkout needs no GitHub API quota.
 function cockpitCommands(repo: string, number: number, headRef: string, headRepo: string | null): string {
   const ref = `${repo}#${number}`;
-  const clone = `gh repo clone ${repo} . -- --filter=blob:none`;
+  const clone = (branch: string) => `git clone -c credential.helper= -c 'credential.helper=!gh auth git-credential' --filter=blob:none ${branch}https://github.com/${repo}.git .`;
   const code = headRepo === repo
-    ? `run \`${clone} --branch ${headRef}\`. Push only with \`git push origin HEAD:${headRef}\`.`
+    ? `run \`${clone(`--branch ${headRef} `)}\`. Push only with \`git push origin HEAD:${headRef}\`.`
     : headRepo
-      ? `run \`${clone} && git remote add head https://github.com/${headRepo}.git && git fetch head ${headRef} && git checkout -b cockpit-pr-${number} head/${headRef}\`. The branch lives in the fork ${headRepo}: push only with \`git push head HEAD:${headRef}\`; if the fork rejects it, explain on the PR instead of pushing anywhere else.`
-      : `run \`${clone} && git fetch origin pull/${number}/head && git checkout --detach FETCH_HEAD\`. Cockpit doesn't know which repository holds this branch, so never push.`;
-  return `COCKPIT COMMANDS - the only way to read or change this PR; never gh pr, gh api, gh run, or GitHub APIs:
+      ? `run \`${clone("")} && git remote add head https://github.com/${headRepo}.git && git fetch head ${headRef} && git checkout -b cockpit-pr-${number} head/${headRef}\`. The branch lives in the fork ${headRepo}: push only with \`git push head HEAD:${headRef}\`; if the fork rejects it, explain on the PR instead of pushing anywhere else.`
+      : `run \`${clone("")} && git fetch origin pull/${number}/head && git checkout --detach FETCH_HEAD\`. Cockpit doesn't know which repository holds this branch, so never push.`;
+  return `COCKPIT COMMANDS - the only way to read or change this PR; never gh commands or GitHub APIs:
 - Read: \`pr-cockpit ${ref}\` (state, checks, open threads), with \`--jobs\` (queued and running Actions), \`--logs [CHECK]\` (cached failing logs), \`--diff\`, or \`--file PATH\`.
 - Wait: \`pr-cockpit listen ${ref}\` blocks until cached state changes after it starts; \`--ci-only\`, \`--comments-only\`, or \`--conflicts-only\` narrow it, \`--run RUN_ID\` waits for one run. Use it only when you are genuinely waiting, never right after your own change. Never sleep, poll, use a harness pause, or wait any other way.
 - Change: \`pr-cockpit update-branch ${ref}\`, \`pr-cockpit comment ${ref} --body-file ./comment.md\`, \`pr-cockpit reply ${ref} HANDLE --body-file ./reply.md\`, \`pr-cockpit resolve ${ref} HANDLE\`. Write body files in this directory, never /tmp or anywhere else, and delete each right after posting so it is never committed and never blocks the clone.
@@ -215,7 +214,7 @@ function hardRules(): string {
 }
 
 // placeholders substituted at spawn time by renderIterationTemplate - a custom template is rendered the same way
-const DEFAULT_FIXER_TEMPLATE = `The user approved merging this PR once it's ready: first fix its merge conflicts, address the review comments from people and bots, and fix the CI failures this PR caused. A failing check the PR didn't cause doesn't block the merge, and you don't need to rerun anything to prove that - judge from the evidence you have. Follow your loaded global instructions and the repository's instructions; after cloning, read the repository's AGENTS.md before editing. If only a person can unblock it, such as a CHANGES_REQUESTED review, a required approval, a decision, or access you lack, comment once saying what's needed.{{FORCE_MERGE_STEP}}`;
+const DEFAULT_FIXER_TEMPLATE = `The user approved this change and armed auto-merge: landing it is approved, so don't ask anyone to approve the change again. Your job is to get it merged safely. Work out what stands between this PR and a safe merge - merge conflicts, review feedback from people and bots, CI failures this PR caused - and clear it the way the evidence supports. A failing check the PR didn't cause doesn't block the merge, and you don't need to rerun anything to prove that - judge from the evidence you have. Follow your loaded global instructions and the repository's instructions; after cloning, read the repository's AGENTS.md before editing. If only someone else can unblock it, such as a CHANGES_REQUESTED review, a required approval GitHub enforces, or access you lack, comment once saying what's needed.{{FORCE_MERGE_STEP}}`;
 
 export function defaultFixerTemplate(): string {
   return DEFAULT_FIXER_TEMPLATE;
@@ -256,21 +255,16 @@ function nextBlocker(summary: PrAgentSummary, strictChecks: boolean): string {
   return "no blocker is known in this snapshot; only the merge gate remains";
 }
 
-// cache-only apart from a one-time refresh for snapshots cached before they carried the head repository;
-// the freshness line keeps a stale clean state from reading as mergeable. The fixer judges for itself which checks
-// its change affects, so its brief neither demands every check green nor tells it to wait.
-async function cockpitBrief(repo: string, number: number, headRef: string, logPath: string, strictChecks = true): Promise<string> {
+// cache-only: a missing head repository means the push target is unknown, not permission to guess it or
+// spend GitHub quota before starting the agent. The freshness line keeps stale clean state from reading as mergeable.
+async function cockpitBrief(repo: string, number: number, headRef: string, strictChecks = true): Promise<string> {
   const ref = `${repo}#${number}`;
   const newest = () => {
     const tracked = getPr(repo, number);
     const cached = getCachedPrDetail(repo, number);
     return { tracked, row: !tracked ? cached : cached && cached.fetched_at > tracked.fetched_at ? cached : tracked };
   };
-  let { tracked, row } = newest();
-  if (row && (JSON.parse(row.detail_json) as PrDetail).headRepository === undefined) {
-    await refreshAgentPr(repo, number, logPath, "agent read");
-    ({ tracked, row } = newest());
-  }
+  const { tracked, row } = newest();
   if (!row) return `COCKPIT BRIEF: Cockpit has no cached snapshot of ${ref}; read it with \`pr-cockpit ${ref}\` first.\n\n${cockpitCommands(repo, number, headRef, null)}`;
   // dynamic: http.ts imports this module statically
   const { buildPrAgentSummary, formatPrAgentSummary, snapshotStatus } = await import("./http.ts");
@@ -291,7 +285,17 @@ ${cockpitCommands(repo, number, detail.headRefName || headRef, detail.headReposi
 
 // the fixer's signal attests its own judgment of the final head, so remote CI doesn't gate it here: GitHub's merge
 // state still enforces required checks, and only a force-merge opt-in lets BLOCKED through. Returns why not, or null.
-export function fixerMergeRefusal(repo: string, pr: PrRow, sha: string): string | null {
+interface MergeGatePr {
+  head_sha: string;
+  state: string;
+  is_draft: number;
+  mergeable: string;
+  merge_state_status: string;
+  base_ref: string;
+  review_decision: string | null;
+  unresolved_count: number;
+}
+export function fixerMergeRefusal(repo: string, pr: MergeGatePr, sha: string): string | null {
   if (pr.head_sha !== sha) return `you signaled ${sha}, but the PR head is now ${pr.head_sha}; check that head and signal it instead`;
   if (pr.state !== "OPEN") return `the PR is ${pr.state}`;
   if (pr.is_draft) return "the PR is a draft, and marking it ready for review is a person's call";
@@ -315,6 +319,56 @@ export function mergeStepText(repo: string, allowMerge = true): string {
 }
 
 const READY_SIGNAL = /^ready-to-merge ([0-9a-f]{40})$/;
+
+interface MergeOutcome {
+  // null once merged; otherwise why not, phrased for the agent
+  refusal: string | null;
+  unavailable: boolean;
+  // the snapshot that passed the gate when GitHub itself then refused or failed the merge
+  gated: PrRow | null;
+}
+
+// the one merge path for agent signals. The agent's word is a signal, not authority: gate on the post-run refresh
+// and bind the merge to the head it signaled. refreshFailure is refreshAgentPr's result for that refresh.
+async function mergeSignaledHead(repo: string, number: number, sha: string, refreshFailure: unknown, logPath: string): Promise<MergeOutcome> {
+  // GitHub never answered (quota block or transport), as opposed to deciding against the read or merge
+  const unavailable = (err: unknown) => err instanceof GithubRequestError && (err.kind === "quota" || err.kind === "transport");
+  const tracked = refreshFailure === null ? getPr(repo, number) : null;
+  const cached = refreshFailure === null && !tracked ? getCachedPrDetail(repo, number) : null;
+  const detail = cached ? JSON.parse(cached.detail_json) as PrDetail : null;
+  // A PR opened by URL stays untracked. Project only its freshly fetched gate fields, never grant push access
+  // or infer mergeability from a cached pre-run snapshot.
+  const fresh: MergeGatePr | null = tracked ?? (detail && {
+    head_sha: detail.headRefOid,
+    state: detail.state,
+    is_draft: detail.isDraft ? 1 : 0,
+    mergeable: detail.mergeable,
+    merge_state_status: detail.mergeStateStatus,
+    base_ref: detail.baseRefName,
+    review_decision: detail.reviewDecision,
+    unresolved_count: detail.reviewThreads.nodes.filter((thread) => !thread.isResolved && !thread.isOutdated).length,
+  });
+  const refused = refreshFailure !== null
+    ? `Cockpit could not refresh the PR, so it could not re-verify it: ${truncate(String(refreshFailure), 300)}`
+    : !fresh
+      ? "Cockpit could not find a fresh PR snapshot"
+      : fixerMergeRefusal(repo, fresh, sha);
+  if (refused || !fresh) {
+    appendFileSync(logPath, `\ncockpit refused merge signal for ${repo}#${number}: ${refused}\n`);
+    return { refusal: refused, unavailable: unavailable(refreshFailure), gated: null };
+  }
+  try {
+    await mergeWithLearning(repo, number, fresh.base_ref, sha);
+  } catch (err) {
+    appendFileSync(logPath, `\ncockpit merge failed for ${repo}#${number}: ${err}\n`);
+    return {
+      refusal: `${unavailable(err) ? "GitHub was unavailable for Cockpit's merge of" : "GitHub rejected Cockpit's merge of"} ${sha}: ${truncate(String(err), 300)}`,
+      unavailable: unavailable(err),
+      gated: tracked,
+    };
+  }
+  return { refusal: null, unavailable: false, gated: null };
+}
 
 interface FixerStatus {
   status: string;
@@ -358,8 +412,9 @@ function prFingerprint(pr: PrRow | null): string {
 }
 
 // the run's own push must land in the cache before the merge gate or the next brief reads it; a PR opened only
-// by URL lives in the detail cache, and refreshing it through the poller would start tracking it
-async function refreshAgentPr(repo: string, number: number, logPath: string, source: GithubUsageSource): Promise<boolean> {
+// by URL lives in the detail cache, and refreshing it through the poller would start tracking it. Resolves to the
+// failure, or null once the cache holds a fresh read.
+async function refreshAgentPr(repo: string, number: number, logPath: string, source: GithubUsageSource): Promise<unknown> {
   try {
     if (getPr(repo, number)) {
       // dynamic: a static poller import would close the agents -> poller -> activity -> agents cycle
@@ -368,10 +423,10 @@ async function refreshAgentPr(repo: string, number: number, logPath: string, sou
     } else {
       await refreshCachedPrDetail(repo, number, source);
     }
-    return true;
+    return null;
   } catch (err) {
     appendFileSync(logPath, `\ncockpit refresh (${source}) failed for ${repo}#${number}: ${err}\n`);
-    return false;
+    return err;
   }
 }
 
@@ -416,12 +471,12 @@ async function superviseFixer(
       }
       // re-read every launch - settings and cached PR signals are both live, not fixed at arm time
       const briefed = prFingerprint(pr);
-      const prompt = fixerPrompt(isFirst, repo, number, baseRef, headRef, await cockpitBrief(repo, number, headRef, logPath, false), mergeStepText(repo), agentPromptTemplate("fixer"), refusal);
+      const prompt = fixerPrompt(isFirst, repo, number, baseRef, headRef, await cockpitBrief(repo, number, headRef, false), mergeStepText(repo), agentPromptTemplate("fixer"), refusal);
       refusal = null;
       const run = await runIteration(repo, number, workdir, logPath, prompt, !isFirst);
       isFirst = false;
       if (control.stopped) return;
-      const refreshed = await refreshAgentPr(repo, number, logPath, "agent read");
+      const refreshFailure = await refreshAgentPr(repo, number, logPath, "agent read");
       if (control.stopped) return;
       if (run.refusal) {
         refusal = run.refusal;
@@ -432,22 +487,11 @@ async function superviseFixer(
       if (run.status === "ready-to-merge" && run.sha) {
         // disabling the fixer during the run revokes its merge authority; the loop head then exits
         if (!agentEnabled("fixer")) continue;
-        // the agent's word is a signal, not authority: gate on the post-run refresh and bind the merge to the head it signaled
-        const fresh = refreshed ? getPr(repo, number) : null;
-        const refused = fresh ? fixerMergeRefusal(repo, fresh, run.sha) : "Cockpit could not refresh the PR, so it could not re-verify it";
-        if (!fresh || refused) {
-          refusal = refused;
-          appendFileSync(logPath, `\ncockpit refused merge signal for ${repo}#${number}: ${refusal}\n`);
-          await awaitPrChange(repo, number, briefed, control);
-          continue;
-        }
-        try {
-          await mergeWithLearning(repo, number, fresh.base_ref, run.sha);
-        } catch (err) {
-          // no retry cap: the agent reads GitHub's reason next run and either clears it or reports the blocker itself
-          appendFileSync(logPath, `\ncockpit merge failed for ${repo}#${number}: ${err}\n`);
-          refusal = `GitHub rejected Cockpit's merge of ${run.sha}: ${truncate(String(err), 300)}`;
-          await awaitPrChange(repo, number, prFingerprint(fresh), control);
+        const outcome = await mergeSignaledHead(repo, number, run.sha, refreshFailure, logPath);
+        if (outcome.refusal) {
+          // no retry cap: the agent reads the reason next run and either clears it or reports the blocker itself
+          refusal = outcome.refusal;
+          await awaitPrChange(repo, number, outcome.gated ? prFingerprint(outcome.gated) : briefed, control);
           continue;
         }
         setAgentExitedStmt.run("merged", repo, number);
@@ -498,7 +542,7 @@ export async function launchFixerAgent(repo: string, number: number): Promise<vo
     $kind: "fixer",
     $agent_id: "",
   });
-  startRun(repo, number, "fixer", "", workdir, logPath, "auto-merge fixer: get this PR green (conflicts, checks, threads) and merge it", startedAt);
+  startRun(repo, number, "fixer", "", workdir, logPath, "auto-merge fixer: merge this approved PR safely", startedAt);
 
   const control = { stopped: false };
   activeSupervisors.set(key, control);
@@ -511,22 +555,23 @@ export async function launchFixerAgent(repo: string, number: number): Promise<vo
   });
 }
 
-function promptAgentPrompt(repo: string, number: number, baseRef: string, headRef: string, viewerLogin: string, instruction: string, brief: string): string {
-  return `You are a one-shot agent working on the pull request ${repo}#${number} (branch "${headRef}" into "${baseRef}"), acting on a direct instruction from @${viewerLogin}. This is a SINGLE run - there is no next iteration.
+// the launching user is named by role, not GitHub login: resolving the login is a REST call that must not gate a cached launch
+function promptAgentPrompt(repo: string, number: number, baseRef: string, headRef: string, instruction: string, brief: string): string {
+  return `You are a one-shot agent working on the pull request ${repo}#${number} (branch "${headRef}" into "${baseRef}"), acting on the user's direct instruction. This is a SINGLE run - there is no next iteration.
 
 ${brief}
 
-INSTRUCTION from @${viewerLogin}:
+INSTRUCTION from the user:
 ${instruction}
 
 Carry out the instruction. If it changes code, commit with a plain descriptive message and push it as the rules below allow.
 
-${baseHardRules("This run has no merge authority, whatever the instruction says.")}
+${baseHardRules(`Merge authority comes only from the INSTRUCTION above: only if it explicitly asks for this PR to be merged may you signal it ready, as the last rule below allows. ${mergeStepText(repo).trim()} Otherwise this run has no merge authority.`)}
 - Do exactly what the instruction asks and nothing more - no unrelated cleanup or refactors. If it needs no code change, make no commit.
-- Last action, always: overwrite the file ${PROMPT_STATUS_FILE} in this directory with exactly one word - "done" (you committed and pushed), "no-op" (nothing to change), or "gave-up" (you could not or should not do it; post a single PR comment explaining why first).`;
+- Last action, always: overwrite the file ${PROMPT_STATUS_FILE} in this directory with exactly one line - "done" (you did what it asked), "no-op" (nothing to change), "gave-up" (you could not or should not do it; post a single PR comment explaining why first), or, only when the instruction explicitly asks to merge this PR and you judge it ready, "ready-to-merge <SHA>" (the full 40-character head commit you checked; a bare "ready-to-merge" or a run that doesn't exit cleanly is refused).`;
 }
 
-async function runPromptOnce(repo: string, number: number, workdir: string, logPath: string, prompt: string, model: string): Promise<string> {
+async function runPromptOnce(repo: string, number: number, workdir: string, logPath: string, prompt: string, model: string): Promise<FixerStatus> {
   rmSync(`${workdir}/${PROMPT_STATUS_FILE}`, { force: true });
   const logFd = openSync(logPath, "a");
   // strip inherited API keys so the agent authenticates via the harness's own login
@@ -539,17 +584,29 @@ async function runPromptOnce(repo: string, number: number, workdir: string, logP
 
   const statusFile = Bun.file(`${workdir}/${PROMPT_STATUS_FILE}`);
   const sentinel = (await statusFile.exists()) ? (await statusFile.text()).trim() : null;
+  if (sentinel?.startsWith("ready-to-merge")) return parseFixerStatus(sentinel, proc.exitCode);
   // only an explicit success sentinel on a clean exit is trusted; a crash or missing sentinel gives up so it never arms
-  if (proc.exitCode === 0 && sentinel === "done") return "done";
-  if (proc.exitCode === 0 && sentinel === "no-op") return "no-op";
-  return "gave-up";
+  const status = proc.exitCode === 0 && (sentinel === "done" || sentinel === "no-op") ? sentinel : "gave-up";
+  return { status, sha: null, refusal: null };
 }
 
-async function runPromptAgent(repo: string, number: number, workdir: string, logPath: string, baseRef: string, headRef: string, viewerLogin: string, instruction: string, model: string): Promise<void> {
-  const prompt = promptAgentPrompt(repo, number, baseRef, headRef, viewerLogin, instruction, await cockpitBrief(repo, number, headRef, logPath));
-  const status = await runPromptOnce(repo, number, workdir, logPath, prompt, model);
+// one shot: a refused or unavailable merge ends the run with its reason in the log instead of relaunching
+async function runPromptAgent(repo: string, number: number, workdir: string, logPath: string, baseRef: string, headRef: string, instruction: string, model: string): Promise<void> {
+  const prompt = promptAgentPrompt(repo, number, baseRef, headRef, instruction, await cockpitBrief(repo, number, headRef));
+  const run = await runPromptOnce(repo, number, workdir, logPath, prompt, model);
   // a kill during the run already set state=killed - respect it, no exit-state clobber, no handoff
   if (getAgentStmt.get(repo, number)?.state === "killed") return;
+  let status = run.status;
+  if (run.refusal) {
+    appendFileSync(logPath, `\ncockpit refused merge signal for ${repo}#${number}: ${run.refusal}\n`);
+    status = "merge-refused";
+  } else if (run.status === "ready-to-merge" && run.sha) {
+    const refreshFailure = await refreshAgentPr(repo, number, logPath, "agent read");
+    if (getAgentStmt.get(repo, number)?.state === "killed") return;
+    const outcome = await mergeSignaledHead(repo, number, run.sha, refreshFailure, logPath);
+    status = !outcome.refusal ? "merged" : outcome.unavailable ? "merge-unavailable" : "merge-refused";
+    if (!outcome.refusal) await refreshAgentPr(repo, number, logPath, "mutation recovery");
+  }
   setAgentExitedStmt.run(status, repo, number);
   finishRun(repo, number, "exited", status);
 }
@@ -563,7 +620,6 @@ export async function launchPromptAgent(repo: string, number: number, instructio
 
   const refs = agentPrRefs(getPr(repo, number), getCachedPrDetail(repo, number)?.detail_json ?? null);
   if (!refs) throw new Error(`no cached PR for ${repo}#${number}`);
-  const viewerLogin = await getViewerLogin();
   const workdir = agentWorkdirFor(repo, number);
   mkdirSync(workdir, { recursive: true });
   const startedAt = new Date().toISOString();
@@ -583,7 +639,7 @@ export async function launchPromptAgent(repo: string, number: number, instructio
   });
   startRun(repo, number, "prompt", "", workdir, logPath, instruction, startedAt);
 
-  runPromptAgent(repo, number, workdir, logPath, refs.baseRef, refs.headRef, viewerLogin, instruction, model).catch((err) => {
+  runPromptAgent(repo, number, workdir, logPath, refs.baseRef, refs.headRef, instruction, model).catch((err) => {
     console.error(`prompt agent crashed for ${key}:`, err);
     setAgentStateStmt.run("died", repo, number);
     finishRun(repo, number, "died", null);
@@ -689,7 +745,7 @@ async function superviseAutofix(
         return;
       }
       const briefed = prFingerprint(pr);
-      const prompt = autofixPrompt(isFirst, repo, number, baseRef, headRef, await cockpitBrief(repo, number, headRef, logPath));
+      const prompt = autofixPrompt(isFirst, repo, number, baseRef, headRef, await cockpitBrief(repo, number, headRef));
       const status = await runAutofixIteration(repo, number, workdir, logPath, prompt, !isFirst);
       isFirst = false;
       if (control.stopped) return;
@@ -750,14 +806,14 @@ export async function launchAutofixAgent(repo: string, number: number): Promise<
 
 const CUSTOM_STATUS_FILE = ".custom-status";
 
-function customPrompt(agent: AgentSetting, isFirst: boolean, repo: string, number: number, baseRef: string, headRef: string, viewerLogin: string, brief: string): string {
+function customPrompt(agent: AgentSetting, isFirst: boolean, repo: string, number: number, baseRef: string, headRef: string, brief: string): string {
   const instruction = agent.prompt_template
     .replaceAll("{{REPO}}", repo)
     .replaceAll("{{PR_NUMBER}}", String(number))
     .replaceAll("{{BASE_REF}}", baseRef)
     .replaceAll("{{STATUS_FILE}}", CUSTOM_STATUS_FILE);
   return `${isFirst
-    ? `You are the "${agent.name}" agent for the pull request ${repo}#${number} (branch "${headRef}" into "${baseRef}"), armed by @${viewerLogin}. Your instruction is below.`
+    ? `You are the "${agent.name}" agent for the pull request ${repo}#${number} (branch "${headRef}" into "${baseRef}"), armed by the user. Your instruction is below.`
     : "Same PR, relaunched because it changed or your last run ended. The brief below is current; start from it."}
 
 ${brief}
@@ -801,7 +857,6 @@ async function superviseCustom(
   logPath: string,
   baseRef: string,
   headRef: string,
-  viewerLogin: string,
   control: { stopped: boolean },
   resuming: boolean,
 ): Promise<void> {
@@ -818,7 +873,7 @@ async function superviseCustom(
         return;
       }
       const briefed = prFingerprint(pr);
-      const prompt = customPrompt(def, isFirst, repo, number, baseRef, headRef, viewerLogin, await cockpitBrief(repo, number, headRef, logPath));
+      const prompt = customPrompt(def, isFirst, repo, number, baseRef, headRef, await cockpitBrief(repo, number, headRef));
       const status = await runCustomIteration(repo, number, agentId, workdir, logPath, prompt, !isFirst);
       isFirst = false;
       if (control.stopped) return;
@@ -848,7 +903,6 @@ export async function launchCustomAgent(repo: string, number: number, agentId: s
 
   const pr = getPr(repo, number);
   if (!pr) throw new Error(`no cached PR for ${repo}#${number}`);
-  const viewerLogin = await getViewerLogin();
   const workdir = agentWorkdirFor(repo, number);
   mkdirSync(workdir, { recursive: true });
   const startedAt = new Date().toISOString();
@@ -870,7 +924,7 @@ export async function launchCustomAgent(repo: string, number: number, agentId: s
 
   const control = { stopped: false };
   activeSupervisors.set(key, control);
-  superviseCustom(repo, number, agentId, workdir, logPath, pr.base_ref, pr.head_ref, viewerLogin, control, false).catch((err) => {
+  superviseCustom(repo, number, agentId, workdir, logPath, pr.base_ref, pr.head_ref, control, false).catch((err) => {
     console.error(`custom agent supervisor crashed for ${key}:`, err);
     setAgentStateStmt.run("died", repo, number);
     finishRun(repo, number, "died", null);
@@ -900,7 +954,7 @@ export function startFixerSupervision(): void {
     const control = { stopped: false };
     activeSupervisors.set(key, control);
     const resumed = row.kind === "custom"
-      ? superviseCustom(row.repo, row.number, row.agent_id, row.workdir, row.log_path, pr.base_ref, pr.head_ref, "", control, true)
+      ? superviseCustom(row.repo, row.number, row.agent_id, row.workdir, row.log_path, pr.base_ref, pr.head_ref, control, true)
       : row.kind === "autofix"
         ? superviseAutofix(row.repo, row.number, row.workdir, row.log_path, pr.base_ref, pr.head_ref, control, true)
         : superviseFixer(row.repo, row.number, row.workdir, row.log_path, pr.base_ref, pr.head_ref, control, true);

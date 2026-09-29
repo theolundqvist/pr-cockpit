@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agentPrRefs, isGreen, parseFixerStatus, runWindowTurns, turnsFromLines } from "./agents.ts";
@@ -210,6 +210,257 @@ test("a one-shot prompt run interrupted by a restart is marked died, never resum
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }
+});
+
+const FIXTURE_HEAD = "0000000000000000000000000000000000002774";
+
+// db.ts opens its database at import, so one child seeds the screenshot fixture and a second runs live (non-mock)
+// Cockpit code against it. Every GitHub API request is recorded and answered "quota exhausted"; gh and the harness
+// are stubs first on PATH, and https://github.com/ clones resolve to a local bare repository.
+async function liveAgentScenario(scenario: string): Promise<{ result: unknown; ghCalls: string[]; clones: Array<{ exitCode: number | null; stderr: string; branch: string | null }> }> {
+  const dir = mkdtempSync(join(tmpdir(), "pr-cockpit-agent-live-"));
+  const dataDir = join(dir, "data");
+  const bin = join(dir, "bin");
+  const out = join(dir, "out");
+  for (const path of [dataDir, bin, out]) mkdirSync(path);
+  const git = (...args: string[]) => {
+    const proc = Bun.spawnSync(["git", "-c", "user.name=fixture", "-c", "user.email=fixture@example.com", ...args], { stderr: "pipe" });
+    if (proc.exitCode !== 0) throw new Error(proc.stderr.toString());
+  };
+  const remote = join(dir, "remote", "fixture", "cockpit.git");
+  git("init", "--bare", "--quiet", remote);
+  const work = join(dir, "work");
+  git("init", "--quiet", work);
+  git("-C", work, "commit", "--quiet", "--allow-empty", "-m", "fixture");
+  git("-C", work, "push", "--quiet", remote, "HEAD:refs/heads/main", "HEAD:refs/heads/fixture/pr-101", "HEAD:refs/pull/101/head");
+  writeFileSync(join(bin, "gh"), `#!/bin/sh
+printf '%s\\n' "$*" >> "$STUB_OUT/gh-calls"
+case "$1 $2" in
+  "auth token") echo stub-token ;;
+  *) echo "stub gh spends no API quota: $*" >&2; exit 1 ;;
+esac
+`);
+  // runs the clone the prompt names while the workdir is still empty, then reports the configured status
+  writeFileSync(join(bin, "omp"), `#!/usr/bin/env bun
+import { readdirSync, writeFileSync } from "node:fs";
+const prompt = process.argv.at(-1);
+const out = process.env.STUB_OUT;
+const n = readdirSync(out).filter((name) => name.startsWith("prompt-")).length;
+writeFileSync(out + "/prompt-" + n + ".txt", prompt);
+const clone = /if it is empty then, run \`([^\`]+)\`/.exec(prompt)?.[1];
+if (clone && readdirSync(".").length === 0) {
+  const proc = Bun.spawnSync(["sh", "-c", clone], { stdout: "pipe", stderr: "pipe" });
+  const head = Bun.spawnSync(["git", "symbolic-ref", "-q", "--short", "HEAD"], { stdout: "pipe", stderr: "pipe" });
+  writeFileSync(out + "/clone-" + n + ".json", JSON.stringify({ exitCode: proc.exitCode, stderr: proc.stderr.toString(), branch: head.exitCode === 0 ? head.stdout.toString().trim() : null }));
+}
+for (const file of [".prompt-status", ".autofix-status", ".custom-status"]) writeFileSync(file, process.env.STUB_STATUS ?? "done");
+process.exit(Number(process.env.STUB_EXIT ?? 0));
+`);
+  chmodSync(join(bin, "gh"), 0o755);
+  chmodSync(join(bin, "omp"), 0o755);
+  const module = (name: string) => JSON.stringify(new URL(`./${name}`, import.meta.url).href);
+  const seed = `
+    const { db } = await import(${module("db.ts")});
+    await import(${module("agents.ts")});
+    const { seedMockDatabase } = await import(${module("mockGithub.ts")});
+    seedMockDatabase(db, ${JSON.stringify(dataDir)});
+    process.exit(0);
+  `;
+  const live = `
+    const githubCalls = [];
+    globalThis.fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input.url;
+      githubCalls.push((init?.method ?? "GET") + " " + url);
+      return Response.json({ message: "API rate limit exceeded" }, { status: 403, headers: {
+        "x-ratelimit-resource": url.endsWith("/graphql") ? "graphql" : "core",
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + 3600),
+      } });
+    };
+    const { db, setSetting } = await import(${module("db.ts")});
+    setSetting("agent_harness", "omp");
+    const agents = await import(${module("agents.ts")});
+    // launches return before their real harness process exits, and only the agent row records the outcome
+    const waitForExit = async (repo, number) => {
+      for (let i = 0; i < 500 && agents.getFixerAgent(repo, number)?.state === "running"; i++) await Bun.sleep(20);
+      return agents.getFixerAgent(repo, number);
+    };
+    ${scenario}
+    process.exit(0);
+  `;
+  const run = async (code: string, env: Record<string, string>) => {
+    const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", code], { env, stdout: "pipe", stderr: "pipe" });
+    const [exitCode, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    if (exitCode !== 0) throw new Error(stderr);
+    return stdout;
+  };
+  try {
+    await run(seed, { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_MOCK: "1" });
+    const { COCKPIT_MOCK: _mock, ...env } = Bun.env;
+    const stdout = await run(live, {
+      ...env,
+      COCKPIT_DATA_DIR: dataDir,
+      COCKPIT_GH_BIN: join(bin, "gh"),
+      PATH: `${bin}:${Bun.env.PATH}`,
+      STUB_OUT: out,
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: `url.file://${join(dir, "remote")}/.insteadOf`,
+      GIT_CONFIG_VALUE_0: "https://github.com/",
+    });
+    const read = (name: string) => { try { return readFileSync(join(out, name), "utf8"); } catch { return null; } };
+    const clones = [];
+    for (let n = 0; read(`prompt-${n}.txt`) !== null; n++) {
+      const clone = read(`clone-${n}.json`);
+      if (clone) clones.push(JSON.parse(clone));
+    }
+    return { result: JSON.parse(stdout.trim().split("\n").at(-1)!), ghCalls: (read("gh-calls") ?? "").split("\n").filter(Boolean), clones };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("cached PRs launch prompt, auto-fix, and custom agents while GitHub's API quota is exhausted", async () => {
+  const { result, ghCalls, clones } = await liveAgentScenario(`
+    const { getViewerLogin } = await import(${JSON.stringify(new URL("./github.ts", import.meta.url).href)});
+    const { buildFetchHandler } = await import(${JSON.stringify(new URL("./http.ts", import.meta.url).href)});
+    // the screenshot's state: the first 403 records core as exhausted, and later core reads fail fast on that record
+    await getViewerLogin().catch(() => {});
+    const blocked = await getViewerLogin().then(() => null, (err) => String(err));
+    githubCalls.length = 0;
+    db.run("UPDATE prs SET detail_json = json_set(detail_json, '$.headRepository', json('{\\"nameWithOwner\\":\\"fixture/cockpit\\"}')) WHERE number = 101");
+    setSetting("agents", JSON.stringify([{ id: "custom-tidy", name: "Tidy", enabled: true, trigger: "keybind", keybind: null, model: "opus", prompt_template: "Tidy {{REPO}}#{{PR_NUMBER}}" }]));
+    db.run("UPDATE prs SET ci_status = 'FAILURE' WHERE number = 101");
+    const handler = buildFetchHandler(4820, { cacheGithubActionsForCommit: async () => {} });
+    const launches = [];
+    for (const [path, body, status] of [
+      ["prompt", { instruction: "Fix the P1 and P2 review comments" }, "done"],
+      ["autofix", {}, "gave-up"],
+      ["custom", { agentId: "custom-tidy" }, "done"],
+    ]) {
+      process.env.STUB_STATUS = status;
+      const response = await handler(new Request("http://127.0.0.1:4820/api/agents/" + path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ repo: "fixture/cockpit", number: 101, ...body }),
+      }));
+      const launchCalls = [...githubCalls];
+      const agent = await waitForExit("fixture/cockpit", 101);
+      launches.push({ path, status: response.status, body: await response.json(), launchCalls, state: agent?.state, exitReason: agent?.exit_reason });
+    }
+    console.log(JSON.stringify({ blocked, launches, githubCalls }));
+  `);
+  const { blocked, launches, githubCalls } = result as { blocked: string; launches: unknown[]; githubCalls: string[] };
+  expect(blocked).toContain("GitHub core quota exhausted until");
+  expect(launches).toEqual([
+    { path: "prompt", status: 200, body: { ok: true }, launchCalls: [], state: "exited", exitReason: "done" },
+    { path: "autofix", status: 200, body: { ok: true }, launchCalls: [], state: "exited", exitReason: "gave-up" },
+    { path: "custom", status: 200, body: { ok: true }, launchCalls: [], state: "exited", exitReason: "done" },
+  ]);
+  // briefs come from the cached snapshot, and the agents' own checkout goes through git, not the GitHub API
+  expect(githubCalls).toEqual([]);
+  expect(clones[0]?.exitCode).toBe(0);
+  expect(clones[0]?.branch).toBe("fixture/pr-101");
+  expect(clones.every((clone) => clone.exitCode === 0)).toBe(true);
+  expect(ghCalls).toEqual(["auth token"]);
+});
+
+test("legacy cached PR launches without fetching its unknown head repository or inventing push permission", async () => {
+  const { result, ghCalls, clones } = await liveAgentScenario(`
+    const { getViewerLogin } = await import(${JSON.stringify(new URL("./github.ts", import.meta.url).href)});
+    const { buildFetchHandler } = await import(${JSON.stringify(new URL("./http.ts", import.meta.url).href)});
+    await getViewerLogin().catch(() => {});
+    githubCalls.length = 0;
+    process.env.STUB_STATUS = "done";
+    const handler = buildFetchHandler(4820, { cacheGithubActionsForCommit: async () => {} });
+    const response = await handler(new Request("http://127.0.0.1:4820/api/agents/prompt", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ repo: "fixture/cockpit", number: 101, instruction: "Inspect the PR" }),
+    }));
+    const agent = await waitForExit("fixture/cockpit", 101);
+    console.log(JSON.stringify({ status: response.status, body: await response.json(), exitReason: agent?.exit_reason, githubCalls }));
+  `);
+  expect(result).toEqual({ status: 200, body: { ok: true }, exitReason: "done", githubCalls: [] });
+  expect(clones.map((clone) => [clone.exitCode, clone.branch])).toEqual([[0, null]]);
+  expect(ghCalls).toEqual(["auth token"]);
+});
+
+test("a prompt agent's ready signal merges only the head Cockpit re-verifies, and says when GitHub is unavailable", async () => {
+  const { result } = await liveAgentScenario(`
+    const { mock } = await import("bun:test");
+    const { GithubRequestError } = await import(${JSON.stringify(new URL("./github.ts", import.meta.url).href)});
+    const pollerUrl = ${JSON.stringify(new URL("./poller.ts", import.meta.url).href)};
+    const mergeMethodUrl = ${JSON.stringify(new URL("./mergeMethod.ts", import.meta.url).href)};
+    const pollerModule = await import(pollerUrl);
+    const mergeMethodModule = await import(mergeMethodUrl);
+    let refresh = async () => {};
+    const merges = [];
+    mock.module(pollerUrl, () => ({ ...pollerModule, refreshPr: (...args) => refresh(...args) }));
+    mock.module(mergeMethodUrl, () => ({ ...mergeMethodModule, mergeWithLearning: async (...args) => { merges.push(args); } }));
+    const outcomes = {};
+    const cases = {
+      verified: [${JSON.stringify(`ready-to-merge ${FIXTURE_HEAD}`)}, "0", async () => {}],
+      headDrift: [${JSON.stringify(`ready-to-merge ${FIXTURE_HEAD}`)}, "0", async () => { db.run("UPDATE prs SET head_sha = ? WHERE number = 101", ["f".repeat(40)]); }],
+      uncleanExit: [${JSON.stringify(`ready-to-merge ${FIXTURE_HEAD}`)}, "1", async () => {}],
+      quota: [${JSON.stringify(`ready-to-merge ${FIXTURE_HEAD}`)}, "0", async () => { throw new GithubRequestError("GitHub graphql quota exhausted until later", 403, [], "quota", "graphql", "later"); }],
+      noMergeAsked: ["done", "0", async () => {}],
+    };
+    for (const [name, [status, exit, onRefresh]] of Object.entries(cases)) {
+      db.run("UPDATE prs SET head_sha = ? WHERE number = 101", [${JSON.stringify(FIXTURE_HEAD)}]);
+      merges.length = 0;
+      refresh = onRefresh;
+      process.env.STUB_STATUS = status;
+      process.env.STUB_EXIT = exit;
+      await agents.launchPromptAgent("fixture/cockpit", 101, name === "noMergeAsked" ? "Fix the P1 and P2 review comments" : "Fix the P1 and P2 review comments, then merge it");
+      const agent = await waitForExit("fixture/cockpit", 101);
+      outcomes[name] = { exitReason: agent?.exit_reason, merges: merges.map((args) => args.slice(0, 4)) };
+    }
+    console.log(JSON.stringify(outcomes));
+  `);
+  expect(result).toEqual({
+    verified: { exitReason: "merged", merges: [["fixture/cockpit", 101, "main", FIXTURE_HEAD]] },
+    headDrift: { exitReason: "merge-refused", merges: [] },
+    uncleanExit: { exitReason: "merge-refused", merges: [] },
+    quota: { exitReason: "merge-unavailable", merges: [] },
+    noMergeAsked: { exitReason: "done", merges: [] },
+  });
+});
+
+test("a direct-URL PR can merge after a fresh detail-cache read without joining the tracked inbox", async () => {
+  const { result } = await liveAgentScenario(`
+    const { mock } = await import("bun:test");
+    const { getPr, getCachedPrDetail, upsertCachedPrDetail } = await import(${JSON.stringify(new URL("./db.ts", import.meta.url).href)});
+    const cacheModuleUrl = ${JSON.stringify(new URL("./cachedPrDetail.ts", import.meta.url).href)};
+    const mergeModuleUrl = ${JSON.stringify(new URL("./mergeMethod.ts", import.meta.url).href)};
+    const cacheModule = await import(cacheModuleUrl);
+    const mergeModule = await import(mergeModuleUrl);
+    const original = getPr("fixture/cockpit", 101);
+    upsertCachedPrDetail({ repo: original.repo, number: original.number, head_sha: original.head_sha, detail_json: original.detail_json, fetched_at: original.fetched_at });
+    db.run("DELETE FROM prs WHERE repo = ? AND number = ?", ["fixture/cockpit", 101]);
+    const merges = [];
+    let currentHead = ${JSON.stringify(FIXTURE_HEAD)};
+    mock.module(cacheModuleUrl, () => ({ ...cacheModule, refreshCachedPrDetail: async () => {
+      const row = getCachedPrDetail("fixture/cockpit", 101);
+      const detail = JSON.parse(row.detail_json);
+      detail.headRefOid = currentHead;
+      upsertCachedPrDetail({ ...row, head_sha: currentHead, detail_json: JSON.stringify(detail), fetched_at: "3000-01-01T00:00:00.000Z" });
+    } }));
+    mock.module(mergeModuleUrl, () => ({ ...mergeModule, mergeWithLearning: async (...args) => { merges.push(args.slice(0, 4)); } }));
+    process.env.STUB_STATUS = ${JSON.stringify(`ready-to-merge ${FIXTURE_HEAD}`)};
+    const outcomes = {};
+    for (const [name, head] of [["valid", ${JSON.stringify(FIXTURE_HEAD)}], ["headDrift", "f".repeat(40)]]) {
+      currentHead = head;
+      merges.length = 0;
+      await agents.launchPromptAgent("fixture/cockpit", 101, "Merge this PR when ready");
+      const agent = await waitForExit("fixture/cockpit", 101);
+      outcomes[name] = { exitReason: agent?.exit_reason, merges: [...merges], tracked: getPr("fixture/cockpit", 101) !== null };
+    }
+    console.log(JSON.stringify(outcomes));
+  `);
+  expect(result).toEqual({
+    valid: { exitReason: "merged", merges: [["fixture/cockpit", 101, "main", FIXTURE_HEAD]], tracked: false },
+    headDrift: { exitReason: "merge-refused", merges: [], tracked: false },
+  });
 });
 
 describe("turnsFromLines", () => {
