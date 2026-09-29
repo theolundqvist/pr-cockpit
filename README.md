@@ -123,6 +123,8 @@ Local caching does **not** mean the app makes no external connections. Besides G
 
 In **Settings → Workspace → Developer**, choose **Check for updates** to fetch the latest `main` revision from GitHub. If an update is available, **Install update** runs the existing updater; the page reloads when the server reports the new revision. Installations with updates disabled reject both actions.
 
+If the installed backend cannot start, the desktop launcher automatically tries an update before opening the app. Recovery is limited to once every five minutes, respects disabled updates, and leaves local edits and non-`main` branches untouched. It restarts only the backend, never an already-running desktop window. If no working update is available, startup reports the failure.
+
 ```sh
 pr-cockpit update  # update and reconcile the installed app
 pr-cockpit status  # identify the process supervising the local server

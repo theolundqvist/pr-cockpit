@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Fetch + fast-forward, treating up-to-date and local-ahead as a clean no-op. Uncommitted tracked
-# edits never block: if they collide with the incoming update they are preserved on a
-# local-edits-<timestamp> branch and the checkout is reset before retrying. exit 0 = safe to restart
-# ("noop"/"updated" on stdout); exit 1 = do not restart, reason on stderr, working tree untouched.
+# Fetch + fast-forward, treating up-to-date and local-ahead as a clean no-op.
+# Manual updates preserve conflicting tracked edits on a local-edits-<timestamp>
+# branch before retrying; automatic updates fail without moving those edits.
+# exit 0 = safe to restart ("noop"/"updated"); exit 1 = do not restart.
 set -Eeuo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -11,6 +11,20 @@ cd "$root"
 branch="$(git rev-parse --abbrev-ref HEAD)"
 if [[ "$branch" == "HEAD" ]]; then
   echo "detached HEAD — not on a branch" >&2
+  exit 1
+fi
+
+# A broken installed desktop must not silently pull whichever feature branch
+# happens to be checked out. Unattended startup recovery only follows main.
+if [[ "${COCKPIT_STARTUP_RECOVERY:-0}" == "1" && "$branch" != "main" ]]; then
+  echo "automatic startup recovery requires the main branch (currently '$branch')" >&2
+  exit 1
+fi
+
+# Automatic recovery must not move aside or discard tracked local work. The
+# manual updater retains its existing backup-branch behavior.
+if [[ "${COCKPIT_AUTO_UPDATE:-0}" == "1" ]] && ! git diff --quiet HEAD --; then
+  echo "tracked local edits prevent automatic update — resolve manually" >&2
   exit 1
 fi
 
@@ -39,6 +53,10 @@ if git merge-base --is-ancestor HEAD "$remote"; then
   fi
   # ff refused: uncommitted tracked edits collide with incoming files. Preserve them on a
   # branch (stash create commits index+tree without touching either), clean, retry.
+  if [[ "${COCKPIT_AUTO_UPDATE:-0}" == "1" ]]; then
+    echo "fast-forward merge failed; automatic update will not move local edits" >&2
+    exit 1
+  fi
   if snapshot="$(git stash create "local edits before update")" && [[ -n "$snapshot" ]]; then
     backup="local-edits-$(date -u +%Y%m%d-%H%M%S)"
     git branch "$backup" "$snapshot"

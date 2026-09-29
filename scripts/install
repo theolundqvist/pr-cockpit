@@ -380,7 +380,15 @@ bootstrap_agent() {
 # Restart only the server. A loaded renderer stays alive and picks up UI assets
 # on its next navigation or refresh.
 bootstrap_agent "$server_agent_plist"
-if [[ "$shell_agent_loaded" -eq 1 && "$shell_agent_root" == "$root" ]]; then
+if [[ "${COCKPIT_STARTUP_RECOVERY:-0}" == "1" ]]; then
+  # Recovery repairs the backend without opening or stopping a renderer.
+  # A later normal install may replace a registration from a different root.
+  if [[ "$shell_agent_loaded" -eq 1 ]]; then
+    echo "pr-cockpit: preserving running app"
+  else
+    echo "pr-cockpit: leaving desktop app unloaded during startup recovery"
+  fi
+elif [[ "$shell_agent_loaded" -eq 1 && "$shell_agent_root" == "$root" ]]; then
   echo "pr-cockpit: preserving running app"
 else
   if [[ "$shell_agent_loaded" -eq 1 ]]; then

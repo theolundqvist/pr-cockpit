@@ -81,7 +81,7 @@ exit 0`,
 
 async function install(
   loadedRoot: string | null,
-  options: { platform?: "Darwin" | "Linux"; proxy?: string; healthRoot?: string; listenerPid?: string; healthFailure?: "once" | "always"; tailscalePort?: string; failInstall?: boolean; hangReporter?: boolean } = {},
+  options: { platform?: "Darwin" | "Linux"; proxy?: string; healthRoot?: string; listenerPid?: string; healthFailure?: "once" | "always"; tailscalePort?: string; failInstall?: boolean; hangReporter?: boolean; startupRecovery?: boolean } = {},
 ) {
   const home = mkdtempSync(join(tmpdir(), "cockpit-install-"));
   try {
@@ -97,6 +97,7 @@ async function install(
           COCKPIT_TAILSCALE_SERVE: "1",
           COCKPIT_TAILSCALE_HTTPS_PORT: options.tailscalePort,
         } : {}),
+        ...(options.startupRecovery ? { COCKPIT_STARTUP_RECOVERY: "1" } : {}),
         ...(options.failInstall ? { COCKPIT_TEST_FAIL_BUN_INSTALL: "1" } : {}),
         ...(options.hangReporter ? { COCKPIT_TEST_HANG_SENTRY_REPORTER: "1" } : {}),
       },
@@ -302,6 +303,21 @@ test("no loaded registration bootstraps the app", async () => {
   expect(result.stdout).not.toContain("replacing the app registration");
   expect(result.calls).not.toContain(`bootout gui/${uid}/app.pr-cockpit\n`);
   expect(result.calls).toContain("Library/LaunchAgents/app.pr-cockpit.plist");
+});
+
+test("startup recovery restarts the backend without loading an absent desktop app", async () => {
+  const result = await install(null, { startupRecovery: true });
+  expect(result.exitCode).toBe(0);
+  expect(result.calls).toContain("app.pr-cockpit.server.plist");
+  expect(result.calls).not.toContain("LaunchAgents/app.pr-cockpit.plist");
+});
+
+test("startup recovery preserves an already loaded app even when its registered root is stale", async () => {
+  const result = await install("/tmp/some-other-checkout", { startupRecovery: true });
+  expect(result.exitCode).toBe(0);
+  expect(result.calls).toContain("app.pr-cockpit.server.plist");
+  expect(result.calls).not.toContain(`bootout gui/${uid}/app.pr-cockpit\n`);
+  expect(result.calls).not.toContain("LaunchAgents/app.pr-cockpit.plist");
 });
 
 test("a registration for this root keeps the running window", async () => {

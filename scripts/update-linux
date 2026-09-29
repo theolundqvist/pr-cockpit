@@ -92,7 +92,7 @@ if [[ "$pull_reason" != "updated" ]]; then
     exit 0
   fi
 fi
-if [[ "${COCKPIT_AUTO_UPDATE:-0}" == "1" && "$pull_reason" != "updated" ]]; then
+if [[ "${COCKPIT_AUTO_UPDATE:-0}" == "1" && "${COCKPIT_STARTUP_RECOVERY:-0}" != "1" && "$pull_reason" != "updated" ]]; then
   echo "auto-update: ${pull_reason:-noop}"
   exit 0
 fi

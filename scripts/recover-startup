@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Shell-only startup repair. Never import the failed backend or launch a renderer.
+set -Eeuo pipefail
+umask 077
+
+if [[ "$#" -ne 0 ]]; then
+  echo "usage: scripts/recover-startup" >&2
+  exit 2
+fi
+platform="$(uname -s)"
+if [[ "${COCKPIT_UPDATE_DISABLED:-0}" == "1" || ( "$platform" == "Linux" && "${COCKPIT_LINUX_DEV:-0}" == "1" ) ]]; then
+  echo "pr-cockpit: automatic startup recovery is disabled" >&2
+  exit 1
+fi
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+if [[ "$platform" == "Linux" ]]; then
+  data_dir="${COCKPIT_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/pr-cockpit}"
+else
+  data_dir="${COCKPIT_DATA_DIR:-$HOME/.local/share/pr-cockpit}"
+fi
+mkdir -p "$data_dir"
+lock="$data_dir/startup-recovery.lock"
+attempt="$data_dir/startup-recovery.attempt"
+
+# Keep this inode permanently: unlinking a lock file allows two independent
+# locks on different inodes. The updater inherits FD 9, so a surviving child
+# still holds the lock if its launcher is interrupted.
+exec 9>>"$lock"
+if [[ "$platform" == "Darwin" ]]; then
+  if ! lockf -s -t 0 9; then
+    echo "pr-cockpit: startup recovery is already in progress" >&2
+    exit 1
+  fi
+elif [[ "$platform" == "Linux" ]]; then
+  if ! command -v flock >/dev/null 2>&1; then
+    echo "pr-cockpit: automatic startup recovery requires flock" >&2
+    exit 1
+  fi
+  if ! flock -n 9; then
+    echo "pr-cockpit: startup recovery is already in progress" >&2
+    exit 1
+  fi
+else
+  echo "pr-cockpit: unsupported startup recovery platform: $platform" >&2
+  exit 1
+fi
+
+now="$(date +%s)"
+last="$(cat "$attempt" 2>/dev/null || true)"
+if [[ "$last" =~ ^[0-9]+$ ]] && (( now >= last && now - last < 300 )); then
+  echo "pr-cockpit: automatic startup recovery already attempted in the last five minutes" >&2
+  exit 1
+fi
+printf '%s\n' "$now" > "$attempt.tmp"
+mv "$attempt.tmp" "$attempt"
+echo "pr-cockpit: backend unavailable; trying non-graphical update..." >&2
+COCKPIT_STARTUP_RECOVERY=1 "$root/scripts/auto-update"

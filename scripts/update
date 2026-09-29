@@ -15,8 +15,20 @@ if [[ "$platform" != "Darwin" ]]; then
   exit 1
 fi
 
+# An automatic update is never allowed to launch or reveal the desktop app.
+# Manual updates keep their historical handoff unless non-GUI was requested.
+non_gui=0
+if [[ "${COCKPIT_AUTO_UPDATE:-0}" == "1" || "${COCKPIT_UPDATE_GUI:-1}" == "0" ]]; then
+  non_gui=1
+fi
+
 fail_and_relaunch() {
+  local status=$?
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) update failed at: $BASH_COMMAND" >> "$data_dir/update-failures.log" 2>/dev/null || true
+  if [[ "$non_gui" -eq 1 ]]; then
+    echo "UPDATE_FAILED installation failed; see $data_dir/update-failures.log" >&2
+    exit "$status"
+  fi
   echo "pr-cockpit: restart step failed after pull, relaunching (last-good build if the rebuild broke)..."
   exec env COCKPIT_SKIP_RECONCILE=1 "$root/scripts/cockpit" --managed-server --show
 }
@@ -36,10 +48,12 @@ if [[ -n "${pull_reason:-}" ]]; then
   echo "pr-cockpit: $pull_reason"
 fi
 
-# Pull ok: the shell may quit and hand off now. Only past here does a failure relaunch the previous version.
+# Manual handoff closes the pipe after PULL_OK; non-GUI callers need the
+# installer result and diagnostics on their original stdout/stderr.
 echo "PULL_OK"
-# The shell quits after PULL_OK and closes this pipe; reopen to a log so the restart doesn't die on SIGPIPE.
-exec >>"$data_dir/update.log" 2>&1
+if [[ "$non_gui" -eq 0 ]]; then
+  exec >>"$data_dir/update.log" 2>&1
+fi
 trap fail_and_relaunch ERR
 
 new_rev="$(git rev-parse HEAD)"
@@ -49,5 +63,8 @@ echo "pr-cockpit: reconciling install..."
 "$root/scripts/install"
 
 echo "pr-cockpit: $old_rev -> $new_rev"
-echo "pr-cockpit: restarting..."
-exec "$root/scripts/cockpit" --managed-server --show
+if [[ "$non_gui" -eq 0 ]]; then
+  echo "pr-cockpit: restarting..."
+  exec "$root/scripts/cockpit" --managed-server --show
+fi
+echo "auto-update: installed $new_rev"

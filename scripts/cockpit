@@ -40,6 +40,7 @@ fi
 # env wins over ~/.config/pr-cockpit/config, which wins over these defaults
 env_port="${COCKPIT_PORT:-}"
 env_data_dir="${COCKPIT_DATA_DIR:-}"
+env_update_disabled="${COCKPIT_UPDATE_DISABLED:-}"
 env_repos="${COCKPIT_REPOS:-}"
 env_default_repo="${COCKPIT_DEFAULT_REPO:-}"
 env_tmux_hosts="${COCKPIT_TMUX_HOSTS:-}"
@@ -77,6 +78,7 @@ else
   data_dir="${env_data_dir:-${COCKPIT_DATA_DIR:-$HOME/.local/share/pr-cockpit}}"
 fi
 export COCKPIT_DATA_DIR="$data_dir"
+export COCKPIT_UPDATE_DISABLED="${env_update_disabled:-${COCKPIT_UPDATE_DISABLED:-}}"
 export COCKPIT_MANAGED=1
 export COCKPIT_REPOS="${env_repos:-${COCKPIT_REPOS:-}}"
 export COCKPIT_TMUX_HOSTS="${env_tmux_hosts:-${COCKPIT_TMUX_HOSTS:-}}"
@@ -98,7 +100,6 @@ server_only=0
 managed_server=0
 pr_arg=""
 protocol_arg=""
-reconcile_failed=0
 proxy_arg=""
 args=("$@")
 arg_index=0
@@ -159,7 +160,6 @@ if [[ "$platform" == "Darwin" && "${COCKPIT_SKIP_RECONCILE:-0}" != "1" && "$serv
     echo "pr-cockpit: finishing installation for $current_rev..."
     if ! "$root/scripts/install"; then
       echo "pr-cockpit: installation reconciliation failed; continuing with the existing app" >&2
-      reconcile_failed=1
     fi
   fi
 fi
@@ -186,29 +186,37 @@ if [[ "$server_only" -eq 1 ]]; then
   exec env COCKPIT_PORT="$port" "$bun" server/main.ts
 fi
 
+# A foreign listener may not implement /healthz.
+port_has_listener() {
+  curl --max-time 2 -fsS -o /dev/null "$url/healthz" >/dev/null 2>&1 && return 0
+  ( : < "/dev/tcp/127.0.0.1/$port" ) 2>/dev/null
+}
+
 if [[ "$platform" == "Linux" ]]; then
   runtime_link="${XDG_DATA_HOME:-$HOME/.local/share}/pr-cockpit-runtime/current"
-  if [[ "${COCKPIT_LINUX_DEV:-0}" == "1" ]]; then
-    runtime_root="$root"
-    runtime_launcher="$script_path"
-  else
-    if [[ ! -d "$runtime_link" ]]; then
-      echo "pr-cockpit: installed Linux runtime is missing at $runtime_link" >&2
-      exit 1
+  linux_resolve_runtime() {
+    if [[ "${COCKPIT_LINUX_DEV:-0}" == "1" ]]; then
+      runtime_root="$root"
+      runtime_launcher="$script_path"
+    else
+      if [[ ! -d "$runtime_link" ]]; then
+        echo "pr-cockpit: installed Linux runtime is missing at $runtime_link" >&2
+        return 1
+      fi
+      runtime_root="$(cd "$runtime_link" && pwd -P)"
+      runtime_launcher="$runtime_root/scripts/cockpit"
+      if [[ ! -x "$runtime_launcher" ]]; then
+        echo "pr-cockpit: active Linux runtime launcher is missing at $runtime_launcher" >&2
+        return 1
+      fi
     fi
-    runtime_root="$(cd "$runtime_link" && pwd -P)"
-    runtime_launcher="$runtime_root/scripts/cockpit"
-    if [[ ! -x "$runtime_launcher" ]]; then
-      echo "pr-cockpit: active Linux runtime launcher is missing at $runtime_launcher" >&2
-      exit 1
+    electron_bin="$runtime_root/shell/node_modules/electron/dist/electron"
+    if [[ ! -x "$electron_bin" ]]; then
+      echo "pr-cockpit: active Linux Electron runtime is missing at $electron_bin" >&2
+      return 1
     fi
-  fi
-
-  electron_bin="$runtime_root/shell/node_modules/electron/dist/electron"
-  if [[ ! -x "$electron_bin" ]]; then
-    echo "pr-cockpit: active Linux Electron runtime is missing at $electron_bin" >&2
-    exit 1
-  fi
+  }
+  linux_resolve_runtime
 
   linux_server_is_ours() {
     local health
@@ -225,7 +233,7 @@ if [[ "$platform" == "Linux" ]]; then
   }
 
   if ! linux_server_is_ours; then
-    if curl --max-time 2 -fsS -o /dev/null "$url/healthz"; then
+    if port_has_listener; then
       echo "pr-cockpit: port $port is serving a different instance; set COCKPIT_PORT to a free port" >&2
       exit 1
     fi
@@ -234,11 +242,21 @@ if [[ "$platform" == "Linux" ]]; then
       nohup "$script_path" --server-only < /dev/null > "$data_dir/server.log" 2>&1 &
       disown
     else
-      systemctl --user start pr-cockpit.service
+      systemctl --user start pr-cockpit.service || true
     fi
     if ! linux_wait_for_server; then
-      echo "pr-cockpit: Linux backend failed to start" >&2
-      exit 1
+      if [[ "${COCKPIT_LINUX_DEV:-0}" != "1" ]] && ! port_has_listener && "$root/scripts/recover-startup"; then
+        # Activation switches current atomically and may retire the old release.
+        # Do not launch Electron from the runtime that failed to start.
+        linux_resolve_runtime
+        if ! linux_wait_for_server; then
+          echo "pr-cockpit: Linux backend is still unavailable after update" >&2
+          exit 1
+        fi
+      else
+        echo "pr-cockpit: Linux backend failed to start" >&2
+        exit 1
+      fi
     fi
   fi
 
@@ -341,19 +359,17 @@ ensure_managed_server() {
 }
 
 if ! server_is_ours; then
-  if curl --max-time 2 -fsS -o /dev/null "$url/healthz"; then
+  if port_has_listener; then
     echo "pr-cockpit: port $port is serving a different instance; set COCKPIT_PORT to a free port" >&2
     exit 1
   fi
   if [[ "$managed_server" -eq 1 ]]; then
     echo "pr-cockpit: starting managed $backend_label on port $port..."
     if ! ensure_managed_server; then
-      if [[ "$reconcile_failed" -eq 1 ]]; then
-        echo "pr-cockpit: managed backend unavailable; falling back to the existing launcher" >&2
-        exec env -u COCKPIT_LAUNCHER COCKPIT_SKIP_RECONCILE=1 COCKPIT_ALLOW_UNMANAGED=1 "$source_launcher" --show
+      if port_has_listener || ! "$root/scripts/recover-startup" || ! wait_for_server; then
+        echo "pr-cockpit: managed backend failed to start — see $HOME/Library/Logs/PR Cockpit/server.err.log" >&2
+        exit 1
       fi
-      echo "pr-cockpit: managed backend failed to start — see $HOME/Library/Logs/PR Cockpit/server.err.log" >&2
-      exit 1
     fi
   else
     echo "pr-cockpit: starting $backend_label on port $port..."
