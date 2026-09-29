@@ -22,6 +22,10 @@
     if (src !== null) return;
     const img = e.target;
     if (!(img instanceof HTMLImageElement) || !img.closest(".md")) return;
+    // Linked images (badges, bot action buttons) follow their link as on GitHub; only a link
+    // back to the image itself still opens the lightbox.
+    const href = img.closest("a[href]")?.getAttribute("href");
+    if (href && href !== img.getAttribute("src") && href !== img.dataset.originalSrc) return;
     e.preventDefault();
     openFrom(img);
   }
