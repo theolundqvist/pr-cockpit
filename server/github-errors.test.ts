@@ -1124,6 +1124,90 @@ test("a retry-after from a quota probe prevents further probes and API requests"
   }
 });
 
+test("quota stays readable while core is exhausted but not during a secondary cooldown", async () => {
+  const fakeGhDir = mkdtempSync(join(tmpdir(), "pr-cockpit-rate-limit-read-"));
+  const fakeGh = join(fakeGhDir, "gh");
+  writeFileSync(fakeGh, "#!/bin/sh\nprintf 'fixture-token\\n'\n");
+  chmodSync(fakeGh, 0o755);
+  try {
+    const script = `
+      let now = 2_000_000_000_000;
+      Date.now = () => now;
+      const github = await import(${JSON.stringify(githubModuleUrl)});
+      const coreReset = (now + 600_000) / 1000;
+      let secondary = false;
+      let rateLimitCalls = 0;
+      let targetCalls = 0;
+      globalThis.fetch = async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/rate_limit") {
+          rateLimitCalls++;
+          if (secondary) return Response.json({ message: "secondary rate limit" }, { status: 429, headers: { "retry-after": "120" } });
+          return Response.json({ resources: {
+            core: { limit: 5000, used: 5000, remaining: 0, reset: coreReset },
+            graphql: { limit: 5000, used: 120, remaining: 4880, reset: coreReset },
+          } });
+        }
+        targetCalls++;
+        return Response.json({ message: "API rate limit exceeded" }, { status: 403, headers: {
+          "x-ratelimit-resource": "core",
+          "x-ratelimit-remaining": "0",
+          "x-ratelimit-reset": String(coreReset),
+        } });
+      };
+      const capture = async (fn) => { try { return { value: await fn() }; } catch (error) { return { error }; } };
+
+      await capture(() => github.fetchActionWorkflows("acme/app"));
+      const exhausted = await capture(() => github.fetchGithubQuota());
+      const readsWhileExhausted = rateLimitCalls;
+      const restAfterRead = await capture(() => github.fetchActionWorkflows("acme/app"));
+
+      secondary = true;
+      now += 61_000;
+      const limited = await capture(() => github.fetchGithubQuota());
+      const readsAfterLimit = rateLimitCalls;
+      now += 61_000;
+      const cooling = await capture(() => github.fetchGithubQuota());
+      const readsWhileCooling = rateLimitCalls;
+
+      secondary = false;
+      now += 120_000;
+      const recovered = await capture(() => github.fetchGithubQuota());
+      console.log(JSON.stringify({
+        exhausted: exhausted.value && { rest: exhausted.value.rest.remaining, graphql: exhausted.value.graphql.remaining },
+        readsWhileExhausted,
+        restStillBlocked: restAfterRead.error?.kind === "quota" && restAfterRead.error.resource === "core",
+        targetCalls,
+        limited: limited.error?.kind,
+        coolingRefusedLocally: cooling.error?.kind === "quota" && readsWhileCooling === readsAfterLimit,
+        recovered: recovered.value?.graphql.remaining,
+      }));
+    `;
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: { ...Bun.env, COCKPIT_GH_BIN: fakeGh, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      process.exited,
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+    ]);
+    expect(exitCode, stderr).toBe(0);
+    expect(JSON.parse(stdout)).toEqual({
+      exhausted: { rest: 0, graphql: 4880 },
+      readsWhileExhausted: 1,
+      restStillBlocked: true,
+      targetCalls: 1,
+      limited: "quota",
+      coolingRefusedLocally: true,
+      recovered: 4880,
+    });
+  } finally {
+    rmSync(fakeGhDir, { recursive: true, force: true });
+  }
+});
+
 test("GitHub requests carry a deadline so a silently dead socket cannot stall polling", async () => {
   const fakeGhDir = mkdtempSync(join(tmpdir(), "pr-cockpit-request-deadline-"));
   const fakeGh = join(fakeGhDir, "gh");

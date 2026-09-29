@@ -116,6 +116,8 @@ Arming auto-merge approves merging after the agent addresses comments, conflicts
 
 The Agents tab renders Markdown answers, groups tool activity into expandable details, and shows an identical final-answer echo only once. Full tool inputs, errors, and raw logs remain available.
 
+**Settings → Usage** shows REST core and GraphQL quota separately, including exhausted balances and reset times. Reading quota status remains available when the primary REST limit is exhausted; GitHub's secondary cooldowns still apply.
+
 ## Local reads. GitHub authority.
 
 Cockpit is a client for your existing GitHub workflow, not a second place to maintain pull requests.

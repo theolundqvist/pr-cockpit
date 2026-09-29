@@ -3,7 +3,7 @@
   import { cachedView, cacheView } from "./detailCache.js";
 
   let data = $state(cachedView("usage"));
-  let error = $state(false);
+  let error = $state(null);
 
   const number = new Intl.NumberFormat();
   const percent = (value, total) => total > 0 ? Math.min(100, (value / total) * 100) : 0;
@@ -25,7 +25,7 @@
         cacheView("usage", next);
         data = next;
       })
-      .catch(() => (error = true));
+      .catch((failure) => (error = failure.message));
   });
 </script>
 
@@ -86,6 +86,20 @@
           <span>{usage.windowComplete ? "points from other clients" : "other clients: awaiting full window"}</span>
         </div>
       </div>
+
+      {#if data.rest}
+        {@const rest = data.rest}
+        <div class="rest-quota" class:exhausted={rest.remaining === 0}>
+          <span>GitHub REST core</span>
+          <strong>
+            {#if rest.remaining === 0}
+              Exhausted until {resetTime(rest.resetAt)}
+            {:else}
+              {number.format(rest.remaining)} of {number.format(rest.limit)} remaining · resets {resetTime(rest.resetAt)}
+            {/if}
+          </strong>
+        </div>
+      {/if}
     </section>
 
     <section class="history-card" aria-labelledby="usage-history-title">
@@ -154,7 +168,7 @@
 
     <span class="usage-window">Resets at {resetTime(quota.resetAt)}.{#if usage.unknownCostRequests} {number.format(usage.unknownCostRequests)} calls with unknown cost.{/if}</span>
   {:else if error}
-    <div class="state error">GitHub usage is unavailable.</div>
+    <div class="state error">GitHub usage is unavailable: {error}</div>
   {:else}
     <div class="state">Loading usage…</div>
   {/if}
@@ -267,6 +281,20 @@
     font-weight: 500;
   }
   .usage-stats span { margin-top: 2px; }
+  .rest-quota {
+    display: flex;
+    justify-content: space-between;
+    gap: 14px;
+    margin-top: 16px;
+    color: var(--text-faint);
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+  .rest-quota strong {
+    color: var(--text);
+    font-weight: 500;
+  }
+  .rest-quota.exhausted strong { color: var(--fail); }
   .history-chart {
     display: grid;
     grid-template-columns: repeat(72, minmax(2px, 1fr));
@@ -367,7 +395,7 @@
     font-family: var(--mono);
     font-size: 12px;
   }
-  .state.error { color: var(--danger); }
+  .state.error { color: var(--fail); }
 
   @media (max-width: 900px) {
     .page { padding-right: 20px; padding-left: 20px; }

@@ -602,11 +602,13 @@ async function handleGithubUsage(runtime: HttpRuntime): Promise<Response> {
     const resources = await runtime.fetchGithubQuota();
     return json({
       quota: resources.graphql,
+      rest: resources.rest,
       usage: githubGraphqlUsage(resources.graphql.used, resources.graphql.limit, resources.graphql.resetAt),
     });
   } catch (err) {
-    console.error("GitHub usage fetch failed:", err);
-    return json({ error: "GitHub usage unavailable" }, 502);
+    if (isTransportFailure(err)) console.warn(`GitHub usage fetch failed: ${(err as Error).message}`);
+    else console.error("GitHub usage fetch failed:", err);
+    return githubErrorResponse(err, "GitHub usage unavailable");
   }
 }
 

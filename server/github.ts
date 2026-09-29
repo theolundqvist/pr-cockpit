@@ -236,8 +236,9 @@ async function revalidateQuota(
   await entry.promise;
 }
 
-function assertQuotaAvailable(resource: GithubQuotaResourceName): void {
-  const blocked = activeQuotaBlock(resource);
+function assertQuotaAvailable(resource: GithubQuotaResourceName, includePrimary = true): void {
+  const active = activeQuotaBlock(resource);
+  const blocked = includePrimary ? active : blockedQuotas.get(resource)?.secondary ?? null;
   if (!blocked) return;
   throw new GithubRequestError(
     `GitHub ${resource} quota exhausted until ${blocked.resetAt}`,
@@ -252,11 +253,12 @@ function assertQuotaAvailable(resource: GithubQuotaResourceName): void {
 async function requireQuota(
   resource: GithubQuotaResourceName,
   authentication?: { token: string; generation: number },
+  includePrimary = true,
 ): Promise<{ token: string; generation: number }> {
   const token = authentication?.token ?? await ghToken();
   const generation = authentication?.generation ?? quotaGeneration(token);
-  await revalidateQuota(resource, token, generation);
-  assertQuotaAvailable(resource);
+  if (includePrimary) await revalidateQuota(resource, token, generation);
+  assertQuotaAvailable(resource, includePrimary);
   return { token, generation };
 }
 
@@ -272,7 +274,10 @@ async function githubApiResponse(
   } = {},
 ): Promise<Response> {
   const resource = quotaResource(path);
-  const { token, generation } = await requireQuota(resource, options.authentication);
+  // GitHub does not charge GET /rate_limit to the primary REST limit, so quota stays readable
+  // while core is exhausted; the read is itself the revalidation. Secondary cooldowns still apply.
+  const rateLimitRead = method === "GET" && path === "/rate_limit";
+  const { token, generation } = await requireQuota(resource, options.authentication, !rateLimitRead);
   let response: Response;
   try {
     response = await fetch(`https://api.github.com${path}`, {

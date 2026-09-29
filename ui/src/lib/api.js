@@ -563,6 +563,6 @@ export async function fetchQuota() {
 
 export async function fetchGithubUsage() {
   const res = await fetch("/api/github-usage");
-  if (!res.ok) throw new Error(`github usage ${res.status}`);
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `github usage ${res.status}`);
   return await res.json();
 }
