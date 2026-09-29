@@ -45,6 +45,8 @@ type QuotaBlocks = { primary?: QuotaDeadline; secondary?: QuotaDeadline };
 const blockedQuotas = new Map<GithubQuotaResourceName, QuotaBlocks>();
 const responseQuotaResources = new WeakMap<Response, GithubQuotaResourceName>();
 const responseQuotaGenerations = new WeakMap<Response, number>();
+// Responses to requests GitHub does not charge to the primary limit; only secondary cooldowns gate them.
+const primaryExemptResponses = new WeakSet<Response>();
 const quotaProbeInFlight = new Map<GithubQuotaResourceName, {
   generation: number;
   primary: QuotaDeadline;
@@ -236,9 +238,13 @@ async function revalidateQuota(
   await entry.promise;
 }
 
-function assertQuotaAvailable(resource: GithubQuotaResourceName, includePrimary = true): void {
+function gatingQuotaBlock(resource: GithubQuotaResourceName, includePrimary: boolean): QuotaDeadline | null {
   const active = activeQuotaBlock(resource);
-  const blocked = includePrimary ? active : blockedQuotas.get(resource)?.secondary ?? null;
+  return includePrimary ? active : blockedQuotas.get(resource)?.secondary ?? null;
+}
+
+function assertQuotaAvailable(resource: GithubQuotaResourceName, includePrimary = true): void {
+  const blocked = gatingQuotaBlock(resource, includePrimary);
   if (!blocked) return;
   throw new GithubRequestError(
     `GitHub ${resource} quota exhausted until ${blocked.resetAt}`,
@@ -305,6 +311,7 @@ async function githubApiResponse(
   }
   responseQuotaResources.set(response, resource);
   responseQuotaGenerations.set(response, generation);
+  if (rateLimitRead) primaryExemptResponses.add(response);
   accountQuota(response, resource, generation);
   return response;
 }
@@ -330,7 +337,7 @@ async function githubResponseError(label: string, response: Response): Promise<G
       || /rate limit/i.test(body)
     ));
   const resetAt = quota && responseHasActiveQuota(response)
-    ? activeQuotaBlock(resource)?.resetAt ?? null
+    ? gatingQuotaBlock(resource, !primaryExemptResponses.has(response))?.resetAt ?? null
     : null;
   return new GithubRequestError(
     `${label}: ${response.status}${body ? ` ${body}` : ""}`,

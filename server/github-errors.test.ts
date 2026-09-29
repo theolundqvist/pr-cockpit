@@ -7,6 +7,7 @@ const githubModuleUrl = new URL("./github.ts", import.meta.url).href;
 const systemIssuesModuleUrl = new URL("./systemIssues.ts", import.meta.url).href;
 const githubUsageModuleUrl = new URL("./githubUsage.ts", import.meta.url).href;
 const githubAuthModuleUrl = new URL("./githubAuth.ts", import.meta.url).href;
+const httpModuleUrl = new URL("./http.ts", import.meta.url).href;
 // Child processes install transport and auth isolation before github.ts evaluates, so static imports cannot exercise these boundaries.
 
 test("closed PR search isolates inaccessible repositories", async () => {
@@ -1134,6 +1135,13 @@ test("quota stays readable while core is exhausted but not during a secondary co
       let now = 2_000_000_000_000;
       Date.now = () => now;
       const github = await import(${JSON.stringify(githubModuleUrl)});
+      const { buildFetchHandler } = await import(${JSON.stringify(httpModuleUrl)});
+      const handler = buildFetchHandler(4820);
+      const usage = async () => {
+        const response = await handler(new Request("http://127.0.0.1:4820/api/github-usage"));
+        const body = await response.json();
+        return { status: response.status, retryAfter: response.headers.get("retry-after"), kind: body.kind, resetAt: body.resetAt };
+      };
       const coreReset = (now + 600_000) / 1000;
       let secondary = false;
       let rateLimitCalls = 0;
@@ -1164,10 +1172,10 @@ test("quota stays readable while core is exhausted but not during a secondary co
 
       secondary = true;
       now += 61_000;
-      const limited = await capture(() => github.fetchGithubQuota());
+      const limited = await usage();
       const readsAfterLimit = rateLimitCalls;
       now += 61_000;
-      const cooling = await capture(() => github.fetchGithubQuota());
+      const cooling = await usage();
       const readsWhileCooling = rateLimitCalls;
 
       secondary = false;
@@ -1178,13 +1186,14 @@ test("quota stays readable while core is exhausted but not during a secondary co
         readsWhileExhausted,
         restStillBlocked: restAfterRead.error?.kind === "quota" && restAfterRead.error.resource === "core",
         targetCalls,
-        limited: limited.error?.kind,
-        coolingRefusedLocally: cooling.error?.kind === "quota" && readsWhileCooling === readsAfterLimit,
+        limited,
+        cooling,
+        coolingRefusedLocally: readsWhileCooling === readsAfterLimit,
         recovered: recovered.value?.graphql.remaining,
       }));
     `;
     const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
-      env: { ...Bun.env, COCKPIT_GH_BIN: fakeGh, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "" },
+      env: { ...Bun.env, COCKPIT_DATA_DIR: fakeGhDir, COCKPIT_GH_BIN: fakeGh, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "" },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -1194,12 +1203,16 @@ test("quota stays readable while core is exhausted but not during a secondary co
       new Response(process.stderr).text(),
     ]);
     expect(exitCode, stderr).toBe(0);
-    expect(JSON.parse(stdout)).toEqual({
+    const result = JSON.parse(stdout);
+    // The exempt read is gated only by GitHub's 120s Retry-After, never by the 600s core reset.
+    const cooldownEnds = "2033-05-18T03:36:21.000Z";
+    expect(result).toEqual({
       exhausted: { rest: 0, graphql: 4880 },
       readsWhileExhausted: 1,
       restStillBlocked: true,
       targetCalls: 1,
-      limited: "quota",
+      limited: { status: 429, retryAfter: "120", kind: "quota", resetAt: cooldownEnds },
+      cooling: { status: 429, retryAfter: "59", kind: "quota", resetAt: cooldownEnds },
       coolingRefusedLocally: true,
       recovered: 4880,
     });
