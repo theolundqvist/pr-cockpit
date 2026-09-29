@@ -210,65 +210,56 @@ function baseHardRules(mergeRule: string): string {
 }
 
 function hardRules(): string {
-  return `${baseHardRules(`Only Cockpit merges: when the merge step's conditions hold you write "ready-to-merge", and Cockpit re-verifies a freshly refreshed snapshot server-side before merging.`)}
-- Keep every fix minimal: make the check pass without rewriting unrelated code. If a failure requires a real design decision, comment on the PR describing the decision needed and write "gave-up" instead of guessing.
-- Last action, always: overwrite the file ${FIXER_STATUS_FILE} in this directory with exactly one word - "continue" (nothing more to do until the PR changes; Cockpit relaunches you with a fresh brief when it does), "ready-to-merge" (the merge step's conditions hold - Cockpit merges), "merged" (the PR is already merged or closed), "waiting-review" (just posted the waiting-on-review comment), or "gave-up" (just posted the give-up comment).`;
+  return `${baseHardRules(`Only Cockpit merges: you signal readiness, and Cockpit re-checks a fresh snapshot before merging exactly the head you name.`)}
+- Last action, always: overwrite the file ${FIXER_STATUS_FILE} in this directory with exactly one line - "continue" (nothing more to do until the PR changes; Cockpit relaunches you with a fresh brief when it does), "ready-to-merge <SHA>" (ready to merge at SHA, the full 40-character head commit you checked; a bare "ready-to-merge" or a run that doesn't exit cleanly is refused), "merged" (the PR is already merged or closed), "waiting-review" (you commented on what a person must review or decide), or "gave-up" (you commented on the access or blocker nobody here can clear).`;
 }
 
 // placeholders substituted at spawn time by renderIterationTemplate - a custom template is rendered the same way
-const DEFAULT_FIXER_TEMPLATE = `WORK - handle every blocker you can act on, in this order, starting from the brief above instead of re-reading it. After each push or state change, re-read pr-cockpit {{REPO}}#{{PR_NUMBER}} and start again at step 1; if it still shows the old head, wait with pr-cockpit listen {{REPO}}#{{PR_NUMBER}} and re-read.
-1. state MERGED or CLOSED: write "merged" to {{STATUS_FILE}} and stop.
-2. Merge conflicts (merge state DIRTY): git fetch origin {{BASE_REF}} && git merge origin/{{BASE_REF}}, resolve, commit, push.
-3. Else, branch behind base (merge state BEHIND): pr-cockpit update-branch {{REPO}}#{{PR_NUMBER}}; if that fails, git fetch origin {{BASE_REF}} && git merge origin/{{BASE_REF}}, then push.
-4. Else, failing checks: read the cached failing job logs with pr-cockpit {{REPO}}#{{PR_NUMBER}} --logs, diagnose, fix with the smallest change that makes the check pass, verify locally with the narrowest relevant command (single test file, lint on the touched files), commit, push.
-5. Else, unresolved review threads: check each thread's author. A thread from a configured BOT reviewer ({{BOT_REVIEWERS}}) - if the concern is valid, fix it (commit and push) and reply explaining the fix; if not, reply explaining why not; then resolve it with pr-cockpit resolve {{REPO}}#{{PR_NUMBER}} HANDLE. A thread from a HUMAN reviewer - never touch, resolve, or reply to it; if that's the only blocker, note it and continue.
-6. Else, checks still queued or running (see pr-cockpit {{REPO}}#{{PR_NUMBER}} --jobs): wait with pr-cockpit listen {{REPO}}#{{PR_NUMBER}} --ci-only.{{FORCE_MERGE_STEP}}
-8. Else, blocked only on human review: if that has held across three consecutive reads, comment that the PR is green and waiting on review, then write "waiting-review". Otherwise wait with pr-cockpit listen {{REPO}}#{{PR_NUMBER}} and return to step 1.
-9. Give up: if the same check is still failing after 3 distinct fix attempts by you across this conversation, comment on the PR summarizing each attempt and why it still fails, then write "gave-up".
-10. Report a single one-line summary of what you did.`;
+const DEFAULT_FIXER_TEMPLATE = `The user approved merging this PR once it's ready: first fix its merge conflicts, address the review comments from people and bots, and fix the CI failures this PR caused. A failing check the PR didn't cause doesn't block the merge, and you don't need to rerun anything to prove that - judge from the evidence you have. Follow your loaded global instructions and the repository's instructions; after cloning, read the repository's AGENTS.md before editing. If only a person can unblock it, such as a CHANGES_REQUESTED review, a required approval, a decision, or access you lack, comment once saying what's needed.{{FORCE_MERGE_STEP}}`;
 
 export function defaultFixerTemplate(): string {
-  return DEFAULT_FIXER_TEMPLATE.replaceAll("{{BOT_REVIEWERS}}", reviewBots().map((bot) => bot.login).join(", "));
+  return DEFAULT_FIXER_TEMPLATE;
 }
 
-// a custom fixer template that drops {{FORCE_MERGE_STEP}} still carries the merge step, last
+// a custom fixer template that drops {{FORCE_MERGE_STEP}} still carries the merge step, last; the step goes in
+// first because it carries placeholders of its own. Saved templates may still name {{BOT_REVIEWERS}}.
 function renderIterationTemplate(template: string, repo: string, number: number, baseRef: string, mergeStep: string): string {
-  const withMergeStep = template.includes("{{FORCE_MERGE_STEP}}") ? template : `${template}${mergeStep}`;
+  const withMergeStep = template.includes("{{FORCE_MERGE_STEP}}") ? template.replaceAll("{{FORCE_MERGE_STEP}}", mergeStep) : `${template}${mergeStep}`;
   return withMergeStep
     .replaceAll("{{REPO}}", repo)
-    .replaceAll("{{FORCE_MERGE_STEP}}", mergeStep)
     .replaceAll("{{BOT_REVIEWERS}}", reviewBots().map((bot) => bot.login).join(", "))
     .replaceAll("{{PR_NUMBER}}", String(number))
     .replaceAll("{{BASE_REF}}", baseRef)
     .replaceAll("{{STATUS_FILE}}", FIXER_STATUS_FILE);
 }
 
-function fixerPrompt(isFirst: boolean, repo: string, number: number, baseRef: string, headRef: string, brief: string, mergeStep: string, template: string): string {
+function fixerPrompt(isFirst: boolean, repo: string, number: number, baseRef: string, headRef: string, brief: string, mergeStep: string, template: string, refusal: string | null): string {
   return `${isFirst
-    ? `You are the auto-merge fixer agent for the pull request ${repo}#${number} (branch "${headRef}" into "${baseRef}"). Clear whatever blocks merging, signal Cockpit when the merge step's conditions hold, and get out of the way.`
+    ? `You are the auto-merge fixer for the pull request ${repo}#${number} (branch "${headRef}" into "${baseRef}").`
     : "Same PR, relaunched because it changed or your last run ended. The brief below is current; start from it."}
 
 ${brief}
-
+${refusal ? `\nCOCKPIT REFUSED YOUR LAST READY SIGNAL: ${refusal}.\n` : ""}
 ${renderIterationTemplate(template.trim() || DEFAULT_FIXER_TEMPLATE, repo, number, baseRef, mergeStep)}
 
 ${hardRules()}`;
 }
 
-function nextBlocker(summary: PrAgentSummary): string {
+function nextBlocker(summary: PrAgentSummary, strictChecks: boolean): string {
   if (summary.state === "MERGED" || summary.state === "CLOSED") return `the PR is ${summary.state}; nothing to do`;
   if (summary.merge === "DIRTY") return `resolve the merge conflicts with ${summary.base} first`;
   if (summary.merge === "BEHIND") return `bring the branch up to date with \`pr-cockpit update-branch ${summary.ref}\``;
-  if (summary.ci.state === "FAILURE" || summary.ci.state === "CANCELLED") return "fix the failing checks, then the open review threads";
+  if (summary.ci.state === "FAILURE" || summary.ci.state === "CANCELLED") return strictChecks ? "fix the failing checks, then the open review threads" : "checks report failures; fix those this PR caused, and address the open review feedback";
   if (summary.openComments.length > 0 || summary.review === "CHANGES_REQUESTED") return "address the open review feedback";
-  if (summary.ci.running > 0) return `checks are still running; wait with \`pr-cockpit listen ${summary.ref} --ci-only\``;
+  if (summary.ci.running > 0) return strictChecks ? `checks are still running; wait with \`pr-cockpit listen ${summary.ref} --ci-only\`` : "checks are still running";
   if (summary.ci.state === "PENDING") return `Actions coverage is incomplete in this snapshot; confirm with \`pr-cockpit ${summary.ref} --jobs\` before treating checks as green`;
   return "no blocker is known in this snapshot; only the merge gate remains";
 }
 
 // cache-only apart from a one-time refresh for snapshots cached before they carried the head repository;
-// the freshness line keeps a stale clean state from reading as mergeable
-async function cockpitBrief(repo: string, number: number, headRef: string, logPath: string): Promise<string> {
+// the freshness line keeps a stale clean state from reading as mergeable. The fixer judges for itself which checks
+// its change affects, so its brief neither demands every check green nor tells it to wait.
+async function cockpitBrief(repo: string, number: number, headRef: string, logPath: string, strictChecks = true): Promise<string> {
   const ref = `${repo}#${number}`;
   const newest = () => {
     const tracked = getPr(repo, number);
@@ -290,7 +281,7 @@ async function cockpitBrief(repo: string, number: number, headRef: string, logPa
     ? `enabled (${detail.autoMergeRequest.mergeMethod}${detail.autoMergeRequest.enabledBy ? ` by @${detail.autoMergeRequest.enabledBy.login}` : ""})`
     : "off";
   return `COCKPIT BRIEF - Cockpit's cached snapshot at this launch, in place of your startup reads. Re-read with \`pr-cockpit ${ref}\` after you change something or \`listen\` wakes${snapshot.freshness === "outdated" ? "; this snapshot is OUTDATED, so re-read it before acting on anything it shows as clear" : ""}.
-Next: ${nextBlocker(summary)}.
+Next: ${nextBlocker(summary, strictChecks)}.
 Auto-merge (cached): Cockpit ${tracked?.auto_merge_enabled ? "armed" : "not armed"} · GitHub ${githubAutoMerge}. Leave both as they are.
 
 ${formatPrAgentSummary(summary, { body: false }).trim()}
@@ -298,30 +289,53 @@ ${formatPrAgentSummary(summary, { body: false }).trim()}
 ${cockpitCommands(repo, number, detail.headRefName || headRef, detail.headRepository?.nameWithOwner ?? null)}`;
 }
 
-// GitHub's StatusCheckRollupState values, as computed by checkRollupStatus in poller.ts; NONE means no checks at all
-const CI_GREEN_STATUSES = new Set(["SUCCESS", "NONE"]);
-
-// the rollup state alone is not enough: force-merge can act while GitHub reports BLOCKED, and a
-// required check that was skipped or cancelled leaves that requirement unmet without failing the rollup.
-// BLOCKED only ever bypasses an approval rule, and a fresh push can briefly report no checks, so it needs SUCCESS.
-export function readyToMerge(pr: PrRow): boolean {
-  return pr.review_decision !== "CHANGES_REQUESTED" &&
-    CI_GREEN_STATUSES.has(pr.ci_status) &&
-    (pr.merge_state_status !== "BLOCKED" || pr.ci_status === "SUCCESS") &&
-    pr.unresolved_count === 0 &&
-    unsatisfiedRequiredChecks(pr.detail_json).length === 0;
+// the fixer's signal attests its own judgment of the final head, so remote CI doesn't gate it here: GitHub's merge
+// state still enforces required checks, and only a force-merge opt-in lets BLOCKED through. Returns why not, or null.
+export function fixerMergeRefusal(repo: string, pr: PrRow, sha: string): string | null {
+  if (pr.head_sha !== sha) return `you signaled ${sha}, but the PR head is now ${pr.head_sha}; check that head and signal it instead`;
+  if (pr.state !== "OPEN") return `the PR is ${pr.state}`;
+  if (pr.is_draft) return "the PR is a draft, and marking it ready for review is a person's call";
+  if (pr.mergeable !== "MERGEABLE" || pr.merge_state_status === "DIRTY") return `GitHub reports mergeable ${pr.mergeable || "unknown"} (merge state ${pr.merge_state_status || "unknown"}), not conflict-free`;
+  if (pr.merge_state_status === "BEHIND") return `the branch is behind ${pr.base_ref}`;
+  if (pr.review_decision === "CHANGES_REQUESTED") return "a CHANGES_REQUESTED review is still in effect, and only its reviewer can clear it";
+  if (pr.unresolved_count > 0) return `${pr.unresolved_count} review thread${pr.unresolved_count === 1 ? " is" : "s are"} still unresolved`;
+  if (mergeAllowedNow(repo, pr)) return null;
+  return pr.merge_state_status === "BLOCKED"
+    ? `GitHub reports BLOCKED (a required approval or required check is unmet), and ${repo} is not opted into force-merge, so Cockpit won't bypass it`
+    : `GitHub reports merge state ${pr.merge_state_status || "unknown"}, which does not allow merging yet`;
 }
 
-// states the conditions instead of gating on launch-time cache state; the server-side gate re-verifies
+// states the gate instead of checking launch-time cache state; the server-side gate re-verifies
 export function mergeStepText(repo: string, allowMerge = true): string {
   if (!allowMerge) return "";
-  if (forceMergeEnabled(repo)) {
-    return `\n7. Else, merge check: if checks are green, there are no conflicts, the branch is not behind, there is no CHANGES_REQUESTED, every review thread is resolved or bot-only-and-addressed, and the only remaining blocker (if any) is a required-approval rule, write "ready-to-merge" to {{STATUS_FILE}} and stop; Cockpit re-verifies and merges it itself. Never signal it past failing checks, conflicts, an unresolved human thread, or CHANGES_REQUESTED.`;
-  }
-  return `\n7. Else, merge check: if the PR is fully green - merge state CLEAN, checks passing, no conflicts, review approved or not required, every thread resolved - write "ready-to-merge" to {{STATUS_FILE}} and stop; Cockpit re-verifies and merges it itself.`;
+  const gate = "Cockpit merges the head you signal only when it has no conflicts, isn't behind, and has no CHANGES_REQUESTED review or unresolved thread";
+  return forceMergeEnabled(repo)
+    ? `\n${gate}; this repository opted into force-merge, so GitHub's BLOCKED state doesn't stop it.`
+    : `\n${gate}, and GitHub allows the merge; BLOCKED means a required approval or check is unmet, and Cockpit won't bypass it.`;
 }
 
-async function runIteration(repo: string, number: number, workdir: string, logPath: string, prompt: string, useContinue: boolean): Promise<string> {
+const READY_SIGNAL = /^ready-to-merge ([0-9a-f]{40})$/;
+
+interface FixerStatus {
+  status: string;
+  sha: string | null;
+  refusal: string | null;
+}
+
+// the ready signal must name the head the agent checked and come from a clean harness exit; anything else is
+// refused back to the agent in its next brief instead of merging or silently relaunching on the same prompt
+export function parseFixerStatus(text: string | null, exitCode: number | null): FixerStatus {
+  const status = text?.trim() ?? "continue";
+  if (status.startsWith("ready-to-merge")) {
+    const sha = READY_SIGNAL.exec(status)?.[1] ?? null;
+    if (!sha) return { status: "continue", sha: null, refusal: `your status file said "${truncate(status, 80)}", but the ready signal must be exactly "ready-to-merge <SHA>" with the full 40-character lowercase head commit you checked` };
+    if (exitCode !== 0) return { status: "continue", sha: null, refusal: `your harness exited with code ${exitCode} after signaling ${sha}, and Cockpit only accepts a ready signal from a run that exits cleanly` };
+    return { status: "ready-to-merge", sha, refusal: null };
+  }
+  return { status: status === "continue" || TERMINAL_STATUSES.includes(status) ? status : "continue", sha: null, refusal: null };
+}
+
+async function runIteration(repo: string, number: number, workdir: string, logPath: string, prompt: string, useContinue: boolean): Promise<FixerStatus> {
   // clear any stale status (previous iteration, or a previous armed session in a reused workdir) before this one runs
   rmSync(`${workdir}/${FIXER_STATUS_FILE}`, { force: true });
   const logFd = openSync(logPath, "a");
@@ -334,9 +348,7 @@ async function runIteration(repo: string, number: number, workdir: string, logPa
   closeSync(logFd);
 
   const statusFile = Bun.file(`${workdir}/${FIXER_STATUS_FILE}`);
-  if (!(await statusFile.exists())) return "continue";
-  const status = (await statusFile.text()).trim();
-  return status === "continue" || status === "ready-to-merge" || TERMINAL_STATUSES.includes(status) ? status : "continue";
+  return parseFixerStatus((await statusFile.exists()) ? await statusFile.text() : null, proc.exitCode);
 }
 
 const activeSupervisors = new Map<string, { stopped: boolean }>();
@@ -385,7 +397,8 @@ async function superviseFixer(
   resuming: boolean,
 ): Promise<void> {
   let isFirst = !resuming;
-  let mergeFailures = 0;
+  // why Cockpit turned down the last ready signal, carried into the next brief so the agent acts on it
+  let refusal: string | null = null;
   try {
     while (!control.stopped) {
       if (!agentEnabled("fixer")) {
@@ -403,32 +416,37 @@ async function superviseFixer(
       }
       // re-read every launch - settings and cached PR signals are both live, not fixed at arm time
       const briefed = prFingerprint(pr);
-      const prompt = fixerPrompt(isFirst, repo, number, baseRef, headRef, await cockpitBrief(repo, number, headRef, logPath), mergeStepText(repo), agentPromptTemplate("fixer"));
-      const status = await runIteration(repo, number, workdir, logPath, prompt, !isFirst);
+      const prompt = fixerPrompt(isFirst, repo, number, baseRef, headRef, await cockpitBrief(repo, number, headRef, logPath, false), mergeStepText(repo), agentPromptTemplate("fixer"), refusal);
+      refusal = null;
+      const run = await runIteration(repo, number, workdir, logPath, prompt, !isFirst);
       isFirst = false;
       if (control.stopped) return;
       const refreshed = await refreshAgentPr(repo, number, logPath, "agent read");
       if (control.stopped) return;
-      if (status === "ready-to-merge") {
-        // the agent's word is a signal, not authority: gate on the post-run refresh and bind the merge to that head
+      if (run.refusal) {
+        refusal = run.refusal;
+        appendFileSync(logPath, `\ncockpit refused merge signal for ${repo}#${number}: ${refusal}\n`);
+        await awaitPrChange(repo, number, briefed, control);
+        continue;
+      }
+      if (run.status === "ready-to-merge" && run.sha) {
+        // disabling the fixer during the run revokes its merge authority; the loop head then exits
+        if (!agentEnabled("fixer")) continue;
+        // the agent's word is a signal, not authority: gate on the post-run refresh and bind the merge to the head it signaled
         const fresh = refreshed ? getPr(repo, number) : null;
-        const gateOk = fresh && readyToMerge(fresh) && mergeAllowedNow(repo, fresh);
-        if (!gateOk) {
-          appendFileSync(logPath, `\ncockpit refused merge signal for ${repo}#${number}: ${refreshed ? "PR does not pass the server-side merge gate" : "snapshot could not be refreshed"}\n`);
+        const refused = fresh ? fixerMergeRefusal(repo, fresh, run.sha) : "Cockpit could not refresh the PR, so it could not re-verify it";
+        if (!fresh || refused) {
+          refusal = refused;
+          appendFileSync(logPath, `\ncockpit refused merge signal for ${repo}#${number}: ${refusal}\n`);
           await awaitPrChange(repo, number, briefed, control);
           continue;
         }
         try {
-          await mergeWithLearning(repo, number, fresh.base_ref, fresh.head_sha);
+          await mergeWithLearning(repo, number, fresh.base_ref, run.sha);
         } catch (err) {
-          mergeFailures += 1;
-          appendFileSync(logPath, `\ncockpit merge failed for ${repo}#${number} (attempt ${mergeFailures}/3): ${err}\n`);
-          if (mergeFailures >= 3) {
-            setAgentExitedStmt.run("gave-up", repo, number);
-            finishRun(repo, number, "exited", "gave-up");
-            cleanupAgentWorkdir(workdir);
-            return;
-          }
+          // no retry cap: the agent reads GitHub's reason next run and either clears it or reports the blocker itself
+          appendFileSync(logPath, `\ncockpit merge failed for ${repo}#${number}: ${err}\n`);
+          refusal = `GitHub rejected Cockpit's merge of ${run.sha}: ${truncate(String(err), 300)}`;
           await awaitPrChange(repo, number, prFingerprint(fresh), control);
           continue;
         }
@@ -438,9 +456,9 @@ async function superviseFixer(
         await refreshAgentPr(repo, number, logPath, "mutation recovery");
         return;
       }
-      if (status !== "continue") {
-        setAgentExitedStmt.run(status, repo, number);
-        finishRun(repo, number, "exited", status);
+      if (run.status !== "continue") {
+        setAgentExitedStmt.run(run.status, repo, number);
+        finishRun(repo, number, "exited", run.status);
         cleanupAgentWorkdir(workdir);
         return;
       }
@@ -625,8 +643,17 @@ async function runAutofixIteration(repo: string, number: number, workdir: string
   return status === "gave-up" || status === "waiting-review" ? status : "continue";
 }
 
+// GitHub's StatusCheckRollupState values, as computed by checkRollupStatus in poller.ts; NONE means no checks at all
+const CI_GREEN_STATUSES = new Set(["SUCCESS", "NONE"]);
+
+// autofix stops only on a fully green PR: the rollup alone is not enough, because a required check that was
+// skipped or cancelled leaves that requirement unmet without failing the rollup
 export function isGreen(pr: PrRow): boolean {
-  return readyToMerge(pr) && pr.merge_state_status === "CLEAN";
+  return pr.merge_state_status === "CLEAN" &&
+    pr.review_decision !== "CHANGES_REQUESTED" &&
+    CI_GREEN_STATUSES.has(pr.ci_status) &&
+    pr.unresolved_count === 0 &&
+    unsatisfiedRequiredChecks(pr.detail_json).length === 0;
 }
 
 async function superviseAutofix(

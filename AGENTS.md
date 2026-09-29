@@ -102,6 +102,7 @@ After a task needs non-obvious investigation, repeated failed attempts, or a rec
 - Agent workflow, operational runbooks, and environment traps go here.
 - A reproducible code failure gets an automated test instead of a paragraph.
 - Record only evidence-backed, reusable guidance. No credentials, no transient PIDs, no diary of one-off failures.
+- Built-in agent prompts state the user's goal, approval, and Cockpit protocol; inherit global and repository instructions instead of duplicating workflow policy that can drift. Known unrelated CI failures need no rerun or post-merge proof.
 - GitHub prerequisite and onboarding flows are server-classified and resolved in-app; never send users to Terminal. Match the landing page: one short headline, no subtitle, flat controls, and only copy needed for the next action; open browser setup automatically and retain the device code as recovery.
 - GitHub GraphQL calls are attributed by feature and operation in Settings → General. External-client usage appears only after one complete locally tracked quota window; before then it is unknown, never estimated.
 - Conflict cards refresh the mirror and compare the PR head with the current base branch; never use cached base revisions, invent repository-level conflict copy, or offer copy-prompt controls.

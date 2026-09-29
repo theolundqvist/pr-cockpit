@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agentPrRefs, isGreen, mergeStepText, readyToMerge, runWindowTurns, turnsFromLines } from "./agents.ts";
+import { agentPrRefs, isGreen, parseFixerStatus, runWindowTurns, turnsFromLines } from "./agents.ts";
 import type { PrRow } from "./db.ts";
 
 function pr(overrides: Partial<PrRow>): PrRow {
@@ -92,20 +92,94 @@ describe("isGreen", () => {
     expect(isGreen(pr({ detail_json: withRequired("CANCELLED") }))).toBe(false);
     expect(isGreen(pr({ detail_json: withRequired("SUCCESS") }))).toBe(true);
   });
+
+  test("unfinished checks never count as green", () => {
+    expect(isGreen(pr({ ci_status: "PENDING" }))).toBe(false);
+    expect(isGreen(pr({ ci_status: "EXPECTED" }))).toBe(false);
+    expect(isGreen(pr({ ci_status: "NONE" }))).toBe(true);
+  });
+
+  test("a mergeable but not CLEAN state is never green", () => {
+    expect(isGreen(pr({ merge_state_status: "UNSTABLE" }))).toBe(false);
+    expect(isGreen(pr({ merge_state_status: "BLOCKED" }))).toBe(false);
+  });
 });
 
-describe("readyToMerge", () => {
-  test("unfinished checks never pass the server merge gate", () => {
-    expect(readyToMerge(pr({ ci_status: "PENDING" }))).toBe(false);
-    expect(readyToMerge(pr({ ci_status: "EXPECTED" }))).toBe(false);
-    expect(readyToMerge(pr({ ci_status: "NONE" }))).toBe(true);
+const VERIFIED = "0123456789abcdef0123456789abcdef01234567";
+
+describe("parseFixerStatus", () => {
+  test("a ready signal names the verified head and needs a clean harness exit", () => {
+    expect(parseFixerStatus(`ready-to-merge ${VERIFIED}\n`, 0)).toEqual({ status: "ready-to-merge", sha: VERIFIED, refusal: null });
+    const crashed = parseFixerStatus(`ready-to-merge ${VERIFIED}`, 1);
+    expect(crashed).toMatchObject({ status: "continue", sha: null });
+    expect(crashed.refusal).toBeTruthy();
   });
 
-  test("a force-merge BLOCKED state needs every check finished and passing", () => {
-    expect(readyToMerge(pr({ merge_state_status: "BLOCKED", ci_status: "PENDING" }))).toBe(false);
-    expect(readyToMerge(pr({ merge_state_status: "BLOCKED", ci_status: "NONE" }))).toBe(false);
-    expect(readyToMerge(pr({ merge_state_status: "BLOCKED", ci_status: "SUCCESS" }))).toBe(true);
+  test("a bare or malformed ready signal is refused back to the agent, never merged", () => {
+    for (const text of ["ready-to-merge", `ready-to-merge ${VERIFIED.slice(0, 7)}`, `ready-to-merge ${VERIFIED.toUpperCase()}`, `ready-to-merge ${VERIFIED} extra`]) {
+      const parsed = parseFixerStatus(text, 0);
+      expect(parsed).toMatchObject({ status: "continue", sha: null });
+      expect(parsed.refusal).toBeTruthy();
+    }
   });
+
+  test("other statuses pass through, and unknown or missing ones mean continue without a refusal", () => {
+    expect(parseFixerStatus("waiting-review\n", 0)).toEqual({ status: "waiting-review", sha: null, refusal: null });
+    expect(parseFixerStatus("gave-up", 1)).toEqual({ status: "gave-up", sha: null, refusal: null });
+    expect(parseFixerStatus("done", 0)).toEqual({ status: "continue", sha: null, refusal: null });
+    expect(parseFixerStatus(null, 0)).toEqual({ status: "continue", sha: null, refusal: null });
+  });
+});
+
+test("the fixer merge gate trusts local verification over remote CI but never GitHub's own merge blockers", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-fixer-gate-"));
+  const repo = "example-org/webapp";
+  const cases = {
+    pendingCi: pr({ head_sha: VERIFIED, ci_status: "PENDING" }),
+    nonRequiredFailure: pr({ head_sha: VERIFIED, ci_status: "FAILURE", merge_state_status: "UNSTABLE" }),
+    headDrift: pr({ head_sha: "f".repeat(40) }),
+    closed: pr({ head_sha: VERIFIED, state: "CLOSED" }),
+    draft: pr({ head_sha: VERIFIED, is_draft: 1, merge_state_status: "DRAFT" }),
+    conflicting: pr({ head_sha: VERIFIED, mergeable: "CONFLICTING", merge_state_status: "DIRTY" }),
+    mergeabilityUnknown: pr({ head_sha: VERIFIED, mergeable: "UNKNOWN", merge_state_status: "BLOCKED" }),
+    behind: pr({ head_sha: VERIFIED, merge_state_status: "BEHIND" }),
+    changesRequested: pr({ head_sha: VERIFIED, review_decision: "CHANGES_REQUESTED" }),
+    unresolved: pr({ head_sha: VERIFIED, unresolved_count: 1 }),
+    blocked: pr({ head_sha: VERIFIED, merge_state_status: "BLOCKED", ci_status: "PENDING" }),
+    unknownState: pr({ head_sha: VERIFIED, merge_state_status: "UNKNOWN" }),
+  };
+  // force_merge_repos lives in the database db.ts opens at import, so the opt-in flips in a child with an isolated data dir
+  const scenario = `
+    const { setSetting } = await import(${JSON.stringify(new URL("./db.ts", import.meta.url).href)});
+    const { fixerMergeRefusal } = await import(${JSON.stringify(new URL("./agents.ts", import.meta.url).href)});
+    const cases = ${JSON.stringify(cases)};
+    const gate = () => Object.fromEntries(Object.entries(cases).map(([name, row]) => [name, fixerMergeRefusal(${JSON.stringify(repo)}, row, ${JSON.stringify(VERIFIED)})]));
+    setSetting("force_merge_repos", "");
+    const plain = gate();
+    setSetting("force_merge_repos", ${JSON.stringify(repo)});
+    console.log(JSON.stringify({ plain, forced: gate() }));
+    process.exit(0);
+  `;
+  try {
+    const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_MOCK: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    if (exitCode !== 0) throw new Error(stderr);
+    const { plain, forced } = JSON.parse(stdout) as Record<"plain" | "forced", Record<keyof typeof cases, string | null>>;
+    expect(plain.pendingCi).toBeNull();
+    expect(plain.nonRequiredFailure).toBeNull();
+    for (const name of ["headDrift", "closed", "draft", "conflicting", "mergeabilityUnknown", "behind", "changesRequested", "unresolved", "blocked", "unknownState"] as const) {
+      expect(plain[name]).not.toBeNull();
+    }
+    // the opt-in lets BLOCKED through and nothing else
+    expect(forced.blocked).toBeNull();
+    expect({ ...forced, blocked: plain.blocked }).toEqual(plain);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
 });
 
 test("a one-shot prompt run interrupted by a restart is marked died, never resumed as the merging fixer", async () => {
@@ -136,13 +210,6 @@ test("a one-shot prompt run interrupted by a restart is marked died, never resum
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }
-});
-
-describe("mergeStepText", () => {
-  test("only an agent with merge permission is told to signal ready-to-merge", () => {
-    expect(mergeStepText("example-org/webapp")).toContain('"ready-to-merge"');
-    expect(mergeStepText("example-org/webapp", false)).toBe("");
-  });
 });
 
 describe("turnsFromLines", () => {

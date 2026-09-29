@@ -110,7 +110,9 @@ pr-cockpit listen owner/repo#123
 
 The CLI also supports comments, reviews, thread resolution, edits, and merges through Cockpit's mutation queue. Run **`pr-cockpit --help`** for commands and options, including `--body-file` for exact multiline text and `--json` for machine-readable status. The installer separately asks before adding Cockpit instructions to supported coding assistants.
 
-Built-in agents start with Cockpit's cached PR brief and use `pr-cockpit` for PR reads and mutations. With OMP, Opus uses the `opus` alias and Sonnet uses `anthropic/claude-sonnet-5-5`. The auto-merge fixer handles conflicts before checks and review feedback, then Cockpit refreshes the PR and verifies the merge gate before merging. Force merge remains opt-in and cannot bypass pending or failing checks, conflicts, or unresolved review threads. Agents clone only when code changes are needed.
+Built-in agents start with Cockpit's cached PR brief and use `pr-cockpit` for PR reads and mutations. With OMP, Opus uses the `opus` alias and Sonnet uses `anthropic/claude-sonnet-5-5`.
+
+Arming auto-merge approves merging after the agent addresses comments, conflicts, and CI failures caused by the PR. It follows your global and repository instructions for how to work; OMP loads global instructions automatically, and the agent reads repository instructions after cloning. Known unrelated CI failures need no rerun or post-merge proof. Cockpit refreshes the PR and merges only the head the agent verified. Bypassing required GitHub checks or approvals still needs the repository's force-merge opt-in; conflicts, unresolved threads, and changes-requested reviews remain blockers.
 
 The Agents tab renders Markdown answers, groups tool activity into expandable details, and shows an identical final-answer echo only once. Full tool inputs, errors, and raw logs remain available.
 
