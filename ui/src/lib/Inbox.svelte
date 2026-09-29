@@ -1119,7 +1119,7 @@
 
     {#if view === "whiteboard" && prefs.whiteboardEnabled}
       {#if Whiteboard}
-        <Whiteboard {prs} groups={groups.map((group) => ({ title: group.title, prs: group.items.filter((item) => item.pr).map((item) => item.pr) }))} {viewerLogin} {active} {refreshRevision} />
+        <Whiteboard {prs} groups={groups.map((group) => ({ id: group.id, title: group.title, prs: group.items.filter((item) => item.pr).map((item) => item.pr) }))} {viewerLogin} {active} {refreshRevision} />
       {:else if whiteboardLoadError}
         <div role="alert">Whiteboard could not load: {whiteboardLoadError} <button onclick={() => location.reload()}>Reload</button></div>
       {:else}<div role="status">Loading whiteboard…</div>{/if}

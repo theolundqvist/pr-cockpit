@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { emptyBoard, reconcileBoard, boardKey, personalState, historyChange, applyHistory, removeNodes, movingIds, moveNodes, intersects, validateBoard, clone, arrangeNodes } from "./whiteboard.js";
+import { emptyBoard, reconcileBoard, boardKey, personalState, historyChange, applyHistory, removeNodes, movingIds, moveNodes, intersects, contains, validateBoard, clone, arrangeNodes, regroupNodes } from "./whiteboard.js";
 
 const pr = (number: number, extra = {}) => ({ repo: "example/cockpit", number, title: `PR ${number}`, author: "octocat", state: "OPEN", headSha: "a".repeat(40), ...extra });
 
@@ -20,6 +20,32 @@ describe("personal whiteboard reconciliation", () => {
     const restored = applyHistory(arranged, historyChange(personalState(doc), personalState(arranged)));
     expect(new Map(restored.nodes.map((n) => [n.id, n]))).toEqual(new Map(doc.nodes.map((n) => [n.id, n])));
     expect(arrangeNodes(doc.nodes.slice(0, 2), 1440, 800)).toEqual([]);
+  });
+  test("explicit regroup follows inbox failure membership without stealing custom cards or losing notes", () => {
+    const prs = [pr(1), pr(2), pr(3), pr(4)];
+    const doc = reconcileBoard(emptyBoard(), prs, [{ id: "feature:work", title: "work", prs }]);
+    const source = doc.nodes.find((n) => n.type === "section")!;
+    delete source.groupId;
+    const customCard = doc.nodes.find((n) => n.key === boardKey(prs[2]))!;
+    customCard.x = 4016; customCard.y = 48;
+    doc.nodes.push({ id: "custom", type: "section", groupId: null, text: "FAILED TO MERGE", x: 4000, y: 0, w: 352, h: 256 });
+    doc.nodes.push({ id: "note", type: "text", text: "Keep context", x: 16, y: 16, w: 160, h: 20 });
+    const groups = [{ id: "merge-failed", title: "FAILED TO MERGE", prs: [prs[0], prs[2]] }, { id: "feature:work", title: "work", prs: [prs[1]] }];
+    const refreshed = reconcileBoard(doc, prs.map((p) => ({ ...p, mergeFailed: p.number === 1 || p.number === 3 })), groups);
+    expect(refreshed.nodes).toEqual(doc.nodes);
+    const after = { ...doc, nodes: arrangeNodes(regroupNodes(doc.nodes, groups), 1440, 800) };
+    const failed = after.nodes.find((n) => n.groupId === "merge-failed")!;
+    const memberKeys = after.nodes.filter((n) => n.type === "pr" && contains(failed, n)).map((n) => n.key);
+    expect(memberKeys).toEqual([boardKey(prs[0])]);
+    const custom = after.nodes.find((n) => n.id === "custom")!;
+    expect(contains(custom, after.nodes.find((n) => n.id === customCard.id)!)).toBe(true);
+    expect(after.nodes.find((n) => n.id === "note")?.text).toBe("Keep context");
+    const retained = after.nodes.find((n) => n.groupId === "board-retained")!;
+    expect(contains(retained, after.nodes.find((n) => n.key === boardKey(prs[3]))!)).toBe(true);
+    const recovered = arrangeNodes(regroupNodes(after.nodes, [{ id: "feature:work", title: "work", prs }]), 1440, 800);
+    expect(recovered.some((n) => n.groupId === "merge-failed")).toBe(false);
+    const restored = applyHistory(after, historyChange(personalState(doc), personalState(after)));
+    expect(new Map(restored.nodes.map((n) => [n.id, n]))).toEqual(new Map(doc.nodes.map((n) => [n.id, n])));
   });
   test("new heads and missing PRs retain geometry, notes and remembered head", () => {
     const doc = reconcileBoard(emptyBoard(), [pr(1)]);

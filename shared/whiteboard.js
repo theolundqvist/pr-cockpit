@@ -1,6 +1,6 @@
 // Personal geometry is deliberately separate from cached GitHub metadata and undo history.
 /**
- * @typedef {{id:string,type:string,x:number,y:number,w:number,h:number,key?:string,note?:string,seenHead?:string,text?:string,color?:string,points?:number[][],from?:string,to?:string}} BoardNode
+ * @typedef {{id:string,type:string,x:number,y:number,w:number,h:number,key?:string,note?:string,seenHead?:string,text?:string,color?:string,points?:number[][],from?:string,to?:string,groupId?:string|null}} BoardNode
  * @typedef {{repo:string,number:number,title:string,author:string,state:string,updatedAt?:string,available?:boolean,cachedAt?:string} & Record<string,unknown>} BoardPr
  * @typedef {{version:number,initialized:boolean,nodes:BoardNode[],excluded:string[],snapshots:Record<string,BoardPr>,viewport:{x:number,y:number,zoom:number},selection:string[]}} BoardDocument
  */
@@ -62,6 +62,45 @@ export function movingIds(nodes, selection) {
 }
 export function moveNodes(nodes, ids, dx, dy) {
   return nodes.map((n) => ids.has(n.id) ? { ...n, x: n.x + dx, y: n.y + dy } : n);
+}
+
+export function regroupNodes(nodes, groups) {
+  const titles = new Set(groups.map((g) => g.title));
+  const generated = nodes.filter((n) => n.type === "section" && (typeof n.groupId === "string" || (n.groupId === undefined && (titles.has(n.text) || n.text === "New arrivals"))));
+  const generatedIds = new Set(generated.map((n) => n.id));
+  const personalIds = movingIds(nodes, nodes.filter((n) => n.type === "section" && !generatedIds.has(n.id)).map((n) => n.id));
+  const cards = nodes.filter((n) => n.type === "pr" && !personalIds.has(n.id));
+  const remaining = new Map(cards.map((n) => [n.key, n]));
+  const buckets = groups.map((group) => ({ id: group.id, title: group.title, cards: group.prs.flatMap((pr) => {
+    const card = remaining.get(boardKey(pr));
+    if (!card) return [];
+    remaining.delete(card.key);
+    return [card];
+  }) })).filter((g) => g.cards.length);
+  if (remaining.size) buckets.push({ id: "board-retained", title: "On this board", cards: [...remaining.values()] });
+  const replacements = new Map();
+  const frames = [];
+  const reused = new Set();
+  let nextY = snap(Math.max(0, ...nodes.map((n) => n.y + n.h)) + 64);
+  for (const group of buckets) {
+    const source = generated.find((n) => !personalIds.has(n.id) && !reused.has(n.id) && (n.groupId === group.id || (n.groupId === undefined && n.text === group.title)));
+    const frame = { ...(source ?? { id: crypto.randomUUID(), type: "section", color: "blue" }), x: 0, y: nextY };
+    if (source) reused.add(source.id);
+    const extras = source ? nodes.filter((n) => n.id !== source.id && (n.type !== "pr" || personalIds.has(n.id)) && contains(source, n)).map((n) => ({ ...n, x: n.x - source.x, y: n.y - source.y + frame.y })) : [];
+    for (const node of extras) replacements.set(node.id, node);
+    const top = Math.max(frame.y + 48, ...extras.map((n) => n.y + n.h + GRID));
+    const cellHeight = Math.ceil(Math.max(...group.cards.map((n) => n.h)) / GRID) * GRID + GRID;
+    group.cards.forEach((n, i) => replacements.set(n.id, { ...n, x: GRID, y: top + i * cellHeight }));
+    const height = top - frame.y + group.cards.length * cellHeight;
+    frames.push({ ...frame, groupId: group.id, text: group.title,
+      w: Math.max(...group.cards.map((n) => n.w + 2 * GRID), ...extras.map((n) => n.x + n.w + GRID)), h: height });
+    nextY += height + 64;
+  }
+  for (const source of generated) {
+    if (reused.has(source.id) || personalIds.has(source.id)) continue;
+    if (nodes.some((n) => n.id !== source.id && (n.type !== "section" && n.type !== "pr" || personalIds.has(n.id)) && contains(source, n))) frames.push({ ...source, groupId: null });
+  }
+  return [...nodes.filter((n) => !generatedIds.has(n.id) || personalIds.has(n.id)).map((n) => replacements.get(n.id) ?? n), ...frames];
 }
 
 export function arrangeNodes(nodes, width, height) {
@@ -161,22 +200,22 @@ export function reconcileBoard(doc, incoming, groups = []) {
   if (!doc.initialized && !nodes.length && arrivals.length) {
     nodes = [...nodes];
     const assigned = new Set();
-    const columns = groups.map((g) => ({ title: g.title, prs: g.prs.filter((pr) => arrivals.some((p) => boardKey(p) === boardKey(pr))) })).filter((g) => g.prs.length);
+    const columns = groups.map((g) => ({ id: g.id ?? g.title, title: g.title, prs: g.prs.filter((pr) => arrivals.some((p) => boardKey(p) === boardKey(pr))) })).filter((g) => g.prs.length);
     const grouped = new Set(columns.flatMap((g) => g.prs.map(boardKey)));
     const other = arrivals.filter((pr) => !grouped.has(boardKey(pr)));
-    if (other.length) columns.push({ title: "Your queue", prs: other });
+    if (other.length) columns.push({ id: "board-queue", title: "Your queue", prs: other });
     const bottoms = [0, 0, 0];
     for (const g of columns) {
       const col = bottoms.indexOf(Math.min(...bottoms));
       const x = col * 384, y = bottoms[col];
       const height = g.prs.length * (CARD_H + 16) + 64;
-      nodes.push({ id: crypto.randomUUID(), type: "section", text: g.title, color: ["green", "orange", "gray"][col], x, y, w: 352, h: height });
+      nodes.push({ id: crypto.randomUUID(), type: "section", groupId: g.id, text: g.title, color: ["green", "orange", "gray"][col], x, y, w: 352, h: height });
       g.prs.forEach((pr, i) => { if (!assigned.has(boardKey(pr))) { nodes.push(prNode(pr, x + 16, y + 48 + i * (CARD_H + 16))); assigned.add(boardKey(pr)); } });
       bottoms[col] += height + 48;
     }
   } else if (arrivals.length) {
     const y = snap(Math.max(0, ...nodes.map((n) => n.y + n.h)) + 64);
-    const section = { id: crypto.randomUUID(), type: "section", text: "New arrivals", color: "blue", x: 0, y, w: 1056, h: Math.ceil(arrivals.length / 3) * (CARD_H + 16) + 64 };
+    const section = { id: crypto.randomUUID(), type: "section", groupId: "board-arrivals", text: "New arrivals", color: "blue", x: 0, y, w: 1056, h: Math.ceil(arrivals.length / 3) * (CARD_H + 16) + 64 };
     nodes = [...nodes, section, ...arrivals.map((pr, i) => prNode(pr, 16 + (i % 3) * 336, y + 48 + Math.floor(i / 3) * (CARD_H + 16)))];
   }
   return { ...doc, initialized: doc.initialized || arrivals.length > 0, snapshots, nodes };

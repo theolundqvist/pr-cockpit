@@ -6,7 +6,7 @@
   import { classify } from "./whoseMove.js";
   import { isTypingTarget } from "./dom.js";
   import { board, loadBoard, reconcile, queueSave, beginInteraction, endInteraction, commit, undoBoard, saveBoard, resolveConflict, exportBoard } from "./whiteboard.svelte.js";
-  import { GRID, snap, bounds, contains, intersects, movingIds, moveNodes, personalState, removeNodes, arrangeNodes } from "../../../shared/whiteboard.js";
+  import { GRID, snap, bounds, contains, intersects, movingIds, moveNodes, personalState, removeNodes, arrangeNodes, regroupNodes } from "../../../shared/whiteboard.js";
 
   let { prs, groups, viewerLogin, active = true, refreshRevision = 0 } = $props();
   let host = $state();
@@ -98,7 +98,7 @@
     cancelGesture();
     endEdit();
     const before = personalState(doc);
-    setNodes(arrangeNodes(nodes, host.clientWidth - 96, host.clientHeight - 96));
+    setNodes(arrangeNodes(record ? regroupNodes(nodes, groups) : nodes, host.clientWidth - 96, host.clientHeight - 96));
     select(doc.selection.filter((id) => nodes.some((n) => n.id === id)));
     if (record) commit(before);
     fit();
@@ -139,7 +139,7 @@
     } else if (["section", "pen", "connector", "text"].includes(kind)) {
       const id = crypto.randomUUID();
       created = { id, type: kind, x: snap(start.x), y: snap(start.y), w: 0, h: 0, color };
-      if (kind === "section") Object.assign(created, { text: "New section", w: 352, h: 288 });
+      if (kind === "section") Object.assign(created, { text: "New section", groupId: null, w: 352, h: 288 });
       if (kind === "text") Object.assign(created, { text: "", w: 256, h: 160 });
       if (kind === "pen" || kind === "connector") Object.assign(created, { x: start.x, y: start.y, points: [[0, 0], [0, 0]], from: kind === "connector" && target && target.type !== "section" ? target.id : null, to: null });
       setNodes([...nodes, created]); select([id]);
@@ -216,7 +216,7 @@
     await tick();
     [...(host?.querySelectorAll("[data-edit]") ?? [])].find((element) => element.dataset.edit === id)?.focus();
   }
-  function updateText(id, field, value) { setNodes(nodes.map((n) => n.id === id ? { ...n, [field]: value } : n)); queueSave(); }
+  function updateText(id, field, value) { setNodes(nodes.map((n) => n.id === id ? { ...n, [field]: value, ...(n.type === "section" ? { groupId: null } : {}) } : n)); queueSave(); }
   function endEdit() {
     if (!editor) return;
     const before = editor.before;
