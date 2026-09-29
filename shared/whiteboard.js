@@ -63,6 +63,58 @@ export function movingIds(nodes, selection) {
 export function moveNodes(nodes, ids, dx, dy) {
   return nodes.map((n) => ids.has(n.id) ? { ...n, x: n.x + dx, y: n.y + dy } : n);
 }
+
+export function arrangeNodes(nodes, width, height) {
+  if (!nodes.length) return nodes;
+  const sections = nodes.filter((n) => n.type === "section");
+  const frames = sections.filter((n) => !sections.some((other) => other !== n && contains(other, n) && (other.w * other.h > n.w * n.h || other.id < n.id)));
+  const children = new Map(frames.map((n) => [n.id, []]));
+  const loose = [];
+  for (const node of nodes) {
+    if (children.has(node.id)) continue;
+    const parent = frames.find((frame) => contains(frame, node));
+    if (parent) children.get(parent.id).push(node);
+    else loose.push(node);
+  }
+  const groups = [...frames.map((frame) => ({ frame, items: children.get(frame.id) })), ...loose.map((node) => ({ frame: null, items: [node] }))];
+  const aspect = width / height;
+  const largest = Math.max(1, ...groups.map((g) => g.items.length));
+  const ideal = Math.max(1, Math.ceil(Math.sqrt(largest * CARD_H / CARD_W * aspect)));
+  const columnChoices = new Set([1, Math.max(1, ideal - 1), ideal, ideal + 1]);
+  let best = null, bestScale = -1;
+  for (const columns of columnChoices) {
+    const blocks = groups.map(({ frame, items }) => {
+      if (frame && items.length && items.every((n) => n.type === "pr")) {
+        const count = Math.min(columns, items.length);
+        const cellWidth = Math.ceil(Math.max(...items.map((n) => n.w)) / GRID) * GRID + GRID;
+        const cellHeight = Math.ceil(Math.max(...items.map((n) => n.h)) / GRID) * GRID + GRID;
+        const placed = items.map((n, i) => ({ ...n, x: GRID + i % count * cellWidth, y: 48 + Math.floor(i / count) * cellHeight }));
+        return { nodes: [{ ...frame, x: 0, y: 0, w: count * cellWidth + GRID, h: Math.ceil(items.length / count) * cellHeight + 48 }, ...placed] };
+      }
+      const all = frame ? [frame, ...items] : items;
+      const box = bounds(all);
+      return { nodes: all.map((n) => ({ ...n, x: n.x - box.x, y: n.y - box.y })) };
+    }).map((block) => ({ ...block, ...bounds(block.nodes) })).sort((a, b) => b.h - a.h);
+    const minimum = Math.max(...blocks.map((b) => b.w));
+    const idealWidth = Math.sqrt(blocks.reduce((sum, b) => sum + (b.w + 48) * (b.h + 48), 0) * aspect);
+    for (let sample = 0; sample <= 12; sample++) {
+      const rowWidth = Math.max(minimum, snap(idealWidth * (.5 + sample / 12)));
+      let x = 0, y = 0, rowHeight = 0, packedWidth = 0;
+      const placed = [];
+      for (const block of blocks) {
+        if (x && x + block.w > rowWidth) { x = 0; y += rowHeight + 48; rowHeight = 0; }
+        placed.push({ block, x, y });
+        packedWidth = Math.max(packedWidth, x + block.w);
+        x += block.w + 48;
+        rowHeight = Math.max(rowHeight, block.h);
+      }
+      const scale = Math.min(width / packedWidth, height / (y + rowHeight));
+      if (scale > bestScale) { best = placed; bestScale = scale; }
+    }
+  }
+  const byId = new Map(best.flatMap(({ block, x, y }) => block.nodes.map((n) => [n.id, { ...n, x: n.x + x, y: n.y + y }])));
+  return nodes.map((n) => byId.get(n.id));
+}
 export const personalState = (doc) => clone({ nodes: doc.nodes, excluded: doc.excluded });
 export function historyChange(before, after) {
   const old = new Map(before.nodes.map((n) => [n.id, n]));

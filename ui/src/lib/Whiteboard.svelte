@@ -2,10 +2,11 @@
   import { onMount, untrack, tick } from "svelte";
   import Avatar from "./Avatar.svelte";
   import ActionStatusIcon from "./ActionStatusIcon.svelte";
+  import Kbd from "./Kbd.svelte";
   import { classify } from "./whoseMove.js";
   import { isTypingTarget } from "./dom.js";
   import { board, loadBoard, reconcile, queueSave, beginInteraction, endInteraction, commit, undoBoard, saveBoard, resolveConflict, exportBoard } from "./whiteboard.svelte.js";
-  import { GRID, snap, bounds, contains, intersects, movingIds, moveNodes, personalState, removeNodes } from "../../../shared/whiteboard.js";
+  import { GRID, snap, bounds, contains, intersects, movingIds, moveNodes, personalState, removeNodes, arrangeNodes } from "../../../shared/whiteboard.js";
 
   let { prs, groups, viewerLogin, active = true, refreshRevision = 0 } = $props();
   let host = $state();
@@ -48,16 +49,16 @@
     return () => { alive = false; cancelGesture(); endEdit(); void saveBoard(); };
   });
   $effect(() => {
-    if (!ready || !active || !hasDocument || gesture || editor) return;
+    if (!ready || !active || !hasDocument || !host || gesture || editor) return;
     const rows = prs;
     const initialGroups = groups;
-    untrack(() => reconcile(rows, initialGroups));
+    untrack(() => syncQueue(rows, initialGroups));
   });
   $effect(() => {
     if (!ready || !active) return;
     refreshRevision;
     const token = ++refreshToken;
-    untrack(async () => { await loadBoard(); if (token === refreshToken && active && !gesture && !editor) reconcile(prs, groups); });
+    untrack(async () => { await loadBoard(); if (token === refreshToken && active && host && !gesture && !editor) syncQueue(prs, groups); });
   });
   $effect(() => { if (!active) untrack(() => { cancelGesture(); endEdit(); space = false; void saveBoard(); }); });
 
@@ -87,6 +88,19 @@
   function fit() {
     const box = bounds(nodes);
     centerBounds(box, Math.max(.15, Math.min(1, (host.clientWidth - 96) / Math.max(box.w, 1), (host.clientHeight - 96) / Math.max(box.h, 1))));
+  }
+  function syncQueue(rows, initialGroups) {
+    const firstLayout = !board.document.initialized && !board.document.nodes.length;
+    reconcile(rows, initialGroups);
+    if (firstLayout && board.document.nodes.length) arrange(false);
+  }
+  function arrange(record = true) {
+    cancelGesture();
+    endEdit();
+    const before = personalState(doc);
+    setNodes(arrangeNodes(nodes, host.clientWidth - 96, host.clientHeight - 96));
+    if (record) commit(before);
+    fit();
   }
   function zoomAt(factor, p = { x: host.clientWidth / 2, y: host.clientHeight / 2 }) {
     const point = world(p);
@@ -299,7 +313,7 @@
   {#if doc}
     <div class="board-toolbar" role="toolbar" aria-label="Whiteboard tools">
       <div class="tool-group">
-        {#each tools as item}<button class="tool-button" class:chosen={tool === item.id} aria-label={`${item.label} (${item.key})`} aria-pressed={tool === item.id} title={`${item.label} (${item.key})`} onclick={() => chooseTool(item.id)}><svg viewBox="0 0 20 20" aria-hidden="true"><path d={item.path} /></svg><span>{item.label}</span></button>{/each}
+        {#each tools as item}<button class="tool-button" class:chosen={tool === item.id} aria-label={`${item.label} (${item.key})`} aria-keyshortcuts={item.key} aria-pressed={tool === item.id} title={`${item.label} (${item.key})`} onclick={() => chooseTool(item.id)}><svg viewBox="0 0 20 20" aria-hidden="true"><path d={item.path} /></svg><span>{item.label}</span><Kbd keys={item.key.toLowerCase()} /></button>{/each}
       </div>
       <div class="tool-group colors" aria-label="Annotation color">{#each colors as c}<button class="swatch" class:chosen={color === c} style={`--ink:var(--native-${c})`} aria-label={`${c} annotation color`} aria-pressed={color === c} onclick={() => { color = c; if (selectedNodes.some((n) => n.type !== "pr")) { const before = personalState(doc); setNodes(nodes.map((n) => selection.has(n.id) && n.type !== "pr" ? { ...n, color: c } : n)); commit(before); } }}></button>{/each}</div>
       <div class="tool-group"><button aria-label="Undo" title="Undo (⌘/Ctrl Z)" disabled={!board.undo.length} onclick={() => undoBoard()}>↶</button><button aria-label="Redo" title="Redo (⌘/Ctrl Shift Z)" disabled={!board.redo.length} onclick={() => undoBoard(true)}>↷</button></div>
@@ -352,6 +366,7 @@
       {#if selectedNodes.some((n) => n.type === "pr")}<button onclick={remember} title="Remember this head locally. Does not submit a GitHub approval.">Mark current head seen</button>{/if}
       {#if selection.size}<button onclick={deleteSelection}>Remove selected</button>{/if}
       <span class="footer-spacer"></span><span class="grid-label">16 px grid</span><button aria-label="Zoom out" onclick={() => zoomAt(1 / 1.2)}>−</button><button class="zoom-label" title="Reset to 100%" onclick={() => zoomAt(1 / view.zoom)}>{Math.round(view.zoom * 100)}%</button><button aria-label="Zoom in" onclick={() => zoomAt(1.2)}>+</button><button onclick={fit}>Fit all</button><button onclick={exportBoard} title="Download a personal board backup">Export</button>
+      <button disabled={!nodes.length} onclick={() => arrange()} title="Rearrange objects to fit this screen. Undo restores their positions.">Arrange</button>
     </div>
   {:else if !board.error}<div class="board-loading" role="status">Loading your whiteboard…</div>{/if}
   <span class="sr-only" aria-live="polite">{announcement}</span>
