@@ -110,6 +110,72 @@ test("a null GraphQL response is reported as an invalid upstream response", asyn
   }
 });
 
+test("PR lookup keeps siblings of a missing alias but rejects a missing repository and other errors", async () => {
+  const fakeGhDir = mkdtempSync(join(tmpdir(), "pr-cockpit-partial-lookup-"));
+  const fakeGh = join(fakeGhDir, "gh");
+  writeFileSync(fakeGh, "#!/bin/sh\nprintf 'fixture-token\\n'\n");
+  chmodSync(fakeGh, 0o755);
+  try {
+    const script = `
+      const { lookupPrIndexes, lookupPr } = await import(${JSON.stringify(githubModuleUrl)});
+      const found = { number: 8, title: "Present", state: "OPEN", isDraft: false, updatedAt: "2026-09-01T00:00:00Z", author: { login: "octo" } };
+      const missingAlias = { type: "NOT_FOUND", path: ["repository", "pr0"], message: "Could not resolve to a PullRequest with the number of 7." };
+      const responses = [
+        Response.json({ data: { repository: { pr0: null, pr1: found } }, errors: [missingAlias] }),
+        Response.json({ data: { repository: { pr0: null } }, errors: [missingAlias] }),
+        Response.json({ data: { repository: null }, errors: [{ type: "NOT_FOUND", path: ["repository"], message: "Could not resolve to a Repository" }] }),
+        Response.json({ data: { repository: { pr0: null, pr1: null } }, errors: [missingAlias, { type: "FORBIDDEN", path: ["repository", "pr1"] }] }),
+        new Response("Bad credentials", { status: 401 }),
+        new TypeError("socket hang up"),
+        Response.json({ data: { repository: { pr0: null, pr1: null } }, errors: [missingAlias, { type: "RATE_LIMITED", path: ["repository", "pr1"] }] }),
+      ];
+      globalThis.fetch = async () => {
+        const next = responses.shift();
+        if (next instanceof Error) throw next;
+        return next;
+      };
+      const outcome = async (run) => {
+        try {
+          return { value: await run() };
+        } catch (error) {
+          return { status: error.status, kind: error.kind };
+        }
+      };
+      console.log(JSON.stringify([
+        await outcome(() => lookupPrIndexes("acme/repo", [7, 8])),
+        await outcome(() => lookupPr("acme/repo", 7)),
+        await outcome(() => lookupPrIndexes("acme/gone", [7, 8])),
+        await outcome(() => lookupPrIndexes("acme/repo", [7, 8])),
+        await outcome(() => lookupPrIndexes("acme/repo", [7, 8])),
+        await outcome(() => lookupPrIndexes("acme/repo", [7, 8])),
+        await outcome(() => lookupPrIndexes("acme/repo", [7, 8])),
+      ]));
+    `;
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: { ...Bun.env, COCKPIT_GH_BIN: fakeGh, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      process.exited,
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+    ]);
+    expect(exitCode, stderr).toBe(0);
+    expect(JSON.parse(stdout)).toEqual([
+      { value: [{ repo: "acme/repo", number: 8, title: "Present", state: "OPEN", isDraft: false, author: "octo", updatedAt: "2026-09-01T00:00:00Z" }] },
+      { value: null },
+      { status: 404, kind: "graphql" },
+      { status: 502, kind: "graphql" },
+      { status: 401, kind: "http" },
+      { status: 503, kind: "transport" },
+      { status: 403, kind: "quota" },
+    ]);
+  } finally {
+    rmSync(fakeGhDir, { recursive: true, force: true });
+  }
+});
+
 test("quota readings are shared by concurrent callers and reusable for pacing until stale or reset", async () => {
   const fakeGhDir = mkdtempSync(join(tmpdir(), "pr-cockpit-quota-reuse-"));
   const fakeGh = join(fakeGhDir, "gh");

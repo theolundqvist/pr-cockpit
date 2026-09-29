@@ -21,7 +21,7 @@ import {
 } from "./systemIssues.ts";
 const strictUtf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
-type GithubGraphqlError = { type?: string; message?: string };
+type GithubGraphqlError = { type?: string; message?: string; path?: readonly (string | number)[] };
 export type GithubQuotaResourceName = "core" | "search" | "graphql";
 export type GithubRequestErrorKind = "http" | "graphql" | "quota" | "transport";
 
@@ -383,6 +383,8 @@ async function graphql<T>(
   variables: Record<string, unknown>,
   source: GithubUsageSource,
   operation: string,
+  // Opt-in for batched aliases: NOT_FOUND errors on accepted paths leave those fields null instead of rejecting siblings.
+  missingAllowed?: (path: readonly (string | number)[]) => boolean,
 ): Promise<T> {
   const instrumented = instrumentGithubGraphql(query);
   let res: Response;
@@ -457,8 +459,10 @@ async function graphql<T>(
   } | undefined;
   if (rateLimit && responseHasActiveQuota(res)) updatePrimaryQuota("graphql", rateLimit.remaining, rateLimit.resetAt);
   if (body.data) delete body.data[RATE_LIMIT_ALIAS];
-  record(rateLimit ?? null, body.errors?.length ? "error" : "ok");
-  if (body.errors?.length) {
+  const partial = !!missingAllowed && !!body.data && !!body.errors?.length
+    && body.errors.every((error) => error.type === "NOT_FOUND" && !!error.path && missingAllowed(error.path));
+  record(rateLimit ?? null, body.errors?.length && !partial ? "error" : "ok");
+  if (body.errors?.length && !partial) {
     const missing = body.errors.every((error) => error.type === "NOT_FOUND");
     const exhausted = body.errors.some((error) => error.type === "RATE_LIMIT" || error.type === "RATE_LIMITED");
     const resetAt = rateLimit?.resetAt
@@ -919,10 +923,15 @@ export async function lookupPrIndexes(repo: string, numbers: number[]): Promise<
     repository(owner: $owner, name: $name) {
       ${selections}
     }
-  }`, { owner, name }, "search", "PR lookup");
+  }`, { owner, name }, "search", "PR lookup", (path) => (
+    // Only a missing PR alias is partial; a missing repository still rejects the batch.
+    path.length === 2 && path[0] === "repository" && typeof path[1] === "string" && /^pr\d+$/.test(path[1])
+  ));
+  const repository = data.repository;
+  if (!repository) throw new GithubRequestError(`Repository not found: ${repo}`, 404, [], "graphql", "graphql");
 
   return unique.flatMap((number, index) => {
-    const entry = data.repository?.[`pr${index}`];
+    const entry = repository[`pr${index}`];
     return entry ? [{
       repo,
       number,
