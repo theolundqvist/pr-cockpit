@@ -37,12 +37,6 @@ export function harnessBin(harness: Harness = agentHarness()): string {
   return found;
 }
 
-function ompModel(model: string): string {
-  if (model === "opus") return "anthropic/claude-opus-5";
-  if (model === "sonnet") return "anthropic/claude-sonnet-5";
-  return model;
-}
-
 export function harnessFlags(prompt: string, model: string, useContinue: boolean, harness: Harness): string[] {
   if (harness === "codex") {
     const args = useContinue ? ["exec", "resume", "--last"] : ["exec"];
@@ -56,7 +50,7 @@ export function harnessFlags(prompt: string, model: string, useContinue: boolean
     return args;
   }
   if (harness === "omp") {
-    const args = ["--print", "--mode", "json", "--model", ompModel(model), "--auto-approve", "--no-title"];
+    const args = ["--print", "--mode", "json", "--model", model, "--auto-approve", "--no-title"];
     if (useContinue) args.push("--continue");
     args.push(prompt);
     return args;

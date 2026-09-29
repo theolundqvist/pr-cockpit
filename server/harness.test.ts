@@ -30,15 +30,11 @@ describe("harnessFlags", () => {
       "--mode",
       "json",
       "--model",
-      "anthropic/claude-opus-5",
+      "opus",
       "--auto-approve",
       "--no-title",
       "fix it",
     ]);
-  });
-
-  test("omp expands logical agent models to current exact Anthropic IDs", () => {
-    expect(harnessFlags("next", "sonnet", false, "omp")).toContain("anthropic/claude-sonnet-5");
   });
 
   test("codex uses JSONL, configured effort, and cwd-scoped resume", () => {
