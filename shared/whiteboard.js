@@ -65,6 +65,8 @@ export function moveNodes(nodes, ids, dx, dy) {
 }
 
 export function arrangeNodes(nodes, width, height) {
+  const contents = nodes.filter((n) => n.type !== "section");
+  nodes = nodes.filter((n) => n.type !== "section" || contents.some((item) => contains(n, item)));
   if (!nodes.length) return nodes;
   const sections = nodes.filter((n) => n.type === "section");
   const frames = sections.filter((n) => !sections.some((other) => other !== n && contains(other, n) && (other.w * other.h > n.w * n.h || other.id < n.id)));

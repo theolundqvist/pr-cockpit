@@ -99,6 +99,7 @@
     endEdit();
     const before = personalState(doc);
     setNodes(arrangeNodes(nodes, host.clientWidth - 96, host.clientHeight - 96));
+    select(doc.selection.filter((id) => nodes.some((n) => n.id === id)));
     if (record) commit(before);
     fit();
   }

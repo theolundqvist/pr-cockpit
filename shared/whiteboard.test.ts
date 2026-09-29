@@ -1,9 +1,26 @@
 import { describe, test, expect } from "bun:test";
-import { emptyBoard, reconcileBoard, boardKey, personalState, historyChange, applyHistory, removeNodes, movingIds, moveNodes, intersects, validateBoard, clone } from "./whiteboard.js";
+import { emptyBoard, reconcileBoard, boardKey, personalState, historyChange, applyHistory, removeNodes, movingIds, moveNodes, intersects, validateBoard, clone, arrangeNodes } from "./whiteboard.js";
 
 const pr = (number: number, extra = {}) => ({ repo: "example/cockpit", number, title: `PR ${number}`, author: "octocat", state: "OPEN", headSha: "a".repeat(40), ...extra });
 
 describe("personal whiteboard reconciliation", () => {
+  test("arrange removes empty section trees, keeps annotations, and can be undone", () => {
+    const frame = (id, x, y, w = 352, h = 256) => ({ id, type: "section", text: id, x, y, w, h });
+    const doc = emptyBoard();
+    doc.nodes = [
+      frame("empty", 0, 0),
+      frame("empty-child", 16, 48, 160, 128),
+      frame("notes", 400, 0),
+      { id: "note", type: "text", text: "Review", x: 416, y: 48, w: 160, h: 128 },
+      frame("drawing", 800, 0),
+      { id: "stroke", type: "pen", x: 816, y: 48, w: 160, h: 128, points: [[0, 0], [160, 128]] },
+    ];
+    const arranged = { ...doc, nodes: arrangeNodes(doc.nodes, 1440, 800) };
+    expect(arranged.nodes.map((n) => n.id)).toEqual(["notes", "note", "drawing", "stroke"]);
+    const restored = applyHistory(arranged, historyChange(personalState(doc), personalState(arranged)));
+    expect(new Map(restored.nodes.map((n) => [n.id, n]))).toEqual(new Map(doc.nodes.map((n) => [n.id, n])));
+    expect(arrangeNodes(doc.nodes.slice(0, 2), 1440, 800)).toEqual([]);
+  });
   test("new heads and missing PRs retain geometry, notes and remembered head", () => {
     const doc = reconcileBoard(emptyBoard(), [pr(1)]);
     const card = doc.nodes.find((n) => n.type === "pr")!;
