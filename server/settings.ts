@@ -4,6 +4,7 @@ import { detectHarness, normalizeHarness, type Harness } from "./harness.ts";
 import { notificationSettingsChanged, storedNotificationSettings } from "./notifications.ts";
 import { defaultNotificationSettings, parseNotificationSettings, type NotificationSettings } from "../shared/notificationRules.ts";
 import desktopShortcuts from "../shared/desktopShortcuts.json";
+import { invalidateSettings } from "./rendererInvalidation.ts";
 
 const POLL_INTERVAL_FLOOR_S = 60;
 const DEFAULT_POLL_INTERVAL_S = 180;
@@ -260,6 +261,7 @@ export interface Settings {
   repo_roots: string;
   cockpit_webhooks: boolean;
   pending_reviews_enabled: boolean;
+  whiteboard_enabled: boolean;
   pr_grouping: PrGrouping;
   agent_harness: Harness;
   relay_url: string;
@@ -300,6 +302,7 @@ export function readSettings(): Settings {
     repo_roots: getSetting("repo_roots") ?? envRepoRoots,
     cockpit_webhooks: getSetting("cockpit_webhooks") === "true",
     pending_reviews_enabled: pendingReviewsEnabled(),
+    whiteboard_enabled: getSetting("whiteboard_enabled") === "true",
     pr_grouping: readPrGrouping(),
     agent_harness: normalizeHarness(getSetting("agent_harness")),
     relay_url: relayConfig().url,
@@ -337,6 +340,7 @@ export function writeSettings(
     repo_roots: string;
     cockpit_webhooks: boolean;
     pending_reviews_enabled: boolean;
+    whiteboard_enabled: boolean;
     pr_grouping: PrGrouping;
     agent_harness: string;
     relay_url: string;
@@ -381,6 +385,13 @@ export function writeSettings(
   if (patch.repo_roots !== undefined) setSetting("repo_roots", patch.repo_roots);
   if (patch.cockpit_webhooks !== undefined) setSetting("cockpit_webhooks", patch.cockpit_webhooks ? "true" : "false");
   if (patch.pending_reviews_enabled !== undefined) setSetting("pending_reviews_enabled", patch.pending_reviews_enabled ? "true" : "false");
+  if (patch.whiteboard_enabled !== undefined) {
+    const enabled = patch.whiteboard_enabled === true ? "true" : "false";
+    if (getSetting("whiteboard_enabled") !== enabled) {
+      setSetting("whiteboard_enabled", enabled);
+      invalidateSettings();
+    }
+  }
   if (patch.agent_harness !== undefined) setSetting("agent_harness", normalizeHarness(patch.agent_harness));
   if (patch.relay_url !== undefined) setSetting("relay_url", patch.relay_url.trim());
   if (notifications !== undefined) {

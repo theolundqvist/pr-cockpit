@@ -73,6 +73,14 @@ Desktop notifications are off by default. In **Settings → Notifications**, cho
 
 </details>
 
+### Keep personal review context on a whiteboard
+
+Enable **Whiteboard (Experimental)** in **Settings → Workspace** to add the final review-queue tab. It is off by default. One personal canvas is saved in this installation's SQLite database; disabling the setting keeps it and stops board activity in every connected window. Unsaved work stays protected in its window with a visible export/re-enable banner; keep that window open until recovered. Board actions never change GitHub, manual queue groups, or queue order.
+
+Open PRs, including drafts, start in sections based on your queue grouping. Drag cards on the 16 px grid, Shift-click or drag empty space to select several objects, and move a section to carry its contents. Add personal notes, pen strokes and connectors with the toolbar. Double-click a card to open its real PR; returning keeps your location and selection. New PRs arrive below existing objects without rearranging them. New commits flag cards for another look; missing cached PRs keep clearly marked last-known metadata. Live metadata refreshes do not create personal saves. Clean windows adopt newer saved boards; unsaved edits require explicit conflict resolution.
+
+Hold **Space** to pan; **Ctrl/⌘ + scroll** zooms at the pointer. **1** fits the board, **0** restores 100%, and **/** finds and locates objects. Arrows nudge the selection; **Delete** removes only board objects. **Ctrl/⌘ Z** and **Shift Ctrl/⌘ Z** undo/redo within the current session, without rolling back live PR metadata. Text editors retain their native text shortcuts. **Clear completed** removes closed/merged cards from the board only; it is undoable and those cards stay excluded on refresh. **Export** downloads a board backup. Failed saves and conflicting windows keep local edits and offer explicit retry/recovery controls.
+
 ## The same PR context in your terminal
 
 The included `pr-cockpit` CLI reads the same local cache as the app. Use it yourself, or give your coding agent a way to inspect a PR without repeatedly fetching it from GitHub. Set up the app first; the CLI needs the local Cockpit server.

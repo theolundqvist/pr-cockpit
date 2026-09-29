@@ -3,7 +3,8 @@ export type RendererInvalidation =
   | { type: "inbox" }
   | { type: "pr"; repo: string; number: number }
   | { type: "notifications" }
-  | { type: "notification-settings" };
+  | { type: "notification-settings" }
+  | { type: "settings" };
 
 let publish = (_event: RendererInvalidation): void => {};
 
@@ -29,4 +30,8 @@ export function invalidateNotifications(): void {
 
 export function invalidateNotificationSettings(): void {
   publish({ type: "notification-settings" });
+}
+
+export function invalidateSettings(): void {
+  publish({ type: "settings" });
 }

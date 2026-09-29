@@ -1,3 +1,4 @@
+import { handleWhiteboard } from "./whiteboard.ts";
 import { codeScanningAlertNumber, isCodeScanningThread, validateCodeScanningDismissal } from "../shared/codeScanning.js";
 import { realpath } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -2651,6 +2652,7 @@ async function handlePutSettings(req: Request, runtime: HttpRuntime): Promise<Re
     relay_url: string;
     notifications: NotificationSettings;
     pending_reviews_enabled: boolean;
+    whiteboard_enabled: boolean;
     pr_grouping: Settings["pr_grouping"];
   }>;
   try {
@@ -3011,6 +3013,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
         || (req.method === "POST" && url.pathname === "/api/commit-message")
         || (req.method === "POST" && url.pathname === "/api/auth/setup")
         || (req.method === "PUT" && url.pathname === "/api/settings")
+        || (req.method === "PUT" && url.pathname === "/api/whiteboard")
         || (req.method === "POST" && url.pathname === "/api/notifications/claim")
         || (req.method === "POST" && url.pathname === "/api/system-issues/retry")
         || (req.method === "POST" && parts.length === 6 && parts[0] === "api" && parts[1] === "pr" && parts[5] === "merge-method")
@@ -3049,6 +3052,8 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     if (req.method === "POST" && url.pathname === "/api/notifications/claim") {
       return json({ notifications: claimNotifications() });
     }
+    // Personal board data belongs to this installation, never to a replica's upstream.
+    if (url.pathname === "/api/whiteboard") return handleWhiteboard(req);
     const replicaResponse = await proxyReplicaRequest(req, url);
     if (replicaResponse) return replicaResponse;
 

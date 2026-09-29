@@ -19,7 +19,7 @@
   import { fetchSettings, fetchSystemIssues, retrySystemIssue } from "./lib/api.js";
   import { showFlash } from "./lib/flash.svelte.js";
   import { burstGate } from "./lib/burstGate.js";
-  import { prefs, setPrefs } from "./lib/prefs.svelte.js";
+  import { prefs, setPrefs, whiteboardSession } from "./lib/prefs.svelte.js";
   import { NOTIFICATION_DRAIN_EVENT, canDeliverNotifications, drainNotifications } from "./lib/desktopNotifications.js";
   import { notificationDelivery } from "./lib/notificationDelivery.svelte.js";
   import { quota } from "./lib/quota.svelte.js";
@@ -204,6 +204,7 @@
       detailRefresh.trigger();
     }
     function refreshRoute() {
+      fetchSettings().then(setPrefs).catch(() => {});
       if (route.name === "inbox") inboxRefresh.trigger();
       else if (route.name === "detail") refreshDetailRoute();
       drainPending();
@@ -227,7 +228,7 @@
           pollCompletedAt = invalidation.lastPollAt;
         } else if (invalidation.type === "notifications") {
           drainPending();
-        } else if (invalidation.type === "notification-settings") {
+        } else if (invalidation.type === "notification-settings" || invalidation.type === "settings") {
           fetchSettings().then(setPrefs).catch(() => {});
         } else if (invalidation.type === "inbox" && route.name === "inbox") {
           inboxRefresh.trigger();
@@ -294,6 +295,13 @@
   >
     <div class="app-banner" bind:clientHeight={bannerHeight}>
       <QuotaBanner />
+      {#if !prefs.whiteboardEnabled && whiteboardSession.current?.board.dirty}
+        <div class="whiteboard-recovery" role="alert">
+          Whiteboard is off. Unsaved work is kept in this window; keep it open until you re-enable or export.
+          <a href="#/settings/general">Re-enable in Settings</a>
+          <button class="ui-control" onclick={() => whiteboardSession.current.exportBoard()}>Export unsaved whiteboard</button>
+        </div>
+      {/if}
     </div>
     <div class="app-drag-region" aria-hidden="true"></div>
     <aside class="app-sidebar">
@@ -448,6 +456,19 @@
 {/if}
 
 <style>
+  .whiteboard-recovery {
+    position: relative;
+    z-index: 5;
+    -webkit-app-region: no-drag;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: 8px 24px 8px calc(24px + var(--quota-shell-inset, 0px));
+    color: var(--text);
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
   .app-shell {
     --app-rail-width: 216px;
     --app-content-max-width: 1320px;

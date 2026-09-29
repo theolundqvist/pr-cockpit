@@ -73,7 +73,28 @@
   }
   let showArchived = $state(false);
   let archivedPrs = $state([]);
-  let view = $state("open");
+  let view = $state(location.hash === "#/whiteboard" && prefs.whiteboardEnabled ? "whiteboard" : "open");
+  let Whiteboard = $state(null);
+  let whiteboardLoadError = $state(null);
+  $effect(() => {
+    if (!prefs.whiteboardEnabled) {
+      if (view === "whiteboard") view = "open";
+      return;
+    }
+    if (location.hash === "#/whiteboard" || localStorage.getItem("cockpit:list-view") === "whiteboard") view = "whiteboard";
+    const onHash = () => {
+      if (location.hash === "#/whiteboard") view = "whiteboard";
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  });
+  $effect(() => {
+    if (!prefs.whiteboardEnabled || view !== "whiteboard" || Whiteboard) return;
+    import("./Whiteboard.svelte").then((module) => { Whiteboard = module.default; }).catch((error) => { whiteboardLoadError = String(error); });
+  });
+  $effect(() => {
+    if (prefs.whiteboardEnabled && view === "whiteboard") localStorage.setItem("cockpit:list-view", "whiteboard");
+  });
   let closedPrs = $state([]);
   let closedLoaded = $state(false);
   let closedSeq = 0;
@@ -456,6 +477,9 @@
   function showView(next) {
     if (view === next) return;
     view = next;
+    if (prefs.whiteboardEnabled) localStorage.setItem("cockpit:list-view", next);
+    if (next === "whiteboard") location.hash = "#/whiteboard";
+    else if (location.hash === "#/whiteboard") location.hash = "#/";
     selected = 0;
     restoreKey = null;
     allPrsSelectedKey = null;
@@ -893,6 +917,7 @@
     if (!active) return;
     function onKey(e) {
       if (e.defaultPrevented) return;
+      if (view === "whiteboard") return;
       if (contextMenu) {
         if (e.key === "Escape") {
           contextMenu = null;
@@ -1040,7 +1065,7 @@
 
 </script>
 
-<div class="page">
+<div class="page" class:board-page={view === "whiteboard"}>
   <div class="inbox" onmousemove={trackMouse}>
     <header class="head">
       <span class="head-title">Review queue</span>
@@ -1073,7 +1098,11 @@
           Recently merged {#if view === "all"}<Kbd keys="tab" />{/if}
         </button>
         <a class="view-tab" role="tab" aria-selected="false" href={actionsHref}>Actions</a>
+        {#if prefs.whiteboardEnabled}
+          <button class="view-tab" role="tab" aria-selected={view === "whiteboard"} class:active={view === "whiteboard"} onclick={() => showView("whiteboard")}>Whiteboard</button>
+        {/if}
       </div>
+      {#if view !== "whiteboard"}
       <div class="repo-filter">
         <MultiSelectDropdown
           label="Repository"
@@ -1085,8 +1114,16 @@
           onchange={selectRepositories}
         />
       </div>
+      {/if}
     </div>
 
+    {#if view === "whiteboard" && prefs.whiteboardEnabled}
+      {#if Whiteboard}
+        <Whiteboard {prs} groups={groups.map((group) => ({ title: group.title, prs: group.items.filter((item) => item.pr).map((item) => item.pr) }))} {viewerLogin} {active} {refreshRevision} />
+      {:else if whiteboardLoadError}
+        <div role="alert">Whiteboard could not load: {whiteboardLoadError} <button onclick={() => location.reload()}>Reload</button></div>
+      {:else}<div role="status">Loading whiteboard…</div>{/if}
+    {:else}
     {#if prefs.prGrouping.mode !== "status" && view === "open"}
       <div class="grouping-toolbar">
         <a href="#/settings/general">Grouping: {prefs.prGrouping.mode === "manual" ? "Manual" : prefs.prGrouping.mode === "feature" ? "Feature area" : "PR type"}</a>
@@ -1457,6 +1494,7 @@
         {/if}
       </aside>
     </div>
+    {/if}
   </div>
 </div>
 <RowMediaOverlay list={queueList} prFor={prForMedia} />
@@ -1498,7 +1536,7 @@
   <div class="copied-flash">Archived — <kbd>z</kbd> to undo</div>
 {:else if bulkAutofixFlash.value}
   <div class="copied-flash">{bulkAutofixFlash.value}</div>
-{:else}
+{:else if view !== "whiteboard"}
   <KeyBar keys={keyBarKeys} />
 {/if}
 
@@ -2870,4 +2908,6 @@
       display: none;
     }
   }
+  .page.board-page { padding: 18px 24px 12px; overflow: hidden; }
+  .board-page .inbox { max-width: none; height: 100%; padding-bottom: 0; display: flex; flex-direction: column; }
 </style>

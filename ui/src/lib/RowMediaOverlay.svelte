@@ -75,7 +75,8 @@
   }
 
   $effect(() => {
-    if (!list) return;
+    const element = list;
+    if (!element) return;
     const over = (event) => {
       if (event.pointerType !== "mouse") return;
       const stack = event.target.closest?.(".row-media");
@@ -101,13 +102,13 @@
       event.stopPropagation();
       openViewer(pr, stack.closest("a.row")?.getAttribute("href"));
     };
-    list.addEventListener("pointerover", over);
-    list.addEventListener("pointerout", out);
-    list.addEventListener("click", click, true);
+    element.addEventListener("pointerover", over);
+    element.addEventListener("pointerout", out);
+    element.addEventListener("click", click, true);
     return () => {
-      list.removeEventListener("pointerover", over);
-      list.removeEventListener("pointerout", out);
-      list.removeEventListener("click", click, true);
+      element.removeEventListener("pointerover", over);
+      element.removeEventListener("pointerout", out);
+      element.removeEventListener("click", click, true);
       hovered = null;
       hidePeek();
     };
