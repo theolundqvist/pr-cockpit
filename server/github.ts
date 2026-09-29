@@ -2067,6 +2067,12 @@ export async function fetchPrDetailPart(
   source: GithubUsageSource,
 ): Promise<PrDetail> {
   if (mockGithub) return mockGithub.detail(repo, number);
+  // Mergeability comes only from the REST half; a scoped refresh would keep UNKNOWN while
+  // advancing fetched_at, postponing the retry for as long as check or review events continue.
+  if (current.state === "OPEN" && !current.isDraft &&
+    (current.mergeable === "UNKNOWN" || current.mergeStateStatus === "UNKNOWN")) {
+    return fetchPrDetail(repo, number, source, current);
+  }
   const [owner, name] = repo.split("/");
   if (!owner || !name) throw new GithubRequestError(`Invalid repository: ${repo}`, 404);
 

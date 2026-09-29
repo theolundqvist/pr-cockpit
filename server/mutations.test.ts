@@ -264,3 +264,102 @@ test("inbox flags an open PR only while its latest merge attempt has failed", as
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test("a failed merge refreshes the PR detail while keeping the merge failure", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-merge-failure-refresh-"));
+  const url = (path: string) => JSON.stringify(new URL(path, import.meta.url).href);
+  const scenario = `
+    const db = await import(${url("./db.ts")});
+    const { mockGithub } = await import(${url("./mockGithub.ts")});
+    const { pollOnce, refreshPr } = await import(${url("./poller.ts")});
+    const { processMutation } = await import(${url("./mutations.ts")});
+    const { buildFetchHandler } = await import(${url("./http.ts")});
+    const { setRendererInvalidationPublisher } = await import(${url("./rendererInvalidation.ts")});
+    const repo = "fixture/cockpit";
+    // Seed what a pre-merge refresh stores while GitHub is still computing mergeability; the
+    // fixture GitHub then reports #103 as conflicting and #9301 as unknown, so its refresh fails.
+    const seed = (number, fixture) => {
+      const detail = { ...mockGithub.detail(repo, fixture), number, mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN" };
+      db.db.query(\`INSERT INTO prs (
+        repo, number, state, is_draft, title, author, base_ref, head_ref, head_sha,
+        updated_at, additions, deletions, changed_files, commit_count, mergeable, merge_state_status,
+        ci_status, unresolved_count, needs_me_rank, detail_json, fetched_at
+      ) VALUES (?, ?, 'OPEN', 0, ?, 'author', 'main', ?, ?, ?, 0, 0, 0, 1, 'UNKNOWN', 'UNKNOWN',
+        'SUCCESS', 0, 0, ?, ?)\`).run(
+        repo, number, detail.title, detail.headRefName, detail.headRefOid, detail.updatedAt,
+        JSON.stringify(detail), "2026-09-21T20:00:00Z",
+      );
+    };
+    for (const number of [101, 102, 103]) seed(number, number);
+    seed(9301, 103);
+    const merge = { kind: "merge", force: false, baseRef: "main", method: "squash", source: "default" };
+    const insert = (number, payload) => {
+      const id = db.insertMutation({ repo, number, kind: payload.kind, payload_json: JSON.stringify(payload), created_at: new Date().toISOString() });
+      return db.listMutationsForPr(repo, number).find((row) => row.id === id);
+    };
+    // Only the GitHub write is replaced: it refuses merges and branch updates and accepts assignments.
+    const dependencies = {
+      executeMutation: async (row) => {
+        if (row.kind === "assign") return false;
+        throw new Error(row.kind === "merge" ? "Pull Request is not mergeable" : "update refused");
+      },
+      refreshPr,
+      pollOnce,
+      deleteMutation: db.deleteMutation,
+      setMutationRefreshing: db.setMutationRefreshing,
+      setMutationState: db.setMutationState,
+    };
+    const invalidated = new Set();
+    setRendererInvalidationPublisher((event) => { if (event.type === "pr") invalidated.add(event.number); });
+    const handler = buildFetchHandler(4820);
+    const mergeable = async (number) =>
+      (await (await handler(new Request(\`http://127.0.0.1:4820/api/pr/fixture/cockpit/\${number}?prefetch=1\`))).json()).mergeable;
+    const mutations = async (number) =>
+      (await (await handler(new Request(\`http://127.0.0.1:4820/api/mutations?repo=fixture%2Fcockpit&number=\${number}\`))).json())
+        .mutations.map(({ kind, state, error }) => ({ kind, state, error }));
+
+    await processMutation(insert(103, merge), dependencies);
+    const conflict = { invalidated: invalidated.has(103), mergeable: await mergeable(103), mutations: await mutations(103) };
+
+    await processMutation(insert(9301, merge), dependencies);
+    await processMutation(insert(101, { kind: "assign", logins: ["reviewer-one"] }), dependencies);
+    const refreshFailure = { mergeable: await mergeable(9301), mutations: await mutations(9301), nextMutations: await mutations(101) };
+
+    await processMutation(insert(102, { kind: "update-branch" }), dependencies);
+    const nonMerge = { invalidated: invalidated.has(102), mergeable: await mergeable(102), mutations: await mutations(102) };
+    console.log(JSON.stringify({ conflict, refreshFailure, nonMerge }));
+  `;
+
+  try {
+    const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_MOCK: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(stderr);
+    const result = JSON.parse(stdout.trim().split("\n").at(-1)!);
+    expect(result.conflict).toEqual({
+      invalidated: true,
+      mergeable: "CONFLICTING",
+      mutations: [{ kind: "merge", state: "failed", error: "Error: Pull Request is not mergeable" }],
+    });
+    // The refresh failure leaves the merge failure in place and the next queued mutation completes.
+    expect(result.refreshFailure).toEqual({
+      mergeable: "UNKNOWN",
+      mutations: [{ kind: "merge", state: "failed", error: "Error: Pull Request is not mergeable" }],
+      nextMutations: [],
+    });
+    expect(result.nonMerge).toEqual({
+      invalidated: false,
+      mergeable: "UNKNOWN",
+      mutations: [{ kind: "update-branch", state: "failed", error: "Error: update refused" }],
+    });
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});

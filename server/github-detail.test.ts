@@ -158,8 +158,8 @@ describe("REST PR detail parity", () => {
     });
   });
 
-  test("updates checks without refetching unchanged metadata or review data", async () => {
-    const base = mapRestPrDetailBase(restPullRequest, restFiles);
+  test("updates checks on a settled open PR without refetching metadata or review data", async () => {
+    const base = mapRestPrDetailBase({ ...restPullRequest, state: "open", merged_at: null, closed_at: null }, restFiles);
     const current = {
       ...base,
       lastCommit: { nodes: [] },
@@ -352,6 +352,40 @@ describe("REST PR detail parity", () => {
       "PATCH /repos/acme/repo/pulls/42",
       "POST /repos/acme/repo/pulls/42/requested_reviewers",
     ]);
+  });
+
+  test("a checks or review event rereads mergeability GitHub had not computed yet", async () => {
+    const openPullRequest = { ...restPullRequest, state: "open" as const, merged_at: null, closed_at: null };
+    const current = {
+      ...mapRestPrDetailBase({ ...openPullRequest, mergeable: null, mergeable_state: "unknown" }, restFiles),
+      lastCommit: { nodes: [] },
+      commitList: { nodes: [] },
+      reviewThreads: { pageInfo: null, nodes: [] },
+    } as unknown as PrDetail;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/user") return Response.json({ login: "viewer" });
+      if (url.pathname === "/repos/acme/repo/pulls/42") return Response.json({ ...openPullRequest, mergeable: false, mergeable_state: "dirty" });
+      if (url.pathname === "/repos/acme/repo/pulls/42/files") return Response.json(restFiles);
+      const query = JSON.parse(String(init?.body)).query as string;
+      if (query.includes("statusCheckRollup")) {
+        return Response.json({ data: { repository: { pullRequest: { lastCommit: { nodes: [{ commit: { statusCheckRollup: null } }] }, commitList: { nodes: [] } } } } });
+      }
+      const page = { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] };
+      return Response.json({
+        data: { repository: { pullRequest: { reactionGroups: [], viewerCanMergeAsAdmin: false, reviewDecision: null, author: null, reviews: page, comments: page, reviewThreads: page } } },
+      });
+    }) as typeof fetch;
+
+    try {
+      for (const scope of ["checks", "review"] as const) {
+        const next = await fetchPrDetailPart("acme/repo", 42, current, scope, "relay");
+        expect([scope, next.mergeable, next.mergeStateStatus]).toEqual([scope, "CONFLICTING", "DIRTY"]);
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 

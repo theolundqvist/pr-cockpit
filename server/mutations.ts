@@ -478,6 +478,12 @@ export async function processMutation(row: MutationRow, dependencies = mutationP
     if (row.kind === "merge") {
       deleteSupersededFailedMerges(row.repo, row.number, row.id);
       invalidateInbox();
+      try {
+        await dependencies.refreshPr(row.repo, row.number, "mutation recovery", "all", "detail");
+      } catch (refreshErr) {
+        // Keep the merge error if refreshing its explanation also fails.
+        console.warn(`refresh after failed merge of ${row.repo}#${row.number} failed: ${refreshErr instanceof Error ? refreshErr.message : String(refreshErr)}`);
+      }
     }
     return;
   }

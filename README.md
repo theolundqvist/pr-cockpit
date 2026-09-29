@@ -47,7 +47,7 @@ Diffs, threads, checks, and file history live in the same review workspace. Pres
 
 ![Folding five regression-test diffs in graphql/graphql-js#4692 to isolate the one-line implementation change](docs/screenshots/landing-hide-tests.gif)
 
-When the review needs a change, stay in context: <kbd>e</kbd> edits the open file and commits the patch to the PR; <kbd>p</kbd> opens the PR in your configured coding agent with review context. You can also revert a focused hunk or press <kbd>h</kbd> to inspect file history.
+When the review needs a change, stay in context: <kbd>e</kbd> edits the open file and commits the patch to the PR; <kbd>p</kbd> opens the PR in your configured coding agent with review context. You can also revert a focused hunk or press <kbd>h</kbd> to inspect file history. A failed merge immediately requests fresh PR details to reveal conflicts or other blockers, while keeping the original error available to retry or dismiss.
 
 Reviewer badges show scores explicitly posted in reviews or comments, parsed without launching a scoring agent.
 
