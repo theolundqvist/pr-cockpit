@@ -1,5 +1,7 @@
 package relay
 
+import "encoding/json"
+
 type CompactRun struct {
 	ID           int64   `json:"id"`
 	Attempt      int     `json:"attempt"`
@@ -46,6 +48,7 @@ type Marker struct {
 	Repo   string      `json:"repo"`
 	Number *int64      `json:"number"`
 	Event  string      `json:"event"`
+	Ref    *string     `json:"ref,omitempty"`
 	Run    *CompactRun `json:"run,omitempty"`
 	Job    *CompactJob `json:"job,omitempty"`
 }
@@ -74,6 +77,8 @@ type pullReference struct {
 
 type webhookPayload struct {
 	Action              string             `json:"action"`
+	// Raw so a non-string ref in an unrelated event cannot reject the whole delivery.
+	Ref                 json.RawMessage    `json:"ref"`
 	Repository          *githubRepository  `json:"repository"`
 	Repositories        []githubRepository `json:"repositories"`
 	RepositoriesAdded   []githubRepository `json:"repositories_added"`

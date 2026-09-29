@@ -22,6 +22,16 @@ export function createRecentPrViews(now: () => number = Date.now, windowMs = VIE
       const at = viewedAt.get(prKeyOf(repo, number));
       return at !== undefined && now() - at < windowMs;
     },
+    // Bounded by maxViewed, so a repository-wide event can check viewed PRs without scanning caches.
+    numbers(repo: string): number[] {
+      const prefix = `${repo}#`;
+      const current = now();
+      const viewed: number[] = [];
+      for (const [key, at] of viewedAt) {
+        if (key.startsWith(prefix) && current - at < windowMs) viewed.push(Number(key.slice(prefix.length)));
+      }
+      return viewed;
+    },
   };
 }
 
@@ -33,4 +43,8 @@ export function notePrViewed(repo: string, number: number): void {
 
 export function prViewedRecently(repo: string, number: number): boolean {
   return recentPrViews.has(repo, number);
+}
+
+export function prsViewedRecently(repo: string): number[] {
+  return recentPrViews.numbers(repo);
 }

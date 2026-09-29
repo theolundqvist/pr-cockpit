@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS markers (
   repo TEXT NOT NULL,
   number INTEGER,
   event TEXT NOT NULL,
+  ref TEXT,
   run_json TEXT,
   job_json TEXT
 );
@@ -113,6 +114,23 @@ CREATE TABLE IF NOT EXISTS usage_repo_daily (
   PRIMARY KEY(day, github_user_id, repo)
 );
 `)
+	if err != nil {
+		return err
+	}
+	return addMarkerRefColumn(ctx, s.db)
+}
+
+// Databases created before push refs were relayed lack the column; existing rows keep NULL,
+// so their markers replay without a ref and old cursors stay valid.
+func addMarkerRefColumn(ctx context.Context, database *sql.DB) error {
+	var present int
+	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('markers') WHERE name = 'ref'`).Scan(&present); err != nil {
+		return err
+	}
+	if present > 0 {
+		return nil
+	}
+	_, err := database.ExecContext(ctx, `ALTER TABLE markers ADD COLUMN ref TEXT`)
 	return err
 }
 
@@ -131,8 +149,8 @@ func (s *Store) Append(ctx context.Context, marker Marker) (Marker, error) {
 	}
 	defer tx.Rollback()
 	result, err := tx.ExecContext(ctx,
-		`INSERT INTO markers(ts, repo, number, event, run_json, job_json) VALUES(?, ?, ?, ?, ?, ?)`,
-		marker.TS, marker.Repo, marker.Number, marker.Event, runJSON, jobJSON)
+		`INSERT INTO markers(ts, repo, number, event, ref, run_json, job_json) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+		marker.TS, marker.Repo, marker.Number, marker.Event, marker.Ref, runJSON, jobJSON)
 	if err != nil {
 		return Marker{}, err
 	}
@@ -212,7 +230,7 @@ func (s *Store) Replay(ctx context.Context, since int64, limit int) ([]Marker, e
 }
 
 func replay(ctx context.Context, database queryer, since int64, limit int) ([]Marker, error) {
-	query := `SELECT seq, ts, repo, number, event, run_json, job_json FROM markers WHERE seq > ? ORDER BY seq ASC`
+	query := `SELECT seq, ts, repo, number, event, ref, run_json, job_json FROM markers WHERE seq > ? ORDER BY seq ASC`
 	args := []any{since}
 	if limit > 0 {
 		query += ` LIMIT ?`
@@ -259,12 +277,15 @@ type scanner interface{ Scan(...any) error }
 func scanMarker(row scanner) (Marker, error) {
 	var marker Marker
 	var number sql.NullInt64
-	var runJSON, jobJSON sql.NullString
-	if err := row.Scan(&marker.Seq, &marker.TS, &marker.Repo, &number, &marker.Event, &runJSON, &jobJSON); err != nil {
+	var runJSON, jobJSON, ref sql.NullString
+	if err := row.Scan(&marker.Seq, &marker.TS, &marker.Repo, &number, &marker.Event, &ref, &runJSON, &jobJSON); err != nil {
 		return Marker{}, err
 	}
 	if number.Valid {
 		marker.Number = &number.Int64
+	}
+	if ref.Valid {
+		marker.Ref = &ref.String
 	}
 	if runJSON.Valid {
 		marker.Run = &CompactRun{}

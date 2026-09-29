@@ -1,12 +1,12 @@
-import { getPr, getSetting, recordPrWebhookActivity, setSetting } from "./db.ts";
-import { ghToken } from "./github.ts";
+import { getCachedPrDetail, getPr, getSetting, openPrNumbersForBranch, recordPrWebhookActivity, setSetting } from "./db.ts";
+import { ghToken, type PrDetail, type PrDetailScope } from "./github.ts";
 import { backgroundPollAllowed, pollOnce, refreshPr, trackedRepos } from "./poller.ts";
 import { createPollRequester, prDetailScopeForEvent, refreshPrFromEvent } from "./eventRefresh.ts";
 import { relayConfig } from "./settings.ts";
 import { ingestActionsState, type CompactJob, type CompactRun } from "./runLogs.ts";
 import { watchForWake } from "./wake.ts";
 import { refreshCachedPrDetail } from "./cachedPrDetail.ts";
-import { prViewedRecently } from "./recentPrViews.ts";
+import { prsViewedRecently, prViewedRecently } from "./recentPrViews.ts";
 import { forwarderCoveredSince } from "./forwarders.ts";
 
 const POLL_MS = 5_000;
@@ -22,6 +22,8 @@ export interface RelayMarker {
   repo: string;
   number: number | null;
   event: string;
+  // Full Git ref of a push (refs/heads/…, refs/tags/…); absent from other events and older relays.
+  ref?: string;
   run?: CompactRun;
   job?: CompactJob;
 }
@@ -124,6 +126,39 @@ function saveCursor(value: number): void {
   setSetting(RELAY_CURSOR_KEY, String(value));
 }
 
+// Tracked PRs refresh through the inbox; others only while the user is viewing their cached detail.
+function refreshMarkedPr(repo: string, number: number, scope: PrDetailScope, tracked: boolean, deps: RelayPollDependencies): void {
+  const allowed = deps.backgroundAllowed ?? backgroundPollAllowed;
+  const refreshViewed = deps.refreshViewedPr ?? refreshCachedPrDetail;
+  void refreshPrFromEvent(repo, number, scope, async (targetRepo, targetNumber, targetScope) => {
+    if (!await allowed()) return;
+    if (tracked) await refreshPr(targetRepo, targetNumber, "relay", targetScope);
+    else await refreshViewed(targetRepo, targetNumber, "relay", targetScope);
+  }).catch((error) => console.error(`relay-triggered refresh failed for ${repo}#${number}:`, error));
+}
+
+// A base push changes mergeability without moving head, updated time, or CI, which is all the poll compares.
+function refreshBranchPrs(repo: string, branch: string, event: string, deps: RelayPollDependencies): void {
+  const tracked = new Set(openPrNumbersForBranch(repo, branch));
+  const viewed = prsViewedRecently(repo).filter((number) => {
+    if (tracked.has(number) || getPr(repo, number) !== null) return false;
+    const cached = getCachedPrDetail(repo, number);
+    if (cached === null) return false;
+    const detail = JSON.parse(cached.detail_json) as Pick<PrDetail, "state" | "baseRefName" | "headRefName">;
+    return detail.state === "OPEN" && (detail.baseRefName === branch || detail.headRefName === branch);
+  });
+  const receivedAt = new Date().toISOString();
+  const scope = prDetailScopeForEvent(event);
+  for (const number of tracked) {
+    recordPrWebhookActivity(repo, number, receivedAt);
+    refreshMarkedPr(repo, number, scope, true, deps);
+  }
+  for (const number of viewed) {
+    recordPrWebhookActivity(repo, number, receivedAt);
+    refreshMarkedPr(repo, number, scope, false, deps);
+  }
+}
+
 async function processMarker(marker: RelayMarker, deps: RelayPollDependencies = {}): Promise<void> {
   const ingest = deps.ingest ?? ingestActionsState;
   relayCoveredRepos.add(marker.repo);
@@ -132,22 +167,21 @@ async function processMarker(marker: RelayMarker, deps: RelayPollDependencies = 
     // check and review events that refresh what the user is looking at.
     await ingest(marker.repo, { run: marker.run, job: marker.job }, undefined, "background");
   } else if (marker.number === null) {
-    (deps.requestFullPoll ?? requestFullPoll)();
+    // Only relays that forward the pushed ref allow targeting; tag and other ref pushes move no PR branch.
+    if (marker.event !== "push" || typeof marker.ref !== "string") {
+      (deps.requestFullPoll ?? requestFullPoll)();
+    } else if (marker.ref.startsWith("refs/heads/") && marker.ref.length > "refs/heads/".length) {
+      refreshBranchPrs(marker.repo, marker.ref.slice("refs/heads/".length), marker.event, deps);
+    }
   } else {
-    const key = `${marker.repo}#${marker.number}`;
     recordPrWebhookActivity(marker.repo, marker.number, new Date().toISOString());
     if (getPr(marker.repo, marker.number) !== null) {
-      void refreshPrFromEvent(marker.repo, marker.number, prDetailScopeForEvent(marker.event), async (repo, number, scope) => {
-        if (await backgroundPollAllowed()) await refreshPr(repo, number, "relay", scope);
-      }).catch((error) => console.error(`relay-triggered refresh failed for ${key}:`, error));
+      refreshMarkedPr(marker.repo, marker.number, prDetailScopeForEvent(marker.event), true, deps);
     } else {
       // Not in the inbox, but open (or recently opened) in the app: without this its detail
       // stayed up to five minutes stale, and a reload inside that window showed the same snapshot.
       if ((deps.viewedRecently ?? prViewedRecently)(marker.repo, marker.number)) {
-        const refreshViewed = deps.refreshViewedPr ?? refreshCachedPrDetail;
-        void refreshPrFromEvent(marker.repo, marker.number, prDetailScopeForEvent(marker.event), async (repo, number, scope) => {
-          if (await (deps.backgroundAllowed ?? backgroundPollAllowed)()) await refreshViewed(repo, number, "relay", scope);
-        }).catch((error) => console.error(`relay-triggered refresh failed for ${key}:`, error));
+        refreshMarkedPr(marker.repo, marker.number, prDetailScopeForEvent(marker.event), false, deps);
       }
       if (QUEUE_MEMBERSHIP_EVENTS.has(marker.event)) (deps.requestFullPoll ?? requestFullPoll)();
     }

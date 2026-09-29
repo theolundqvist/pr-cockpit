@@ -5,6 +5,9 @@ import { join } from "node:path";
 
 const relayClientUrl = new URL("./relayClient.ts", import.meta.url).href;
 const dbUrl = new URL("./db.ts", import.meta.url).href;
+const mockGithubUrl = new URL("./mockGithub.ts", import.meta.url).href;
+const invalidationUrl = new URL("./rendererInvalidation.ts", import.meta.url).href;
+const recentPrViewsUrl = new URL("./recentPrViews.ts", import.meta.url).href;
 
 test("relay cursor survives restart and acknowledges only handled markers", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-relay-cursor-"));
@@ -163,6 +166,176 @@ test("events refresh an uncached PR the user recently viewed, with the event's s
     ]);
     // A viewed PR can still enter the queue through the event, so membership polls continue.
     expect(result.requested).toBe(1);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("a pushed branch refreshes the tracked open PRs based on or headed by it, and only those", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-relay-push-"));
+  try {
+    const script = `
+      const { pollRelayOnce } = await import(${JSON.stringify(relayClientUrl)});
+      const { db, getPr, getSetting, setSetting } = await import(${JSON.stringify(dbUrl)});
+      const { seedMockDatabase } = await import(${JSON.stringify(mockGithubUrl)});
+      const { setRendererInvalidationPublisher } = await import(${JSON.stringify(invalidationUrl)});
+      seedMockDatabase(db, ${JSON.stringify(dataDir)});
+      // Resolves once each PR's detail and Actions catalog have been published.
+      const settledFor = (keys) => new Promise((resolve, reject) => {
+        const deadline = setTimeout(() => reject(new Error("refreshes did not settle: " + JSON.stringify(invalidated))), 4_000);
+        setRendererInvalidationPublisher((event) => {
+          if (event.type !== "pr") return;
+          invalidated.push(event.repo + "#" + event.number);
+          if (keys.every((key) => invalidated.filter((entry) => entry === key).length >= 2)) {
+            clearTimeout(deadline);
+            resolve();
+          }
+        });
+      });
+      // #103 alone is open on main, and its snapshot predates main moving: GitHub now reports it
+      // conflicting, yet its head, updated time, and CI are unchanged, so only the push reveals it.
+      const stale = { ...JSON.parse(getPr("fixture/cockpit", 103).detail_json), mergeable: "MERGEABLE", mergeStateStatus: "CLEAN" };
+      db.run("UPDATE prs SET fetched_at = '2026-01-01T00:00:00.000Z'");
+      db.run("UPDATE prs SET base_ref = 'develop' WHERE repo = 'fixture/cockpit' AND state NOT IN ('MERGED', 'CLOSED')");
+      db.run("UPDATE prs SET base_ref = 'main', mergeable = 'MERGEABLE', merge_state_status = 'CLEAN', detail_json = ? WHERE repo = 'fixture/cockpit' AND number = 103", [JSON.stringify(stale)]);
+      const before = getPr("fixture/cockpit", 103);
+      const invalidated = [];
+      const refreshed = settledFor(["fixture/cockpit#101", "fixture/cockpit#103"]);
+      const requested = [];
+      setSetting("relay_cursor", "0");
+      await pollRelayOnce("https://relay.test", "token", {
+        fetcher: async () => Response.json({ latest: 6, events: [
+          { seq: 1, ts: 1, repo: "fixture/cockpit", number: null, event: "push", ref: "refs/heads/main" },
+          { seq: 2, ts: 2, repo: "fixture/cockpit", number: null, event: "push", ref: "refs/heads/fixture/pr-101" },
+          { seq: 3, ts: 3, repo: "fixture/cockpit", number: null, event: "push", ref: "refs/tags/main" },
+          { seq: 4, ts: 4, repo: "fixture/cockpit", number: null, event: "push", ref: "refs/heads/" },
+          { seq: 5, ts: 5, repo: "fixture/elsewhere", number: null, event: "push", ref: "refs/heads/main" },
+          { seq: 6, ts: 6, repo: "fixture/cockpit", number: null, event: "push" },
+        ] }),
+        requestFullPoll: () => requested.push(true),
+        backgroundAllowed: async () => true,
+      });
+      await refreshed;
+      const after = getPr("fixture/cockpit", 103);
+      console.log(JSON.stringify({
+        invalidated: [...new Set(invalidated)].sort(),
+        before: { head: before.head_sha, updatedAt: before.updated_at },
+        after: { head: after.head_sha, updatedAt: after.updated_at, mergeable: after.mergeable, mergeState: after.merge_state_status, detail: JSON.parse(after.detail_json).mergeable },
+        activity: db.query("SELECT repo, number FROM pr_webhook_activity ORDER BY repo, number").all(),
+        requested: requested.length,
+        cursor: getSetting("relay_cursor"),
+      }));
+      db.close();
+    `;
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_MOCK: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([process.exited, new Response(process.stdout).text(), new Response(process.stderr).text()]);
+    if (exitCode !== 0) throw new Error(stderr);
+    const result = JSON.parse(stdout);
+    // The merged PR on main, the admin repository's PR on main, and every other branch stay put.
+    expect(result.invalidated).toEqual(["fixture/cockpit#101", "fixture/cockpit#103"]);
+    expect(result.after).toEqual({ ...result.before, mergeable: "CONFLICTING", mergeState: "DIRTY", detail: "CONFLICTING" });
+    expect(result.activity).toEqual([{ repo: "fixture/cockpit", number: 101 }, { repo: "fixture/cockpit", number: 103 }]);
+    // Only the marker from a relay that does not forward refs still falls back to a poll.
+    expect(result.requested).toBe(1);
+    expect(result.cursor).toBe("6");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("a streamed branch push also refreshes recently viewed untracked PRs from their cached detail", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-relay-push-viewed-"));
+  try {
+    const script = `
+      const { streamRelayOnce } = await import(${JSON.stringify(relayClientUrl)});
+      const { db, getCachedPrDetail, getPr, setSetting, upsertCachedPrDetail } = await import(${JSON.stringify(dbUrl)});
+      const { seedMockDatabase } = await import(${JSON.stringify(mockGithubUrl)});
+      const { setRendererInvalidationPublisher } = await import(${JSON.stringify(invalidationUrl)});
+      const { notePrViewed } = await import(${JSON.stringify(recentPrViewsUrl)});
+      seedMockDatabase(db, ${JSON.stringify(dataDir)});
+      // Resolves once each PR's detail and Actions catalog have been published.
+      const settledFor = (keys) => new Promise((resolve, reject) => {
+        const deadline = setTimeout(() => reject(new Error("refreshes did not settle: " + JSON.stringify(invalidated))), 4_000);
+        setRendererInvalidationPublisher((event) => {
+          if (event.type !== "pr") return;
+          invalidated.push(event.repo + "#" + event.number);
+          if (keys.every((key) => invalidated.filter((entry) => entry === key).length >= 2)) {
+            clearTimeout(deadline);
+            resolve();
+          }
+        });
+      });
+      db.run("UPDATE prs SET fetched_at = '2026-01-01T00:00:00.000Z'");
+      db.run("UPDATE prs SET base_ref = 'develop' WHERE state NOT IN ('MERGED', 'CLOSED')");
+      db.run("UPDATE prs SET base_ref = 'main' WHERE repo = 'fixture/cockpit' AND number = 102");
+      // Outside the inbox, known only from a detail the user opened before main moved.
+      const cache = (repo, number, overrides) => {
+        const detail = { ...JSON.parse(getPr(repo, number).detail_json), ...overrides };
+        db.run("DELETE FROM prs WHERE repo = ? AND number = ?", [repo, number]);
+        upsertCachedPrDetail({ repo, number, head_sha: detail.headRefOid, detail_json: JSON.stringify(detail), fetched_at: "2026-01-01T00:00:00.000Z" });
+        return detail;
+      };
+      const stale = cache("fixture/cockpit", 103, { mergeable: "MERGEABLE", mergeStateStatus: "CLEAN" });
+      cache("fixture/cockpit", 104, {});
+      cache("fixture/cockpit", 105, { baseRefName: "develop" });
+      cache("fixture/cockpit", 106, {});
+      cache("fixture/admin-cockpit", 112, {});
+      for (const [repo, number] of [["fixture/cockpit", 103], ["fixture/cockpit", 105], ["fixture/cockpit", 106], ["fixture/admin-cockpit", 112]]) notePrViewed(repo, number);
+      const invalidated = [];
+      const refreshed = settledFor(["fixture/cockpit#102", "fixture/cockpit#103"]);
+      class FakeSocket {
+        listeners = {};
+        constructor(frames) {
+          queueMicrotask(() => {
+            this.emit("open");
+            for (const frame of frames) this.emit("message", { data: JSON.stringify(frame) });
+            this.emit("close", { code: 1000, reason: "relay restart" });
+          });
+        }
+        addEventListener(type, listener) { (this.listeners[type] ??= []).push(listener); }
+        emit(type, event) { for (const listener of this.listeners[type] ?? []) listener(event); }
+        close() { this.emit("close"); }
+      }
+      setSetting("relay_cursor", "0");
+      try {
+        await streamRelayOnce("https://stream.test", "ticket", {
+          socket: () => new FakeSocket([{ type: "marker", marker: { seq: 1, ts: 1, repo: "fixture/cockpit", number: null, event: "push", ref: "refs/heads/main" } }]),
+          requestFullPoll: () => { throw new Error("a branch push must not poll"); },
+          backgroundAllowed: async () => true,
+        });
+      } catch (error) {
+        if (error.message !== "relay WebSocket closed (code=1000, reason=relay restart)") throw error;
+      }
+      await refreshed;
+      const cached = getCachedPrDetail("fixture/cockpit", 103);
+      const fresh = JSON.parse(cached.detail_json);
+      console.log(JSON.stringify({
+        invalidated: [...new Set(invalidated)].sort(),
+        before: { head: stale.headRefOid, updatedAt: stale.updatedAt },
+        after: { head: fresh.headRefOid, updatedAt: fresh.updatedAt, mergeable: fresh.mergeable, mergeState: fresh.mergeStateStatus },
+        tracked: { 102: getPr("fixture/cockpit", 102) !== null, 103: getPr("fixture/cockpit", 103) !== null },
+        activity: db.query("SELECT repo, number FROM pr_webhook_activity ORDER BY repo, number").all(),
+      }));
+      db.close();
+    `;
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_MOCK: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([process.exited, new Response(process.stdout).text(), new Response(process.stderr).text()]);
+    if (exitCode !== 0) throw new Error(stderr);
+    const result = JSON.parse(stdout);
+    // Unviewed #104, #105 on another base, merged #106, and the other repository's #112 stay put.
+    expect(result.invalidated).toEqual(["fixture/cockpit#102", "fixture/cockpit#103"]);
+    expect(result.after).toEqual({ ...result.before, mergeable: "CONFLICTING", mergeState: "DIRTY" });
+    // The viewed PR refreshes in place rather than joining the inbox.
+    expect(result.tracked).toEqual({ 102: true, 103: false });
+    expect(result.activity).toEqual([{ repo: "fixture/cockpit", number: 102 }, { repo: "fixture/cockpit", number: 103 }]);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }

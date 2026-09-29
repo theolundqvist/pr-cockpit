@@ -116,7 +116,7 @@ COCKPIT_RELAY_URL="https://pr-cockpit-relay.<your-subdomain>.workers.dev"
 ## 5. Verify live updates
 
 1. In PR Cockpit settings, confirm each selected repository says **live push ✓**.
-2. Comment on, push to, or change a check on an open pull request.
+2. Comment on, change a check on, or push to the head or base branch of an open pull request. A base-branch push should refresh its conflict state even when the PR's head commit is unchanged.
 3. Confirm the relay status below **Live update relay** changes from waiting for the first event to a recent event time.
 4. In the GitHub App's **Advanced → Recent deliveries**, confirm the delivery returned HTTP `200`.
 

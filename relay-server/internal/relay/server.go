@@ -236,7 +236,7 @@ func (s *Server) handleGitHub(response http.ResponseWriter, request *http.Reques
 		message = "no repository"
 	} else {
 		run, job := compactActions(event, payload)
-		marker := Marker{TS: receivedAt.UnixMilli(), Repo: payload.Repository.FullName, Number: pullNumber(payload), Event: event, Run: run, Job: job}
+		marker := Marker{TS: receivedAt.UnixMilli(), Repo: payload.Repository.FullName, Number: pullNumber(payload), Event: event, Ref: pushRef(event, payload), Run: run, Job: job}
 		if _, err := s.publish(request.Context(), marker); err != nil {
 			s.internalError(response, err)
 			return

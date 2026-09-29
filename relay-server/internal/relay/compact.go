@@ -1,5 +1,7 @@
 package relay
 
+import "encoding/json"
+
 func compactActions(event string, payload webhookPayload) (*CompactRun, *CompactJob) {
 	if event == "workflow_run" && payload.WorkflowRun != nil {
 		run := payload.WorkflowRun
@@ -112,4 +114,16 @@ func pullNumber(payload webhookPayload) *int64 {
 		return &payload.WorkflowJob.PullRequests[0].Number
 	}
 	return nil
+}
+
+// pushRef keeps the full pushed ref so clients can refresh PRs whose base or head branch moved.
+func pushRef(event string, payload webhookPayload) *string {
+	if event != "push" {
+		return nil
+	}
+	var ref string
+	if json.Unmarshal(payload.Ref, &ref) != nil || ref == "" {
+		return nil
+	}
+	return &ref
 }

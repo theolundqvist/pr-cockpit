@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -202,6 +203,132 @@ func TestReplayToLiveOrdering(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("live marker was not delivered")
 	}
+}
+
+func TestPushRefsSurviveSchemaUpgradeRestartReplayAndStream(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relay.db")
+	legacy, err := sql.Open("sqlite3", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE relay_state (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), latest_seq INTEGER NOT NULL)`,
+		`INSERT INTO relay_state(singleton, latest_seq) VALUES(1, 1)`,
+		`CREATE TABLE markers (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, repo TEXT NOT NULL, number INTEGER, event TEXT NOT NULL, run_json TEXT, job_json TEXT)`,
+	} {
+		if _, err := legacy.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := legacy.Exec(`INSERT INTO markers(ts, repo, event) VALUES(?, 'owner/repo', 'push')`, time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	github := httptest.NewServer(githubAccess(func(*http.Request) int { return http.StatusOK }))
+	defer github.Close()
+	open := func() (*Server, *Store) {
+		t.Helper()
+		store, err := OpenStore(path, 7*24*time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		server, err := NewServer(store, Config{WebhookSecret: "secret", GitHubAPIURL: github.URL, HTTPClient: github.Client()})
+		if err != nil {
+			store.Close()
+			t.Fatal(err)
+		}
+		return server, store
+	}
+	deliver := func(server *Server, event, body string) {
+		t.Helper()
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, signedWebhookRequest([]byte(body), event))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s webhook status = %d", event, response.Code)
+		}
+	}
+	wantRefs := map[int64]string{2: "refs/heads/feature/nested/topic", 5: "refs/heads/main"}
+	checkRef := func(source string, marker map[string]any) {
+		t.Helper()
+		seq := int64(marker["seq"].(float64))
+		ref, present := marker["ref"]
+		if want, ok := wantRefs[seq]; ok && ref != want || !ok && present {
+			t.Fatalf("%s marker %d ref = %#v, present = %v", source, seq, ref, present)
+		}
+	}
+
+	upgraded, store := open()
+	deliver(upgraded, "push", `{"ref":"refs/heads/feature/nested/topic","repository":{"full_name":"owner/repo"}}`)
+	deliver(upgraded, "push", `{"ref":"","repository":{"full_name":"owner/repo"}}`)
+	deliver(upgraded, "create", `{"ref":"feature/nested/topic","ref_type":"branch","repository":{"full_name":"owner/repo"}}`)
+	upgraded.Shutdown()
+	store.Close()
+	between, reopened := open()
+	between.Shutdown()
+	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restarted, store := open()
+	defer store.Close()
+	defer restarted.Shutdown()
+
+	request := httptest.NewRequest(http.MethodGet, "/events?since=0", nil)
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	restarted.Handler().ServeHTTP(response, request)
+	var events struct {
+		Latest int64            `json:"latest"`
+		Events []map[string]any `json:"events"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &events); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusOK || events.Latest != 4 || len(events.Events) != 4 {
+		t.Fatalf("status = %d, events = %#v", response.Code, events)
+	}
+	for _, marker := range events.Events {
+		checkRef("replayed", marker)
+	}
+
+	status, ticket := postSession(t, restarted, "token")
+	if status != http.StatusOK {
+		t.Fatalf("session status = %d", status)
+	}
+	httpServer := httptest.NewServer(restarted.Handler())
+	defer httpServer.Close()
+	connection, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(httpServer.URL, "http")+"/stream?since=1&ticket="+ticket, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	connection.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var ready readyFrame
+	if err := connection.ReadJSON(&ready); err != nil || ready.Type != "ready" || ready.Latest != 4 {
+		t.Fatalf("ready = %#v, error = %v", ready, err)
+	}
+	readMarker := func() map[string]any {
+		t.Helper()
+		var frame struct {
+			Type   string         `json:"type"`
+			Marker map[string]any `json:"marker"`
+		}
+		if err := connection.ReadJSON(&frame); err != nil || frame.Type != "marker" {
+			t.Fatalf("frame = %#v, error = %v", frame, err)
+		}
+		return frame.Marker
+	}
+	for range 3 {
+		checkRef("streamed replay", readMarker())
+	}
+	deliver(restarted, "push", `{"ref":"refs/heads/main","repository":{"full_name":"owner/repo"}}`)
+	live := readMarker()
+	if live["seq"] != float64(5) {
+		t.Fatalf("live marker = %#v", live)
+	}
+	checkRef("live", live)
 }
 
 func TestSessionAuthorizesReadableRepoWithoutCoverage(t *testing.T) {

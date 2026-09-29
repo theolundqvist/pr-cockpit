@@ -12,6 +12,8 @@ interface Marker {
   repo: string;
   number: number | null;
   event: string;
+  // Full pushed ref (refs/heads/...); only push markers carry it, and older stored markers lack it.
+  ref?: string;
   run?: CompactRun;
   job?: CompactJob;
 }
@@ -178,6 +180,11 @@ function prNumber(payload: any): number | null {
   );
 }
 
+function pushRef(event: string, payload: unknown): { ref?: string } {
+  if (event !== "push" || !payload || typeof payload !== "object" || !("ref" in payload)) return {};
+  const ref = payload.ref;
+  return typeof ref === "string" && ref !== "" ? { ref } : {};
+}
 
 async function sha256Hex(text: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
@@ -234,6 +241,7 @@ export default {
         repo,
         number: prNumber(payload),
         event,
+        ...pushRef(event, payload),
         ...compactActions(event, payload),
       });
       return new Response("ok");

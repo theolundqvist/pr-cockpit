@@ -20,4 +20,19 @@ describe("recent PR views", () => {
     clock = 1_000;
     expect(views.has("acme/app", 3)).toBe(false);
   });
+
+  test("list a repository's unexpired views without matching other repositories", () => {
+    let clock = 0;
+    const views = createRecentPrViews(() => clock, 1_000, 5);
+    views.note("acme/app", 1);
+    views.note("acme/ap", 2);
+    views.note("acme/app-two", 3);
+    clock = 500;
+    views.note("acme/app", 4);
+    expect(views.numbers("acme/app")).toEqual([1, 4]);
+
+    clock = 1_000;
+    expect(views.numbers("acme/app")).toEqual([4]);
+    expect(views.numbers("acme/ap")).toEqual([]);
+  });
 });
