@@ -50,7 +50,7 @@ export function harnessFlags(prompt: string, model: string, useContinue: boolean
     return args;
   }
   if (harness === "omp") {
-    const args = ["--print", "--mode", "json", "--model", model, "--auto-approve", "--no-title"];
+    const args = ["--print", "--mode", "json", "--model", model === "sonnet" ? "anthropic/claude-sonnet-5-5" : model, "--auto-approve", "--no-title"];
     if (useContinue) args.push("--continue");
     args.push(prompt);
     return args;
