@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { agentPrRefs, defaultAutofixTemplate, defaultFixerTemplate, isGreen, mergeStepText, runWindowTurns, turnsFromLines } from "./agents.ts";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { agentPrRefs, isGreen, mergeStepText, readyToMerge, runWindowTurns, turnsFromLines } from "./agents.ts";
 import type { PrRow } from "./db.ts";
 
 function pr(overrides: Partial<PrRow>): PrRow {
@@ -91,46 +94,54 @@ describe("isGreen", () => {
   });
 });
 
+describe("readyToMerge", () => {
+  test("unfinished checks never pass the server merge gate", () => {
+    expect(readyToMerge(pr({ ci_status: "PENDING" }))).toBe(false);
+    expect(readyToMerge(pr({ ci_status: "EXPECTED" }))).toBe(false);
+    expect(readyToMerge(pr({ ci_status: "NONE" }))).toBe(true);
+  });
+
+  test("a force-merge BLOCKED state needs every check finished and passing", () => {
+    expect(readyToMerge(pr({ merge_state_status: "BLOCKED", ci_status: "PENDING" }))).toBe(false);
+    expect(readyToMerge(pr({ merge_state_status: "BLOCKED", ci_status: "NONE" }))).toBe(false);
+    expect(readyToMerge(pr({ merge_state_status: "BLOCKED", ci_status: "SUCCESS" }))).toBe(true);
+  });
+});
+
+test("a one-shot prompt run interrupted by a restart is marked died, never resumed as the merging fixer", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-agent-resume-"));
+  const workdir = join(dataDir, "agents", "fixture-cockpit-101");
+  mkdirSync(workdir, { recursive: true });
+  // db.ts touches its database at import, so the restart runs in a child with an isolated data dir;
+  // the state is read synchronously, before any resumed supervisor could reach a harness
+  const scenario = `
+    const { db } = await import(${JSON.stringify(new URL("./db.ts", import.meta.url).href)});
+    const agents = await import(${JSON.stringify(new URL("./agents.ts", import.meta.url).href)});
+    const { seedMockDatabase } = await import(${JSON.stringify(new URL("./mockGithub.ts", import.meta.url).href)});
+    seedMockDatabase(db, ${JSON.stringify(dataDir)});
+    db.run("INSERT INTO fixer_agents (repo, number, pid, pid_started, state, started_at, workdir, log_path, kind, agent_id) VALUES ('fixture/cockpit', 101, 0, '', 'running', '2026-01-01T00:00:00Z', ?, ?, 'prompt', '')", [${JSON.stringify(workdir)}, ${JSON.stringify(`${workdir}.log`)}]);
+    agents.startFixerSupervision();
+    console.log(JSON.stringify(agents.getFixerAgent("fixture/cockpit", 101)));
+    process.exit(0);
+  `;
+  try {
+    const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_MOCK: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    if (exitCode !== 0) throw new Error(stderr);
+    expect(JSON.parse(stdout)).toMatchObject({ kind: "prompt", state: "died" });
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 describe("mergeStepText", () => {
-  test("emits a ready-to-merge signal step instead of a gh merge command", () => {
-    const step = mergeStepText("example-org/webapp", pr({}));
-    expect(step).toContain('write "ready-to-merge" to {{STATUS_FILE}}');
-    expect(step).not.toContain("gh pr merge");
-  });
-
-  test("never emits a merge step when allowMerge is false, even when ready", () => {
-    expect(mergeStepText("example-org/webapp", pr({}), false)).toBe("");
-  });
-
-  test("never emits a merge step when the branch is BEHIND - that's an update-branch job, not a merge gate", () => {
-    expect(mergeStepText("example-org/webapp", pr({ merge_state_status: "BEHIND" }))).toBe("");
-  });
-});
-
-describe("defaultFixerTemplate", () => {
-  test("uses cached PR state and event-driven waiting", () => {
-    const template = defaultFixerTemplate();
-    expect(template).toContain("gh pr update-branch");
-    expect(template).toContain("pr-cockpit {{REPO}}#{{PR_NUMBER}}");
-    expect(template).toContain("pr-cockpit listen {{REPO}}#{{PR_NUMBER}}");
-    expect(template).toContain("pr-cockpit {{REPO}}#{{PR_NUMBER}} --jobs");
-    expect(template).toContain("pr-cockpit {{REPO}}#{{PR_NUMBER}} --logs");
-    expect(template).not.toContain("gh pr view");
-    expect(template).not.toContain("gh run view");
-  });
-});
-
-describe("defaultAutofixTemplate", () => {
-  test("uses cached PR state and event-driven waiting while preserving update-branch handling", () => {
-    const template = defaultAutofixTemplate();
-    expect(template).toContain("BEHIND");
-    expect(template).toContain("gh pr update-branch");
-    expect(template).toContain("pr-cockpit {{REPO}}#{{PR_NUMBER}}");
-    expect(template).toContain("pr-cockpit listen {{REPO}}#{{PR_NUMBER}}");
-    expect(template).toContain("pr-cockpit {{REPO}}#{{PR_NUMBER}} --jobs");
-    expect(template).toContain("pr-cockpit {{REPO}}#{{PR_NUMBER}} --logs");
-    expect(template).not.toContain("gh pr view");
-    expect(template).not.toContain("gh run view");
+  test("only an agent with merge permission is told to signal ready-to-merge", () => {
+    expect(mergeStepText("example-org/webapp")).toContain('"ready-to-merge"');
+    expect(mergeStepText("example-org/webapp", false)).toBe("");
   });
 });
 

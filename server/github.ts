@@ -1415,6 +1415,8 @@ type PrDetailShape<Rx> = {
   baseRefName: string;
   baseRefOid: string;
   headRefName: string;
+  // absent in snapshots cached before it was fetched; null when the head repository was deleted
+  headRepository?: { nameWithOwner: string } | null;
   headRefOid: string;
   body: string;
   additions: number;
@@ -1521,7 +1523,7 @@ type RestPullRequest = {
   draft: boolean;
   user: RestUser | null;
   base: { ref: string; sha: string };
-  head: { ref: string; sha: string };
+  head: { ref: string; sha: string; repo?: { full_name: string } | null };
   body: string | null;
   additions: number;
   deletions: number;
@@ -1554,6 +1556,7 @@ export function mapRestPrDetailBase(pullRequest: RestPullRequest, files: RestPul
     baseRefName: pullRequest.base.ref,
     baseRefOid: pullRequest.base.sha,
     headRefName: pullRequest.head.ref,
+    headRepository: pullRequest.head.repo ? { nameWithOwner: pullRequest.head.repo.full_name } : null,
     headRefOid: pullRequest.head.sha,
     body: pullRequest.body ?? "",
     additions: pullRequest.additions,

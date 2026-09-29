@@ -102,6 +102,10 @@ pr-cockpit listen owner/repo#123
 
 The CLI also supports comments, reviews, thread resolution, edits, and merges through Cockpit's mutation queue. Run **`pr-cockpit --help`** for commands and options, including `--body-file` for exact multiline text and `--json` for machine-readable status. The installer separately asks before adding Cockpit instructions to supported coding assistants.
 
+Built-in agents start with Cockpit's cached PR brief and use `pr-cockpit` for PR reads and mutations. The auto-merge fixer handles conflicts before checks and review feedback, then Cockpit refreshes the PR and verifies the merge gate before merging. Force merge remains opt-in and cannot bypass pending or failing checks, conflicts, or unresolved review threads. Agents clone only when code changes are needed.
+
+The Agents tab renders Markdown answers, groups tool activity into expandable details, and shows an identical final-answer echo only once. Full tool inputs, errors, and raw logs remain available.
+
 ## Local reads. GitHub authority.
 
 Cockpit is a client for your existing GitHub workflow, not a second place to maintain pull requests.

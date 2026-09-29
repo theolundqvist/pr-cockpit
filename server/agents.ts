@@ -1,7 +1,10 @@
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, rmSync } from "node:fs";
-import { db, getCachedPrDetail, getPr, type PrRow } from "./db.ts";
+import { db, getCachedPrDetail, getPr, lastWebhookAtForPr, type PrRow } from "./db.ts";
 import { unsatisfiedRequiredChecks } from "./checkState.ts";
-import { getViewerLogin } from "./github.ts";
+import { refreshCachedPrDetail } from "./cachedPrDetail.ts";
+import { getViewerLogin, type PrDetail } from "./github.ts";
+import type { PrAgentSummary } from "./http.ts";
+import type { GithubUsageSource } from "./githubUsage.ts";
 import { agentEnabled, agentModel, agentPromptTemplate, agentSettings, CUSTOM_AGENT_ID_PREFIX, forceMergeEnabled, type AgentSetting } from "./settings.ts";
 import { reviewBots } from "./reviewScore.ts";
 import { mergeAllowedNow, mergeWithLearning } from "./mergeMethod.ts";
@@ -178,40 +181,60 @@ const PROMPT_STATUS_FILE = ".prompt-status";
 const AUTOFIX_STATUS_FILE = ".autofix-status";
 const TERMINAL_STATUSES = ["merged", "waiting-review", "gave-up"];
 
-function prCockpitRule(repo: string, number: number): string {
-  return `- Use \`pr-cockpit ${repo}#${number}\` and its flags for every PR read. Whenever progress depends on CI, reviews, comments, or PR state changing, always run \`pr-cockpit listen ${repo}#${number}\`; never sleep, poll, use a harness pause, or wait any other way.`;
+// Cockpit has no checkout command, so the clone is the one gh call left; it touches no PR state. The push target
+// comes only from GitHub's head repository - a matching branch name or SHA doesn't prove which repository it is.
+function cockpitCommands(repo: string, number: number, headRef: string, headRepo: string | null): string {
+  const ref = `${repo}#${number}`;
+  const clone = `gh repo clone ${repo} . -- --filter=blob:none`;
+  const code = headRepo === repo
+    ? `run \`${clone} --branch ${headRef}\`. Push only with \`git push origin HEAD:${headRef}\`.`
+    : headRepo
+      ? `run \`${clone} && git remote add head https://github.com/${headRepo}.git && git fetch head ${headRef} && git checkout -b cockpit-pr-${number} head/${headRef}\`. The branch lives in the fork ${headRepo}: push only with \`git push head HEAD:${headRef}\`; if the fork rejects it, explain on the PR instead of pushing anywhere else.`
+      : `run \`${clone} && git fetch origin pull/${number}/head && git checkout --detach FETCH_HEAD\`. Cockpit doesn't know which repository holds this branch, so never push.`;
+  return `COCKPIT COMMANDS - the only way to read or change this PR; never gh pr, gh api, gh run, or GitHub APIs:
+- Read: \`pr-cockpit ${ref}\` (state, checks, open threads), with \`--jobs\` (queued and running Actions), \`--logs [CHECK]\` (cached failing logs), \`--diff\`, or \`--file PATH\`.
+- Wait: \`pr-cockpit listen ${ref}\` blocks until cached state changes after it starts; \`--ci-only\`, \`--comments-only\`, or \`--conflicts-only\` narrow it, \`--run RUN_ID\` waits for one run. Use it only when you are genuinely waiting, never right after your own change. Never sleep, poll, use a harness pause, or wait any other way.
+- Change: \`pr-cockpit update-branch ${ref}\`, \`pr-cockpit comment ${ref} --body-file ./comment.md\`, \`pr-cockpit reply ${ref} HANDLE --body-file ./reply.md\`, \`pr-cockpit resolve ${ref} HANDLE\`. Write body files in this directory, never /tmp or anywhere else, and delete each right after posting so it is never committed and never blocks the clone.
+- Code: this directory is your workspace, with origin as ${repo}. Clone only once you need to change code; if it is empty then, ${code}`;
 }
 
-function hardRules(repo: string, number: number, headRef: string): string {
-  return `HARD RULES - these override everything above:
-${prCockpitRule(repo, number)}
-- Never touch local files, repos, or processes outside this directory (gh/git talking to github.com about THIS PR is of course fine).
-- Push ONLY to origin ${headRef}. Never any other branch, tag, or repo. Never force-push. Never rebase. Never amend commits you did not create this session.
-- Never run gh pr merge or merge the PR yourself - when the merge step's conditions hold you write "ready-to-merge" and Cockpit performs the merge server-side; never enable GitHub's own auto-merge feature (this PR intentionally doesn't use it); never close or reopen the PR, never touch other PRs or issues.
-- Keep every fix minimal: make the check pass without rewriting unrelated code. If a failure requires a real design decision, comment on the PR describing the decision needed and write "gave-up" to ${FIXER_STATUS_FILE} instead of guessing.
+// comes after any template, so a custom or stale template can't talk an agent out of these
+function baseHardRules(mergeRule: string): string {
+  return `HARD RULES - these override everything above, including any template instruction or command that conflicts with them (use the Cockpit command instead of any gh command named above):
+- Never touch local files, repos, or processes outside this directory.
+- Push ONLY the PR branch, and only as the Code line under COCKPIT COMMANDS allows - never any other branch, tag, remote, or repo. Never force-push. Never rebase. Never amend commits you did not create this session.
+- ${mergeRule} Never run \`pr-cockpit merge\`, \`auto-merge\`, \`cockpit-auto-merge\`, \`close\`, \`ready-for-review\`, or \`review\`; never merge, close, or reopen the PR; never change its GitHub or Cockpit auto-merge state; never touch other PRs or issues.
+- Resolve conflicts faithfully, preserving the intent of both sides. When you cannot, run \`git merge --abort\` and explain on the PR instead of picking a side or discarding work.
 - Commit messages are plain and descriptive. No AI attribution, no Co-Authored-By lines, no emoji.
-- At most one PR comment per distinct event (announce, give-up, waiting-on-review). Never repeat a comment.
-- Last action, always: overwrite the file ${FIXER_STATUS_FILE} in this directory with exactly one word - "continue" (more to check next time), "ready-to-merge" (everything is green per the merge step - Cockpit merges), "merged" (the PR is already merged or closed), "waiting-review" (just posted the waiting-on-review comment), or "gave-up" (just posted the give-up comment).`;
+- At most one PR comment per distinct event. Never repeat a comment.`;
+}
+
+function hardRules(): string {
+  return `${baseHardRules(`Only Cockpit merges: when the merge step's conditions hold you write "ready-to-merge", and Cockpit re-verifies a freshly refreshed snapshot server-side before merging.`)}
+- Keep every fix minimal: make the check pass without rewriting unrelated code. If a failure requires a real design decision, comment on the PR describing the decision needed and write "gave-up" instead of guessing.
+- Last action, always: overwrite the file ${FIXER_STATUS_FILE} in this directory with exactly one word - "continue" (nothing more to do until the PR changes; Cockpit relaunches you with a fresh brief when it does), "ready-to-merge" (the merge step's conditions hold - Cockpit merges), "merged" (the PR is already merged or closed), "waiting-review" (just posted the waiting-on-review comment), or "gave-up" (just posted the give-up comment).`;
 }
 
 // placeholders substituted at spawn time by renderIterationTemplate - a custom template is rendered the same way
-const DEFAULT_FIXER_TEMPLATE = `THIS ITERATION - make at most one code or PR change, then stop:
-1. Check state: pr-cockpit {{REPO}}#{{PR_NUMBER}}
-2. state MERGED or CLOSED: write "merged" to {{STATUS_FILE}} and stop.
-3. Merge conflicts (mergeStateStatus DIRTY): git fetch origin && git merge origin/{{BASE_REF}}. Resolve conflicts faithfully - preserve the intent of BOTH sides; when genuinely unsure, keep the base branch's version and say so in the merge commit body. Commit and push.
-4. Else, branch behind base (mergeStateStatus BEHIND): gh pr update-branch {{PR_NUMBER}}; if that fails (e.g. permission), fall back to git fetch origin && git merge origin/{{BASE_REF}} && git push. This re-triggers CI - just do it and stop for this iteration.
-5. Else, failing checks: read the cached failing job logs with pr-cockpit {{REPO}}#{{PR_NUMBER}} --logs, diagnose, fix in this clone with the smallest change that makes the check pass, verify locally with the narrowest relevant command (single test file, lint on the touched files), commit with a plain descriptive message, push.
-6. Else, unresolved review threads: for each unresolved thread, check its author. A thread from a configured BOT reviewer ({{BOT_REVIEWERS}}) - if the concern is valid, fix it (commit and push) and reply explaining the fix, then resolve it with pr-cockpit resolve {{REPO}}#{{PR_NUMBER}} HANDLE; if not valid, reply explaining why not, then resolve it the same way. A thread from a HUMAN reviewer - never touch it, never resolve it, never reply to it; if that's the only blocker, just note it and continue.{{FORCE_MERGE_STEP}}
-8. Else, nothing actionable (checks running, or blocked only on human review): inspect queued and running Actions state with pr-cockpit {{REPO}}#{{PR_NUMBER}} --jobs. If this is the third consecutive check you've seen "blocked only on review, everything else green" (check your own memory of this conversation), comment that the PR is green and waiting on review, then write "waiting-review". Otherwise run pr-cockpit listen {{REPO}}#{{PR_NUMBER}}, then return to step 1 when it wakes.
+const DEFAULT_FIXER_TEMPLATE = `WORK - handle every blocker you can act on, in this order, starting from the brief above instead of re-reading it. After each push or state change, re-read pr-cockpit {{REPO}}#{{PR_NUMBER}} and start again at step 1; if it still shows the old head, wait with pr-cockpit listen {{REPO}}#{{PR_NUMBER}} and re-read.
+1. state MERGED or CLOSED: write "merged" to {{STATUS_FILE}} and stop.
+2. Merge conflicts (merge state DIRTY): git fetch origin {{BASE_REF}} && git merge origin/{{BASE_REF}}, resolve, commit, push.
+3. Else, branch behind base (merge state BEHIND): pr-cockpit update-branch {{REPO}}#{{PR_NUMBER}}; if that fails, git fetch origin {{BASE_REF}} && git merge origin/{{BASE_REF}}, then push.
+4. Else, failing checks: read the cached failing job logs with pr-cockpit {{REPO}}#{{PR_NUMBER}} --logs, diagnose, fix with the smallest change that makes the check pass, verify locally with the narrowest relevant command (single test file, lint on the touched files), commit, push.
+5. Else, unresolved review threads: check each thread's author. A thread from a configured BOT reviewer ({{BOT_REVIEWERS}}) - if the concern is valid, fix it (commit and push) and reply explaining the fix; if not, reply explaining why not; then resolve it with pr-cockpit resolve {{REPO}}#{{PR_NUMBER}} HANDLE. A thread from a HUMAN reviewer - never touch, resolve, or reply to it; if that's the only blocker, note it and continue.
+6. Else, checks still queued or running (see pr-cockpit {{REPO}}#{{PR_NUMBER}} --jobs): wait with pr-cockpit listen {{REPO}}#{{PR_NUMBER}} --ci-only.{{FORCE_MERGE_STEP}}
+8. Else, blocked only on human review: if that has held across three consecutive reads, comment that the PR is green and waiting on review, then write "waiting-review". Otherwise wait with pr-cockpit listen {{REPO}}#{{PR_NUMBER}} and return to step 1.
 9. Give up: if the same check is still failing after 3 distinct fix attempts by you across this conversation, comment on the PR summarizing each attempt and why it still fails, then write "gave-up".
-10. Report a single one-line summary of what you did this iteration.`;
+10. Report a single one-line summary of what you did.`;
 
 export function defaultFixerTemplate(): string {
   return DEFAULT_FIXER_TEMPLATE.replaceAll("{{BOT_REVIEWERS}}", reviewBots().map((bot) => bot.login).join(", "));
 }
 
+// a custom fixer template that drops {{FORCE_MERGE_STEP}} still carries the merge step, last
 function renderIterationTemplate(template: string, repo: string, number: number, baseRef: string, mergeStep: string): string {
-  return template
+  const withMergeStep = template.includes("{{FORCE_MERGE_STEP}}") ? template : `${template}${mergeStep}`;
+  return withMergeStep
     .replaceAll("{{REPO}}", repo)
     .replaceAll("{{FORCE_MERGE_STEP}}", mergeStep)
     .replaceAll("{{BOT_REVIEWERS}}", reviewBots().map((bot) => bot.login).join(", "))
@@ -220,55 +243,82 @@ function renderIterationTemplate(template: string, repo: string, number: number,
     .replaceAll("{{STATUS_FILE}}", FIXER_STATUS_FILE);
 }
 
-function iterationBody(repo: string, number: number, baseRef: string, mergeStep: string, template: string): string {
-  return renderIterationTemplate(template.trim() || DEFAULT_FIXER_TEMPLATE, repo, number, baseRef, mergeStep);
+function fixerPrompt(isFirst: boolean, repo: string, number: number, baseRef: string, headRef: string, brief: string, mergeStep: string, template: string): string {
+  return `${isFirst
+    ? `You are the auto-merge fixer agent for the pull request ${repo}#${number} (branch "${headRef}" into "${baseRef}"). Clear whatever blocks merging, signal Cockpit when the merge step's conditions hold, and get out of the way.`
+    : "Same PR, relaunched because it changed or your last run ended. The brief below is current; start from it."}
+
+${brief}
+
+${renderIterationTemplate(template.trim() || DEFAULT_FIXER_TEMPLATE, repo, number, baseRef, mergeStep)}
+
+${hardRules()}`;
 }
 
-function firstIterationPrompt(repo: string, number: number, baseRef: string, headRef: string, viewerLogin: string, mergeStep: string, template: string): string {
-  return `You are the auto-merge fixer agent for the pull request ${repo}#${number} (branch "${headRef}" into "${baseRef}").
-This PR does not use GitHub's own auto-merge - you own getting it merged yourself, via the merge step below, once everything is green. Your one goal is to clear whatever blocks that, then merge it and get out of the way. Each invocation handles at most one code or PR change. When only changing PR state can unblock you, stay in the invocation and use pr-cockpit listen as instructed below.
-
-SETUP (do this first):
-1. This directory is your workspace. If it is empty, run: gh repo clone ${repo} . -- --depth 50
-   then: gh pr checkout ${number}
-2. Announce yourself, but first check you haven't already: if any existing comment on the PR contains "// cockpit auto-merger", skip this step entirely (a previous agent session announced). Otherwise:
-   gh pr comment ${number} --body "Approved and armed for auto-merge by @${viewerLogin}. I'll merge this when everything is green - conflicts and failing checks - until then. // cockpit auto-merger"
-
-${iterationBody(repo, number, baseRef, mergeStep, template)}
-
-${hardRules(repo, number, headRef)}`;
+function nextBlocker(summary: PrAgentSummary): string {
+  if (summary.state === "MERGED" || summary.state === "CLOSED") return `the PR is ${summary.state}; nothing to do`;
+  if (summary.merge === "DIRTY") return `resolve the merge conflicts with ${summary.base} first`;
+  if (summary.merge === "BEHIND") return `bring the branch up to date with \`pr-cockpit update-branch ${summary.ref}\``;
+  if (summary.ci.state === "FAILURE" || summary.ci.state === "CANCELLED") return "fix the failing checks, then the open review threads";
+  if (summary.openComments.length > 0 || summary.review === "CHANGES_REQUESTED") return "address the open review feedback";
+  if (summary.ci.running > 0) return `checks are still running; wait with \`pr-cockpit listen ${summary.ref} --ci-only\``;
+  if (summary.ci.state === "PENDING") return `Actions coverage is incomplete in this snapshot; confirm with \`pr-cockpit ${summary.ref} --jobs\` before treating checks as green`;
+  return "no blocker is known in this snapshot; only the merge gate remains";
 }
 
-function nextIterationPrompt(repo: string, number: number, baseRef: string, headRef: string, mergeStep: string, template: string): string {
-  return `Same PR, next iteration. Setup and the announce comment are already done - do not repeat them.
+// cache-only apart from a one-time refresh for snapshots cached before they carried the head repository;
+// the freshness line keeps a stale clean state from reading as mergeable
+async function cockpitBrief(repo: string, number: number, headRef: string, logPath: string): Promise<string> {
+  const ref = `${repo}#${number}`;
+  const newest = () => {
+    const tracked = getPr(repo, number);
+    const cached = getCachedPrDetail(repo, number);
+    return { tracked, row: !tracked ? cached : cached && cached.fetched_at > tracked.fetched_at ? cached : tracked };
+  };
+  let { tracked, row } = newest();
+  if (row && (JSON.parse(row.detail_json) as PrDetail).headRepository === undefined) {
+    await refreshAgentPr(repo, number, logPath, "agent read");
+    ({ tracked, row } = newest());
+  }
+  if (!row) return `COCKPIT BRIEF: Cockpit has no cached snapshot of ${ref}; read it with \`pr-cockpit ${ref}\` first.\n\n${cockpitCommands(repo, number, headRef, null)}`;
+  // dynamic: http.ts imports this module statically
+  const { buildPrAgentSummary, formatPrAgentSummary, snapshotStatus } = await import("./http.ts");
+  const detail = JSON.parse(row.detail_json) as PrDetail;
+  const snapshot = snapshotStatus(row.fetched_at, lastWebhookAtForPr(repo, number));
+  const summary = buildPrAgentSummary(ref, { ...detail, agentSnapshot: snapshot }, null);
+  const githubAutoMerge = detail.autoMergeRequest
+    ? `enabled (${detail.autoMergeRequest.mergeMethod}${detail.autoMergeRequest.enabledBy ? ` by @${detail.autoMergeRequest.enabledBy.login}` : ""})`
+    : "off";
+  return `COCKPIT BRIEF - Cockpit's cached snapshot at this launch, in place of your startup reads. Re-read with \`pr-cockpit ${ref}\` after you change something or \`listen\` wakes${snapshot.freshness === "outdated" ? "; this snapshot is OUTDATED, so re-read it before acting on anything it shows as clear" : ""}.
+Next: ${nextBlocker(summary)}.
+Auto-merge (cached): Cockpit ${tracked?.auto_merge_enabled ? "armed" : "not armed"} · GitHub ${githubAutoMerge}. Leave both as they are.
 
-${iterationBody(repo, number, baseRef, mergeStep, template)}
+${formatPrAgentSummary(summary, { body: false }).trim()}
 
-${hardRules(repo, number, headRef)}`;
+${cockpitCommands(repo, number, detail.headRefName || headRef, detail.headRepository?.nameWithOwner ?? null)}`;
 }
 
-// matches GitHub's StatusCheckRollupState values, as computed by checkRollupStatus in poller.ts
-const CI_FAILING_STATUSES = new Set(["FAILURE", "ERROR"]);
+// GitHub's StatusCheckRollupState values, as computed by checkRollupStatus in poller.ts; NONE means no checks at all
+const CI_GREEN_STATUSES = new Set(["SUCCESS", "NONE"]);
 
 // the rollup state alone is not enough: force-merge can act while GitHub reports BLOCKED, and a
-// required check that was skipped or cancelled leaves that requirement unmet without failing the rollup
-function readyToMerge(pr: PrRow): boolean {
+// required check that was skipped or cancelled leaves that requirement unmet without failing the rollup.
+// BLOCKED only ever bypasses an approval rule, and a fresh push can briefly report no checks, so it needs SUCCESS.
+export function readyToMerge(pr: PrRow): boolean {
   return pr.review_decision !== "CHANGES_REQUESTED" &&
-    !CI_FAILING_STATUSES.has(pr.ci_status) &&
+    CI_GREEN_STATUSES.has(pr.ci_status) &&
+    (pr.merge_state_status !== "BLOCKED" || pr.ci_status === "SUCCESS") &&
     pr.unresolved_count === 0 &&
     unsatisfiedRequiredChecks(pr.detail_json).length === 0;
 }
 
-// mutually exclusive by construction - CLEAN and BLOCKED can't both hold - so at most one step is ever active
-export function mergeStepText(repo: string, pr: PrRow, allowMerge = true): string {
+// states the conditions instead of gating on launch-time cache state; the server-side gate re-verifies
+export function mergeStepText(repo: string, allowMerge = true): string {
   if (!allowMerge) return "";
-  if (readyToMerge(pr) && pr.merge_state_status === "CLEAN") {
-    return `\n7. Merge check: if the PR is fully green - checks passing, no conflicts, review approved or not required, every thread resolved - write "ready-to-merge" to {{STATUS_FILE}} and stop; Cockpit performs the merge itself.`;
+  if (forceMergeEnabled(repo)) {
+    return `\n7. Else, merge check: if checks are green, there are no conflicts, the branch is not behind, there is no CHANGES_REQUESTED, every review thread is resolved or bot-only-and-addressed, and the only remaining blocker (if any) is a required-approval rule, write "ready-to-merge" to {{STATUS_FILE}} and stop; Cockpit re-verifies and merges it itself. Never signal it past failing checks, conflicts, an unresolved human thread, or CHANGES_REQUESTED.`;
   }
-  if (readyToMerge(pr) && forceMergeEnabled(repo) && pr.merge_state_status === "BLOCKED") {
-    return `\n7. Force-merge check: if the ONLY thing blocking merge is a required-approval rule - checks green, no conflicts, no CHANGES_REQUESTED, every review thread resolved or bot-only-and-addressed - write "ready-to-merge" to {{STATUS_FILE}} and stop; Cockpit performs the merge itself. Never signal it past failing checks, conflicts, an unresolved human thread, or CHANGES_REQUESTED, only ever a pure "needs approval" rule when everything else is actually green.`;
-  }
-  return "";
+  return `\n7. Else, merge check: if the PR is fully green - merge state CLEAN, checks passing, no conflicts, review approved or not required, every thread resolved - write "ready-to-merge" to {{STATUS_FILE}} and stop; Cockpit re-verifies and merges it itself.`;
 }
 
 async function runIteration(repo: string, number: number, workdir: string, logPath: string, prompt: string, useContinue: boolean): Promise<string> {
@@ -289,8 +339,40 @@ async function runIteration(repo: string, number: number, workdir: string, logPa
   return status === "continue" || status === "ready-to-merge" || TERMINAL_STATUSES.includes(status) ? status : "continue";
 }
 
-const ITERATION_INTERVAL_MS = 180_000;
 const activeSupervisors = new Map<string, { stopped: boolean }>();
+
+function prFingerprint(pr: PrRow | null): string {
+  return pr ? [pr.state, pr.head_sha, pr.merge_state_status, pr.ci_status, pr.review_decision, pr.unresolved_count, pr.updated_at].join("|") : "";
+}
+
+// the run's own push must land in the cache before the merge gate or the next brief reads it; a PR opened only
+// by URL lives in the detail cache, and refreshing it through the poller would start tracking it
+async function refreshAgentPr(repo: string, number: number, logPath: string, source: GithubUsageSource): Promise<boolean> {
+  try {
+    if (getPr(repo, number)) {
+      // dynamic: a static poller import would close the agents -> poller -> activity -> agents cycle
+      const { refreshPr } = await import("./poller.ts");
+      await refreshPr(repo, number, source, "all", "detail");
+    } else {
+      await refreshCachedPrDetail(repo, number, source);
+    }
+    return true;
+  } catch (err) {
+    appendFileSync(logPath, `\ncockpit refresh (${source}) failed for ${repo}#${number}: ${err}\n`);
+    return false;
+  }
+}
+
+const IDLE_RELAUNCH_MS = 180_000;
+const PR_CHANGE_POLL_MS = 5_000;
+
+// relaunch once the cache differs from what the last run was briefed on; the cap covers missed events and crashes
+async function awaitPrChange(repo: string, number: number, briefed: string, control: { stopped: boolean }): Promise<void> {
+  const deadline = Date.now() + IDLE_RELAUNCH_MS;
+  while (!control.stopped && Date.now() < deadline && prFingerprint(getPr(repo, number)) === briefed) {
+    await Bun.sleep(PR_CHANGE_POLL_MS);
+  }
+}
 
 async function superviseFixer(
   repo: string,
@@ -299,7 +381,6 @@ async function superviseFixer(
   logPath: string,
   baseRef: string,
   headRef: string,
-  viewerLogin: string,
   control: { stopped: boolean },
   resuming: boolean,
 ): Promise<void> {
@@ -320,24 +401,21 @@ async function superviseFixer(
         cleanupAgentWorkdir(workdir);
         return;
       }
-      // re-read every tick - settings and cached PR signals are both live, not fixed at arm time
-      const mergeStep = mergeStepText(repo, pr);
-      const template = agentPromptTemplate("fixer");
-      const prompt = isFirst
-        ? firstIterationPrompt(repo, number, baseRef, headRef, viewerLogin, mergeStep, template)
-        : nextIterationPrompt(repo, number, baseRef, headRef, mergeStep, template);
+      // re-read every launch - settings and cached PR signals are both live, not fixed at arm time
+      const briefed = prFingerprint(pr);
+      const prompt = fixerPrompt(isFirst, repo, number, baseRef, headRef, await cockpitBrief(repo, number, headRef, logPath), mergeStepText(repo), agentPromptTemplate("fixer"));
       const status = await runIteration(repo, number, workdir, logPath, prompt, !isFirst);
       isFirst = false;
       if (control.stopped) return;
+      const refreshed = await refreshAgentPr(repo, number, logPath, "agent read");
+      if (control.stopped) return;
       if (status === "ready-to-merge") {
-        // the agent's word is a signal, not authority: re-read the row and re-check the
-        // same server-side predicates that gated the prompt, on post-iteration state -
-        // this also binds the merge to the freshest verified head so a race push 409s
-        const fresh = getPr(repo, number);
+        // the agent's word is a signal, not authority: gate on the post-run refresh and bind the merge to that head
+        const fresh = refreshed ? getPr(repo, number) : null;
         const gateOk = fresh && readyToMerge(fresh) && mergeAllowedNow(repo, fresh);
         if (!gateOk) {
-          appendFileSync(logPath, `\ncockpit refused merge signal for ${repo}#${number}: PR no longer passes the server-side merge gate\n`);
-          await Bun.sleep(ITERATION_INTERVAL_MS);
+          appendFileSync(logPath, `\ncockpit refused merge signal for ${repo}#${number}: ${refreshed ? "PR does not pass the server-side merge gate" : "snapshot could not be refreshed"}\n`);
+          await awaitPrChange(repo, number, briefed, control);
           continue;
         }
         try {
@@ -351,19 +429,13 @@ async function superviseFixer(
             cleanupAgentWorkdir(workdir);
             return;
           }
-          await Bun.sleep(ITERATION_INTERVAL_MS);
+          await awaitPrChange(repo, number, prFingerprint(fresh), control);
           continue;
         }
         setAgentExitedStmt.run("merged", repo, number);
         finishRun(repo, number, "exited", "merged");
         cleanupAgentWorkdir(workdir);
-        try {
-          // dynamic: a static poller import would close the agents -> poller -> activity -> agents cycle
-          const { refreshPr } = await import("./poller.ts");
-          await refreshPr(repo, number, "mutation recovery");
-        } catch (err) {
-          appendFileSync(logPath, `\npost-merge refresh failed for ${repo}#${number}: ${err}\n`);
-        }
+        await refreshAgentPr(repo, number, logPath, "mutation recovery");
         return;
       }
       if (status !== "continue") {
@@ -372,10 +444,10 @@ async function superviseFixer(
         cleanupAgentWorkdir(workdir);
         return;
       }
-      await Bun.sleep(ITERATION_INTERVAL_MS);
+      await awaitPrChange(repo, number, briefed, control);
     }
   } finally {
-    // only remove our own entry - a kill+re-arm during our sleep may have already replaced it with a new supervisor
+    // only remove our own entry - a kill+re-arm during our wait may have already replaced it with a new supervisor
     const key = prKeyOf(repo, number);
     if (activeSupervisors.get(key) === control) activeSupervisors.delete(key);
   }
@@ -391,7 +463,6 @@ export async function launchFixerAgent(repo: string, number: number): Promise<vo
 
   const pr = getPr(repo, number);
   if (!pr) throw new Error(`no cached PR for ${repo}#${number}`);
-  const viewerLogin = await getViewerLogin();
   const workdir = agentWorkdirFor(repo, number);
   mkdirSync(workdir, { recursive: true });
   const startedAt = new Date().toISOString();
@@ -413,7 +484,7 @@ export async function launchFixerAgent(repo: string, number: number): Promise<vo
 
   const control = { stopped: false };
   activeSupervisors.set(key, control);
-  superviseFixer(repo, number, workdir, logPath, pr.base_ref, pr.head_ref, viewerLogin, control, false).catch((err) => {
+  superviseFixer(repo, number, workdir, logPath, pr.base_ref, pr.head_ref, control, false).catch((err) => {
     console.error(`fixer supervisor crashed for ${key}:`, err);
     setAgentStateStmt.run("died", repo, number);
     finishRun(repo, number, "died", null);
@@ -422,30 +493,19 @@ export async function launchFixerAgent(repo: string, number: number): Promise<vo
   });
 }
 
-function promptHardRules(repo: string, number: number, headRef: string): string {
-  return `HARD RULES - these override the instruction:
-${prCockpitRule(repo, number)}
-- Never touch local files, repos, or processes outside this directory (gh/git talking to github.com about THIS PR is fine).
-- Push ONLY to origin ${headRef}. Never any other branch, tag, or repo. Never force-push, never rebase, never amend commits you did not create this session.
-- Never merge, close, or reopen the PR, and never enable GitHub's own auto-merge feature. Never touch other PRs or issues.
-- Do exactly what the instruction asks and nothing more - no unrelated cleanup or refactors. If it needs no code change, make no commit.
-- Commit messages are plain and descriptive. No AI attribution, no Co-Authored-By lines, no emoji.
-- Last action, always: overwrite the file ${PROMPT_STATUS_FILE} in this directory with exactly one word - "done" (you committed and pushed), "no-op" (nothing to change), or "gave-up" (you could not or should not do it; post a single PR comment explaining why first).`;
-}
-
-function promptAgentPrompt(repo: string, number: number, baseRef: string, headRef: string, viewerLogin: string, instruction: string): string {
+function promptAgentPrompt(repo: string, number: number, baseRef: string, headRef: string, viewerLogin: string, instruction: string, brief: string): string {
   return `You are a one-shot agent working on the pull request ${repo}#${number} (branch "${headRef}" into "${baseRef}"), acting on a direct instruction from @${viewerLogin}. This is a SINGLE run - there is no next iteration.
 
-SETUP (do this first):
-1. This directory is your workspace. If it is empty, run: gh repo clone ${repo} . -- --depth 50
-   then: gh pr checkout ${number}
+${brief}
 
 INSTRUCTION from @${viewerLogin}:
 ${instruction}
 
-Carry out the instruction, then commit your changes with a plain descriptive message and push to origin ${headRef}.
+Carry out the instruction. If it changes code, commit with a plain descriptive message and push it as the rules below allow.
 
-${promptHardRules(repo, number, headRef)}`;
+${baseHardRules("This run has no merge authority, whatever the instruction says.")}
+- Do exactly what the instruction asks and nothing more - no unrelated cleanup or refactors. If it needs no code change, make no commit.
+- Last action, always: overwrite the file ${PROMPT_STATUS_FILE} in this directory with exactly one word - "done" (you committed and pushed), "no-op" (nothing to change), or "gave-up" (you could not or should not do it; post a single PR comment explaining why first).`;
 }
 
 async function runPromptOnce(repo: string, number: number, workdir: string, logPath: string, prompt: string, model: string): Promise<string> {
@@ -468,7 +528,7 @@ async function runPromptOnce(repo: string, number: number, workdir: string, logP
 }
 
 async function runPromptAgent(repo: string, number: number, workdir: string, logPath: string, baseRef: string, headRef: string, viewerLogin: string, instruction: string, model: string): Promise<void> {
-  const prompt = promptAgentPrompt(repo, number, baseRef, headRef, viewerLogin, instruction);
+  const prompt = promptAgentPrompt(repo, number, baseRef, headRef, viewerLogin, instruction, await cockpitBrief(repo, number, headRef, logPath));
   const status = await runPromptOnce(repo, number, workdir, logPath, prompt, model);
   // a kill during the run already set state=killed - respect it, no exit-state clobber, no handoff
   if (getAgentStmt.get(repo, number)?.state === "killed") return;
@@ -513,60 +573,39 @@ export async function launchPromptAgent(repo: string, number: number, instructio
 }
 
 // unlike the merge-fixer, autofix addresses (and resolves) human threads too - it never merges, so there's no blast radius to guard against
-const AUTOFIX_ITERATION_TEMPLATE = `THIS ITERATION - make at most one code or PR change, then stop:
-1. Check state: pr-cockpit {{REPO}}#{{PR_NUMBER}}
-2. state MERGED or CLOSED: write "gave-up" to {{STATUS_FILE}} and stop.
-3. Merge conflicts (mergeStateStatus DIRTY): git fetch origin && git merge origin/{{BASE_REF}}. Resolve conflicts faithfully - preserve the intent of BOTH sides; when genuinely unsure, keep the base branch's version and say so in the merge commit body. Commit and push.
-4. Else, branch behind base (mergeStateStatus BEHIND): gh pr update-branch {{PR_NUMBER}}; if that fails (e.g. permission), fall back to git fetch origin && git merge origin/{{BASE_REF}} && git push. This re-triggers CI - just do it and stop for this iteration.
-5. Else, failing checks: read the cached failing job logs with pr-cockpit {{REPO}}#{{PR_NUMBER}} --logs, diagnose, fix in this clone with the smallest change that makes the check pass, verify locally with the narrowest relevant command (single test file, lint on the touched files), commit with a plain descriptive message, push.
-6. Else, unresolved review threads (from Greptile, other bots, AND human reviewers alike): for each, if the concern is valid, fix it (commit and push) and reply explaining the fix, then resolve it with pr-cockpit resolve {{REPO}}#{{PR_NUMBER}} HANDLE; if not valid, reply with a short explanation of why not, then resolve it the same way.
-7. Else, nothing actionable (checks running, or blocked only on human review approval - mergeStateStatus BLOCKED with no CHANGES_REQUESTED, no failing checks, no unresolved threads): inspect queued and running Actions state with pr-cockpit {{REPO}}#{{PR_NUMBER}} --jobs. If this is the third consecutive check you've seen "blocked only on approval, everything else green" (check your own memory of this conversation), comment that the PR is green and waiting on review, then write "waiting-review" to {{STATUS_FILE}}. Otherwise run pr-cockpit listen {{REPO}}#{{PR_NUMBER}}, then return to step 1 when it wakes.
-8. Give up: if the same check or thread is still unresolved after 3 distinct fix attempts by you across this conversation, comment on the PR summarizing each attempt and why it still fails, then write "gave-up" to {{STATUS_FILE}}.
-9. Otherwise, overwrite {{STATUS_FILE}} with exactly "continue".
-10. Report a single one-line summary of what you did this iteration.`;
+const AUTOFIX_ITERATION_TEMPLATE = `WORK - handle every blocker you can act on, in this order, starting from the brief above instead of re-reading it. After each push or state change, re-read pr-cockpit {{REPO}}#{{PR_NUMBER}} and start again at step 1; if it still shows the old head, wait with pr-cockpit listen {{REPO}}#{{PR_NUMBER}} and re-read.
+1. state MERGED or CLOSED: write "gave-up" to {{STATUS_FILE}} and stop.
+2. Merge conflicts (merge state DIRTY): git fetch origin {{BASE_REF}} && git merge origin/{{BASE_REF}}, resolve, commit, push.
+3. Else, branch behind base (merge state BEHIND): pr-cockpit update-branch {{REPO}}#{{PR_NUMBER}}; if that fails, git fetch origin {{BASE_REF}} && git merge origin/{{BASE_REF}}, then push.
+4. Else, failing checks: read the cached failing job logs with pr-cockpit {{REPO}}#{{PR_NUMBER}} --logs, diagnose, fix with the smallest change that makes the check pass, verify locally with the narrowest relevant command (single test file, lint on the touched files), commit, push.
+5. Else, unresolved review threads (from Greptile, other bots, AND human reviewers alike): for each, if the concern is valid, fix it (commit and push) and reply explaining the fix; if not, reply with a short explanation of why not; then resolve it with pr-cockpit resolve {{REPO}}#{{PR_NUMBER}} HANDLE.
+6. Else, checks still queued or running (see pr-cockpit {{REPO}}#{{PR_NUMBER}} --jobs): wait with pr-cockpit listen {{REPO}}#{{PR_NUMBER}} --ci-only.
+7. Else, fully green (checks passing, no conflicts, no unresolved threads): write "continue" to {{STATUS_FILE}} and stop; Cockpit confirms it and ends the run for a human to merge.
+8. Else, blocked only on human review approval: if that has held across three consecutive reads, comment that the PR is green and waiting on review, then write "waiting-review" to {{STATUS_FILE}}. Otherwise wait with pr-cockpit listen {{REPO}}#{{PR_NUMBER}} and return to step 1.
+9. Give up: if the same check or thread is still unresolved after 3 distinct fix attempts by you across this conversation, comment on the PR summarizing each attempt and why it still fails, then write "gave-up" to {{STATUS_FILE}}.
+10. Report a single one-line summary of what you did.`;
 
 export function defaultAutofixTemplate(): string {
   return AUTOFIX_ITERATION_TEMPLATE;
 }
 
-function autofixHardRules(repo: string, number: number, headRef: string): string {
-  return `HARD RULES - these override everything above:
-${prCockpitRule(repo, number)}
-- Never touch local files, repos, or processes outside this directory (gh/git talking to github.com about THIS PR is of course fine).
-- Push ONLY to origin ${headRef}. Never any other branch, tag, or repo. Never force-push. Never rebase. Never amend commits you did not create this session.
-- Never merge the PR, never enable GitHub's own auto-merge feature, never close or reopen the PR, never touch other PRs or issues. Getting the PR green is the whole job - a human merges it.
-- Keep every fix minimal: make the check or thread resolve without rewriting unrelated code.
-- Commit messages are plain and descriptive. No AI attribution, no Co-Authored-By lines, no emoji.
-- At most one PR comment per distinct event (waiting-on-review, give-up). Never repeat a comment.
-- Last action, always: overwrite the file ${AUTOFIX_STATUS_FILE} in this directory with exactly one word - "continue" (more to check next time), "waiting-review" (just posted the waiting-on-review comment), or "gave-up" (just posted the give-up comment).`;
-}
-
-function autofixIterationBody(repo: string, number: number, baseRef: string): string {
-  return (agentPromptTemplate("autofix").trim() || AUTOFIX_ITERATION_TEMPLATE)
+function autofixPrompt(isFirst: boolean, repo: string, number: number, baseRef: string, headRef: string, brief: string): string {
+  const body = (agentPromptTemplate("autofix").trim() || AUTOFIX_ITERATION_TEMPLATE)
     .replaceAll("{{REPO}}", repo)
     .replaceAll("{{PR_NUMBER}}", String(number))
     .replaceAll("{{BASE_REF}}", baseRef)
     .replaceAll("{{STATUS_FILE}}", AUTOFIX_STATUS_FILE);
-}
+  return `${isFirst
+    ? `You are the auto-fix agent for the pull request ${repo}#${number} (branch "${headRef}" into "${baseRef}"). Your one goal is to get it fully green - CI passing, no merge conflicts, zero unresolved review threads - then stop and let a human merge it.`
+    : "Same PR, relaunched because it changed or your last run ended. The brief below is current; start from it."}
 
-function autofixFirstIterationPrompt(repo: string, number: number, baseRef: string, headRef: string): string {
-  return `You are the auto-fix agent for the pull request ${repo}#${number} (branch "${headRef}" into "${baseRef}"). Your one goal is to get it fully green - CI passing, no merge conflicts, zero unresolved review threads - then stop and let a human merge it. Each invocation handles at most one code or PR change. When only changing PR state can unblock you, stay in the invocation and use pr-cockpit listen as instructed below.
+${brief}
 
-SETUP (do this first):
-1. This directory is your workspace. If it is empty, run: gh repo clone ${repo} . -- --depth 50
-   then: gh pr checkout ${number}
+${body}
 
-${autofixIterationBody(repo, number, baseRef)}
-
-${autofixHardRules(repo, number, headRef)}`;
-}
-
-function autofixNextIterationPrompt(repo: string, number: number, baseRef: string, headRef: string): string {
-  return `Same PR, next iteration. Setup is already done - do not repeat it.
-
-${autofixIterationBody(repo, number, baseRef)}
-
-${autofixHardRules(repo, number, headRef)}`;
+${baseHardRules("Getting the PR green is the whole job - a human merges it; you have no merge authority.")}
+- Keep every fix minimal: make the check or thread resolve without rewriting unrelated code.
+- Last action, always: overwrite the file ${AUTOFIX_STATUS_FILE} in this directory with exactly one word - "continue" (nothing more to do until the PR changes; Cockpit relaunches you with a fresh brief when it does), "waiting-review" (just posted the waiting-on-review comment), or "gave-up" (just posted the give-up comment).`;
 }
 
 async function runAutofixIteration(repo: string, number: number, workdir: string, logPath: string, prompt: string, useContinue: boolean): Promise<string> {
@@ -622,7 +661,8 @@ async function superviseAutofix(
         cleanupAgentWorkdir(workdir);
         return;
       }
-      const prompt = isFirst ? autofixFirstIterationPrompt(repo, number, baseRef, headRef) : autofixNextIterationPrompt(repo, number, baseRef, headRef);
+      const briefed = prFingerprint(pr);
+      const prompt = autofixPrompt(isFirst, repo, number, baseRef, headRef, await cockpitBrief(repo, number, headRef, logPath));
       const status = await runAutofixIteration(repo, number, workdir, logPath, prompt, !isFirst);
       isFirst = false;
       if (control.stopped) return;
@@ -632,7 +672,8 @@ async function superviseAutofix(
         cleanupAgentWorkdir(workdir);
         return;
       }
-      await Bun.sleep(ITERATION_INTERVAL_MS);
+      await refreshAgentPr(repo, number, logPath, "agent read");
+      await awaitPrChange(repo, number, briefed, control);
     }
   } finally {
     const key = prKeyOf(repo, number);
@@ -682,45 +723,24 @@ export async function launchAutofixAgent(repo: string, number: number): Promise<
 
 const CUSTOM_STATUS_FILE = ".custom-status";
 
-function customHardRules(repo: string, number: number, headRef: string): string {
-  return `HARD RULES - these override everything above:
-${prCockpitRule(repo, number)}
-- Never touch local files, repos, or processes outside this directory (gh/git talking to github.com about THIS PR is of course fine).
-- Push ONLY to origin ${headRef}. Never any other branch, tag, or repo. Never force-push. Never rebase. Never amend commits you did not create this session.
-- Never merge the PR, never enable GitHub's own auto-merge feature, never close or reopen the PR, never touch other PRs or issues.
-- Keep every change minimal: do what the instruction asks without rewriting unrelated code.
-- Commit messages are plain and descriptive. No AI attribution, no Co-Authored-By lines, no emoji.
-- At most one PR comment per distinct event (give-up). Never repeat a comment.
-- Last action, always: overwrite the file ${CUSTOM_STATUS_FILE} in this directory with exactly one word - "continue" (more to do next time), "done" (the instruction is fully satisfied), or "gave-up" (you cannot or should not proceed; post a single PR comment explaining why first).`;
-}
-
-function customIterationBody(agent: AgentSetting, number: number, baseRef: string): string {
-  return agent.prompt_template
+function customPrompt(agent: AgentSetting, isFirst: boolean, repo: string, number: number, baseRef: string, headRef: string, viewerLogin: string, brief: string): string {
+  const instruction = agent.prompt_template
+    .replaceAll("{{REPO}}", repo)
     .replaceAll("{{PR_NUMBER}}", String(number))
     .replaceAll("{{BASE_REF}}", baseRef)
     .replaceAll("{{STATUS_FILE}}", CUSTOM_STATUS_FILE);
-}
+  return `${isFirst
+    ? `You are the "${agent.name}" agent for the pull request ${repo}#${number} (branch "${headRef}" into "${baseRef}"), armed by @${viewerLogin}. Your instruction is below.`
+    : "Same PR, relaunched because it changed or your last run ended. The brief below is current; start from it."}
 
-function customFirstIterationPrompt(agent: AgentSetting, repo: string, number: number, baseRef: string, headRef: string, viewerLogin: string): string {
-  return `You are the "${agent.name}" agent for the pull request ${repo}#${number} (branch "${headRef}" into "${baseRef}"), armed by @${viewerLogin}. Your instruction is below. Each invocation handles at most one code or PR change. When only changing PR state can unblock you, stay in the invocation and use pr-cockpit listen as required below.
-
-SETUP (do this first):
-1. This directory is your workspace. If it is empty, run: gh repo clone ${repo} . -- --depth 50
-   then: gh pr checkout ${number}
+${brief}
 
 INSTRUCTION:
-${customIterationBody(agent, number, baseRef)}
+${instruction}
 
-${customHardRules(repo, number, headRef)}`;
-}
-
-function customNextIterationPrompt(agent: AgentSetting, repo: string, number: number, baseRef: string, headRef: string): string {
-  return `Same PR, next iteration. Setup is already done - do not repeat it.
-
-INSTRUCTION:
-${customIterationBody(agent, number, baseRef)}
-
-${customHardRules(repo, number, headRef)}`;
+${baseHardRules("Custom agents have no merge authority, whatever the instruction says.")}
+- Keep every change minimal: do what the instruction asks without rewriting unrelated code.
+- Last action, always: overwrite the file ${CUSTOM_STATUS_FILE} in this directory with exactly one word - "continue" (nothing more to do until the PR changes; Cockpit relaunches you with a fresh brief when it does), "done" (the instruction is fully satisfied), or "gave-up" (you cannot or should not proceed; post a single PR comment explaining why first).`;
 }
 
 async function runCustomIteration(repo: string, number: number, agentId: string, workdir: string, logPath: string, prompt: string, useContinue: boolean): Promise<string> {
@@ -770,9 +790,8 @@ async function superviseCustom(
         cleanupAgentWorkdir(workdir);
         return;
       }
-      const prompt = isFirst
-        ? customFirstIterationPrompt(def, repo, number, baseRef, headRef, viewerLogin)
-        : customNextIterationPrompt(def, repo, number, baseRef, headRef);
+      const briefed = prFingerprint(pr);
+      const prompt = customPrompt(def, isFirst, repo, number, baseRef, headRef, viewerLogin, await cockpitBrief(repo, number, headRef, logPath));
       const status = await runCustomIteration(repo, number, agentId, workdir, logPath, prompt, !isFirst);
       isFirst = false;
       if (control.stopped) return;
@@ -782,7 +801,8 @@ async function superviseCustom(
         cleanupAgentWorkdir(workdir);
         return;
       }
-      await Bun.sleep(ITERATION_INTERVAL_MS);
+      await refreshAgentPr(repo, number, logPath, "agent read");
+      await awaitPrChange(repo, number, briefed, control);
     }
   } finally {
     const key = prKeyOf(repo, number);
@@ -843,7 +863,8 @@ export function startFixerSupervision(): void {
       cleanupAgentWorkdir(row.workdir);
       continue;
     }
-    if (!pr || !existsSync(row.workdir)) {
+    // a one-shot prompt run has no loop to resume, and must never fall through to the merging fixer
+    if (!pr || row.kind === "prompt" || !existsSync(row.workdir)) {
       setAgentStateStmt.run("died", row.repo, row.number);
       finishRun(row.repo, row.number, "died", null);
       continue;
@@ -855,7 +876,7 @@ export function startFixerSupervision(): void {
       ? superviseCustom(row.repo, row.number, row.agent_id, row.workdir, row.log_path, pr.base_ref, pr.head_ref, "", control, true)
       : row.kind === "autofix"
         ? superviseAutofix(row.repo, row.number, row.workdir, row.log_path, pr.base_ref, pr.head_ref, control, true)
-        : superviseFixer(row.repo, row.number, row.workdir, row.log_path, pr.base_ref, pr.head_ref, "", control, true);
+        : superviseFixer(row.repo, row.number, row.workdir, row.log_path, pr.base_ref, pr.head_ref, control, true);
     resumed.catch((err) => {
       console.error(`agent resume crashed for ${key}:`, err);
       setAgentStateStmt.run("died", row.repo, row.number);
