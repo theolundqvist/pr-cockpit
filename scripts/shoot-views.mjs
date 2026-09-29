@@ -1023,10 +1023,57 @@ const scenarios = [
     interact: async (page) => {
       await page.locator(".run-row").nth(1).click();
       await page.locator(".run-detail-head").waitFor();
+      const activity = page.locator(".turn-activity > summary").first();
+      if (await activity.count()) await activity.click();
       const turn = page.locator(".turn-toggle").first();
       if (await turn.count()) await turn.click();
     },
     verify: async (page) => page.locator(".run-turns").waitFor(),
+  },
+  {
+    name: "detail-agent-transcript",
+    route: `#/pr/${REPO}/110/agents`,
+    description: "Markdown outcomes, compact inspectable activity, and conservative final-answer deduplication.",
+    ready: ".agents-layout .run-row",
+    beforeGoto: async (page) => {
+      await page.route("**/api/agents/runs/detail?*", async (route) => {
+        const response = await route.fetch();
+        const detail = await response.json();
+        const answer = "**Change:** Preserve readable answers and complete tool inputs.\n\n- Render **safe Markdown** and `inline code`.\n- Keep errors and raw logs available.";
+        const command = 'bun test server/http.test.ts --test-name-pattern "keeps meaningful output and errors while suppressing only the repeated final answer"';
+        detail.turns = [
+          { kind: "text", text: "I’ll inspect the transcript and verify the result." },
+          ...Array.from({ length: 6 }, (_, index) => ({ kind: "tool", toolName: "Read", toolInput: { file_path: `ui/src/lib/transcript-${index}.js`, offset: index * 20 } })),
+          { kind: "tool", toolName: "Bash", toolInput: { command, description: "Verify transcript rendering", timeout: 120000 } },
+          { kind: "text", text: answer },
+          { kind: "result", text: answer, isError: false },
+          { kind: "result", text: "Additional output: the verification report is available.", isError: false },
+          { kind: "text", text: "Repeated error details must remain visible." },
+          { kind: "result", text: "Repeated error details must remain visible.", isError: true },
+        ];
+        detail.rawLog = JSON.stringify(detail.turns);
+        await route.fulfill({ response, json: detail });
+      });
+    },
+    interact: async (page) => {
+      await page.locator(".run-row").nth(1).click();
+      await page.locator(".turn-activity").waitFor();
+    },
+    verify: async (page) => {
+      if (await page.locator(".run-turns strong").filter({ hasText: "Change:" }).count() !== 1) throw new Error("The final answer is duplicated");
+      await page.locator(".turn-result").getByText("Additional output: the verification report is available.", { exact: true }).waitFor();
+      await page.locator(".turn-result.err").getByText("Repeated error details must remain visible.", { exact: true }).waitFor();
+      const activity = page.locator(".turn-activity");
+      if (await activity.evaluate((node) => node.open)) throw new Error("Tool activity is not compact by default");
+      await activity.locator("summary").click();
+      const shell = activity.locator(".turn-tool").last();
+      await shell.locator("button").click();
+      const input = JSON.parse(await shell.locator("pre").textContent());
+      if (!input.command.endsWith('only the repeated final answer"') || input.timeout !== 120000) throw new Error("Full tool input was lost");
+      await page.getByRole("button", { name: "raw log", exact: true }).click();
+      if (!(await page.locator(".am-log").textContent()).includes('"isError":true')) throw new Error("Raw error log was lost");
+      await page.getByRole("button", { name: "hide raw log", exact: true }).click();
+    },
   },
   {
     ...detail("detail-agent-prompt", 101, "Agent prompt dialog with a deterministic task instruction."),
