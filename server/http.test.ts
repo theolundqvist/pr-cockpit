@@ -1324,6 +1324,56 @@ describe("agent PR summary", () => {
 });
 
 describe("PR detail refresh", () => {
+  test("PR detail and preloads show replacement checks without losing run history", async () => {
+    const repo = "cockpit-test/replaced-checks";
+    const number = 987654405;
+    const row = trackedPrRow({ repo, number, fetchedAt: new Date().toISOString() });
+    const detail = JSON.parse(row.detail_json);
+    const check = (run: number, job: number, conclusion: string, workflow = 1) => ({
+      __typename: "CheckRun", databaseId: job, name: "gate", status: "COMPLETED", conclusion,
+      detailsUrl: null, startedAt: null, completedAt: null, isRequired: true,
+      checkSuite: { workflowRun: { databaseId: run, workflow: { databaseId: workflow, name: "CI" } } },
+    });
+    const handler = buildFetchHandler(4820);
+    try {
+      for (const [replacement, independent, expected, hasNextPage = false] of [
+        ["SUCCESS", "SKIPPED", "SUCCESS"],
+        ["SUCCESS", "FAILURE", "FAILURE"],
+        [null, "SUCCESS", "PENDING"],
+        [null, "FAILURE", "PENDING"],
+        [null, "CANCELLED", "PENDING"],
+        ["CANCELLED", "SUCCESS", "FAILURE"],
+        ["SUCCESS", "SKIPPED", "PENDING", true],
+        ["SUCCESS", "SKIPPED", "PENDING", "legacy"],
+      ] as const) {
+        const nodes = [
+          { ...check(20, 200, replacement ?? ""), conclusion: replacement, status: replacement ? "COMPLETED" : "IN_PROGRESS" },
+          check(10, 100, "CANCELLED"),
+          check(20, 190, "FAILURE"),
+          check(15, 150, independent, 2),
+        ];
+        if (hasNextPage === "legacy") {
+          nodes.push(...Array.from({ length: 96 }, (_, index) => check(10, index, "CANCELLED")));
+        }
+        detail.lastCommit = { nodes: [{ commit: { statusCheckRollup: {
+          state: "FAILURE", contexts: { nodes, pageInfo: hasNextPage === "legacy" ? undefined : { hasNextPage, endCursor: null } },
+        } } }] };
+        upsertPr({ ...row, detail_json: JSON.stringify(detail) });
+        const direct = await (await handler(new Request(`http://127.0.0.1:4820/api/pr/${repo}/${number}?prefetch=1`))).json() as PrDetail;
+        const bulk = await (await handler(new Request(`http://127.0.0.1:4820/api/pr-details?keys=${encodeURIComponent(`${repo}#${number}`)}`))).json() as { details: Record<string, PrDetail> };
+        for (const response of [direct, bulk.details[`${repo}#${number}`]]) {
+          const rollup = response!.lastCommit.nodes[0]!.commit.statusCheckRollup!;
+          expect(rollup.state).toBe(expected);
+          expect(rollup.contexts.nodes.map((node) => node.__typename === "CheckRun" ? node.databaseId : null)).toEqual([200, 150]);
+          expect(rollup.contexts.pageInfo?.hasNextPage).toBe(Boolean(hasNextPage));
+        }
+        expect(JSON.parse(getPr(repo, number)!.detail_json).lastCommit.nodes[0].commit.statusCheckRollup.contexts.nodes).toEqual(nodes);
+      }
+    } finally {
+      db.query("DELETE FROM prs WHERE repo = ? AND number = ?").run(repo, number);
+    }
+  });
+
   test("a stale tracked read paints the stored snapshot, and ?fresh=1 joins its refresh", async () => {
     const repo = "cockpit-test/stale-tracked";
     const number = 987654326;

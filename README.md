@@ -43,7 +43,7 @@ Press <kbd>⌥⌘K</kbd> on macOS or <kbd>Super+Alt+K</kbd> on Linux X11 to sear
 
 ### Read the change, then follow the details
 
-Diffs, threads, checks, and file history live in the same review workspace. Press <kbd>x</kbd> to fold test files when you want to see the implementation first; press it again to bring the tests back.
+Diffs, threads, checks, and file history live in the same review workspace. The PR check summary uses the latest workflow run and job attempt; earlier runs remain in Actions history. Press <kbd>x</kbd> to fold test files when you want to see the implementation first; press it again to bring the tests back.
 
 ![Folding five regression-test diffs in graphql/graphql-js#4692 to isolate the one-line implementation change](docs/screenshots/landing-hide-tests.gif)
 

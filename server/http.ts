@@ -700,8 +700,39 @@ function withBaseBranchPr(
   compactReviewHunks(detail);
   const basePr = getPrByBranch(repoName, detail.baseRefName);
   const headRef = detail.headRefName;
+  const lastCommit = detail.lastCommit && {
+    ...detail.lastCommit,
+    nodes: detail.lastCommit.nodes.map((node) => {
+      const rollup = node.commit.statusCheckRollup;
+      if (!rollup?.contexts.nodes.length) return node;
+      const checks = currentChecks(rollup.contexts.nodes);
+      const states = checks.map(checkState);
+      const complete = rollup.contexts.pageInfo
+        ? !rollup.contexts.pageInfo.hasNextPage
+        : rollup.contexts.nodes.length < 100;
+      const state = states.includes("running") ? "PENDING"
+        : states.some((state) => state === "failed" || state === "cancelled") ? "FAILURE"
+        : !complete ? "PENDING" : "SUCCESS";
+      return {
+        ...node,
+        commit: {
+          ...node.commit,
+          statusCheckRollup: {
+            ...rollup,
+            state,
+            contexts: {
+              ...rollup.contexts,
+              pageInfo: rollup.contexts.pageInfo ?? { hasNextPage: !complete, endCursor: null },
+              nodes: checks,
+            },
+          },
+        },
+      };
+    }),
+  };
   return {
     ...detail,
+    lastCommit,
     reviewerScores: currentReviewerScores(detail),
     baseBranchPrNumber: basePr && basePr.number !== num ? basePr.number : null,
     worktreePath: headRef ? worktreePathFor(repoName, headRef) : null,
