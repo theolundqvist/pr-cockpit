@@ -41,6 +41,10 @@
   let pendingReviewsEnabled = $state(false);
   let descriptionUnreadDots = $state(false);
   let whiteboardEnabled = $state(false);
+  let safeMergeApprovalEnabled = $state(false);
+  // Approval consent belongs to the source Cockpit, so a save forwards it only when this toggle changed.
+  let savedSafeMergeApproval = false;
+  let groupDragEnabled = $state(false);
   let testPathRegex = $state("");
   let diffLayout = $state("split");
   let forceMergeRepos = $state([]);
@@ -143,6 +147,9 @@
     pendingReviewsEnabled = s.pending_reviews_enabled === true;
     descriptionUnreadDots = s.description_unread_dots === true;
     whiteboardEnabled = s.whiteboard_enabled === true;
+    safeMergeApprovalEnabled = s.safe_merge_approval_enabled === true;
+    savedSafeMergeApproval = safeMergeApprovalEnabled;
+    groupDragEnabled = s.group_drag_enabled === true;
     diffLayout = s.diff_layout;
     forceMergeRepos = s.force_merge_repos.split(",").map((r) => r.trim()).filter(Boolean);
     agents = s.agents.map((a) => ({ ...a, promptText: a.prompt_template || a.prompt_default }));
@@ -256,6 +263,8 @@
         pending_reviews_enabled: pendingReviewsEnabled,
         description_unread_dots: descriptionUnreadDots,
         whiteboard_enabled: whiteboardEnabled,
+        ...(safeMergeApprovalEnabled !== savedSafeMergeApproval ? { safe_merge_approval_enabled: safeMergeApprovalEnabled } : {}),
+        group_drag_enabled: groupDragEnabled,
         test_path_regex: testPathRegex.trim() === BUILTIN_TEST_PATH.source.trim() ? "" : testPathRegex.trim(),
         diff_layout: diffLayout,
         force_merge_repos: forceMergeRepos.filter((repo) => configuredRepos.includes(repo)).join(","),
@@ -442,6 +451,22 @@
             <span class="check-text">
               <span class="check-label">Mark changed descriptions</span>
               <span class="hint">A blue dot beside a PR whose description changed since you last read it.</span>
+            </span>
+          </label>
+
+          <label class="check-field settings-option field-wide">
+            <input class="check" type="checkbox" bind:checked={safeMergeApprovalEnabled} />
+            <span class="check-text">
+              <span class="check-label">Approve PRs for safe merge</span>
+              <span class="hint">Adds Approve for safe merge to a PR's menu. Agents may then fix and merge it once checks pass, until you revoke it. Turning this off clears every approval.</span>
+            </span>
+          </label>
+
+          <label class="check-field settings-option field-wide">
+            <input class="check" type="checkbox" bind:checked={groupDragEnabled} />
+            <span class="check-text">
+              <span class="check-label">Drag PRs between groups</span>
+              <span class="hint">Dropping a PR on another group changes its title type or scope, its manual group, its pin, or its approval.</span>
             </span>
           </label>
         </div>

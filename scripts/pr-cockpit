@@ -427,20 +427,23 @@ switch (operation) {
     for (const pr of prs) console.log(`- #${pr.number} [${pr.state}] ${pr.title} — @${pr.author} — ${pr.updatedAt}`);
     break;
   case "pr-fingerprint": {
+    // Merge consent, like PR state, wakes every scope so a revocation is never slept through.
+    const approvedForSafeMerge = input.approvedForSafeMerge ?? false;
     if (argument === "ci") {
-      console.log(stable({ state: input.state ?? null, ci: input.ci ?? null }));
+      console.log(stable({ state: input.state ?? null, approvedForSafeMerge, ci: input.ci ?? null }));
       break;
     }
     if (argument === "comments") {
       console.log(stable({
         state: input.state ?? null,
+        approvedForSafeMerge,
         openComments: input.openComments ?? [],
         openCommentsComplete: input.openCommentsComplete ?? false,
       }));
       break;
     }
     if (argument === "conflicts") {
-      console.log(stable({ state: input.state ?? null, merge: input.merge ?? null }));
+      console.log(stable({ state: input.state ?? null, approvedForSafeMerge, merge: input.merge ?? null }));
       break;
     }
     delete input.snapshot;

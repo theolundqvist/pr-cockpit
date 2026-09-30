@@ -55,6 +55,10 @@ Enable **Pending reviews** in **Settings → Workspace** to save inline comments
 
 Enable **Mark changed descriptions** in **Settings → Workspace** to show a small blue dot at the left of a queue row when the PR description differs from the one you last read. It is off by default. A description counts as read while it is on screen in the Conversation tab of a foreground window; PRs you have never read stay unmarked, and a description reverted to the version you read clears the dot.
 
+Enable **Approve PRs for safe merge** in **Settings → Workspace**, then right-click a PR and choose **Approve for safe merge**. It appears above ordinary pins, below failed merges, without launching an agent. Approval covers that PR through fixes and base updates until revoked; closing it or disabling the feature clears approval. Ordinary pins remain bookmarks.
+
+Enable **Drag PRs between groups** in **Settings → Workspace** to move a PR onto another section or row. Type grouping changes the title's conventional-commit type; feature grouping changes its scope; manual grouping changes only your assignment. Title changes are saved to GitHub without changing the summary, draft prefix, or breaking-change marker. Status sections remain read-only. Dropping into **Approved for safe merge** grants approval; dropping out revokes it.
+
 Desktop notifications are off by default. In **Settings → Notifications**, choose events and combine rules for human or bot authors, comment text, repositories, and review requests. GitHub bot accounts and configured review bots count as bots; unknown authors match neither human nor bot filters.
 
 <details>
@@ -115,6 +119,8 @@ The CLI also supports comments, reviews, thread resolution, edits, and merges th
 Built-in agents launch from Cockpit's cached PR brief without spending GitHub API quota, and clone through Git rather than GitHub's API. They use `pr-cockpit` for PR reads and mutations; remote API operations still need available quota. With OMP, Opus uses the `opus` alias and Sonnet uses `anthropic/claude-sonnet-5-5`.
 
 Arming auto-merge approves the feature and delegates safely landing it to the merger. It follows your global and repository instructions, addressing comments, conflicts, and CI failures caused by the PR; known unrelated failures need no rerun or post-merge proof. OMP loads global instructions automatically, and the agent reads repository instructions after cloning. A direct prompt can also authorize merging explicitly. In either case, Cockpit refreshes the PR and merges only the head the agent checked. Bypassing required GitHub checks or approvals still needs the repository's force-merge opt-in; conflicts, unresolved threads, and changes-requested reviews remain blockers.
+
+Safe-merge approval is also visible in CLI output and as `approvedForSafeMerge` in `--json`; `listen` wakes when it changes. Agents must re-read approval immediately before merging and still satisfy the safety checks above. Approval is granted or revoked in the app, never by an agent approving itself.
 
 The Agents tab renders Markdown answers, groups tool activity into expandable details, and shows an identical final-answer echo only once. Full tool inputs, errors, and raw logs remain available.
 

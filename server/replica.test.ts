@@ -209,3 +209,132 @@ test("a replica mirrors the source's failed merges without touching its local mu
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a replica mirrors its source's merge-approval flag and rows, and toggles only through the source", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pr-cockpit-replica-approvals-"));
+  const sourcePort = reservePort();
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "ssh"), "#!/usr/bin/env bash\nwhile kill -0 \"$PPID\" 2>/dev/null; do sleep 0.1; done\n");
+  chmodSync(join(bin, "ssh"), 0o755);
+  const scenario = `
+    const db = await import(${JSON.stringify(new URL("./db.ts", import.meta.url).href)});
+    const { replicaStatus, startReplicaSync } = await import(${JSON.stringify(new URL("./replica.ts", import.meta.url).href)});
+    const { buildFetchHandler } = await import(${JSON.stringify(new URL("./http.ts", import.meta.url).href)});
+    const repo = "fixture/cockpit";
+    db.setSetting("replica_ssh_host", "fixture-source");
+    db.db.query(\`INSERT INTO prs (
+      repo, number, state, is_draft, title, author, base_ref, head_ref, head_sha,
+      updated_at, additions, deletions, changed_files, commit_count, mergeable,
+      ci_status, unresolved_count, needs_me_rank, detail_json, fetched_at
+    ) VALUES (?, 301, 'OPEN', 0, 'open PR', 'author', 'main', 'feature', ?, ?, 0, 0, 0, 1,
+      'MERGEABLE', 'SUCCESS', 0, 0, ?, ?)\`).run(
+      repo, "a".repeat(40), "2026-09-21T20:00:00Z",
+      JSON.stringify({ state: "OPEN", body: "", comments: { nodes: [] } }), "2026-09-21T20:00:00Z",
+    );
+    const { pr_merge_approvals: _, ...legacyTables } = db.readInboxReplica();
+    const source = { legacy: true, confirms: true, enabled: false, approvals: [], settingsBodies: [] };
+    const server = Bun.serve({
+      port: ${sourcePort},
+      async fetch(request) {
+        const path = new URL(request.url).pathname;
+        if (path === "/healthz") return new Response("ok");
+        if (path === "/api/settings") {
+          const body = await request.json();
+          source.settingsBodies.push(body);
+          // A source predating the flag ignores it and answers with its other settings.
+          if (!source.confirms) return Response.json({ theme: "system" });
+          source.enabled = body.safe_merge_approval_enabled;
+          if (!source.enabled) source.approvals = [];
+          return Response.json({ safe_merge_approval_enabled: source.enabled });
+        }
+        if (source.legacy) return Response.json({ revision: '"legacy"', lastPollAt: null, viewerLogin: null, tables: legacyTables });
+        return Response.json({
+          revision: '"' + source.enabled + source.approvals.length + '"',
+          lastPollAt: null,
+          viewerLogin: null,
+          safeMergeApprovalEnabled: source.enabled,
+          tables: { ...legacyTables, pr_merge_approvals: source.approvals },
+        });
+      },
+    });
+    const handler = buildFetchHandler(4820);
+    const observe = async () => {
+      const { prs } = await (await handler(new Request("http://127.0.0.1:4820/api/inbox"))).json();
+      const settings = await (await handler(new Request("http://127.0.0.1:4820/api/settings"))).json();
+      return {
+        approved: prs.find((pr) => pr.number === 301)?.approvedForSafeMerge,
+        flag: settings.safe_merge_approval_enabled,
+        theme: settings.theme,
+        lastError: replicaStatus().lastError,
+      };
+    };
+    const sync = async () => {
+      (await startReplicaSync())();
+      return observe();
+    };
+    const put = async (body) => {
+      const response = await handler(new Request("http://127.0.0.1:4820/api/settings", { method: "PUT", body: JSON.stringify(body) }));
+      return { status: response.status, ...(await observe()) };
+    };
+    db.setSetting("safe_merge_approval_enabled", "true");
+    const legacySource = await sync();
+    source.legacy = false;
+    source.enabled = true;
+    source.approvals = [{ repo, number: 301, approved_at: "2026-09-21T20:01:00Z" }];
+    const approvedSource = await sync();
+    source.confirms = false;
+    const unconfirmedDisable = await put({ safe_merge_approval_enabled: false, theme: "light" });
+    source.confirms = true;
+    const confirmedDisable = await put({ safe_merge_approval_enabled: false, theme: "light" });
+    const afterDisableSync = await sync();
+    // The source re-enabled and gained consent before this replica synced; an explicit disable still reaches it.
+    source.enabled = true;
+    source.approvals = [{ repo, number: 301, approved_at: "2026-09-21T20:02:00Z" }];
+    const staleMirrorDisable = await put({ safe_merge_approval_enabled: false });
+    const sourceAfterStaleDisable = { enabled: source.enabled, approvals: source.approvals.length };
+    const reenabled = await put({ safe_merge_approval_enabled: true });
+    server.stop(true);
+    console.log(JSON.stringify({ legacySource, approvedSource, unconfirmedDisable, confirmedDisable, afterDisableSync, staleMirrorDisable, sourceAfterStaleDisable, reenabled, settingsBodies: source.settingsBodies }));
+    process.exit(0);
+  `;
+
+  try {
+    const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], {
+      env: {
+        ...Bun.env,
+        PATH: `${bin}:${Bun.env.PATH}`,
+        COCKPIT_DATA_DIR: join(root, "replica"),
+        COCKPIT_MOCK: "",
+        COCKPIT_REPLICA_SSH_HOST: "fixture-source",
+        COCKPIT_REPLICA_LOCAL_PORT: String(sourcePort),
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(stderr);
+    expect(JSON.parse(stdout.trim().split("\n").at(-1)!)).toEqual({
+      legacySource: { approved: false, flag: false, theme: "system", lastError: null },
+      approvedSource: { approved: true, flag: true, theme: "system", lastError: null },
+      unconfirmedDisable: { status: 502, approved: true, flag: true, theme: "system", lastError: null },
+      confirmedDisable: { status: 200, approved: false, flag: false, theme: "light", lastError: null },
+      afterDisableSync: { approved: false, flag: false, theme: "light", lastError: null },
+      staleMirrorDisable: { status: 200, approved: false, flag: false, theme: "light", lastError: null },
+      sourceAfterStaleDisable: { enabled: false, approvals: 0 },
+      reenabled: { status: 200, approved: false, flag: true, theme: "light", lastError: null },
+      settingsBodies: [
+        { safe_merge_approval_enabled: false },
+        { safe_merge_approval_enabled: false },
+        { safe_merge_approval_enabled: false },
+        { safe_merge_approval_enabled: true },
+      ],
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

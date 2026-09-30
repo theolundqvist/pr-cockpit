@@ -1,15 +1,17 @@
 <script module>
   // survives the inbox unmounting into a PR view: esc back restores the cursor to that PR
   let restoreKey = null;
+  // Title changes from group drops stay in the edit-title queue; tracking outlives a trip into a PR view.
+  const retitles = $state({});
 </script>
 
 <script>
-  import { categoryForPr, DRAFT_PREFIX, isDraftPr, orderQueueUnits, PR_TYPES, TYPE_TITLES } from "../../../shared/prGrouping.ts";
+  import { categoryForPr, DRAFT_PREFIX, isDraftPr, orderQueueUnits, planGroupDrop, PR_TYPES, TYPE_TITLES } from "../../../shared/prGrouping.ts";
   import { assignments, assignPr, syncAssignments, onAssignmentStorage } from "./prAssignments.svelte.js";
   import { isSetAside, putAside } from "./setAside.svelte.js";
   import { lastViewed } from "./lastViewed.svelte.js";
   import { tick, untrack } from "svelte";
-  import { fetchInbox, fetchRecentClosed, fetchAllPrs, fetchPrDetails, setArchived, saveSettings, reorderPr, fetchSettings, fetchRelayStatus, fetchRelayCoverage, autofixAgent, customAgent } from "./api.js";
+  import { fetchInbox, fetchRecentClosed, fetchAllPrs, fetchPrDetails, setArchived, saveSettings, reorderPr, setMergeApproval, enqueueMutation, fetchMutations, retryMutation, discardMutation, fetchSettings, fetchRelayStatus, fetchRelayCoverage, autofixAgent, customAgent } from "./api.js";
   import { cacheDetail, cachedHeadSha, cachedView, cacheView } from "./detailCache.js";
   import { preloadPr } from "./preload.js";
   import { filterPrs, countMatches, wantsHistory } from "./prFilter.js";
@@ -31,6 +33,8 @@
   import CurrentBranchBadge from "./CurrentBranchBadge.svelte";
   import Kbd from "./Kbd.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
+  import MutationBadge from "./MutationBadge.svelte";
+  import { presentMutationError } from "./mutationError.js";
   import MultiSelectDropdown from "./MultiSelectDropdown.svelte";
 
   let { active = true, refreshRevision = 0, pollCompletedAt = null, onFindPr = () => {} } = $props();
@@ -609,9 +613,11 @@
     return () => window.removeEventListener("storage", onAssignmentStorage);
   });
 
-  // A failed merge outranks pinning and grouping; stacks never pull a failed PR under a healthy ancestor.
+  // A failed merge outranks approval, pinning, and grouping; stacks never pull a failed PR under a healthy ancestor.
+  // Approval places only its own PR, never the stack beneath it.
   function groupId(pr) {
     if (pr.mergeFailed === true) return "merge-failed";
+    if (isApproved(pr)) return "approved";
     if (pr.rank != null) return "pinned";
     const root = topUnit(pr);
     return prefs.prGrouping.mode === "status" ? classify(root, viewerLogin).group
@@ -628,11 +634,13 @@
 
   let groups = $derived.by(() => {
     const failed = [];
+    const approved = [];
     const pinned = [];
     const buckets = new Map();
     for (const pr of filteredPrs) {
       const id = groupId(pr);
       if (id === "merge-failed") failed.push(pr);
+      else if (id === "approved") approved.push(pr);
       else if (id === "pinned") pinned.push(pr);
       else {
         if (!buckets.has(id)) buckets.set(id, []);
@@ -647,8 +655,11 @@
         { id: "other", title: mode === "manual" ? "Ungrouped" : "Other" }];
     // A stack sorts by its root row; feature groups also order by status, then type.
     const statusRank = mode === "feature" ? (pr) => GROUP_ORDER.indexOf(classify(pr, viewerLogin).group) : undefined;
-    const statusGroups = categories.filter(({ id }) => buckets.has(id)).map(({ id, title }) => {
-      const { units, unrankedCount, items } = orderGroup(buckets.get(id), (units) => orderQueueUnits(units, statusRank));
+    // An active drag also shows the empty sections it could land in; feature mode offers only scopes that
+    // already exist, plus Other.
+    const shown = (id, rows) => rows.length > 0 || (revealKey !== null && revealKey === dragKey && dropPlan(dragKey, id) !== null);
+    const statusGroups = categories.filter(({ id }) => shown(id, buckets.get(id) ?? [])).map(({ id, title }) => {
+      const { units, unrankedCount, items } = orderGroup(buckets.get(id) ?? [], (units) => orderQueueUnits(units, statusRank));
       return { id, title, units, unrankedCount, items };
     });
     const leading = [];
@@ -656,7 +667,11 @@
       const { units, unrankedCount, items } = orderGroup(failed, (units) => orderQueueUnits(units, statusRank));
       leading.push({ id: "merge-failed", title: "FAILED TO MERGE", units, unrankedCount, items });
     }
-    if (pinned.length) {
+    if (shown("approved", approved)) {
+      const { units, unrankedCount, items } = orderGroup(approved, (units) => orderQueueUnits(units, statusRank));
+      leading.push({ id: "approved", title: "Approved for safe merge", units, unrankedCount, items });
+    }
+    if (shown("pinned", pinned)) {
       const { units, unrankedCount, items } = orderGroup(pinned);
       leading.push({ id: "pinned", title: "Pinned", units, unrankedCount, items });
     }
@@ -686,6 +701,9 @@
   });
 
   let dragKey = $state(null);
+  // Chromium cancels a native drag whose source moves during dragstart, so empty destinations
+  // appear only once the drag is under way.
+  let revealKey = $state(null);
   let dropHint = $state(null);
   let rankBusy = new Set();
 
@@ -712,51 +730,175 @@
     }
   }
 
+  function nextPinRank() {
+    return Math.max(-1, ...prs.map((item) => item.rank).filter((rank) => rank != null)) + 1;
+  }
+
   function togglePinned(pr) {
-    if (pr.rank != null) {
-      applyRank(pr, null);
-      return;
+    applyRank(pr, pr.rank != null ? null : nextPinRank());
+  }
+
+  function isApproved(pr) {
+    return prefs.safeMergeApprovalEnabled && pr.approvedForSafeMerge === true;
+  }
+
+  // Tracked drafts carry state "draft"; the server still rejects anything GitHub no longer has open.
+  function approvable(pr) {
+    return pr.state === "OPEN" || pr.state === "draft";
+  }
+
+  // Section moves change only authoritative state: nothing is drawn in the destination until the
+  // server confirms it, and a queued rename reaches the new group only once GitHub accepts the title.
+  async function applyGroupMove(pr, plan, position = null) {
+    const key = prKey(pr);
+    if (rankBusy.has(key)) return;
+    rankBusy.add(key);
+    try {
+      // Revocation lands first: if it fails, nothing else about the PR changes while consent stays live.
+      if (plan.approve === false) await setMergeApproval(pr.repo, pr.number, false);
+      if (plan.title) await queueRetitle(pr, plan.title);
+      if (plan.assignment !== undefined && !assignPr(prKey(topUnit(pr)), plan.assignment)) return;
+      if (plan.approve === true) await setMergeApproval(pr.repo, pr.number, true);
+      if (plan.pin !== undefined) await reorderPr(pr.repo, pr.number, plan.pin ? (position ?? nextPinRank()) : null);
+    } catch (error) {
+      showFlash(`Couldn't update #${pr.number}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      restoreKey = key;
+      await loadInbox();
+      rankBusy.delete(key);
     }
-    const lastPosition = Math.max(-1, ...prs.map((item) => item.rank).filter((rank) => rank != null));
-    applyRank(pr, lastPosition + 1);
+  }
+
+  async function queueRetitle(pr, title) {
+    if ((await fetchMutations(pr.repo, pr.number)).some((mutation) => mutation.kind === "edit-title")) {
+      throw new Error("a title change is already queued");
+    }
+    const { id } = await enqueueMutation(pr.repo, pr.number, { kind: "edit-title", title });
+    retitles[prKey(pr)] = { id, repo: pr.repo, number: pr.number, title, state: "pending", error: null };
+  }
+
+  let retitlePolling = false;
+  async function pollRetitles() {
+    if (retitlePolling) return;
+    retitlePolling = true;
+    let landed = false;
+    try {
+      for (const [key, retitle] of Object.entries(retitles)) {
+        if (retitle.state === "failed") continue;
+        // An unreachable queue is asked again next tick; only a listed absence means the rename landed.
+        const rows = await fetchMutations(retitle.repo, retitle.number).catch(() => null);
+        if (!rows || retitles[key]?.id !== retitle.id) continue;
+        const row = rows.find((mutation) => mutation.id === retitle.id);
+        if (row === undefined) {
+          delete retitles[key];
+          landed = true;
+        } else if (row.state === "failed") retitles[key] = { ...retitle, state: "failed", error: presentMutationError("rename", row.error).message };
+      }
+    } finally {
+      retitlePolling = false;
+    }
+    if (landed) await loadInbox();
+  }
+
+  $effect(() => {
+    if (!Object.values(retitles).some((retitle) => retitle.state !== "failed")) return;
+    const timer = setInterval(pollRetitles, 2000);
+    return () => clearInterval(timer);
+  });
+
+  async function retryRetitle(key) {
+    const retitle = retitles[key];
+    try {
+      await retryMutation(retitle.id);
+      retitles[key] = { ...retitle, state: "pending", error: null };
+    } catch (error) {
+      showFlash(`Couldn't retry renaming #${retitle.number}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  async function discardRetitle(key) {
+    const retitle = retitles[key];
+    try {
+      await discardMutation(retitle.id);
+      delete retitles[key];
+    } catch (error) {
+      showFlash(`Couldn't discard renaming #${retitle.number}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    await loadInbox();
+  }
+
+  // Cross-section drops exist only while group dragging is on, for the dragged row's own section.
+  function dropPlan(key, target) {
+    const pr = prefs.groupDragEnabled && key ? prs.find((p) => prKey(p) === key) : null;
+    if (!pr) return null;
+    const plan = planGroupDrop({
+      from: groupId(pr),
+      to: target,
+      title: pr.title,
+      mode: prefs.prGrouping.mode,
+      pinned: pr.rank != null,
+      approved: isApproved(pr),
+      approvalEnabled: prefs.safeMergeApprovalEnabled,
+    });
+    if (!plan || (plan.approve && !approvable(pr)) || (plan.title && retitles[key])) return null;
+    return plan;
+  }
+
+  // Drag feedback names every consequence, above all a GitHub rename, before the drop commits it.
+  function describeDrop(plan) {
+    const parts = [];
+    if (plan.approve !== undefined) parts.push(plan.approve ? "Approve for safe merge" : "Revoke safe-merge approval");
+    if (plan.pin !== undefined) parts.push(plan.pin ? "Pin" : "Unpin");
+    if (plan.assignment !== undefined) parts.push(plan.assignment === null ? "Ungroup" : "Assign group");
+    if (plan.title) parts.push(`Rename on GitHub to “${plan.title}”`);
+    return parts.join(" · ");
   }
 
   function onDragStart(e, pr) {
-    dragKey = prKey(pr);
+    const key = prKey(pr);
+    dragKey = key;
+    revealKey = null;
+    setTimeout(() => {
+      if (dragKey === key) revealKey = key;
+    });
     e.dataTransfer.effectAllowed = "move";
     e.dataTransfer.setData("text/plain", dragKey);
   }
 
   function onDragEnd() {
     dragKey = null;
+    revealKey = null;
     dropHint = null;
   }
 
   function onDragOverRow(e, pr) {
     if (!dragKey || prKey(pr) === dragKey) return;
+    const target = groupId(pr);
+    // Approved rows have no order of their own, and ranking one there would silently pin it.
+    const plan = target === dragGroupId ? null : dropPlan(dragKey, target);
+    if (target === dragGroupId ? target === "approved" : prefs.groupDragEnabled && !plan) return;
     e.preventDefault();
     const r = e.currentTarget.getBoundingClientRect();
     const before = e.clientY - r.top < r.height / 2;
-    dropHint = { key: prKey(pr), before };
+    dropHint = { key: prKey(pr), before, target, plan };
   }
 
-  function dropAt(dragged, group, insertIndex) {
+  function rankAt(group, dragged, insertIndex) {
     const rest = group.units.filter((p) => prKey(p) !== prKey(dragged));
     const u = rest.filter((p) => p.rank == null).length;
-    if (insertIndex < u) {
-      applyRank(dragged, null);
-      return;
-    }
+    if (insertIndex < u) return null;
     const ranked = rest.filter((p) => p.rank != null);
     const k = insertIndex - u;
     const L = ranked[k - 1];
     const R = ranked[k];
-    let pos;
-    if (L && R) pos = (L.rank + R.rank) / 2;
-    else if (R) pos = R.rank - 1;
-    else if (L) pos = L.rank + 1;
-    else pos = 0;
-    applyRank(dragged, pos);
+    if (L && R) return (L.rank + R.rank) / 2;
+    if (R) return R.rank - 1;
+    if (L) return L.rank + 1;
+    return 0;
+  }
+
+  function dropAt(dragged, group, insertIndex) {
+    applyRank(dragged, rankAt(group, dragged, insertIndex));
   }
 
   function onDropRow(e, overPr) {
@@ -770,12 +912,34 @@
     const group = groups.find((g) => g.id === groupId(overPr));
     if (!group) return;
     const dragged = group.units.find((p) => prKey(p) === draggedKey);
-    if (!dragged) return;
     const overUnit = topUnit(overPr);
     const rest = group.units.filter((p) => prKey(p) !== draggedKey);
     const j = rest.findIndex((p) => prKey(p) === prKey(overUnit));
-    if (j < 0) return;
+    if (!dragged) {
+      const plan = dropPlan(draggedKey, group.id);
+      const pr = prs.find((p) => prKey(p) === draggedKey);
+      if (plan && pr) applyGroupMove(pr, plan, plan.pin && j >= 0 ? rankAt(group, pr, before ? j : j + 1) : null);
+      return;
+    }
+    if (j < 0 || group.id === "approved") return;
     dropAt(dragged, group, before ? j : j + 1);
+  }
+
+  function onDragOverGroup(e, group) {
+    const plan = dropPlan(dragKey, group.id);
+    if (!plan) return;
+    e.preventDefault();
+    dropHint = { key: "header:" + group.id, target: group.id, plan };
+  }
+
+  function onDropGroup(e, group) {
+    e.preventDefault();
+    const draggedKey = dragKey;
+    dragKey = null;
+    dropHint = null;
+    const plan = dropPlan(draggedKey, group.id);
+    const pr = prs.find((p) => prKey(p) === draggedKey);
+    if (plan && pr) applyGroupMove(pr, plan);
   }
 
   function onDropDivider(e, group) {
@@ -1263,10 +1427,18 @@
         {@render rowMedia(pr)}
         <span class="row-age mono">{relativeTime(pr.updatedAt)}</span>
       </a>
+      {#if retitles[prKey(pr)]}
+        {@const retitle = retitles[prKey(pr)]}
+        <div class="row-retitle" role="status">
+          <span class="row-retitle-title">Renaming to “{retitle.title}”</span>
+          <MutationBadge state={retitle.state} pendingLabel="SAVING…" onRetry={() => retryRetitle(prKey(pr))} onDiscard={() => discardRetitle(prKey(pr))} />
+          {#if retitle.error}<span class="row-retitle-error">{retitle.error}</span>{/if}
+        </div>
+      {/if}
     {/snippet}
 
     {#snippet groupBody(group)}
-      {#if dragGroupId === group.id && group.unrankedCount === 0}
+      {#if dragGroupId === group.id && group.unrankedCount === 0 && group.id !== "approved"}
         <div
           class="unrank-zone"
           class:drop-active={dropHint?.key === "unrank:" + group.id}
@@ -1283,7 +1455,7 @@
       {/if}
       {#each group.items as item (item.divider ? group.id + ":div" : prKey(item.pr))}
         {#if item.divider}
-          {#if group.id !== "pinned" && group.id !== "merge-failed"}
+          {#if group.id !== "pinned" && group.id !== "merge-failed" && group.id !== "approved"}
             <div
               class="rank-divider"
               class:drop-active={dropHint?.key === "div:" + group.id}
@@ -1416,8 +1588,15 @@
           {#each groups as group (group.id)}
             {@const groupCount = group.items.filter((item) => item.pr).length}
             <section class="queue-group">
-              <div class="group-label">
+              <div
+                class="group-label"
+                class:drop-active={dropHint?.key === "header:" + group.id}
+                role="presentation"
+                ondragover={(e) => onDragOverGroup(e, group)}
+                ondrop={(e) => onDropGroup(e, group)}
+              >
                 <span>{group.title}</span>
+                {#if dropHint?.plan && dropHint.target === group.id}<span class="drop-preview">{describeDrop(dropHint.plan)}</span>{/if}
                 <span class="group-count">{groupCount}</span>
               </div>
               <div class="group-body">{@render groupBody(group)}</div>
@@ -1517,6 +1696,11 @@
     <button role="menuitem" onclick={() => { openGithub(contextMenu.pr); contextMenu = null; }}>Open on GitHub</button>
     {#if view === "open" && !isArchived(contextMenu.pr) && contextMenu.pr.state === "OPEN"}
       <button role="menuitem" onclick={() => { togglePinned(contextMenu.pr); contextMenu = null; }}>{contextMenu.pr.rank == null ? "Pin" : "Unpin"}</button>
+    {/if}
+    <!-- Revoking consent never waits on grant eligibility: drafts and archived rows can still withdraw it. -->
+    {#if view === "open" && (isApproved(contextMenu.pr) || (prefs.safeMergeApprovalEnabled && !isArchived(contextMenu.pr) && approvable(contextMenu.pr)))}
+      {@const approved = isApproved(contextMenu.pr)}
+      <button role="menuitem" onclick={() => { applyGroupMove(contextMenu.pr, { approve: !approved }); contextMenu = null; }}>{approved ? "Revoke safe-merge approval" : "Approve for safe merge"}</button>
     {/if}
     {#if view === "open"}
       <button role="menuitem" onclick={() => archiveFromMenu(contextMenu.pr)}>{isArchived(contextMenu.pr) ? "Unarchive" : "Archive"}</button>
@@ -1896,6 +2080,30 @@
     border-color: var(--link);
     color: var(--link);
     background: var(--link-bg);
+  }
+  .group-label.drop-active {
+    color: var(--link);
+    background: var(--link-bg);
+  }
+  .drop-preview {
+    min-width: 0;
+    margin: 0 10px 0 auto;
+    overflow: hidden;
+    color: var(--link);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .row-retitle {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 14px 8px;
+    font-size: 11.5px;
+    color: var(--text-dim);
+  }
+  .row-retitle-error {
+    color: var(--fail);
   }
   .row.selected {
     background: var(--panel-raised);

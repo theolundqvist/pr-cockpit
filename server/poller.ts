@@ -7,6 +7,7 @@ import {
   getPr,
   listWebhookRegistrations,
   setAutoMergeArmed,
+  setSafeMergeApproval,
   upsertPr,
   upsertPrIndex,
   type PrRow,
@@ -203,8 +204,12 @@ async function refreshPrNow(
 
   prefetchDetailImages(detail);
 
-  // keyed on the freshly observed state, not the pre-await `previous` snapshot - closed prs can't be re-armed
-  if (detail.state === "MERGED" || detail.state === "CLOSED") setAutoMergeArmed(repo, number, false);
+  // keyed on the freshly observed state, not the pre-await `previous` snapshot - closed prs can't be re-armed,
+  // and a reopened PR needs fresh merge consent
+  if (detail.state === "MERGED" || detail.state === "CLOSED") {
+    setAutoMergeArmed(repo, number, false);
+    setSafeMergeApproval(repo, number, false);
+  }
   invalidatePr(repo, number);
   invalidateInbox();
 

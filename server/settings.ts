@@ -1,10 +1,10 @@
 import { normalizePrGrouping, type PrGrouping } from "../shared/prGrouping.ts";
-import { getSetting, setSetting } from "./db.ts";
+import { clearSafeMergeApprovals, getSetting, setSetting } from "./db.ts";
 import { detectHarness, normalizeHarness, type Harness } from "./harness.ts";
 import { notificationSettingsChanged, storedNotificationSettings } from "./notifications.ts";
 import { defaultNotificationSettings, parseNotificationSettings, type NotificationSettings } from "../shared/notificationRules.ts";
 import desktopShortcuts from "../shared/desktopShortcuts.json";
-import { invalidateSettings } from "./rendererInvalidation.ts";
+import { invalidateInbox, invalidatePr, invalidateSettings } from "./rendererInvalidation.ts";
 
 const POLL_INTERVAL_FLOOR_S = 60;
 const DEFAULT_POLL_INTERVAL_S = 180;
@@ -226,6 +226,10 @@ export function pendingReviewsEnabled(): boolean {
   return getSetting("pending_reviews_enabled") === "true";
 }
 
+export function safeMergeApprovalEnabled(): boolean {
+  return getSetting("safe_merge_approval_enabled") === "true";
+}
+
 function readPrGrouping(): PrGrouping {
   try { return normalizePrGrouping(JSON.parse(getSetting("pr_grouping") ?? "null")); }
   catch { return normalizePrGrouping(null); }
@@ -263,6 +267,8 @@ export interface Settings {
   pending_reviews_enabled: boolean;
   description_unread_dots: boolean;
   whiteboard_enabled: boolean;
+  safe_merge_approval_enabled: boolean;
+  group_drag_enabled: boolean;
   pr_grouping: PrGrouping;
   agent_harness: Harness;
   relay_url: string;
@@ -305,6 +311,8 @@ export function readSettings(): Settings {
     pending_reviews_enabled: pendingReviewsEnabled(),
     description_unread_dots: getSetting("description_unread_dots") === "true",
     whiteboard_enabled: getSetting("whiteboard_enabled") === "true",
+    safe_merge_approval_enabled: safeMergeApprovalEnabled(),
+    group_drag_enabled: getSetting("group_drag_enabled") === "true",
     pr_grouping: readPrGrouping(),
     agent_harness: normalizeHarness(getSetting("agent_harness")),
     relay_url: relayConfig().url,
@@ -344,6 +352,8 @@ export function writeSettings(
     pending_reviews_enabled: boolean;
     description_unread_dots: boolean;
     whiteboard_enabled: boolean;
+    safe_merge_approval_enabled: boolean;
+    group_drag_enabled: boolean;
     pr_grouping: PrGrouping;
     agent_harness: string;
     relay_url: string;
@@ -393,6 +403,23 @@ export function writeSettings(
     const enabled = patch.whiteboard_enabled === true ? "true" : "false";
     if (getSetting("whiteboard_enabled") !== enabled) {
       setSetting("whiteboard_enabled", enabled);
+      invalidateSettings();
+    }
+  }
+  if (patch.safe_merge_approval_enabled !== undefined) {
+    const enabled = patch.safe_merge_approval_enabled === true;
+    if (safeMergeApprovalEnabled() !== enabled) {
+      setSetting("safe_merge_approval_enabled", enabled ? "true" : "false");
+      // Consent never survives the feature being off, so re-enabling cannot resurrect it.
+      if (!enabled) for (const pr of clearSafeMergeApprovals()) invalidatePr(pr.repo, pr.number);
+      invalidateSettings();
+      invalidateInbox();
+    }
+  }
+  if (patch.group_drag_enabled !== undefined) {
+    const enabled = patch.group_drag_enabled === true ? "true" : "false";
+    if (getSetting("group_drag_enabled") !== enabled) {
+      setSetting("group_drag_enabled", enabled);
       invalidateSettings();
     }
   }

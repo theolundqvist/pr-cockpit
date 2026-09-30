@@ -3069,6 +3069,6 @@ export async function updatePullRequestBody(repo: string, number: number, body: 
 
 
 export async function updatePullRequestTitle(repo: string, number: number, title: string): Promise<void> {
-  if (mockGithub) return;
+  if (mockGithub) return mockGithub.updatePullRequestTitle(repo, number, title);
   await restRequest("PATCH", `/repos/${repo}/pulls/${number}`, { title });
 }

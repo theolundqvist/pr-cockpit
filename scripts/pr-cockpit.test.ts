@@ -403,6 +403,50 @@ test("every listen scope stops polling once the PR is merged or closed", async (
   }
 });
 
+test("every listen scope wakes when safe-merge approval is granted or revoked", async () => {
+  for (const scope of [[], ["--ci-only"], ["--comments-only"], ["--conflicts-only"]]) {
+    for (const initial of [false, true]) {
+      let reads = 0;
+      const server = Bun.serve({
+        port: 0,
+        fetch(request) {
+          if (new URL(request.url).searchParams.get("format") === "json") {
+            reads += 1;
+            return Response.json({
+              state: "OPEN",
+              approvedForSafeMerge: reads >= 3 ? !initial : initial,
+              ci: { state: "SUCCESS", failed: 0 },
+              merge: "CLEAN",
+              openComments: [],
+              openCommentsComplete: true,
+            });
+          }
+          return new Response("consent changed\n");
+        },
+      });
+      const process = Bun.spawn([join(import.meta.dir, "pr-cockpit"), "listen", ...scope, "owner/repo#1"], {
+        env: { ...Bun.env, COCKPIT_PORT: String(server.port), COCKPIT_LISTEN_INTERVAL: "0.01" },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      try {
+        const [output, error, exitCode] = await Promise.all([
+          new Response(process.stdout).text(),
+          new Response(process.stderr).text(),
+          process.exited,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(error).toBe("");
+        expect(output).toBe("consent changed\n");
+        expect(reads).toBe(3);
+      } finally {
+        process.kill();
+        server.stop(true);
+      }
+    }
+  }
+});
+
 test("resolve posts the displayed thread handle", async () => {
   let requestPath = "";
   let requestMethod = "";

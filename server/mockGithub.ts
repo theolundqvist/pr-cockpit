@@ -573,6 +573,8 @@ type MockPendingReview = PendingReview & { nodeId: string };
 const pendingReviews = new Map<string, MockPendingReview>();
 let nextPendingReviewId = 20_000;
 let nextPendingCommentId = 30_000;
+// Set by seedMockDatabase; queued fixture writes update the rows it seeded.
+let fixtureDb: Database | null = null;
 
 if (isMockGithub && !capturedRepo) {
   pendingReviews.set(`${REPO}#101`, {
@@ -718,6 +720,15 @@ export const mockGithub = isMockGithub ? {
       ? { mergeMethod: method.toUpperCase(), enabledBy: { login: snapshot?.viewer ?? VIEWER } }
       : null;
   },
+  // Queued edit-title mutations rewrite the fixture and its seeded row: rows carry a far-future fetched_at so
+  // the mutation's own refresh can never overwrite them.
+  updatePullRequestTitle: (repo: string, number: number, title: string): void => {
+    const detail = details[`${repo}#${number}`];
+    if (!detail || !fixtureDb) throw new Error(`no mock fixture for ${repo}#${number}`);
+    detail.title = title;
+    fixtureDb.prepare("UPDATE prs SET title = ?, detail_json = ? WHERE repo = ? AND number = ?").run(title, JSON.stringify(detail), repo, number);
+    fixtureDb.prepare("UPDATE pr_index SET title = ? WHERE repo = ? AND number = ?").run(title, repo, number);
+  },
   conflictFiles: (_repo: string, number: number): string[] => !capturedRepo && number === 103
     ? ["ui/navigation.ts", "ui/src/lib/router/state.ts", "server/navigation.ts"]
     : [],
@@ -786,8 +797,9 @@ export function installMockNetworkGuard(): void {
 
 export function seedMockDatabase(db: Database, dataDir: string): void {
   if (!isMockGithub) return;
+  fixtureDb = db;
   const insertedAt = "2999-01-01T00:00:00.000Z";
-  db.exec("DELETE FROM prs; DELETE FROM diffs; DELETE FROM file_contents; DELETE FROM mutations; DELETE FROM pr_index; DELETE FROM archived_prs; DELETE FROM pr_rank; DELETE FROM pr_detail_cache; DELETE FROM repo_users; DELETE FROM fixer_agents; DELETE FROM agent_runs;");
+  db.exec("DELETE FROM prs; DELETE FROM diffs; DELETE FROM file_contents; DELETE FROM mutations; DELETE FROM pr_index; DELETE FROM archived_prs; DELETE FROM pr_rank; DELETE FROM pr_merge_approvals; DELETE FROM pr_detail_cache; DELETE FROM repo_users; DELETE FROM fixer_agents; DELETE FROM agent_runs;");
   const insertPr = db.prepare(`
     INSERT INTO prs (repo, number, state, is_draft, title, author, base_ref, head_ref, head_sha, updated_at, additions, deletions, changed_files, commit_count, mergeable, merge_state_status, auto_merge_enabled, viewer_is_author, viewer_review_requested, viewer_review_state, ci_status, review_decision, unresolved_count, needs_me_rank, greptile_confidence, greptile_reviewed_sha, greptile_unresolved_count, detail_json, fetched_at, body_media, body_digest)
     VALUES ($repo, $number, $state, $is_draft, $title, $author, $base_ref, $head_ref, $head_sha, $updated_at, $additions, $deletions, $changed_files, $commit_count, $mergeable, $merge_state_status, $auto_merge_enabled, $viewer_is_author, $viewer_review_requested, $viewer_review_state, $ci_status, $review_decision, $unresolved_count, $needs_me_rank, $greptile_confidence, $greptile_reviewed_sha, $greptile_unresolved_count, $detail_json, $fetched_at, $body_media, $body_digest)

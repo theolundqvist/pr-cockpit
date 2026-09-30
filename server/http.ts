@@ -15,6 +15,8 @@ import {
   getPr,
   getPrByBranch,
   getRanks,
+  hasSafeMergeApproval,
+  listSafeMergeApprovalKeys,
   getMergedPrAnalyticsCache,
   upsertMergedPrAnalyticsCache,
   lastWebhookAtForPr,
@@ -35,6 +37,7 @@ import {
   saveDiff,
   saveFileContents,
   setArchived,
+  setSafeMergeApproval,
   queueWorkflowRunRerun,
   setAutoMergeArmed,
   setRank,
@@ -95,6 +98,7 @@ import {
   replicaSnapshotResponse,
   replicaStatus,
   replicaViewerLogin,
+  setSourceSafeMergeApproval,
 } from "./replica.ts";
 import { tailscaleServeStatus } from "./tailscaleServe.ts";
 import { runtimeSupervisor } from "./supervisor.ts";
@@ -104,7 +108,7 @@ import { commitsFromMirror, commitStatsFromMirror, conflictFilesFromMirror, diff
 import { checkState, currentChecks, type CheckState } from "./checkState.ts";
 import { currentBaseRef, discardMutation, enqueueMutation, mutationsForPr, retryMutation, type MutationPayload } from "./mutations.ts";
 import { isMergeMethod, mergeMethodFor, mergeMethodSourceFor, setMergeMethodPreference } from "./mergeMethod.ts";
-import { AGENT_DEFAULTS, pendingReviewsEnabled, readSettings, relayConfig, RELAY_APP_INSTALL_URL, RELAY_APP_SLUG, settingsRepos, writeSettings, type AgentSetting, type Settings } from "./settings.ts";
+import { AGENT_DEFAULTS, pendingReviewsEnabled, readSettings, relayConfig, RELAY_APP_INSTALL_URL, RELAY_APP_SLUG, safeMergeApprovalEnabled, settingsRepos, writeSettings, type AgentSetting, type Settings } from "./settings.ts";
 import { claudeBinPath, codexBinPath, ompBinPath } from "./harness.ts";
 import { CommitMessageError, generateCommitMessage } from "./commitMessage.ts";
 import { relayStatus, webhookCoveredSince } from "./relayClient.ts";
@@ -337,6 +341,7 @@ async function handleInbox(url: URL): Promise<Response> {
     }
   }
   const ranks = getRanks();
+  const mergeApprovals = safeMergeApprovalEnabled() ? listSafeMergeApprovalKeys() : new Set<string>();
   const failedMergeKeys = replicaEnabled() ? replicaFailedMergeKeys() : listFailedMergeKeys();
   const agentByPr = new Map<string, AgentRow>(listFixerAgents().map((a) => [prKey(a), a]));
   const testRe = testMatcher(readSettings().test_path_regex);
@@ -387,6 +392,7 @@ async function handleInbox(url: URL): Promise<Response> {
       fixerAgentState: agentByPr.get(prKey(pr))?.state ?? null,
       fixerAgentExitReason: agentByPr.get(prKey(pr))?.exit_reason ?? null,
       mergeFailed: pr.state === "OPEN" && failedMergeKeys.has(prKey(pr)),
+      approvedForSafeMerge: detail.state === "OPEN" && mergeApprovals.has(prKey(pr)),
       descriptionDigest: pr.body_digest ?? null,
       ...mediaFields(pr.body_media ? JSON.parse(pr.body_media) as string[] : undefined),
     };
@@ -741,7 +747,14 @@ function withBaseBranchPr(
     localBranch: localBranchFor(repoName),
     mergeMethod: mergeMethodFor(repoName, detail.baseRefName),
     mergeMethodSource: mergeMethodSourceFor(repoName, detail.baseRefName),
+    approvedForSafeMerge: approvedForSafeMerge(repoName, num, detail.state),
   };
+}
+
+// Explicit consent lives apart from pins; it reads false once the feature is off or the PR is closed or merged.
+// `state` is GitHub's detail state: tracked rows store every draft, even a closed one, as "draft".
+function approvedForSafeMerge(repo: string, number: number, state: string): boolean {
+  return state === "OPEN" && safeMergeApprovalEnabled() && hasSafeMergeApproval(repo, number);
 }
 
 function cachedPrSnapshot(repoName: string, num: number) {
@@ -892,6 +905,7 @@ export interface PrAgentSummary {
   state: string;
   draft: boolean;
   merge: string;
+  approvedForSafeMerge: boolean;
   review: string;
   updatedAt: string;
   snapshot: AgentSnapshotStatus | null;
@@ -1021,6 +1035,7 @@ export function buildPrAgentSummary(
     state: String(detail.state ?? "UNKNOWN"),
     draft: detail.isDraft === true,
     merge: String(detail.mergeStateStatus ?? detail.mergeable ?? "UNKNOWN"),
+    approvedForSafeMerge: approvedForSafeMerge(repo, number, String(detail.state ?? "UNKNOWN")),
     review: String(detail.reviewDecision ?? "NONE"),
     updatedAt: String(detail.updatedAt ?? ""),
     snapshot: detail.agentSnapshot ?? null,
@@ -1094,7 +1109,11 @@ function formatPrAgentDigest(summary: PrAgentSummary, includeComments: boolean, 
     }
   }
   if (lines.length === 0) lines.push(`No new comments. CI: ${summary.ci.state} · Review: ${summary.review}.`);
-  return `${lines.join("\n")}\n`;
+  return `${mergeApprovalLine(summary)}\n${lines.join("\n")}\n`;
+}
+
+function mergeApprovalLine(summary: PrAgentSummary): string {
+  return `Merge approval: ${summary.approvedForSafeMerge ? "approved for safe merge" : "not granted"}`;
 }
 
 export function formatPrAgentSummary(summary: PrAgentSummary, options: AgentSummaryFormatOptions = {}): string {
@@ -1112,6 +1131,7 @@ export function formatPrAgentSummary(summary: PrAgentSummary, options: AgentSumm
     `Head: ${summary.head}`,
     `Head SHA: ${summary.headSha}`,
     `Merge state: ${summary.merge}`,
+    mergeApprovalLine(summary),
     `Created: ${summary.createdAt}`,
     `Updated: ${summary.updatedAt}`,
     `URL: ${summary.url}`,
@@ -2688,6 +2708,8 @@ async function handlePutSettings(req: Request, runtime: HttpRuntime): Promise<Re
     pending_reviews_enabled: boolean;
     description_unread_dots: boolean;
     whiteboard_enabled: boolean;
+    safe_merge_approval_enabled: boolean;
+    group_drag_enabled: boolean;
     pr_grouping: Settings["pr_grouping"];
   }>;
   try {
@@ -2698,9 +2720,19 @@ async function handlePutSettings(req: Request, runtime: HttpRuntime): Promise<Re
   const previousSettings = readSettings();
   const previousReplica = previousSettings.replica_ssh_host;
   const previousRepos = previousSettings.repos;
+  // A replica's merge-consent flag mirrors its source, which may be ahead of the mirror: every explicit value is
+  // forwarded, lands only as the source confirms it, and is never re-applied by the local patch.
+  const replica = replicaEnabled();
+  if (replica && body.safe_merge_approval_enabled !== undefined) {
+    try {
+      await setSourceSafeMergeApproval(body.safe_merge_approval_enabled === true);
+    } catch (error) {
+      return json({ error: error instanceof Error ? error.message : String(error) }, 502);
+    }
+  }
   let settings: Settings;
   try {
-    settings = writeSettings(body);
+    settings = writeSettings(replica ? { ...body, safe_merge_approval_enabled: undefined } : body);
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : String(error) }, 400);
   }
@@ -2965,6 +2997,26 @@ async function handleReorder(req: Request): Promise<Response> {
   return json({ ok: true });
 }
 
+// Consent only for the exact open PR; it launches nothing and changes no merge gate.
+async function handleMergeApproval(owner: string, repo: string, number: string, req: Request): Promise<Response> {
+  if (!validPrReference(owner, repo, number)) return json({ error: "invalid PR reference" }, 400);
+  const body: unknown = await req.json().catch(() => null);
+  const approved = body && typeof body === "object" && "approved" in body ? body.approved : null;
+  if (typeof approved !== "boolean") return json({ error: "approved must be a boolean" }, 400);
+  const repoName = `${owner}/${repo}`;
+  const num = Number(number);
+  if (approved) {
+    if (!safeMergeApprovalEnabled()) return json({ error: "safe merge approval is disabled" }, 409);
+    const pr = getPr(repoName, num);
+    if (!pr || JSON.parse(pr.detail_json).state !== "OPEN") return json({ error: `${repoName}#${num} is not an open inbox PR` }, 409);
+  }
+  if (setSafeMergeApproval(repoName, num, approved)) {
+    invalidatePr(repoName, num);
+    invalidateInbox();
+  }
+  return json({ approvedForSafeMerge: approved });
+}
+
 function runGit(root: string, args: string[]): { success: boolean; stdout: string; stderr: string } {
   try {
     const proc = Bun.spawnSync(["git", "-C", root, ...args], { stdout: "pipe", stderr: "pipe" });
@@ -3045,13 +3097,14 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     }
     if (isMockGithub && req.method !== "GET") {
       let allowed = (req.method === "POST" && url.pathname === "/api/archive")
+        || (req.method === "POST" && url.pathname === "/api/inbox/reorder")
         || (req.method === "POST" && url.pathname === "/api/commit-message")
         || (req.method === "POST" && url.pathname === "/api/auth/setup")
         || (req.method === "PUT" && url.pathname === "/api/settings")
         || (req.method === "PUT" && url.pathname === "/api/whiteboard")
         || (req.method === "POST" && url.pathname === "/api/notifications/claim")
         || (req.method === "POST" && url.pathname === "/api/system-issues/retry")
-        || (req.method === "POST" && parts.length === 6 && parts[0] === "api" && parts[1] === "pr" && parts[5] === "merge-method")
+        || (req.method === "POST" && parts.length === 6 && parts[0] === "api" && parts[1] === "pr" && (parts[5] === "merge-method" || parts[5] === "merge-approval"))
         || (
           req.method === "POST" && parts.length === 7 &&
           parts[0] === "api" && parts[1] === "actions" && parts[2] === "runs" &&
@@ -3061,6 +3114,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
         const body: unknown = await req.clone().json().catch(() => null);
         const allowedKinds: Record<string, true> = {
           "github-auto-merge": true,
+          "edit-title": true,
           "pending-inline-comment": true,
           "edit-pending-comment": true,
           "delete-pending-comment": true,
@@ -3508,6 +3562,9 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       parts[2] === "pr"
     ) {
       return handleAgentPr(parts[3]!, parts[4]!, parts[5]!, url, runtime);
+    }
+    if (req.method === "POST" && parts.length === 6 && parts[0] === "api" && parts[1] === "pr" && parts[5] === "merge-approval") {
+      return handleMergeApproval(parts[2]!, parts[3]!, parts[4]!, req);
     }
     if (req.method === "POST" && parts.length === 6 && parts[0] === "api" && parts[1] === "pr" && parts[5] === "merge-method") {
       const repoName = `${parts[2]!}/${parts[3]!}`;

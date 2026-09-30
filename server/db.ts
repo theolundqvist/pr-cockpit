@@ -144,6 +144,14 @@ CREATE TABLE IF NOT EXISTS pr_rank (
   PRIMARY KEY (repo, number)
 );
 
+-- Explicit per-PR consent to merge safely, independent of pr_rank pins; see setSafeMergeApproval.
+CREATE TABLE IF NOT EXISTS pr_merge_approvals (
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  approved_at TEXT NOT NULL,
+  PRIMARY KEY (repo, number)
+);
+
 CREATE TABLE IF NOT EXISTS pr_detail_cache (
   repo TEXT NOT NULL,
   number INTEGER NOT NULL,
@@ -1519,6 +1527,7 @@ const evictReposNotInTxn = db.transaction((repos: string[]) => {
   const whereSql = `repo NOT IN (${placeholders})`;
   preservePrDetails(whereSql, repos);
   db.prepare(`DELETE FROM pr_rank WHERE ${whereSql}`).run(...repos);
+  db.prepare(`DELETE FROM pr_merge_approvals WHERE ${whereSql}`).run(...repos);
   db.prepare(`DELETE FROM prs WHERE ${whereSql}`).run(...repos);
 });
 
@@ -1540,6 +1549,7 @@ const evictStalePrsTxn = db.transaction((repo: string, keepNumbers: number[]) =>
     : `repo = ? AND number NOT IN (${keepNumbers.map(() => "?").join(",")})`;
   preservePrDetails(whereSql, params);
   db.prepare(`DELETE FROM pr_rank WHERE ${whereSql}`).run(...params);
+  db.prepare(`DELETE FROM pr_merge_approvals WHERE ${whereSql}`).run(...params);
   db.prepare(`DELETE FROM prs WHERE ${whereSql}`).run(...params);
 });
 
@@ -1594,6 +1604,46 @@ const ranksStmt = db.prepare<{ repo: string; number: number; position: number },
 
 export function getRanks(): Map<string, number> {
   return new Map(ranksStmt.all().map((r) => [prKey(r), r.position]));
+}
+
+const setSafeMergeApprovalStmt = db.prepare(`
+INSERT INTO pr_merge_approvals (repo, number, approved_at) VALUES ($repo, $number, $approved_at)
+ON CONFLICT (repo, number) DO NOTHING
+`);
+
+const unsetSafeMergeApprovalStmt = db.prepare("DELETE FROM pr_merge_approvals WHERE repo = ? AND number = ?");
+
+// PR-wide consent that outlives new commits and base merges; closing, merging, or leaving the open inbox clears it.
+// Returns whether the stored consent changed.
+export function setSafeMergeApproval(repo: string, number: number, approved: boolean): boolean {
+  const result = approved
+    ? setSafeMergeApprovalStmt.run({ $repo: repo, $number: number, $approved_at: new Date().toISOString() })
+    : unsetSafeMergeApprovalStmt.run(repo, number);
+  return result.changes > 0;
+}
+
+const safeMergeApprovalKeysStmt = db.prepare<{ repo: string; number: number }, []>(
+  "SELECT repo, number FROM pr_merge_approvals",
+);
+
+export function listSafeMergeApprovalKeys(): Set<string> {
+  return new Set(safeMergeApprovalKeysStmt.all().map(prKey));
+}
+
+const hasSafeMergeApprovalStmt = db.prepare<{ found: number }, [string, number]>(
+  "SELECT 1 AS found FROM pr_merge_approvals WHERE repo = ? AND number = ?",
+);
+
+export function hasSafeMergeApproval(repo: string, number: number): boolean {
+  return hasSafeMergeApprovalStmt.get(repo, number)?.found === 1;
+}
+
+const clearSafeMergeApprovalsStmt = db.prepare<{ repo: string; number: number }, []>(
+  "DELETE FROM pr_merge_approvals RETURNING repo, number",
+);
+
+export function clearSafeMergeApprovals(): Array<{ repo: string; number: number }> {
+  return clearSafeMergeApprovalsStmt.all();
 }
 
 export interface CachedPrDetailRow {
@@ -1814,6 +1864,7 @@ const REPLICA_TABLES = [
   "archived_prs",
   "pr_index",
   "pr_rank",
+  "pr_merge_approvals",
   "repo_users",
   "fixer_agents",
 ] as const;

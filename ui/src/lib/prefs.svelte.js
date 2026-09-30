@@ -17,6 +17,8 @@ export const prefs = $state({
   pendingReviewsEnabled: false,
   descriptionUnreadDots: false,
   whiteboardEnabled: false,
+  safeMergeApprovalEnabled: false,
+  groupDragEnabled: false,
   agents: [
     { id: "fixer", name: "Auto-merge fixer", enabled: true, trigger: "keybind", keybind: "a", model: "opus", prompt_template: "" },
     { id: "autofix", name: "Auto-fix", enabled: true, trigger: "keybind", keybind: "f", model: "opus", prompt_template: "" },
@@ -35,6 +37,8 @@ export function setPrefs(settings) {
   prefs.pendingReviewsEnabled = settings.pending_reviews_enabled === true;
   prefs.descriptionUnreadDots = settings.description_unread_dots === true;
   prefs.whiteboardEnabled = settings.whiteboard_enabled === true;
+  prefs.safeMergeApprovalEnabled = settings.safe_merge_approval_enabled === true;
+  prefs.groupDragEnabled = settings.group_drag_enabled === true;
   whiteboardSession.current?.setEnabled(prefs.whiteboardEnabled);
   prefs.loaded = true;
 }

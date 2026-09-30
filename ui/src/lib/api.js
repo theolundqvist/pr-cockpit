@@ -55,6 +55,17 @@ export async function reorderPr(repo, number, position) {
   if (!res.ok) throw new Error(`reorder ${res.status}`);
 }
 
+export async function setMergeApproval(repo, number, approved) {
+  const res = await fetch(`/api/pr/${repo}/${number}/merge-approval`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ approved }),
+  });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.error || `merge approval ${res.status}`);
+  return body.approvedForSafeMerge;
+}
+
 // A stale tracked snapshot comes back immediately and flagged; `fresh` waits for its refresh.
 // `prefetch` reads only what the server already holds locally: 204 (null here) when it has nothing.
 export async function fetchPrDetailSnapshot(repo, number, { fresh = false, prefetch = false } = {}) {

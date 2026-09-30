@@ -3,7 +3,7 @@ import { getPr, getSetting, listFailedMergeKeys, readInboxReplica, replaceInboxR
 import { observePrNotifications } from "./notifications.ts";
 import { setLastPollAt, lastPollAt } from "./poller.ts";
 import { invalidateInbox, publishPollCompleted } from "./rendererInvalidation.ts";
-import { pendingReviewsEnabled, readSettings } from "./settings.ts";
+import { pendingReviewsEnabled, readSettings, safeMergeApprovalEnabled, writeSettings } from "./settings.ts";
 
 const SOURCE_PORT = Number(Bun.env.COCKPIT_PROXY_PORT ?? 4820);
 const TUNNEL_PORT = Number(Bun.env.COCKPIT_REPLICA_LOCAL_PORT ?? 48203);
@@ -42,6 +42,7 @@ type ReplicaSnapshot = {
   lastPollAt: string | null;
   viewerLogin: string | null;
   failedMergeKeys: string[];
+  safeMergeApprovalEnabled: boolean;
   tables: InboxReplica;
 };
 
@@ -88,16 +89,23 @@ function parseReplicaSnapshot(value: unknown): ReplicaSnapshot {
     || !("fixer_agents" in tables) || !isReplicaRows(tables.fixer_agents)) {
     throw new Error("Replica source returned invalid table rows");
   }
+  // Sources predating safe-merge approval omit the flag and table; they cannot hold consent.
+  const safeMergeApproval = "safeMergeApprovalEnabled" in value ? value.safeMergeApprovalEnabled : false;
+  if (typeof safeMergeApproval !== "boolean") throw new Error("Replica source returned an invalid merge approval setting");
+  const mergeApprovals = "pr_merge_approvals" in tables ? tables.pr_merge_approvals : [];
+  if (!isReplicaRows(mergeApprovals)) throw new Error("Replica source returned invalid merge approvals");
   return {
     revision: value.revision,
     lastPollAt: value.lastPollAt,
     viewerLogin: value.viewerLogin,
     failedMergeKeys,
+    safeMergeApprovalEnabled: safeMergeApproval,
     tables: {
       prs: tables.prs,
       archived_prs: tables.archived_prs,
       pr_index: tables.pr_index,
       pr_rank: tables.pr_rank,
+      pr_merge_approvals: mergeApprovals,
       repo_users: tables.repo_users,
       fixer_agents: tables.fixer_agents,
     },
@@ -207,6 +215,10 @@ async function syncReplica(): Promise<void> {
       }
       if (!response.ok) throw new Error(`replica source returned ${response.status}: ${await response.text()}`);
       const snapshot = parseReplicaSnapshot(await response.json());
+      // The source owns merge consent; its flag lands before its rows so a local clear never erases them.
+      if (safeMergeApprovalEnabled() !== snapshot.safeMergeApprovalEnabled) {
+        writeSettings({ safe_merge_approval_enabled: snapshot.safeMergeApprovalEnabled });
+      }
       importInboxReplica(snapshot.tables);
       setSetting(FAILED_MERGES_SETTING, JSON.stringify(snapshot.failedMergeKeys));
       setLastPollAt(snapshot.lastPollAt);
@@ -228,6 +240,28 @@ async function syncReplica(): Promise<void> {
     syncInFlight = null;
   });
   return syncInFlight;
+}
+
+// Replicas only mirror the source's merge-approval flag: change it at the source and accept only the value the
+// source confirms. The confirmed value lands (clearing local consent on disable) once no older snapshot can still
+// import, and a full re-import follows so a concurrent source change is never hidden behind a matching ETag.
+export async function setSourceSafeMergeApproval(enabled: boolean): Promise<void> {
+  await ensureTunnel();
+  const response = await fetch(sourceUrl("/api/settings"), {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ safe_merge_approval_enabled: enabled }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  const settings: unknown = await response.json().catch(() => null);
+  if (!response.ok || !settings || typeof settings !== "object" || !("safe_merge_approval_enabled" in settings)
+    || settings.safe_merge_approval_enabled !== enabled) {
+    throw new Error(`PR Cockpit source ${replicaSshHost()} did not ${enabled ? "enable" : "disable"} safe merge approval`);
+  }
+  if (syncInFlight) await syncInFlight;
+  writeSettings({ safe_merge_approval_enabled: enabled });
+  state = { ...state, revision: null };
+  await syncReplica();
 }
 
 export async function startReplicaSync(): Promise<() => void> {
@@ -261,7 +295,8 @@ export function replicaSnapshotResponse(request: Request): Response {
   const tables = readInboxReplica();
   const viewerLogin = snapshotViewerLogin(tables);
   const failedMergeKeys = [...listFailedMergeKeys()];
-  const revision = `"${Bun.hash(JSON.stringify({ tables, viewerLogin, failedMergeKeys })).toString(16)}"`;
+  const mergeApprovalEnabled = safeMergeApprovalEnabled();
+  const revision = `"${Bun.hash(JSON.stringify({ tables, viewerLogin, failedMergeKeys, mergeApprovalEnabled })).toString(16)}"`;
   const headers = {
     etag: revision,
     "x-pr-cockpit-last-poll-at": lastPollAt ?? "",
@@ -272,6 +307,7 @@ export function replicaSnapshotResponse(request: Request): Response {
     lastPollAt,
     viewerLogin,
     failedMergeKeys,
+    safeMergeApprovalEnabled: mergeApprovalEnabled,
     tables,
   };
   const body = new Blob([JSON.stringify(snapshot)]).stream().pipeThrough(new CompressionStream("gzip"));

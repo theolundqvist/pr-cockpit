@@ -66,3 +66,54 @@ export function categoryForPr(title: string, config: PrGrouping, assignment?: st
   if (config.mode === "type") return parsed.type && PR_TYPES.includes(parsed.type) ? `type:${parsed.type}` : "other";
   return parsed.scope && parsed.scope !== "other" ? `feature:${parsed.scope}` : "other";
 }
+
+// Rewrites only the part of the title that places it in `category`, keeping the draft prefix, `!`,
+// summary, and any untouched scope as written. Returns null when the title cannot join that group.
+export function retitleForCategory(title: string, mode: GroupingMode, category: string): string | null {
+  const parsed = parsePrTitle(title);
+  const parts = TITLE_RE.exec(title)?.groups;
+  const draft = parsed.draft ? DRAFT_PREFIX : "";
+  const build = (type: string, scope: string | undefined) => `${draft}${type}${scope === undefined ? "" : `(${scope})`}${parsed.breaking ? "!" : ""}: ${parsed.summary}`;
+  if (mode === "type") {
+    const type = category.startsWith("type:") ? category.slice("type:".length) : "";
+    if (!PR_TYPES.includes(type)) return null;
+    if (parsed.type === type) return title;
+    return build(type, parts?.scope);
+  }
+  if (mode !== "feature") return null;
+  if (category === "other") return parsed.scope ? build(parsed.type!, undefined) : title;
+  if (!parsed.type) return null;
+  const scope = category.startsWith("feature:") ? category.slice("feature:".length) : "";
+  if (!scope || scope === "other") return null;
+  return parsed.scope === scope ? title : build(parsed.type, scope);
+}
+
+export type GroupDropPlan = { approve?: boolean; pin?: boolean; title?: string; assignment?: string | null };
+
+// A drop between inbox sections changes only what the destination stands for. Failed merges and
+// computed status groups reflect state that a drag must never fake, so they accept and release nothing.
+export function planGroupDrop(input: {
+  from: string;
+  to: string;
+  title: string;
+  mode: GroupingMode;
+  pinned: boolean;
+  approved: boolean;
+  approvalEnabled: boolean;
+}): GroupDropPlan | null {
+  const { from, to } = input;
+  if (from === to || from === "merge-failed" || to === "merge-failed") return null;
+  if (to === "approved") return input.approvalEnabled && !input.approved ? { approve: true } : null;
+  const leave: GroupDropPlan = input.approved ? { approve: false } : {};
+  if (to === "pinned") return { ...leave, pin: true };
+  if (input.pinned) leave.pin = false;
+  if (input.mode === "manual") {
+    if (to !== "other" && !to.startsWith("group:")) return null;
+    return { ...leave, assignment: to === "other" ? null : to.slice("group:".length) };
+  }
+  if (input.mode === "status") return null;
+  const title = retitleForCategory(input.title, input.mode, to);
+  if (title === null) return null;
+  if (title !== input.title) return { ...leave, title };
+  return Object.keys(leave).length ? leave : null;
+}
