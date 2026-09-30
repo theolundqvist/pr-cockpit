@@ -32,7 +32,8 @@
   import { isCodeScanningThread } from "../../../shared/codeScanning.js";
   import { loadPrIndex, prSummary } from "./prIndex.svelte.js";
   import { prKeyOwner, shouldCopyPrCockpitUrl, shouldCopyPrUrl } from "./dom.js";
-  import { readLastViewed, writeLastViewed } from "./lastViewed.js";
+  import { readLastViewed, writeDescriptionViewed, writeLastViewed } from "./lastViewed.svelte.js";
+  import { descriptionDigest } from "../../../shared/descriptionDigest.js";
   import { durationText, relativeTime } from "./time.js";
   import { mermaidDiagrams } from "./mermaid.js";
   import { theme } from "./theme.svelte.js";
@@ -486,6 +487,47 @@
     const timer = setTimeout(() => writeLastViewed(repo, number, head), 4000);
     return () => clearTimeout(timer);
   });
+
+  // Only the published description counts: an open editor or pending edit shows other text.
+  let descriptionTarget = $derived(
+    prefs.descriptionUnreadDots && typeof pr?.body === "string" && !editingBody && displayBody === pr.body
+      ? { repo, number, digest: descriptionDigest(pr.body) }
+      : null,
+  );
+
+  // A description counts as read only while its region is on screen in a foreground window;
+  // switching tabs, PRs, or turning the preference off stops observing.
+  function descriptionRead(node, initial) {
+    let target = null;
+    let observer = null;
+    let intersecting = false;
+    // Deferred a frame so a PR switch settles first: repo and number can reach a render before pr does.
+    const record = () => requestAnimationFrame(() => {
+      if (target && intersecting && document.visibilityState === "visible") writeDescriptionViewed(target.repo, target.number, target.digest);
+    });
+    const stop = () => {
+      target = null;
+      observer?.disconnect();
+      observer = null;
+      intersecting = false;
+      document.removeEventListener("visibilitychange", record);
+    };
+    const update = (next) => {
+      target = next;
+      if (!next) return stop();
+      if (!observer) {
+        observer = new IntersectionObserver((entries) => {
+          intersecting = entries.at(-1).isIntersecting;
+          record();
+        });
+        observer.observe(node);
+        document.addEventListener("visibilitychange", record);
+      }
+      record();
+    };
+    update(initial);
+    return { update, destroy: stop };
+  }
 
   let newCommitCount = $derived.by(() => {
     if (!anchorInList) return 0;
@@ -2962,9 +3004,9 @@
         </div>
       {:else if tab !== "actions"}
         <div class="cols">
-        <div class="left">
+        <div class="left" use:descriptionRead={pr.body ? null : descriptionTarget}>
           {#if pr.body}
-            <section class="card body-card">
+            <section class="card body-card" use:descriptionRead={descriptionTarget}>
               {#if editingBody}
                 <div class="composer body-editor">
                   <textarea bind:value={bodyDraft} onkeydown={onBodyEditKey} use:sizeToTextOnMount></textarea>

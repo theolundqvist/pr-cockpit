@@ -387,6 +387,7 @@ async function handleInbox(url: URL): Promise<Response> {
       fixerAgentState: agentByPr.get(prKey(pr))?.state ?? null,
       fixerAgentExitReason: agentByPr.get(prKey(pr))?.exit_reason ?? null,
       mergeFailed: pr.state === "OPEN" && failedMergeKeys.has(prKey(pr)),
+      descriptionDigest: pr.body_digest ?? null,
       ...mediaFields(pr.body_media ? JSON.parse(pr.body_media) as string[] : undefined),
     };
   });
@@ -2654,6 +2655,7 @@ async function handlePutSettings(req: Request, runtime: HttpRuntime): Promise<Re
     relay_url: string;
     notifications: NotificationSettings;
     pending_reviews_enabled: boolean;
+    description_unread_dots: boolean;
     whiteboard_enabled: boolean;
     pr_grouping: Settings["pr_grouping"];
   }>;

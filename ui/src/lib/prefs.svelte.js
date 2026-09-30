@@ -15,6 +15,7 @@ export const prefs = $state({
   diffLayout: "split",
   notificationsEnabled: false,
   pendingReviewsEnabled: false,
+  descriptionUnreadDots: false,
   whiteboardEnabled: false,
   agents: [
     { id: "fixer", name: "Auto-merge fixer", enabled: true, trigger: "keybind", keybind: "a", model: "opus", prompt_template: "" },
@@ -32,6 +33,7 @@ export function setPrefs(settings) {
   prefs.agents = settings.agents;
   prefs.notificationsEnabled = settings.notifications?.enabled === true;
   prefs.pendingReviewsEnabled = settings.pending_reviews_enabled === true;
+  prefs.descriptionUnreadDots = settings.description_unread_dots === true;
   prefs.whiteboardEnabled = settings.whiteboard_enabled === true;
   whiteboardSession.current?.setEnabled(prefs.whiteboardEnabled);
   prefs.loaded = true;

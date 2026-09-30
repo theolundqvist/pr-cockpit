@@ -18,6 +18,7 @@ import type {
 import { needsMeRank } from "./rank.ts";
 import { mockAvatarDataUri } from "./mockImages.ts";
 import { extractGithubMedia } from "./githubMedia.ts";
+import { descriptionDigest } from "../shared/descriptionDigest.js";
 
 export const isMockGithub = Bun.env.COCKPIT_MOCK === "1";
 
@@ -788,8 +789,8 @@ export function seedMockDatabase(db: Database, dataDir: string): void {
   const insertedAt = "2999-01-01T00:00:00.000Z";
   db.exec("DELETE FROM prs; DELETE FROM diffs; DELETE FROM file_contents; DELETE FROM mutations; DELETE FROM pr_index; DELETE FROM archived_prs; DELETE FROM pr_rank; DELETE FROM pr_detail_cache; DELETE FROM repo_users; DELETE FROM fixer_agents; DELETE FROM agent_runs;");
   const insertPr = db.prepare(`
-    INSERT INTO prs (repo, number, state, is_draft, title, author, base_ref, head_ref, head_sha, updated_at, additions, deletions, changed_files, commit_count, mergeable, merge_state_status, auto_merge_enabled, viewer_is_author, viewer_review_requested, viewer_review_state, ci_status, review_decision, unresolved_count, needs_me_rank, greptile_confidence, greptile_reviewed_sha, greptile_unresolved_count, detail_json, fetched_at, body_media)
-    VALUES ($repo, $number, $state, $is_draft, $title, $author, $base_ref, $head_ref, $head_sha, $updated_at, $additions, $deletions, $changed_files, $commit_count, $mergeable, $merge_state_status, $auto_merge_enabled, $viewer_is_author, $viewer_review_requested, $viewer_review_state, $ci_status, $review_decision, $unresolved_count, $needs_me_rank, $greptile_confidence, $greptile_reviewed_sha, $greptile_unresolved_count, $detail_json, $fetched_at, $body_media)
+    INSERT INTO prs (repo, number, state, is_draft, title, author, base_ref, head_ref, head_sha, updated_at, additions, deletions, changed_files, commit_count, mergeable, merge_state_status, auto_merge_enabled, viewer_is_author, viewer_review_requested, viewer_review_state, ci_status, review_decision, unresolved_count, needs_me_rank, greptile_confidence, greptile_reviewed_sha, greptile_unresolved_count, detail_json, fetched_at, body_media, body_digest)
+    VALUES ($repo, $number, $state, $is_draft, $title, $author, $base_ref, $head_ref, $head_sha, $updated_at, $additions, $deletions, $changed_files, $commit_count, $mergeable, $merge_state_status, $auto_merge_enabled, $viewer_is_author, $viewer_review_requested, $viewer_review_state, $ci_status, $review_decision, $unresolved_count, $needs_me_rank, $greptile_confidence, $greptile_reviewed_sha, $greptile_unresolved_count, $detail_json, $fetched_at, $body_media, $body_digest)
   `);
   const insertIndex = db.prepare("INSERT INTO pr_index (repo, number, title, state, is_draft, author, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)");
   const insertDiff = db.prepare("INSERT INTO diffs (head_sha, patch, fetched_at) VALUES (?, ?, datetime('now'))");
@@ -833,6 +834,7 @@ export function seedMockDatabase(db: Database, dataDir: string): void {
         $detail_json: JSON.stringify(detail),
         $fetched_at: insertedAt,
         $body_media: JSON.stringify(extractGithubMedia(detail.body, { videos: true })),
+        $body_digest: descriptionDigest(detail.body),
       });
       insertIndex.run(repo, detail.number, detail.title, detail.state, detail.isDraft ? 1 : 0, detail.author?.login ?? "unknown", detail.updatedAt);
       insertDiff.run(detail.headRefOid, prPatch(detail.number));

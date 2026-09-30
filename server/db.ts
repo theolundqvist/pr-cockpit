@@ -6,6 +6,7 @@ import type { PrIndexEntry } from "./github.ts";
 import { SCHEMA_EPOCH } from "./schemaEpoch.ts";
 import { prKey } from "./prKey.ts";
 import { extractGithubMedia } from "./githubMedia.ts";
+import { descriptionDigest } from "../shared/descriptionDigest.js";
 
 const dataDir = Bun.env.COCKPIT_DATA_DIR ?? "data";
 mkdirSync(dataDir, { recursive: true });
@@ -375,7 +376,17 @@ if (!prsColumns.some((c) => c.name === "body_media")) {
   const backfill = db.prepare("UPDATE prs SET body_media = ? WHERE repo = ? AND number = ?");
   db.transaction(() => {
     for (const row of db.query<{ repo: string; number: number; detail_json: string }, []>("SELECT repo, number, detail_json FROM prs").all()) {
-      backfill.run(bodyMediaJson(row.detail_json), row.repo, row.number);
+      backfill.run(bodyMediaJson(detailBody(row.detail_json)), row.repo, row.number);
+    }
+  })();
+}
+if (!prsColumns.some((c) => c.name === "body_digest")) {
+  db.exec("ALTER TABLE prs ADD COLUMN body_digest TEXT");
+  const backfill = db.prepare("UPDATE prs SET body_digest = ? WHERE repo = ? AND number = ?");
+  db.transaction(() => {
+    for (const row of db.query<{ repo: string; number: number; detail_json: string }, []>("SELECT repo, number, detail_json FROM prs").all()) {
+      const body = detailBody(row.detail_json);
+      backfill.run(body === null ? null : descriptionDigest(body), row.repo, row.number);
     }
   })();
 }
@@ -512,12 +523,18 @@ export interface PrRow {
   fetched_at: string;
   // JSON array of the body's GitHub media URLs, derived from detail_json on every write.
   body_media?: string | null;
+  // descriptionDigest of the body, derived on every write; null when copied from an older replica source.
+  body_digest?: string | null;
 }
 
 // Parsed once when a detail is stored, so serving the inbox never scans PR bodies.
-function bodyMediaJson(detailJson: string): string {
-  const body = (JSON.parse(detailJson) as { body?: unknown }).body;
-  return JSON.stringify(typeof body === "string" ? extractGithubMedia(body, { videos: true }) : []);
+function detailBody(detailJson: string): string | null {
+  const detail: unknown = JSON.parse(detailJson);
+  return detail && typeof detail === "object" && "body" in detail && typeof detail.body === "string" ? detail.body : null;
+}
+
+function bodyMediaJson(body: string | null): string {
+  return JSON.stringify(body === null ? [] : extractGithubMedia(body, { videos: true }));
 }
 
 const bodyMediaStmt = db.prepare<{ repo: string; number: number; body_media: string }, []>(
@@ -546,13 +563,13 @@ INSERT INTO prs (
   updated_at, additions, deletions, changed_files, commit_count, mergeable, merge_state_status,
   auto_merge_enabled, viewer_is_author, viewer_review_requested, viewer_review_state,
   ci_status, review_decision, unresolved_count, needs_me_rank, greptile_confidence, greptile_reviewed_sha,
-  greptile_unresolved_count, detail_json, fetched_at, body_media
+  greptile_unresolved_count, detail_json, fetched_at, body_media, body_digest
 ) VALUES (
   $repo, $number, $state, $is_draft, $title, $author, $base_ref, $head_ref, $head_sha,
   $updated_at, $additions, $deletions, $changed_files, $commit_count, $mergeable, $merge_state_status,
   $auto_merge_enabled, $viewer_is_author, $viewer_review_requested, $viewer_review_state,
   $ci_status, $review_decision, $unresolved_count, $needs_me_rank, $greptile_confidence, $greptile_reviewed_sha,
-  $greptile_unresolved_count, $detail_json, $fetched_at, $body_media
+  $greptile_unresolved_count, $detail_json, $fetched_at, $body_media, $body_digest
 )
 ON CONFLICT (repo, number) DO UPDATE SET
   state = excluded.state,
@@ -582,11 +599,13 @@ ON CONFLICT (repo, number) DO UPDATE SET
   greptile_unresolved_count = excluded.greptile_unresolved_count,
   detail_json = excluded.detail_json,
   fetched_at = excluded.fetched_at,
-  body_media = excluded.body_media
+  body_media = excluded.body_media,
+  body_digest = excluded.body_digest
 WHERE excluded.fetched_at >= prs.fetched_at
 `);
 
 export function upsertPr(row: PrRow): void {
+  const body = detailBody(row.detail_json);
   upsertStmt.run({
     $repo: row.repo,
     $number: row.number,
@@ -617,7 +636,8 @@ export function upsertPr(row: PrRow): void {
     $greptile_unresolved_count: row.greptile_unresolved_count,
     $detail_json: row.detail_json,
     $fetched_at: row.fetched_at,
-    $body_media: bodyMediaJson(row.detail_json),
+    $body_media: bodyMediaJson(body),
+    $body_digest: body === null ? null : descriptionDigest(body),
   });
 }
 

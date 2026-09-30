@@ -7,6 +7,7 @@
   import { categoryForPr, DRAFT_PREFIX, isDraftPr, orderQueueUnits, PR_TYPES, TYPE_TITLES } from "../../../shared/prGrouping.ts";
   import { assignments, assignPr, syncAssignments, onAssignmentStorage } from "./prAssignments.svelte.js";
   import { isSetAside, putAside } from "./setAside.svelte.js";
+  import { lastViewed } from "./lastViewed.svelte.js";
   import { tick, untrack } from "svelte";
   import { fetchInbox, fetchRecentClosed, fetchAllPrs, fetchPrDetails, setArchived, saveSettings, reorderPr, fetchSettings, fetchRelayStatus, fetchRelayCoverage, autofixAgent, customAgent } from "./api.js";
   import { cacheDetail, cachedHeadSha, cachedView, cacheView } from "./detailCache.js";
@@ -1189,6 +1190,7 @@
       {@const index = ordered.indexOf(pr)}
       {@const info = stack.get(prKey(pr))}
       {@const statsDiffer = pr.additions !== pr.rawAdditions || pr.deletions !== pr.rawDeletions}
+      {@const viewedDescription = prefs.descriptionUnreadDots && pr.descriptionDigest ? lastViewed.all[prKey(pr)]?.descriptionDigest : undefined}
       <a
         class="row {status.tone}"
         class:selected={index === selected}
@@ -1208,6 +1210,9 @@
         onmouseenter={(e) => onRowHover(e, index)}
         onclick={() => (restoreKey = prKey(pr))}
       >
+        {#if viewedDescription && viewedDescription !== pr.descriptionDigest}
+          <span class="description-dot" role="img" aria-label="Description changed" title="Description changed since you last read it"></span>
+        {/if}
         {#if info?.indent}<span class="stack-glyph" aria-hidden="true">└</span>{/if}
         <span class="row-avatar">
           <Avatar login={pr.author} url={`https://github.com/${pr.author}.png?size=64`} size={30} />
@@ -2385,6 +2390,17 @@
   .row.wait.selected::before { background: var(--wait); }
   .row.merged.selected::before { background: var(--merged); }
   .row.closed.selected::before { background: var(--closed); }
+  /* Sits in the row's left padding, clear of the selection bar, so rows keep their alignment. */
+  .description-dot {
+    position: absolute;
+    top: 50%;
+    left: 4px;
+    width: 6px;
+    height: 6px;
+    margin-top: -3px;
+    border-radius: 50%;
+    background: var(--native-blue);
+  }
   .row.multi-selected {
     border-color: var(--border-soft);
     background: var(--link-bg);

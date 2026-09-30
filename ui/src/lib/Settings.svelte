@@ -39,6 +39,7 @@
   let hideTestsDefault = $state(false);
   let newestCommentsFirst = $state(false);
   let pendingReviewsEnabled = $state(false);
+  let descriptionUnreadDots = $state(false);
   let whiteboardEnabled = $state(false);
   let testPathRegex = $state("");
   let diffLayout = $state("split");
@@ -140,6 +141,7 @@
     hideTestsDefault = s.hide_tests_default;
     newestCommentsFirst = s.newest_comments_first;
     pendingReviewsEnabled = s.pending_reviews_enabled === true;
+    descriptionUnreadDots = s.description_unread_dots === true;
     whiteboardEnabled = s.whiteboard_enabled === true;
     diffLayout = s.diff_layout;
     forceMergeRepos = s.force_merge_repos.split(",").map((r) => r.trim()).filter(Boolean);
@@ -252,6 +254,7 @@
         hide_tests_default: hideTestsDefault,
         newest_comments_first: newestCommentsFirst,
         pending_reviews_enabled: pendingReviewsEnabled,
+        description_unread_dots: descriptionUnreadDots,
         whiteboard_enabled: whiteboardEnabled,
         test_path_regex: testPathRegex.trim() === BUILTIN_TEST_PATH.source.trim() ? "" : testPathRegex.trim(),
         diff_layout: diffLayout,
@@ -431,6 +434,14 @@
             <input class="check" type="checkbox" bind:checked={pendingReviewsEnabled} />
             <span class="check-text">
               <span class="check-label">Stage comments as pending reviews</span>
+            </span>
+          </label>
+
+          <label class="check-field settings-option field-wide">
+            <input class="check" type="checkbox" bind:checked={descriptionUnreadDots} />
+            <span class="check-text">
+              <span class="check-label">Mark changed descriptions</span>
+              <span class="hint">A blue dot beside a PR whose description changed since you last read it.</span>
             </span>
           </label>
         </div>
