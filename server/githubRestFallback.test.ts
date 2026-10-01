@@ -139,7 +139,7 @@ describe("REST review decision", () => {
 });
 
 // Quota blocks are module state, so the exhausted-GraphQL path runs in its own process.
-test("an exhausted GraphQL pool reads PRs over REST only when the fallback is enabled", async () => {
+test("an exhausted GraphQL pool reads PRs over REST unless the fallback is turned off", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-rest-fallback-"));
   try {
     const script = `
@@ -196,6 +196,8 @@ test("an exhausted GraphQL pool reads PRs over REST only when the fallback is en
       };
       const capture = async (fn) => { try { await fn(); return null; } catch (error) { return error; } };
 
+      const defaultOn = writeSettings({}).rest_fallback_enabled;
+      writeSettings({ rest_fallback_enabled: false });
       const disabled = await capture(() => github.fetchPrDetail("acme/app", 7));
       writeSettings({ rest_fallback_enabled: true });
       paths.length = 0;
@@ -204,6 +206,7 @@ test("an exhausted GraphQL pool reads PRs over REST only when the fallback is en
       const hits = await github.searchOpenPrs(["acme/app"]);
       const rollup = detail.lastCommit.nodes[0].commit.statusCheckRollup;
       console.log(JSON.stringify({
+        defaultOn,
         disabled: { kind: disabled?.kind, resource: disabled?.resource },
         graphqlAfterEnable: paths.filter((path) => path === "/graphql").length,
         reviewDecision: detail.reviewDecision,
@@ -228,6 +231,7 @@ test("an exhausted GraphQL pool reads PRs over REST only when the fallback is en
     ]);
     expect(exitCode, stderr).toBe(0);
     expect(JSON.parse(stdout)).toEqual({
+      defaultOn: true,
       disabled: { kind: "quota", resource: "graphql" },
       graphqlAfterEnable: 0,
       reviewDecision: "APPROVED",

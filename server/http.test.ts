@@ -765,7 +765,19 @@ describe("agent PR summary", () => {
       graphql: { limit: 5_000, used: 5_000, remaining: 0, resetAt },
       fetchedAt,
     });
-    const output = formatPrAgentSummary(summary);
+    const original = getSetting("rest_fallback_enabled");
+    setSetting("rest_fallback_enabled", "false");
+    let output: string;
+    let withFallback: string;
+    try {
+      output = formatPrAgentSummary(summary);
+      setSetting("rest_fallback_enabled", "true");
+      withFallback = formatPrAgentSummary(summary);
+    } finally {
+      setSetting("rest_fallback_enabled", original ?? "true");
+    }
+    // REST still refreshes the PR while GraphQL is empty, so the snapshot is not stuck.
+    expect(withFallback).not.toContain("Refresh unavailable");
 
     expect(summary.snapshot).toEqual({ fetchedAt, freshness: "outdated", newerActivityAt });
 

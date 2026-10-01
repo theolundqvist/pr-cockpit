@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // Install the isolated transport before module evaluation; db must load first to break the settings cycle.
 const githubModuleUrl = new URL("./github.ts", import.meta.url).href;
@@ -33,7 +36,8 @@ test("repository open PR listing completes more than 100 results and rejects inc
         },
       } } } });
     };
-    await import(${JSON.stringify(dbModuleUrl)});
+    // The rate-limited page must surface as GraphQL's quota error, not fall back to REST.
+    (await import(${JSON.stringify(dbModuleUrl)})).setSetting("rest_fallback_enabled", "false");
     const { fetchRepositoryOpenPrs, GithubRequestError } = await import(${JSON.stringify(githubModuleUrl)});
     const eagerRequests = requests.length;
     const prs = await fetchRepositoryOpenPrs("acme/widgets");
@@ -51,14 +55,17 @@ test("repository open PR listing completes more than 100 results and rejects inc
     }
     console.log(JSON.stringify({ eagerRequests, prs, completeRequests, overlapping, errors }));
   `;
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-open-prs-"));
   const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
-    env: { ...Bun.env, COCKPIT_GH_BIN: "/bin/echo", COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "" },
+    env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_GH_BIN: "/bin/echo", COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "" },
     stdout: "pipe",
     stderr: "pipe",
   });
   const stdout = await new Response(child.stdout).text();
   const stderr = await new Response(child.stderr).text();
-  expect(await child.exited, stderr).toBe(0);
+  const exitCode = await child.exited;
+  rmSync(dataDir, { recursive: true, force: true });
+  expect(exitCode, stderr).toBe(0);
   const result = JSON.parse(stdout);
   expect(result.eagerRequests).toBe(0);
   expect(result.completeRequests).toEqual([

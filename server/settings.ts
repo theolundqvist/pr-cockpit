@@ -226,9 +226,10 @@ export function pendingReviewsEnabled(): boolean {
   return getSetting("pending_reviews_enabled") === "true";
 }
 
-// Off by default: REST reads lose thread resolution and per-commit CI that only GraphQL has.
+// On unless turned off: an exhausted GraphQL pool otherwise stops every PR refresh, which
+// costs more than the thread resolution and per-commit CI that REST reads cannot see.
 export function restFallbackEnabled(): boolean {
-  return getSetting("rest_fallback_enabled") === "true";
+  return getSetting("rest_fallback_enabled") !== "false";
 }
 
 export function safeMergeApprovalEnabled(): boolean {

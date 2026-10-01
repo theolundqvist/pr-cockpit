@@ -7,6 +7,7 @@ const githubModuleUrl = new URL("./github.ts", import.meta.url).href;
 const systemIssuesModuleUrl = new URL("./systemIssues.ts", import.meta.url).href;
 const githubUsageModuleUrl = new URL("./githubUsage.ts", import.meta.url).href;
 const githubAuthModuleUrl = new URL("./githubAuth.ts", import.meta.url).href;
+const settingsModuleUrl = new URL("./settings.ts", import.meta.url).href;
 const httpModuleUrl = new URL("./http.ts", import.meta.url).href;
 // Child processes install transport and auth isolation before github.ts evaluates, so static imports cannot exercise these boundaries.
 
@@ -118,6 +119,8 @@ test("PR lookup keeps siblings of a missing alias but rejects a missing reposito
   chmodSync(fakeGh, 0o755);
   try {
     const script = `
+      // These cases pin GraphQL's own error typing, so the REST fallback stays out of the way.
+      (await import(${JSON.stringify(settingsModuleUrl)})).writeSettings({ rest_fallback_enabled: false });
       const { lookupPrIndexes, lookupPr } = await import(${JSON.stringify(githubModuleUrl)});
       const found = { number: 8, title: "Present", state: "OPEN", isDraft: false, updatedAt: "2026-09-01T00:00:00Z", author: { login: "octo" } };
       const missingAlias = { type: "NOT_FOUND", path: ["repository", "pr0"], message: "Could not resolve to a PullRequest with the number of 7." };
@@ -153,7 +156,7 @@ test("PR lookup keeps siblings of a missing alias but rejects a missing reposito
       ]));
     `;
     const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
-      env: { ...Bun.env, COCKPIT_GH_BIN: fakeGh, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "" },
+      env: { ...Bun.env, COCKPIT_DATA_DIR: fakeGhDir, COCKPIT_GH_BIN: fakeGh, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "" },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -277,6 +280,8 @@ test("quota boundaries isolate search, GraphQL, and core while transport and mut
     const script = `
       let now = 2_000_000_000_000;
       Date.now = () => now;
+      // GraphQL exhaustion must stay a typed quota error here, so the REST fallback is off.
+      (await import(${JSON.stringify(settingsModuleUrl)})).writeSettings({ rest_fallback_enabled: false });
       const github = await import(${JSON.stringify(githubModuleUrl)});
       const usage = await import(${JSON.stringify(githubUsageModuleUrl)});
       const graphqlUsage = [];
@@ -376,7 +381,7 @@ test("quota boundaries isolate search, GraphQL, and core while transport and mut
       }));
     `;
     const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
-      env: { ...Bun.env, COCKPIT_GH_BIN: fakeGh, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "" },
+      env: { ...Bun.env, COCKPIT_DATA_DIR: fakeGhDir, COCKPIT_GH_BIN: fakeGh, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "" },
       stdout: "pipe",
       stderr: "pipe",
     });

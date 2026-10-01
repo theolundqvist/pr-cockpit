@@ -19,7 +19,7 @@ export const prefs = $state({
   whiteboardEnabled: false,
   safeMergeApprovalEnabled: false,
   groupDragEnabled: false,
-  restFallbackEnabled: false,
+  restFallbackEnabled: true,
   agents: [
     { id: "fixer", name: "Auto-merge fixer", enabled: true, trigger: "keybind", keybind: "a", model: "opus", prompt_template: "" },
     { id: "autofix", name: "Auto-fix", enabled: true, trigger: "keybind", keybind: "f", model: "opus", prompt_template: "" },
@@ -40,7 +40,7 @@ export function setPrefs(settings) {
   prefs.whiteboardEnabled = settings.whiteboard_enabled === true;
   prefs.safeMergeApprovalEnabled = settings.safe_merge_approval_enabled === true;
   prefs.groupDragEnabled = settings.group_drag_enabled === true;
-  prefs.restFallbackEnabled = settings.rest_fallback_enabled === true;
+  prefs.restFallbackEnabled = settings.rest_fallback_enabled !== false;
   whiteboardSession.current?.setEnabled(prefs.whiteboardEnabled);
   prefs.loaded = true;
 }

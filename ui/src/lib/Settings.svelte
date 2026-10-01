@@ -41,7 +41,7 @@
   let pendingReviewsEnabled = $state(false);
   let descriptionUnreadDots = $state(false);
   let whiteboardEnabled = $state(false);
-  let restFallbackEnabled = $state(false);
+  let restFallbackEnabled = $state(true);
   let safeMergeApprovalEnabled = $state(false);
   // Approval consent belongs to the source Cockpit, so a save forwards it only when this toggle changed.
   let savedSafeMergeApproval = false;
@@ -151,7 +151,7 @@
     safeMergeApprovalEnabled = s.safe_merge_approval_enabled === true;
     savedSafeMergeApproval = safeMergeApprovalEnabled;
     groupDragEnabled = s.group_drag_enabled === true;
-    restFallbackEnabled = s.rest_fallback_enabled === true;
+    restFallbackEnabled = s.rest_fallback_enabled !== false;
     diffLayout = s.diff_layout;
     forceMergeRepos = s.force_merge_repos.split(",").map((r) => r.trim()).filter(Boolean);
     agents = s.agents.map((a) => ({ ...a, promptText: a.prompt_template || a.prompt_default }));
