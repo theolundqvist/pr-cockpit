@@ -590,7 +590,12 @@ async function handleAllPrs(url: URL, runtime: HttpRuntime): Promise<Response> {
         }
         rows = await refresh;
       }
-      for (const pr of rows) prs.push(pr);
+      for (const pr of rows) {
+        const current = getPr(pr.repo, pr.number);
+        prs.push(current && current.updated_at >= pr.updatedAt && current.title !== pr.title
+          ? { ...pr, title: current.title, updatedAt: current.updated_at }
+          : pr);
+      }
     }
     prs.sort((left, right) =>
       right.updatedAt.localeCompare(left.updatedAt)

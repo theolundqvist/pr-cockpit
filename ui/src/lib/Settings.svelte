@@ -465,8 +465,8 @@
           <label class="check-field settings-option field-wide">
             <input class="check" type="checkbox" bind:checked={groupDragEnabled} />
             <span class="check-text">
-              <span class="check-label">Drag PRs between groups</span>
-              <span class="hint">Dropping a PR on another group changes its title type or scope, its manual group, its pin, or its approval.</span>
+              <span class="check-label">Rename and move PRs between groups</span>
+              <span class="hint">Rename from the right-click menu, or drag to change a title's type or scope, a manual group, a pin, or approval.</span>
             </span>
           </label>
         </div>

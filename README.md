@@ -57,9 +57,9 @@ Enable **Mark changed descriptions** in **Settings → Workspace** to show a sma
 
 Enable **Approve PRs for safe merge** in **Settings → Workspace**, then right-click a PR and choose **Approve for safe merge**. It appears above ordinary pins, below failed merges, without launching an agent. Approval covers that PR through fixes and base updates until revoked; closing it or disabling the feature clears approval. Ordinary pins remain bookmarks.
 
-Enable **Drag PRs between groups** in **Settings → Workspace** to move a PR onto another section or row. Type grouping changes the title's conventional-commit type; feature grouping changes its scope; manual grouping changes only your assignment. Title changes are saved to GitHub without changing the summary, draft prefix, or breaking-change marker. Status sections remain read-only. Dropping into **Approved for safe merge** grants approval; dropping out revokes it.
+Enable **Rename and move PRs between groups** in **Settings → Workspace** to rename a PR from its right-click menu or move it onto another section or row. Rename edits the title inline: Enter saves and Escape cancels. Type grouping changes the title's conventional-commit type; feature grouping changes its scope; manual grouping changes only your assignment. Dragging preserves the summary, draft prefix, and breaking-change marker. Status sections remain read-only. Dropping into **Approved for safe merge** grants approval; dropping out revokes it.
 
-Press **⌘Z** (Ctrl+Z on Windows/Linux) to undo a move's title change, including while it is saving. Undo restores the exact previous title on GitHub, not revoked merge approval. Rename moves and Set Aside share undo order; text fields and the whiteboard keep their own undo.
+Press **⌘Z** (Ctrl+Z on Windows/Linux) to undo a title change from Rename or a group move, including while it is saving. Undo restores the exact previous title on GitHub, not revoked merge approval. Title changes and Set Aside share undo order; text fields and the whiteboard keep their own undo.
 
 Desktop notifications are off by default. In **Settings → Notifications**, choose events and combine rules for human or bot authors, comment text, repositories, and review requests. GitHub bot accounts and configured review bots count as bots; unknown authors match neither human nor bot filters.
 

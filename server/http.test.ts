@@ -222,6 +222,34 @@ describe("all PRs", () => {
     state: "OPEN" as const, isDraft: false, updatedAt: "2026-09-01T00:00:00Z",
   };
 
+  test("shows a completed rename over a cached repository list without letting older details win", async () => {
+    const repo = "fixture/rename";
+    const number = 9301;
+    const original = { ...row, repo, number, title: "fix(mail): keep selection" };
+    let fetches = 0;
+    const handler = buildFetchHandler(4820, {
+      trackedRepos: async () => [repo],
+      fetchRepositoryOpenPrs: async () => { fetches++; return [original]; },
+    });
+    try {
+      expect(await (await handler(new Request(url))).json()).toEqual({ prs: [original] });
+      const current = {
+        ...trackedPrRow({ repo, number, fetchedAt: "2026-09-02T00:00:00Z" }),
+        title: "fix(calendar): keep selection",
+        updated_at: "2026-09-02T00:00:00Z",
+      };
+      upsertPr(current);
+      expect(await (await handler(new Request(url))).json()).toEqual({
+        prs: [{ ...original, title: current.title, updatedAt: current.updated_at }],
+      });
+      upsertPr({ ...current, title: "Old title", updated_at: "2026-08-01T00:00:00Z" });
+      expect(await (await handler(new Request(url))).json()).toEqual({ prs: [original] });
+      expect(fetches).toBe(1);
+    } finally {
+      db.query("DELETE FROM prs WHERE repo = ? AND number = ?").run(repo, number);
+    }
+  });
+
   test("is lazy, restricts scope, sorts all authors, and leaves personal membership untouched", async () => {
     const calls: string[] = [];
     let tracked = ["acme/widgets", "acme/api"];

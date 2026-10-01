@@ -74,6 +74,7 @@
     lastMouseY = e.screenY;
   }
   function onRowHover(e, index) {
+    if (titleEditor) return;
     if (e.screenX === lastMouseX && e.screenY === lastMouseY) return;
     selected = index;
     if (ordered[index]) preloadPr(ordered[index], { urgent: true });
@@ -116,6 +117,10 @@
   const archiveFlash = timedFlag(4000, () => (undo = null));
   let contextMenu = $state(null);
   let contextMenuNode = $state();
+  let titleEditor = $state(null);
+  $effect(() => {
+    if (!prefs.groupDragEnabled) titleEditor = null;
+  });
   let lastG = 0;
   // Row thumbnails mount one task after the list's first paint, so opening the queue never waits on them;
   // each row reserves the deck's width up front, so nothing shifts when they arrive. A cold open has no
@@ -483,6 +488,7 @@
 
   function showView(next) {
     if (view === next) return;
+    titleEditor = null;
     view = next;
     if (prefs.whiteboardEnabled) localStorage.setItem("cockpit:list-view", next);
     if (next === "whiteboard") location.hash = "#/whiteboard";
@@ -500,9 +506,11 @@
   let historyQuery = $state("");
   let historyLoading = $state(false);
   let historySeq = 0;
+  let historyRevision = $state(0);
 
   $effect(() => {
     const q = filterQuery.trim();
+    historyRevision;
     if (!wantsHistory(q)) {
       historyLoading = false;
       return;
@@ -771,6 +779,42 @@
     }
   }
 
+  function startRename(pr) {
+    contextMenu = null;
+    const index = ordered.findIndex((item) => prKey(item) === prKey(pr));
+    if (index !== -1) selected = index;
+    titleEditor = { pr, draft: pr.title, saving: false };
+  }
+
+  function focusTitleInput(node) {
+    node.focus();
+    node.select();
+  }
+
+  async function saveRename(event) {
+    event.preventDefault();
+    const editor = titleEditor;
+    const title = editor.draft.trim();
+    const key = prKey(editor.pr);
+    if (!title || editor.saving || rankBusy.has(key)) return;
+    if (title === editor.pr.title) {
+      titleEditor = null;
+      return;
+    }
+    editor.saving = true;
+    rankBusy.add(key);
+    try {
+      await queueRetitle(editor.pr, title, false);
+      if (titleEditor === editor) titleEditor = null;
+      await loadInbox();
+    } catch (error) {
+      showFlash(`Couldn't rename #${editor.pr.number}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      editor.saving = false;
+      rankBusy.delete(key);
+    }
+  }
+
   async function queueRetitle(pr, title, revokeApproval) {
     const key = prKey(pr);
     const previousTitle = pr.title;
@@ -829,7 +873,13 @@
     } finally {
       retitlePolling = false;
     }
-    if (landed) await loadInbox();
+    if (landed) {
+      await loadInbox();
+      if (showArchived) await loadArchived();
+      if (view === "all") await loadAllPrs();
+      else if (view === "closed") await loadClosed();
+      else if (wantsHistory(filterQuery)) historyRevision++;
+    }
   }
 
   $effect(() => {
@@ -1004,12 +1054,16 @@
   let ordered = $derived(view === "all" ? visibleAllPrs : view === "closed" ? filteredClosedPrs : showArchived ? [...openOrdered, ...visibleArchivedPrs] : openOrdered);
   let archivedSet = $derived(new Set(archivedPrs.map((pr) => prKey(pr))));
   const isArchived = (pr) => archivedSet.has(prKey(pr));
+  $effect(() => {
+    if (titleEditor && (!active || !ordered.some((pr) => prKey(pr) === prKey(titleEditor.pr)))) titleEditor = null;
+  });
 
   $effect(() => {
     if (selected > ordered.length - 1) selected = Math.max(0, ordered.length - 1);
   });
 
   let keyBarKeys = $derived.by(() => {
+    if (titleEditor) return [{ key: "enter", label: "save title" }, { key: "esc", label: "cancel" }];
     const pr = ordered[selected];
     const keys = [
       { key: "j / k", label: "move" },
@@ -1118,6 +1172,13 @@
       if (contextMenu) {
         if (e.key === "Escape") {
           contextMenu = null;
+          e.preventDefault();
+        }
+        return;
+      }
+      if (titleEditor) {
+        if (e.key === "Escape" && !titleEditor.saving) {
+          titleEditor = null;
           e.preventDefault();
         }
         return;
@@ -1381,13 +1442,35 @@
       {/if}
     {/snippet}
 
+    {#snippet renameEditor()}
+      <form class="row-title-editor" onsubmit={saveRename}>
+        <input aria-label="Pull request title" bind:value={titleEditor.draft} disabled={titleEditor.saving} use:focusTitleInput />
+        <button type="submit" disabled={!titleEditor.draft.trim() || titleEditor.saving} aria-label="Save pull request title">Save <Kbd keys="enter" /></button>
+        <button type="button" disabled={titleEditor.saving} onclick={() => titleEditor = null} aria-label="Cancel renaming pull request">Cancel <Kbd keys="esc" /></button>
+      </form>
+    {/snippet}
+
+    {#snippet renameStatus(pr)}
+      {#if retitles[prKey(pr)]}
+        {@const retitle = retitles[prKey(pr)]}
+        <div class="row-retitle" role="status">
+          <span class="row-retitle-title">Renaming to “{retitle.title}”</span>
+          <MutationBadge state={retitle.state} pendingLabel="SAVING…" onRetry={() => retryRetitle(prKey(pr))} onDiscard={() => discardRetitle(prKey(pr))} />
+          {#if retitle.error}<span class="row-retitle-error">{retitle.error}</span>{/if}
+        </div>
+      {/if}
+    {/snippet}
+
     {#snippet row(pr)}
       {@const status = classify(pr, viewerLogin)}
       {@const index = ordered.indexOf(pr)}
       {@const info = stack.get(prKey(pr))}
       {@const statsDiffer = pr.additions !== pr.rawAdditions || pr.deletions !== pr.rawDeletions}
       {@const viewedDescription = prefs.descriptionUnreadDots && pr.descriptionDigest ? lastViewed.all[prKey(pr)]?.descriptionDigest : undefined}
-      <a
+      {@const editing = titleEditor && prKey(titleEditor.pr) === prKey(pr)}
+      <svelte:element
+        this={editing ? "div" : "a"}
+        role={editing ? "group" : "link"}
         class="row {status.tone}"
         class:selected={index === selected}
         class:multi-selected={multiRange && index >= multiRange.lo && index <= multiRange.hi}
@@ -1397,8 +1480,8 @@
         oncontextmenu={(event) => openContextMenu(event, pr)}
         class:drop-before={dropHint?.key === prKey(pr) && dropHint.before}
         class:drop-after={dropHint?.key === prKey(pr) && !dropHint.before}
-        href="#/pr/{pr.repo}/{pr.number}"
-        draggable={!info?.indent && !isArchived(pr)}
+        href={editing ? undefined : `#/pr/${pr.repo}/${pr.number}`}
+        draggable={!titleEditor && !info?.indent && !isArchived(pr)}
         ondragstart={(e) => onDragStart(e, pr)}
         ondragend={onDragEnd}
         ondragover={(e) => onDragOverRow(e, pr)}
@@ -1415,6 +1498,9 @@
         </span>
         <span class="row-badge-slot"><span class="row-badge badge {status.tone}">{status.label}</span></span>
         <div class="row-main">
+          {#if editing}
+            {@render renameEditor()}
+          {:else}
           <div class="row-title">
             {@render rowTitle(pr)}
             {#if pr.rank != null}
@@ -1426,6 +1512,7 @@
               </span>
             {/if}
           </div>
+          {/if}
           <div class="row-meta mono">
             <span class="num">#{pr.number}</span>
             <span class="sep">·</span>
@@ -1455,18 +1542,11 @@
             {pr.reviewScore}/5
           </span>
         {/if}
-        <span class="row-keys">{#if index === selected}<Kbd keys="s" label={pr.rank == null ? "Pin" : "Unpin"} /><Kbd keys="enter" />{/if}</span>
+        <span class="row-keys">{#if index === selected && !editing}<Kbd keys="s" label={pr.rank == null ? "Pin" : "Unpin"} /><Kbd keys="enter" />{/if}</span>
         {@render rowMedia(pr)}
         <span class="row-age mono">{relativeTime(pr.updatedAt)}</span>
-      </a>
-      {#if retitles[prKey(pr)]}
-        {@const retitle = retitles[prKey(pr)]}
-        <div class="row-retitle" role="status">
-          <span class="row-retitle-title">Renaming to “{retitle.title}”</span>
-          <MutationBadge state={retitle.state} pendingLabel="SAVING…" onRetry={() => retryRetitle(prKey(pr))} onDiscard={() => discardRetitle(prKey(pr))} />
-          {#if retitle.error}<span class="row-retitle-error">{retitle.error}</span>{/if}
-        </div>
-      {/if}
+      </svelte:element>
+      {@render renameStatus(pr)}
     {/snippet}
 
     {#snippet groupBody(group)}
@@ -1512,10 +1592,11 @@
     {#snippet closedRow(pr)}
       {@const status = classify(pr, viewerLogin)}
       {@const index = ordered.indexOf(pr)}
-      <a
+      {@const editing = titleEditor && prKey(titleEditor.pr) === prKey(pr)}
+      <svelte:element this={editing ? "div" : "a"} role={editing ? "group" : "link"}
         class="row {status.tone}"
         class:selected={index === selected}
-        href="#/pr/{pr.repo}/{pr.number}"
+        href={editing ? undefined : `#/pr/${pr.repo}/${pr.number}`}
         onmouseenter={(e) => onRowHover(e, index)}
         oncontextmenu={(event) => openContextMenu(event, pr)}
       >
@@ -1524,7 +1605,7 @@
         </span>
         <span class="row-badge-slot"><span class="row-badge badge {status.tone}">{status.label}</span></span>
         <div class="row-main">
-          <div class="row-title">{@render rowTitle(pr)}</div>
+          {#if editing}{@render renameEditor()}{:else}<div class="row-title">{@render rowTitle(pr)}</div>{/if}
           <div class="row-meta mono">
             <span class="num">#{pr.number}</span>
             <span class="sep">·</span>
@@ -1533,17 +1614,19 @@
             <span>{pr.author}</span>
           </div>
         </div>
-        <span class="row-keys">{#if index === selected}<Kbd keys="enter" />{/if}</span>
+        <span class="row-keys">{#if index === selected && !editing}<Kbd keys="enter" />{/if}</span>
         {@render rowMedia(pr)}
         <span class="row-age mono" title={pr.terminalAt}>{relativeTime(pr.terminalAt)}</span>
-      </a>
+      </svelte:element>
+      {@render renameStatus(pr)}
     {/snippet}
 
     {#snippet allPrRow(pr, index)}
-      <a
+      {@const editing = titleEditor && prKey(titleEditor.pr) === prKey(pr)}
+      <svelte:element this={editing ? "div" : "a"} role={editing ? "group" : "link"}
         class="row wait"
         class:selected={index === selected}
-        href="#/pr/{pr.repo}/{pr.number}"
+        href={editing ? undefined : `#/pr/${pr.repo}/${pr.number}`}
         onmouseenter={(e) => onRowHover(e, index)}
         onclick={() => (restoreKey = prKey(pr))}
         oncontextmenu={(event) => openContextMenu(event, pr)}
@@ -1553,7 +1636,7 @@
         </span>
         <span class="cow-badge-slot"><span class="cow-badge wait">Open</span></span>
         <div class="row-main">
-          <div class="row-title">{@render rowTitle(pr)}</div>
+          {#if editing}{@render renameEditor()}{:else}<div class="row-title">{@render rowTitle(pr)}</div>{/if}
           <div class="row-meta mono">
             <span class="num">#{pr.number}</span>
             <span class="sep">·</span>
@@ -1562,10 +1645,11 @@
             <span>{pr.author}</span>
           </div>
         </div>
-        <span class="row-keys">{#if index === selected}<Kbd keys="enter" />{/if}</span>
+        <span class="row-keys">{#if index === selected && !editing}<Kbd keys="enter" />{/if}</span>
         {@render rowMedia(pr)}
         <span class="row-age mono" title={pr.updatedAt}>{relativeTime(pr.updatedAt)}</span>
-      </a>
+      </svelte:element>
+      {@render renameStatus(pr)}
     {/snippet}
 
     <div class="inbox-layout">
@@ -1726,6 +1810,9 @@
   >
     <button role="menuitem" onclick={() => { location.hash = `#/pr/${contextMenu.pr.repo}/${contextMenu.pr.number}`; contextMenu = null; }}>Open pull request</button>
     <button role="menuitem" onclick={() => { openGithub(contextMenu.pr); contextMenu = null; }}>Open on GitHub</button>
+      {#if prefs.groupDragEnabled}
+        <button role="menuitem" disabled={!!titleEditor?.saving || !!retitles[prKey(contextMenu.pr)]} onclick={() => startRename(contextMenu.pr)}>Rename</button>
+      {/if}
     {#if view === "open" && !isArchived(contextMenu.pr) && contextMenu.pr.state === "OPEN"}
       <button role="menuitem" onclick={() => { togglePinned(contextMenu.pr); contextMenu = null; }}>{contextMenu.pr.rank == null ? "Pin" : "Unpin"}</button>
     {/if}
@@ -1762,6 +1849,42 @@
 {/if}
 
 <style>
+  .row-title-editor {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+  }
+  .row-title-editor input {
+    flex: 1;
+    min-width: 0;
+    padding: 4px 6px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--text);
+    font: inherit;
+  }
+  .row-title-editor button {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+    padding: 4px 6px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-dim);
+    font: inherit;
+    cursor: pointer;
+  }
+  .row-title-editor button:hover {
+    background: var(--surface);
+    color: var(--text);
+  }
+  .row-title-editor button:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
   .pr-context-menu {
     position: fixed;
     z-index: 100;
