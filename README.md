@@ -53,7 +53,7 @@ Reviewer badges show scores explicitly posted in reviews or comments, parsed wit
 
 Enable **Pending reviews** in **Settings → Workspace** to save inline comments as a native GitHub draft and submit them together as one review. Drafts survive reloads and remain editable; if the PR head changes, submission stops until the stale draft is discarded. **Comment now** still posts a single comment immediately.
 
-Enable **Mark changed descriptions** in **Settings → Workspace** to show a small blue dot at the left of a queue row when the PR description differs from the one you last read. It is off by default. A description counts as read while it is on screen in the Conversation tab of a foreground window; PRs you have never read stay unmarked, and a description reverted to the version you read clears the dot.
+Enable **Mark changed descriptions** in **Settings → Workspace** to show a small blue dot to the left of the avatar, vertically centered on it, when the PR description differs from the one you last read. It is off by default. A description counts as read while it is on screen in the Conversation tab of a foreground window; PRs you have never read stay unmarked, and a description reverted to the version you read clears the dot.
 
 Enable **Approve PRs for safe merge** in **Settings → Workspace**, then right-click a PR and choose **Approve for safe merge**. It appears above ordinary pins, below failed merges, without launching an agent. Approval covers that PR through fixes and base updates until revoked; closing it or disabling the feature clears approval. Ordinary pins remain bookmarks.
 

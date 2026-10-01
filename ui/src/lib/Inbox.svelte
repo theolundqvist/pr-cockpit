@@ -1406,11 +1406,11 @@
         onmouseenter={(e) => onRowHover(e, index)}
         onclick={() => (restoreKey = prKey(pr))}
       >
-        {#if viewedDescription && viewedDescription !== pr.descriptionDigest}
-          <span class="description-dot" role="img" aria-label="Description changed" title="Description changed since you last read it"></span>
-        {/if}
         {#if info?.indent}<span class="stack-glyph" aria-hidden="true">└</span>{/if}
         <span class="row-avatar">
+          {#if viewedDescription && viewedDescription !== pr.descriptionDigest}
+            <span class="description-dot" role="img" aria-label="Description changed" title="Description changed since you last read it"></span>
+          {/if}
           <Avatar login={pr.author} url={`https://github.com/${pr.author}.png?size=64`} size={30} />
         </span>
         <span class="row-badge-slot"><span class="row-badge badge {status.tone}">{status.label}</span></span>
@@ -2160,6 +2160,7 @@
     background: var(--link-bg);
   }
   .row-avatar {
+    position: relative;
     flex: none;
     display: flex;
     margin-top: 1px;
@@ -2630,11 +2631,11 @@
   .row.wait.selected::before { background: var(--wait); }
   .row.merged.selected::before { background: var(--merged); }
   .row.closed.selected::before { background: var(--closed); }
-  /* Sits in the row's left padding, clear of the selection bar, so rows keep their alignment. */
+  /* Keep the dot centered on the avatar even when row metadata wraps. */
   .description-dot {
     position: absolute;
     top: 50%;
-    left: 4px;
+    left: -8px;
     width: 6px;
     height: 6px;
     margin-top: -3px;
@@ -3105,6 +3106,9 @@
       grid-column: 1;
       grid-row: 1 / span 2;
       margin-top: 2px;
+    }
+    .description-dot {
+      left: -2px;
     }
     .row-main {
       grid-column: 2;
