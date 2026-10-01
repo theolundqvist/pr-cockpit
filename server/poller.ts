@@ -1,4 +1,4 @@
-import { fetchGithubQuota, fetchPrDetail, recentGithubQuota, fetchPrDetailPart, GithubRequestError, lookupPr, searchClosedPrs, searchOpenPrs, searchRecentPrs, type GithubQuotaResource, type PrDetail, type PrDetailScope } from "./github.ts";
+import { backgroundQuotaAvailable, fetchGithubQuota, fetchPrDetail, recentGithubQuota, fetchPrDetailPart, GithubRequestError, lookupPr, searchClosedPrs, searchOpenPrs, searchRecentPrs, type GithubQuotaResource, type PrDetail, type PrDetailScope } from "./github.ts";
 import type { GithubUsageSource } from "./githubUsage.ts";
 import {
   deleteWebhookRegistrationsForPr,
@@ -21,13 +21,12 @@ import { fetchMirror, pruneMirrors } from "./mirror.ts";
 import { needsMeRank } from "./rank.ts";
 import { refreshRepoUsers } from "./repoUsers.ts";
 import { createPrRefreshScheduler } from "./refreshScheduler.ts";
-import { pollIntervalMs, settingsRepos } from "./settings.ts";
+import { pollIntervalMs, restFallbackEnabled, settingsRepos } from "./settings.ts";
 import { discoveredRepos, refreshWorktreeScan } from "./worktreeScan.ts";
 import { onPrActivity } from "./activity.ts";
 import { invalidateInbox, invalidatePr, publishPollCompleted } from "./rendererInvalidation.ts";
 import { cacheGithubActionsForCommit, refreshRecentActions } from "./runLogs.ts";
 import { observePrNotifications } from "./notifications.ts";
-import { GRAPHQL_BACKGROUND_RESERVE } from "../ui/src/lib/quotaImpact.js";
 import { captureError } from "./sentry.ts";
 import { reportStorageFailure, repositoryAvailable } from "./systemIssues.ts";
 import { watchForWake } from "./wake.ts";
@@ -37,7 +36,6 @@ const INDEX_SWEEP_MS = 1_800_000;
 const POLL_REFRESH_CONCURRENCY = 3;
 // GitHub's search index trails writes by minutes, so bounded sweeps overlap the previous one.
 const CLOSED_SWEEP_OVERLAP_MS = 15 * 60_000;
-const GRAPHQL_WINDOW_MS = 60 * 60_000;
 
 export let lastPollAt: string | null = null;
 
@@ -48,12 +46,7 @@ export function setLastPollAt(value: string | null): void {
 let quotaPauseResetAt: string | null = null;
 let openInboxKeys = new Set<string>();
 
-export function backgroundQuotaAvailable(quota: GithubQuotaResource, now = Date.now()): boolean {
-  if (quota.remaining >= quota.limit) return true;
-  const resetIn = Math.max(0, Date.parse(quota.resetAt) - now);
-  const pacedReserve = Math.ceil(quota.limit * Math.min(resetIn, GRAPHQL_WINDOW_MS) / GRAPHQL_WINDOW_MS);
-  return quota.remaining > Math.max(GRAPHQL_BACKGROUND_RESERVE, pacedReserve);
-}
+export { backgroundQuotaAvailable };
 
 // Pacing tolerates a reading this old; fetching a fresh one first added a /rate_limit round
 // trip (~0.5s) to the first relay refresh after every quiet minute.
@@ -64,7 +57,8 @@ export async function backgroundPollAllowed(): Promise<boolean> {
   // fetchGithubQuota answers from cache while the reading is fresh, so this only calls out when stale.
   if (recent) void fetchGithubQuota().catch(() => {});
   const quota = recent ?? await fetchGithubQuota();
-  if (backgroundQuotaAvailable(quota.graphql)) {
+  // With the REST fallback on, background reads move to the REST pool once GraphQL is low.
+  if (backgroundQuotaAvailable(quota.graphql) || (restFallbackEnabled() && backgroundQuotaAvailable(quota.rest))) {
     quotaPauseResetAt = null;
     return true;
   }

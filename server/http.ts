@@ -108,7 +108,7 @@ import { commitsFromMirror, commitStatsFromMirror, conflictFilesFromMirror, diff
 import { checkState, currentChecks, type CheckState } from "./checkState.ts";
 import { currentBaseRef, discardMutation, enqueueMutation, mutationsForPr, retryMutation, type MutationPayload } from "./mutations.ts";
 import { isMergeMethod, mergeMethodFor, mergeMethodSourceFor, setMergeMethodPreference } from "./mergeMethod.ts";
-import { AGENT_DEFAULTS, pendingReviewsEnabled, readSettings, relayConfig, RELAY_APP_INSTALL_URL, RELAY_APP_SLUG, safeMergeApprovalEnabled, settingsRepos, writeSettings, type AgentSetting, type Settings } from "./settings.ts";
+import { AGENT_DEFAULTS, pendingReviewsEnabled, readSettings, relayConfig, restFallbackEnabled, RELAY_APP_INSTALL_URL, RELAY_APP_SLUG, safeMergeApprovalEnabled, settingsRepos, writeSettings, type AgentSetting, type Settings } from "./settings.ts";
 import { claudeBinPath, codexBinPath, ompBinPath } from "./harness.ts";
 import { CommitMessageError, generateCommitMessage } from "./commitMessage.ts";
 import { relayStatus, webhookCoveredSince } from "./relayClient.ts";
@@ -1147,7 +1147,7 @@ export function formatPrAgentSummary(summary: PrAgentSummary, options: AgentSumm
     if (newerActivityAt) {
       lines.push(`Known newer activity: webhook received ${newerActivityAt}. This snapshot does not include that activity.`);
     }
-    if (summary.quota?.graphql.remaining === 0) {
+    if (summary.quota?.graphql.remaining === 0 && !restFallbackEnabled()) {
       lines.push(`Refresh unavailable until ${summary.quota.graphql.resetAt}: GitHub GraphQL quota exhausted.`);
     }
   }
@@ -2715,6 +2715,7 @@ async function handlePutSettings(req: Request, runtime: HttpRuntime): Promise<Re
     whiteboard_enabled: boolean;
     safe_merge_approval_enabled: boolean;
     group_drag_enabled: boolean;
+    rest_fallback_enabled: boolean;
     pr_grouping: Settings["pr_grouping"];
   }>;
   try {

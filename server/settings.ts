@@ -226,6 +226,11 @@ export function pendingReviewsEnabled(): boolean {
   return getSetting("pending_reviews_enabled") === "true";
 }
 
+// Off by default: REST reads lose thread resolution and per-commit CI that only GraphQL has.
+export function restFallbackEnabled(): boolean {
+  return getSetting("rest_fallback_enabled") === "true";
+}
+
 export function safeMergeApprovalEnabled(): boolean {
   return getSetting("safe_merge_approval_enabled") === "true";
 }
@@ -269,6 +274,7 @@ export interface Settings {
   whiteboard_enabled: boolean;
   safe_merge_approval_enabled: boolean;
   group_drag_enabled: boolean;
+  rest_fallback_enabled: boolean;
   pr_grouping: PrGrouping;
   agent_harness: Harness;
   relay_url: string;
@@ -313,6 +319,7 @@ export function readSettings(): Settings {
     whiteboard_enabled: getSetting("whiteboard_enabled") === "true",
     safe_merge_approval_enabled: safeMergeApprovalEnabled(),
     group_drag_enabled: getSetting("group_drag_enabled") === "true",
+    rest_fallback_enabled: restFallbackEnabled(),
     pr_grouping: readPrGrouping(),
     agent_harness: normalizeHarness(getSetting("agent_harness")),
     relay_url: relayConfig().url,
@@ -354,6 +361,7 @@ export function writeSettings(
     whiteboard_enabled: boolean;
     safe_merge_approval_enabled: boolean;
     group_drag_enabled: boolean;
+    rest_fallback_enabled: boolean;
     pr_grouping: PrGrouping;
     agent_harness: string;
     relay_url: string;
@@ -420,6 +428,13 @@ export function writeSettings(
     const enabled = patch.group_drag_enabled === true ? "true" : "false";
     if (getSetting("group_drag_enabled") !== enabled) {
       setSetting("group_drag_enabled", enabled);
+      invalidateSettings();
+    }
+  }
+  if (patch.rest_fallback_enabled !== undefined) {
+    const enabled = patch.rest_fallback_enabled === true;
+    if (restFallbackEnabled() !== enabled) {
+      setSetting("rest_fallback_enabled", enabled ? "true" : "false");
       invalidateSettings();
     }
   }

@@ -13,7 +13,28 @@ import {
   recordGithubGraphqlUsage,
   type GithubUsageSource,
 } from "./githubUsage.ts";
-import { readSettings } from "./settings.ts";
+import { readSettings, restFallbackEnabled } from "./settings.ts";
+import { createConcurrencyLimit } from "./concurrency.ts";
+import { GRAPHQL_BACKGROUND_RESERVE } from "../ui/src/lib/quotaImpact.js";
+import type { PrCheck } from "./checkState.ts";
+import {
+  restAuthor,
+  restCheckContexts,
+  restCommitList,
+  restIssueComments,
+  restReactionGroups,
+  restReviewDecision,
+  restReviews,
+  restReviewThreads,
+  restRollupState,
+  type RestCheckRun,
+  type RestCommitStatus,
+  type RestIssueComment,
+  type RestPrCommit,
+  type RestReactions,
+  type RestReview,
+  type RestReviewComment,
+} from "./githubRestFallback.ts";
 import {
   clearRepositoryUnavailable,
   reportRepositoryUnavailable,
@@ -493,6 +514,123 @@ async function graphql<T>(
   return body.data;
 }
 
+const GRAPHQL_WINDOW_MS = 60 * 60_000;
+
+// Background work may spend a pool only while it stays ahead of an even pace to the reset,
+// so the screen keeps a share of what is left.
+export function backgroundQuotaAvailable(quota: GithubQuotaResource, now = Date.now()): boolean {
+  if (quota.remaining >= quota.limit) return true;
+  const resetIn = Math.max(0, Date.parse(quota.resetAt) - now);
+  const pacedReserve = Math.ceil(quota.limit * Math.min(resetIn, GRAPHQL_WINDOW_MS) / GRAPHQL_WINDOW_MS);
+  return quota.remaining > Math.max(GRAPHQL_BACKGROUND_RESERVE, pacedReserve);
+}
+
+// Reads made on Cockpit's own schedule rather than for someone looking at the screen.
+const BACKGROUND_SOURCES: ReadonlySet<GithubUsageSource> = new Set([
+  "background poll",
+  "daemon",
+  "index sync",
+  "relay",
+  "review inbox",
+  "webhook",
+]);
+
+// With the REST fallback on, a read takes GitHub's separate REST pool while GraphQL is
+// exhausted, and a background read also while GraphQL is below its background reserve.
+function graphqlReadOnRest(source: GithubUsageSource): boolean {
+  if (mockGithub || !restFallbackEnabled()) return false;
+  if (activeQuotaBlock("graphql")) return true;
+  if (!BACKGROUND_SOURCES.has(source) || !cachedQuota) return false;
+  return Date.parse(cachedQuota.graphql.resetAt) > Date.now() && !backgroundQuotaAvailable(cachedQuota.graphql);
+}
+
+async function readWithRestFallback<T>(
+  source: GithubUsageSource,
+  graphqlRead: () => Promise<T>,
+  restRead: () => Promise<T>,
+): Promise<T> {
+  if (graphqlReadOnRest(source)) return restRead();
+  try {
+    return await graphqlRead();
+  } catch (error) {
+    const graphqlExhausted = error instanceof GithubRequestError && error.kind === "quota" && error.resource === "graphql";
+    if (!graphqlExhausted || mockGithub || !restFallbackEnabled()) throw error;
+    return restRead();
+  }
+}
+
+// Fan-out per PR for REST reads; most answers are 304s from the ETag cache and cost nothing.
+const REST_FANOUT = 8;
+
+// Pages a REST list through the ETag cache, so an unchanged page costs no quota.
+async function restList<T>(
+  path: string,
+  maxPages = 10,
+  pick: (body: unknown) => T[] = (body) => body as T[],
+): Promise<T[]> {
+  const items: T[] = [];
+  const separator = path.includes("?") ? "&" : "?";
+  for (let page = 1; page <= maxPages; page++) {
+    const batch = pick(await restJson<unknown>(`${path}${separator}per_page=100&page=${page}`));
+    items.push(...batch);
+    if (batch.length < 100) break;
+  }
+  return items;
+}
+
+function restBranchPath(branch: string): string {
+  return branch.split("/").map(encodeURIComponent).join("/");
+}
+
+function restPullState(pull: { state: "open" | "closed"; merged_at: string | null }): PrState {
+  return pull.merged_at ? "MERGED" : pull.state.toUpperCase() as PrState;
+}
+
+type RestChecks = { checkRuns: RestCheckRun[]; statuses: RestCommitStatus[]; workflowRuns: WorkflowRun[] };
+
+async function fetchRestChecks(repo: string, sha: string): Promise<RestChecks> {
+  const commit = encodeURIComponent(sha);
+  const [checkRuns, statuses, workflowRuns] = await Promise.all([
+    restList<RestCheckRun>(`/repos/${repo}/commits/${commit}/check-runs`, 10, (body) => (body as { check_runs?: RestCheckRun[] }).check_runs ?? []),
+    restJson<{ statuses?: RestCommitStatus[] }>(`/repos/${repo}/commits/${commit}/status?per_page=100`).then((body) => body.statuses ?? []),
+    fetchWorkflowRuns(repo, sha),
+  ]);
+  return { checkRuns, statuses, workflowRuns };
+}
+
+function restChecksRollup(checks: RestChecks, required: ReadonlySet<string> = new Set()): { contexts: PrCheck[]; rollup: string | null } {
+  const contexts = restCheckContexts(checks.checkRuns, checks.statuses, checks.workflowRuns, required);
+  return { contexts, rollup: restRollupState(contexts) };
+}
+
+// Required checks and approvals come from classic protection, which REST shows to readers on
+// the branch, and from rulesets. Either may be hidden; that only loses the required markers.
+async function fetchRestBranchRules(repo: string, branch: string): Promise<{ contexts: Set<string>; approvals: number }> {
+  const path = restBranchPath(branch);
+  const [protectedBranch, rules] = await Promise.all([
+    restJson<{ protection?: { required_status_checks?: { contexts?: string[]; checks?: Array<{ context: string }> } } }>(
+      `/repos/${repo}/branches/${path}`,
+    ).catch(() => null),
+    restJson<Array<{ type: string; parameters?: { required_status_checks?: Array<{ context: string }>; required_approving_review_count?: number } }>>(
+      `/repos/${repo}/rules/branches/${path}`,
+    ).catch(() => []),
+  ]);
+  const required = protectedBranch?.protection?.required_status_checks;
+  const contexts = new Set([...required?.contexts ?? [], ...(required?.checks ?? []).map((check) => check.context)]);
+  let approvals = 0;
+  for (const rule of rules) {
+    if (rule.type === "required_status_checks") for (const check of rule.parameters?.required_status_checks ?? []) contexts.add(check.context);
+    if (rule.type === "pull_request") approvals = Math.max(approvals, rule.parameters?.required_approving_review_count ?? 0);
+  }
+  return { contexts, approvals };
+}
+
+// The open PR as the poll and review inbox see it: REST search has neither the head nor CI.
+async function fetchRestPullWithRollup(repo: string, number: number): Promise<{ pull: RestPullRequest; rollup: string | null }> {
+  const pull = await restJson<RestPullRequest>(`/repos/${repo}/pulls/${number}`);
+  return { pull, rollup: restChecksRollup(await fetchRestChecks(repo, pull.head.sha)).rollup };
+}
+
 export const MAX_MERGED_PR_ANALYTICS_DAYS = 180;
 
 export interface MergedPrAnalyticsPullRequest {
@@ -561,49 +699,85 @@ export async function fetchMergedPrAnalytics(repo: string, base: string): Promis
   } else {
     const [owner, name] = repo.split("/");
     if (!owner || !name) throw new GithubRequestError(`Invalid repository: ${repo}`, 404);
-    pullRequests = [];
-    let cursor: string | null = null;
-    while (true) {
-      const data = await graphql<{
-        repository: {
-          pullRequests: {
-            nodes: Array<{
-              number: number;
-              title: string;
-              url: string;
-              mergedAt: string | null;
-              updatedAt: string;
-              author: { login: string } | null;
-            }>;
-            pageInfo: { hasNextPage: boolean; endCursor: string | null };
-          };
-        } | null;
-      }>(MERGED_PRS_QUERY, { owner, name, base, cursor }, "user action", "merged-pr-analytics");
-      if (!data.repository) throw new GithubRequestError(`Repository not found: ${repo}`, 404);
-
-      const nodes = data.repository.pullRequests.nodes;
-      const reachedCutoff = nodes.length > 0 && nodes.every((entry) => Date.parse(entry.updatedAt) < cutoff);
-      for (const entry of nodes) {
-        if (!entry.mergedAt) continue;
-        if (Date.parse(entry.mergedAt) < cutoff) continue;
-        pullRequests.push({
-          number: entry.number,
-          title: entry.title,
-          url: entry.url,
-          author: entry.author?.login ?? "unknown",
-          mergedAt: entry.mergedAt,
-        });
-      }
-
-      const { hasNextPage, endCursor } = data.repository.pullRequests.pageInfo;
-      if (reachedCutoff || !hasNextPage) break;
-      if (!endCursor) throw new GithubRequestError("GraphQL response missing pull request cursor", 502);
-      cursor = endCursor;
-    }
+    pullRequests = await readWithRestFallback(
+      "user action",
+      () => fetchMergedPrsGraphql(owner, name, repo, base, cutoff),
+      () => fetchMergedPrsRest(repo, base, cutoff),
+    );
   }
 
   pullRequests.sort((left, right) => right.mergedAt.localeCompare(left.mergedAt));
   return { repo, base, asOf, pullRequests };
+}
+
+async function fetchMergedPrsRest(repo: string, base: string, cutoff: number): Promise<MergedPrAnalyticsPullRequest[]> {
+  const pullRequests: MergedPrAnalyticsPullRequest[] = [];
+  for (let page = 1; page <= 50; page++) {
+    const batch = await restJson<RestPullRequest[]>(
+      `/repos/${repo}/pulls?state=closed&base=${encodeURIComponent(base)}&sort=updated&direction=desc&per_page=100&page=${page}`,
+    );
+    for (const pull of batch) {
+      if (!pull.merged_at || Date.parse(pull.merged_at) < cutoff) continue;
+      pullRequests.push({
+        number: pull.number,
+        title: pull.title,
+        url: pull.html_url,
+        author: restAuthor(pull.user)?.login ?? "unknown",
+        mergedAt: pull.merged_at,
+      });
+    }
+    if (batch.length < 100 || batch.every((pull) => Date.parse(pull.updated_at) < cutoff)) break;
+  }
+  return pullRequests;
+}
+
+async function fetchMergedPrsGraphql(
+  owner: string,
+  name: string,
+  repo: string,
+  base: string,
+  cutoff: number,
+): Promise<MergedPrAnalyticsPullRequest[]> {
+  const pullRequests: MergedPrAnalyticsPullRequest[] = [];
+  let cursor: string | null = null;
+  while (true) {
+    const data: {
+      repository: {
+        pullRequests: {
+          nodes: Array<{
+            number: number;
+            title: string;
+            url: string;
+            mergedAt: string | null;
+            updatedAt: string;
+            author: { login: string } | null;
+          }>;
+          pageInfo: { hasNextPage: boolean; endCursor: string | null };
+        };
+      } | null;
+    } = await graphql(MERGED_PRS_QUERY, { owner, name, base, cursor }, "user action", "merged-pr-analytics");
+    if (!data.repository) throw new GithubRequestError(`Repository not found: ${repo}`, 404);
+
+    const nodes = data.repository.pullRequests.nodes;
+    const reachedCutoff = nodes.length > 0 && nodes.every((entry) => Date.parse(entry.updatedAt) < cutoff);
+    for (const entry of nodes) {
+      if (!entry.mergedAt) continue;
+      if (Date.parse(entry.mergedAt) < cutoff) continue;
+      pullRequests.push({
+        number: entry.number,
+        title: entry.title,
+        url: entry.url,
+        author: entry.author?.login ?? "unknown",
+        mergedAt: entry.mergedAt,
+      });
+    }
+
+    const { hasNextPage, endCursor } = data.repository.pullRequests.pageInfo;
+    if (reachedCutoff || !hasNextPage) break;
+    if (!endCursor) throw new GithubRequestError("GraphQL response missing pull request cursor", 502);
+    cursor = endCursor;
+  }
+  return pullRequests;
 }
 
 export interface GithubQuotaResource {
@@ -722,34 +896,58 @@ function repositorySearchUnavailable(error: unknown): error is GithubRequestErro
     || /repositories cannot be searched/i.test(error.message);
 }
 
-async function searchOpenPrBatch(repos: string[]): Promise<SearchHit[]> {
+async function searchOpenPrsGraphql(searchQuery: string): Promise<SearchHit[]> {
+  const data = await graphql<{
+    search: {
+      nodes: Array<{
+        number: number;
+        title: string;
+        updatedAt: string;
+        headRefOid: string;
+        repository: { nameWithOwner: string };
+        commits: { nodes: Array<{ commit: { statusCheckRollup: { state: string } | null } }> };
+      }>;
+    };
+  }>(SEARCH_QUERY, { searchQuery }, "background poll", "open PR search");
+  if (data.search.nodes.length === 50) {
+    console.warn(`search hit the 50-result cap, PRs may be missing: ${searchQuery}`);
+  }
+  return data.search.nodes.map((node) => ({
+    repo: node.repository.nameWithOwner,
+    number: node.number,
+    title: node.title,
+    updatedAt: node.updatedAt,
+    headRefOid: node.headRefOid,
+    ciState: node.commits.nodes[0]?.commit.statusCheckRollup?.state ?? "NONE",
+  }));
+}
+
+// REST search finds the PRs; each one's head and CI come from its own conditional reads.
+async function searchOpenPrsRest(searchQuery: string): Promise<SearchHit[]> {
+  const items = await restSearchPrs(searchQuery, 100);
+  if (items.length === 100) console.warn(`search hit the 100-result cap, PRs may be missing: ${searchQuery}`);
+  const limit = createConcurrencyLimit(REST_FANOUT);
+  return Promise.all(items.map((item) => limit(async () => {
+    const repo = restSearchRepo(item);
+    const { pull, rollup } = await fetchRestPullWithRollup(repo, item.number);
+    return {
+      repo,
+      number: pull.number,
+      title: pull.title,
+      updatedAt: pull.updated_at,
+      headRefOid: pull.head.sha,
+      ciState: rollup ?? "NONE",
+    };
+  })));
+}
+
+async function searchOpenPrBatch(repos: string[], search: (searchQuery: string) => Promise<SearchHit[]>): Promise<SearchHit[]> {
   const repoFilter = repos.map((repo) => `repo:${repo}`).join(" ");
   const searchQuery = `is:open is:pr archived:false involves:@me ${repoFilter}`;
   try {
-    const data = await graphql<{
-      search: {
-        nodes: Array<{
-          number: number;
-          title: string;
-          updatedAt: string;
-          headRefOid: string;
-          repository: { nameWithOwner: string };
-          commits: { nodes: Array<{ commit: { statusCheckRollup: { state: string } | null } }> };
-        }>;
-      };
-    }>(SEARCH_QUERY, { searchQuery }, "background poll", "open PR search");
+    const hits = await search(searchQuery);
     for (const repo of repos) clearRepositoryUnavailable(repo);
-    if (data.search.nodes.length === 50) {
-      console.warn(`search hit the 50-result cap, PRs may be missing: ${searchQuery}`);
-    }
-    return data.search.nodes.map((node) => ({
-      repo: node.repository.nameWithOwner,
-      number: node.number,
-      title: node.title,
-      updatedAt: node.updatedAt,
-      headRefOid: node.headRefOid,
-      ciState: node.commits.nodes[0]?.commit.statusCheckRollup?.state ?? "NONE",
-    }));
+    return hits;
   } catch (error) {
     if (!repositorySearchUnavailable(error)) throw error;
     if (repos.length === 1) {
@@ -759,8 +957,8 @@ async function searchOpenPrBatch(repos: string[]): Promise<SearchHit[]> {
     }
     const midpoint = Math.ceil(repos.length / 2);
     const searches = await Promise.allSettled([
-      searchOpenPrBatch(repos.slice(0, midpoint)),
-      searchOpenPrBatch(repos.slice(midpoint)),
+      searchOpenPrBatch(repos.slice(0, midpoint), search),
+      searchOpenPrBatch(repos.slice(midpoint), search),
     ]);
     const hits: SearchHit[] = [];
     for (const search of searches) {
@@ -774,7 +972,12 @@ async function searchOpenPrBatch(repos: string[]): Promise<SearchHit[]> {
 export async function searchOpenPrs(repos: string[]): Promise<SearchHit[]> {
   if (mockGithub) return mockGithub.searchOpenPrs(repos);
   const available = repos.filter(repositoryAvailable);
-  return available.length === 0 ? [] : searchOpenPrBatch(available);
+  if (available.length === 0) return [];
+  return readWithRestFallback(
+    "background poll",
+    () => searchOpenPrBatch(available, searchOpenPrsGraphql),
+    () => searchOpenPrBatch(available, searchOpenPrsRest),
+  );
 }
 
 export interface RepositoryOpenPr {
@@ -813,7 +1016,27 @@ export async function fetchRepositoryOpenPrs(repo: string): Promise<RepositoryOp
         state: "OPEN", isDraft: entry.isDraft, updatedAt: entry.updatedAt,
       }));
   }
+  return readWithRestFallback(
+    "user action",
+    () => fetchRepositoryOpenPrsGraphql(repo, owner, name),
+    () => fetchRepositoryOpenPrsRest(repo),
+  );
+}
 
+async function fetchRepositoryOpenPrsRest(repo: string): Promise<RepositoryOpenPr[]> {
+  const prs = new Map<number, RepositoryOpenPr>();
+  for (const pull of await restList<RestPullRequest>(`/repos/${repo}/pulls?state=open&sort=updated&direction=desc`, 100)) {
+    const previous = prs.get(pull.number);
+    if (previous && previous.updatedAt >= pull.updated_at) continue;
+    prs.set(pull.number, {
+      repo, number: pull.number, title: pull.title, author: restAuthor(pull.user)?.login ?? "unknown",
+      state: "OPEN", isDraft: pull.draft, updatedAt: pull.updated_at,
+    });
+  }
+  return [...prs.values()];
+}
+
+async function fetchRepositoryOpenPrsGraphql(repo: string, owner: string, name: string): Promise<RepositoryOpenPr[]> {
   const prs = new Map<number, RepositoryOpenPr>();
   const seenCursors = new Set<string>();
   let cursor: string | null = null;
@@ -924,6 +1147,35 @@ export async function lookupPrIndexes(repo: string, numbers: number[]): Promise<
 
   const [owner, name] = repo.split("/");
   if (!owner || !name) throw new GithubRequestError(`Invalid repository: ${repo}`, 404);
+  return readWithRestFallback(
+    "search",
+    () => lookupPrIndexesGraphql(repo, owner, name, unique),
+    () => lookupPrIndexesRest(repo, unique),
+  );
+}
+
+async function lookupPrIndexesRest(repo: string, numbers: number[]): Promise<PrIndexEntry[]> {
+  const limit = createConcurrencyLimit(REST_FANOUT);
+  const pulls = await Promise.all(numbers.map((number) => limit(async () => {
+    try {
+      return await restJson<RestPullRequest>(`/repos/${repo}/pulls/${number}`);
+    } catch (error) {
+      if (error instanceof GithubRequestError && error.status === 404) return null;
+      throw error;
+    }
+  })));
+  return pulls.flatMap((pull) => pull ? [{
+    repo,
+    number: pull.number,
+    title: pull.title,
+    state: restPullState(pull),
+    isDraft: pull.draft,
+    author: restAuthor(pull.user)?.login ?? "unknown",
+    updatedAt: pull.updated_at,
+  }] : []);
+}
+
+async function lookupPrIndexesGraphql(repo: string, owner: string, name: string, unique: number[]): Promise<PrIndexEntry[]> {
   const selections = unique
     .map((number, index) => `pr${index}: pullRequest(number: ${number}) {
       number title state isDraft updatedAt author { login }
@@ -1151,9 +1403,51 @@ export interface ReviewsPollResult {
   remaining: number | null;
 }
 
+function reviewSearchSince(): string {
+  return new Date(Date.now() - 30 * 86400_000).toISOString().slice(0, 10);
+}
+
 export async function fetchReviewItems(): Promise<ReviewsPollResult> {
   if (mockGithub) return { items: [], cost: 0, remaining: 5_000 };
-  const since = new Date(Date.now() - 30 * 86400_000).toISOString().slice(0, 10);
+  return readWithRestFallback("review inbox", fetchReviewItemsGraphql, fetchReviewItemsRest);
+}
+
+// REST has no review decision outside the PR detail, so these items read as not yet approved.
+async function fetchReviewItemsRest(): Promise<ReviewsPollResult> {
+  const buckets: Array<[ReviewItem["bucket"], string]> = [
+    ["review-requested", "is:pr is:open review-requested:@me archived:false"],
+    ["assigned", "is:pr is:open assignee:@me archived:false"],
+    ["mentioned", `is:pr is:open mentions:@me archived:false updated:>=${reviewSearchSince()}`],
+  ];
+  const results = await Promise.all(buckets.map(([, query]) => restSearchPrs(query, 50)));
+  const found = new Map<string, { repo: string; number: number; bucket: ReviewItem["bucket"] }>();
+  buckets.forEach(([bucket], index) => {
+    for (const item of results[index] ?? []) {
+      const repo = restSearchRepo(item);
+      const key = `${repo}#${item.number}`;
+      const previous = found.get(key);
+      if (!previous || BUCKET_RANK[bucket] < BUCKET_RANK[previous.bucket]) found.set(key, { repo, number: item.number, bucket });
+    }
+  });
+  const limit = createConcurrencyLimit(REST_FANOUT);
+  const items = await Promise.all([...found.values()].map(({ repo, number, bucket }) => limit(async (): Promise<ReviewItem> => {
+    const { pull, rollup } = await fetchRestPullWithRollup(repo, number);
+    return {
+      repo,
+      number,
+      url: pull.html_url,
+      title: pull.title,
+      branch: pull.head.ref,
+      bucket,
+      isDraft: pull.draft,
+      state: reviewStateFor({ isDraft: pull.draft, reviewDecision: null, statusCheckRollup: rollup === null ? null : { state: rollup } }),
+    };
+  })));
+  return { items, cost: null, remaining: null };
+}
+
+async function fetchReviewItemsGraphql(): Promise<ReviewsPollResult> {
+  const since = reviewSearchSince();
   const query = `
 query {
   rateLimit { cost remaining }
@@ -1514,7 +1808,7 @@ type PrDetailShape<Rx> = {
   };
 } & Rx;
 
-type RawPrDetail = PrDetailShape<{ reactionGroups: RawReactionGroup[] }>;
+export type RawPrDetail = PrDetailShape<{ reactionGroups: RawReactionGroup[] }>;
 
 type RawPrDetailChecks = Pick<RawPrDetail, "lastCommit" | "commitList">;
 type RawPrDetailReview = Pick<
@@ -2052,20 +2346,69 @@ export async function fetchPrDetail(
   if (mockGithub) return mockGithub.detail(repo, number);
   const [owner, name] = repo.split("/");
   if (!owner || !name) throw new GithubRequestError(`Invalid repository: ${repo}`, 404);
-  // The GraphQL and REST halves run together, so one exhausted quota would waste the other's spend on every retry.
-  await Promise.all([requireQuota("graphql"), requireQuota("core")]);
-  const [checks, review, rest, viewerLogin] = await Promise.all([
-    fetchDetailChecks(owner, name, number, previous, source),
-    fetchDetailReview(owner, name, number, source, previous?.reviewThreads?.nodes.length ?? 0),
-    fetchRestPrDetailBase(repo, number),
+  return readWithRestFallback<PrDetail>(source, async () => {
+    // The GraphQL and REST halves run together, so one exhausted quota would waste the other's spend on every retry.
+    await Promise.all([requireQuota("graphql"), requireQuota("core")]);
+    const [checks, review, rest, viewerLogin] = await Promise.all([
+      fetchDetailChecks(owner, name, number, previous, source),
+      fetchDetailReview(owner, name, number, source, previous?.reviewThreads?.nodes.length ?? 0),
+      fetchRestPrDetailBase(repo, number),
+      getViewerLogin(),
+    ]);
+    if (!checks || !review) throw new GithubRequestError(`${repo}#${number} was not found`, 404);
+    return {
+      ...rest,
+      ...checks,
+      viewerLogin,
+      ...normalizeReviewDetail(review, viewerLogin, review.author, rest.reviewRequests),
+    };
+  }, () => fetchRestPrDetail(repo, number, previous));
+}
+
+// The whole detail over REST. Every list goes through the ETag cache, so rereading an
+// unchanged PR costs little, which is why a scoped refresh rereads all of it here.
+async function fetchRestPrDetail(
+  repo: string,
+  number: number,
+  previous: Pick<PrDetail, "commitList" | "reviewThreads"> | null,
+): Promise<PrDetail> {
+  const base = fetchRestPrDetailBase(repo, number);
+  const [rest, viewerLogin, issue, repository, commits, reviews, comments, reviewComments, checks, rules] = await Promise.all([
+    base,
     getViewerLogin(),
+    restJson<{ reactions?: RestReactions }>(`/repos/${repo}/issues/${number}`),
+    restJson<{ permissions?: { admin?: boolean } }>(`/repos/${repo}`),
+    restList<RestPrCommit>(`/repos/${repo}/pulls/${number}/commits`, 3),
+    restList<RestReview>(`/repos/${repo}/pulls/${number}/reviews`),
+    restList<RestIssueComment>(`/repos/${repo}/issues/${number}/comments`),
+    restList<RestReviewComment>(`/repos/${repo}/pulls/${number}/comments`),
+    base.then((pull) => fetchRestChecks(repo, pull.headRefOid)),
+    base.then((pull) => fetchRestBranchRules(repo, pull.baseRefName)),
   ]);
-  if (!checks || !review) throw new GithubRequestError(`${repo}#${number} was not found`, 404);
+  const { contexts, rollup } = restChecksRollup(checks, rules.contexts);
+  const review: RawPrDetailReview = {
+    author: rest.author,
+    reactionGroups: restReactionGroups(issue.reactions),
+    viewerCanMergeAsAdmin: repository.permissions?.admin === true,
+    reviewDecision: restReviewDecision(reviews, rules.approvals),
+    reviews: restReviews(reviews),
+    comments: restIssueComments(comments),
+    reviewThreads: restReviewThreads(reviewComments, reviews, previous),
+  };
   return {
     ...rest,
-    ...checks,
+    lastCommit: {
+      nodes: [{
+        commit: {
+          statusCheckRollup: rollup === null
+            ? null
+            : { state: rollup, contexts: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: contexts } },
+        },
+      }],
+    },
+    commitList: restCommitList(commits, rest.headRefOid, rollup, previous),
     viewerLogin,
-    ...normalizeReviewDetail(review, viewerLogin, review.author, rest.reviewRequests),
+    ...normalizeReviewDetail(review, viewerLogin, rest.author, rest.reviewRequests),
   };
 }
 
@@ -2087,7 +2430,22 @@ export async function fetchPrDetailPart(
   }
   const [owner, name] = repo.split("/");
   if (!owner || !name) throw new GithubRequestError(`Invalid repository: ${repo}`, 404);
+  return readWithRestFallback<PrDetail>(
+    source,
+    () => fetchPrDetailPartGraphql(repo, owner, name, number, current, scope, source),
+    () => fetchRestPrDetail(repo, number, current),
+  );
+}
 
+async function fetchPrDetailPartGraphql(
+  repo: string,
+  owner: string,
+  name: string,
+  number: number,
+  current: PrDetail,
+  scope: Exclude<PrDetailScope, "all">,
+  source: GithubUsageSource,
+): Promise<PrDetail> {
   if (scope === "checks") {
     const checks = await fetchDetailChecks(owner, name, number, current, source);
     if (!checks) throw new GithubRequestError(`${repo}#${number} was not found`, 404);
@@ -2365,6 +2723,8 @@ export interface WorkflowRun {
   run_number?: number;
   pull_requests?: Array<{ number?: number }>;
   html_url: string | null;
+  check_suite_id?: number;
+  workflow_id?: number;
 }
 export async function fetchWorkflowRun(repo: string, runId: number): Promise<WorkflowRun> {
   if (mockGithub) return mockGithub.workflowRun(repo, runId);
