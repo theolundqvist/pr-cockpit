@@ -149,7 +149,7 @@
   });
   let pollCompletedAt = $state(null);
   let bannerHeight = $state(0);
-  let impact = $derived(quotaImpact(quota.resources));
+  let impact = $derived(quotaImpact(quota.resources, { restFallback: prefs.restFallbackEnabled }));
   let quotaTone = $derived(
     impact.level === "out" ? "critical" : impact.level === "reserved" ? "warning" : "normal",
   );

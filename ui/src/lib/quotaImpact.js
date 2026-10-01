@@ -10,6 +10,12 @@ const POOLS = {
     out: "PR state, checks, threads, and search stop refreshing; assigning, resolving, and editing fail",
     reserved: "background polling is paused, so only the PR you open still refreshes",
   },
+  // With the REST fallback setting on, PR reads move to the REST pool instead of stopping.
+  graphqlOverRest: {
+    label: "GraphQL",
+    out: "PRs refresh over REST; resolving threads, auto-merge, and marking ready fail",
+    reserved: "background polling reads over REST",
+  },
   rest: {
     label: "REST",
     out: "diffs, file views, and file history stop loading; commenting, reviewing, and merging fail",
@@ -17,21 +23,23 @@ const POOLS = {
   },
 };
 
-function poolState(api, resource) {
+function poolState(api, resource, restFallback) {
   if (!resource) return null;
-  if (resource.remaining === 0) return { api, level: "out", effect: POOLS[api].out };
+  const pool = api === "graphql" && restFallback ? POOLS.graphqlOverRest : POOLS[api];
+  if (resource.remaining === 0) return { api, level: "out", effect: pool.out };
   if (api === "graphql" && resource.remaining <= GRAPHQL_BACKGROUND_RESERVE) {
-    return { api, level: "reserved", effect: POOLS[api].reserved };
+    return { api, level: "reserved", effect: pool.reserved };
   }
   return null;
 }
 
 // level "out": a pool is empty and the actions it powers fail outright.
 // level "reserved": GraphQL is below the polling reserve, so only background refresh stopped.
-export function quotaImpact(quota) {
+// restFallback: GraphQL reads fall back to REST, so an empty GraphQL pool no longer blocks merges.
+export function quotaImpact(quota, { restFallback = false } = {}) {
   const pools = [];
   for (const api of ["graphql", "rest"]) {
-    const state = poolState(api, quota?.[api]);
+    const state = poolState(api, quota?.[api], restFallback);
     if (!state) continue;
     const resource = quota[api];
     pools.push({ ...state, label: POOLS[api].label, remaining: resource.remaining, limit: resource.limit, resetAt: resource.resetAt });
@@ -42,7 +50,7 @@ export function quotaImpact(quota) {
     pools,
     // a merge refreshes the PR over GraphQL, then merges over REST: either pool being
     // empty means the merge cannot happen, so Cockpit refuses instead of queueing a failure
-    mergeBlocked: out.length > 0,
+    mergeBlocked: out.some((p) => p.api === "rest" || !restFallback),
     restoresAt: pools.reduce((latest, p) => (latest && latest > p.resetAt ? latest : p.resetAt), null),
   };
 }

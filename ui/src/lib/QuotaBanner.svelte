@@ -1,6 +1,7 @@
 <script>
   import { quota } from "./quota.svelte.js";
   import { quotaImpact, quotaOutLabel } from "./quotaImpact.js";
+  import { prefs } from "./prefs.svelte.js";
 
   let now = $state(Date.now());
 
@@ -9,7 +10,7 @@
     return () => clearInterval(timer);
   });
 
-  let impact = $derived(quotaImpact(quota.resources));
+  let impact = $derived(quotaImpact(quota.resources, { restFallback: prefs.restFallbackEnabled }));
 
   function clock(iso) {
     return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });

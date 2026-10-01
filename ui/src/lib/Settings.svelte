@@ -41,6 +41,7 @@
   let pendingReviewsEnabled = $state(false);
   let descriptionUnreadDots = $state(false);
   let whiteboardEnabled = $state(false);
+  let restFallbackEnabled = $state(false);
   let safeMergeApprovalEnabled = $state(false);
   // Approval consent belongs to the source Cockpit, so a save forwards it only when this toggle changed.
   let savedSafeMergeApproval = false;
@@ -150,6 +151,7 @@
     safeMergeApprovalEnabled = s.safe_merge_approval_enabled === true;
     savedSafeMergeApproval = safeMergeApprovalEnabled;
     groupDragEnabled = s.group_drag_enabled === true;
+    restFallbackEnabled = s.rest_fallback_enabled === true;
     diffLayout = s.diff_layout;
     forceMergeRepos = s.force_merge_repos.split(",").map((r) => r.trim()).filter(Boolean);
     agents = s.agents.map((a) => ({ ...a, promptText: a.prompt_template || a.prompt_default }));
@@ -265,6 +267,7 @@
         whiteboard_enabled: whiteboardEnabled,
         ...(safeMergeApprovalEnabled !== savedSafeMergeApproval ? { safe_merge_approval_enabled: safeMergeApprovalEnabled } : {}),
         group_drag_enabled: groupDragEnabled,
+        rest_fallback_enabled: restFallbackEnabled,
         test_path_regex: testPathRegex.trim() === BUILTIN_TEST_PATH.source.trim() ? "" : testPathRegex.trim(),
         diff_layout: diffLayout,
         force_merge_repos: forceMergeRepos.filter((repo) => configuredRepos.includes(repo)).join(","),
@@ -477,6 +480,14 @@
             <span class="label">Check GitHub every (seconds)</span>
             <span class="hint">Minimum 60 seconds.</span>
             <input class="input narrow" type="number" min="60" step="10" bind:value={pollInterval} />
+          </label>
+
+          <label class="check-field settings-option field-wide">
+            <input class="check" type="checkbox" bind:checked={restFallbackEnabled} />
+            <span class="check-text">
+              <span class="check-label">Fall back to REST when GraphQL runs low</span>
+              <span class="hint">PRs keep refreshing on GitHub's separate REST quota. Resolving threads, auto-merge, and marking ready still need GraphQL.</span>
+            </span>
           </label>
 
 

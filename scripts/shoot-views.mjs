@@ -1224,6 +1224,24 @@ const scenarios = [
     verify: async (page) => page.getByText("GitHub GraphQL and REST quota exhausted", { exact: true }).waitFor(),
   },
   {
+    name: "quota-graphql-rest-fallback",
+    route: "#/",
+    description: "GraphQL empty with the REST fallback on: PRs still refresh and merging stays available.",
+    beforeGoto: async (page, { baseURL }) => {
+      await restFallbackSettingsRoute(page, baseURL);
+      await quotaRoutes(page, { graphql: 0, rest: 4800 });
+    },
+    ready: ".quota-banner",
+    verify: async (page) => page.getByText("PRs refresh over REST", { exact: false }).waitFor(),
+  },
+  {
+    ...settings("settings-rest-fallback", "Live updates with the opt-in REST fallback for an exhausted GraphQL quota.", "general"),
+    interact: async (page) => {
+      await page.getByText("Live updates", { exact: true }).click();
+      await page.locator("#relay-url").scrollIntoViewIfNeeded();
+    },
+  },
+  {
     name: "quota-reserved",
     route: "#/",
     description: "GraphQL below the polling reserve, so only background refresh is degraded.",
@@ -1254,6 +1272,13 @@ const scenarios = [
 
 function detail(name, number, description, repo = REPO) {
   return { name, route: `#/pr/${repo}/${number}`, description, ready: ".page .detail" };
+}
+
+async function restFallbackSettingsRoute(page, baseURL) {
+  const settings = await requestJson(`${baseURL}/api/settings`);
+  await page.route("**/api/settings", (route) => route.request().method() === "GET"
+    ? route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...settings, rest_fallback_enabled: true }) })
+    : route.continue());
 }
 
 function quotaRoutes(page, { graphql, rest }) {

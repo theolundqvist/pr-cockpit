@@ -62,4 +62,15 @@ describe("quotaImpact", () => {
     expect(pool).toMatchObject({ api: "graphql", label: "GraphQL", remaining: 0, limit: 5000, resetAt: EARLY });
     expect(pool.effect).toContain("stop refreshing");
   });
+
+  test("with the REST fallback an empty graphql pool keeps merging available", () => {
+    const empty = quota({ graphql: { limit: 5000, remaining: 0, resetAt: EARLY } });
+    const impact = quotaImpact(empty, { restFallback: true });
+    expect(impact.level).toBe("out");
+    expect(impact.mergeBlocked).toBe(false);
+    expect(impact.pools[0].effect).toContain("over REST");
+    expect(quotaImpact(empty).mergeBlocked).toBe(true);
+    const bothEmpty = quotaImpact({ ...empty, rest: { limit: 5000, remaining: 0, resetAt: LATE } }, { restFallback: true });
+    expect(bothEmpty.mergeBlocked).toBe(true);
+  });
 });
