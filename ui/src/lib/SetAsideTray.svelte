@@ -1,6 +1,7 @@
 <script>
   import { tick } from "svelte";
-  import { setAside, bringBack, bringBackAll, syncSetAside, undoSetAside } from "./setAside.svelte.js";
+  import { setAside, bringBack, bringBackAll, syncSetAside } from "./setAside.svelte.js";
+  import { undoLastAction } from "./undo.js";
   import { isTypingTarget } from "./dom.js";
   import { isRecordingShortcut } from "./shortcutCapture.js";
   import Kbd from "./Kbd.svelte";
@@ -49,7 +50,7 @@
   $effect(() => {
     function onKey(event) {
       if (event.defaultPrevented || isRecordingShortcut()) return;
-      if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "z" && !isTypingTarget(event.target) && undoSetAside()) {
+      if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "z" && !isTypingTarget(event.target) && !document.querySelector(".whiteboard")?.checkVisibility() && undoLastAction()) {
         event.preventDefault();
         event.stopImmediatePropagation();
         return;

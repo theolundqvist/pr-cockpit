@@ -59,6 +59,8 @@ Enable **Approve PRs for safe merge** in **Settings → Workspace**, then right-
 
 Enable **Drag PRs between groups** in **Settings → Workspace** to move a PR onto another section or row. Type grouping changes the title's conventional-commit type; feature grouping changes its scope; manual grouping changes only your assignment. Title changes are saved to GitHub without changing the summary, draft prefix, or breaking-change marker. Status sections remain read-only. Dropping into **Approved for safe merge** grants approval; dropping out revokes it.
 
+Press **⌘Z** (Ctrl+Z on Windows/Linux) to undo a move's title change, including while it is saving. Undo restores the exact previous title on GitHub, not revoked merge approval. Rename moves and Set Aside share undo order; text fields and the whiteboard keep their own undo.
+
 Desktop notifications are off by default. In **Settings → Notifications**, choose events and combine rules for human or bot authors, comment text, repositories, and review requests. GitHub bot accounts and configured review bots count as bots; unknown authors match neither human nor bot filters.
 
 <details>
@@ -75,6 +77,7 @@ Desktop notifications are off by default. In **Settings → Notifications**, cho
 | <kbd>x</kbd> | Hide / show test files |
 | <kbd>h</kbd> | File history |
 | <kbd>m</kbd> | Merge |
+| <kbd>⌘</kbd><kbd>z</kbd> / <kbd>Ctrl</kbd><kbd>z</kbd> | Undo a group-move rename or Set Aside action |
 | <kbd>?</kbd> | Full shortcut guide |
 
 </details>

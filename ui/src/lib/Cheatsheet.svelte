@@ -61,7 +61,7 @@
         { key: "t", label: "switch branch" },
         { key: "z", label: "undo archive" },
         { key: "b", label: "set aside / bring back" },
-        { key: "⌘Z / Ctrl+Z", label: "undo set aside" },
+        { key: "⌘Z / Ctrl+Z", label: "undo rename or set aside" },
         { key: "⌘⌥C", label: "copy GitHub PR URL" },
         { key: "⌘⇧C", label: "copy PR Cockpit link (PR page)" },
       ],

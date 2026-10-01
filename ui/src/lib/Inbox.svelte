@@ -3,6 +3,7 @@
   let restoreKey = null;
   // Title changes from group drops stay in the edit-title queue; tracking outlives a trip into a PR view.
   const retitles = $state({});
+  const undoneRetitles = $state({});
 </script>
 
 <script>
@@ -35,6 +36,7 @@
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import MutationBadge from "./MutationBadge.svelte";
   import { presentMutationError } from "./mutationError.js";
+  import { recordUndo } from "./undo.js";
   import MultiSelectDropdown from "./MultiSelectDropdown.svelte";
 
   let { active = true, refreshRevision = 0, pollCompletedAt = null, onFindPr = () => {} } = $props();
@@ -755,8 +757,8 @@
     rankBusy.add(key);
     try {
       // Revocation lands first: if it fails, nothing else about the PR changes while consent stays live.
-      if (plan.approve === false) await setMergeApproval(pr.repo, pr.number, false);
-      if (plan.title) await queueRetitle(pr, plan.title);
+      if (plan.title) await queueRetitle(pr, plan.title, plan.approve === false);
+      else if (plan.approve === false) await setMergeApproval(pr.repo, pr.number, false);
       if (plan.assignment !== undefined && !assignPr(prKey(topUnit(pr)), plan.assignment)) return;
       if (plan.approve === true) await setMergeApproval(pr.repo, pr.number, true);
       if (plan.pin !== undefined) await reorderPr(pr.repo, pr.number, plan.pin ? (position ?? nextPinRank()) : null);
@@ -769,12 +771,32 @@
     }
   }
 
-  async function queueRetitle(pr, title) {
-    if ((await fetchMutations(pr.repo, pr.number)).some((mutation) => mutation.kind === "edit-title")) {
-      throw new Error("a title change is already queued");
+  async function queueRetitle(pr, title, revokeApproval) {
+    const key = prKey(pr);
+    const previousTitle = pr.title;
+    let submitted;
+    const forget = recordUndo(key, async () => {
+      const { id } = await submitted;
+      // FIFO puts the inverse after the forward write, even while its cache refresh is recovering.
+      const restored = await enqueueMutation(pr.repo, pr.number, { kind: "edit-title", title: previousTitle });
+      undoneRetitles[id] = { repo: pr.repo, number: pr.number };
+      retitles[key] = { id: restored.id, repo: pr.repo, number: pr.number, title: previousTitle, state: "pending", error: null };
+    });
+    submitted = (async () => {
+      if (revokeApproval) await setMergeApproval(pr.repo, pr.number, false);
+      if ((await fetchMutations(pr.repo, pr.number)).some((mutation) => mutation.kind === "edit-title")) {
+        throw new Error("a title change is already queued");
+      }
+      const result = await enqueueMutation(pr.repo, pr.number, { kind: "edit-title", title });
+      retitles[key] = { id: result.id, repo: pr.repo, number: pr.number, title, state: "pending", error: null };
+      return result;
+    })();
+    try {
+      await submitted;
+    } catch (error) {
+      forget();
+      throw error;
     }
-    const { id } = await enqueueMutation(pr.repo, pr.number, { kind: "edit-title", title });
-    retitles[prKey(pr)] = { id, repo: pr.repo, number: pr.number, title, state: "pending", error: null };
   }
 
   let retitlePolling = false;
@@ -783,6 +805,16 @@
     retitlePolling = true;
     let landed = false;
     try {
+      for (const [id, pr] of Object.entries(undoneRetitles)) {
+        const rows = await fetchMutations(pr.repo, pr.number).catch(() => null);
+        if (!rows) continue;
+        const original = rows.find((mutation) => mutation.id === Number(id));
+        if (original?.state === "failed") {
+          const discarded = await discardMutation(Number(id)).then(() => true, () => false);
+          if (!discarded) continue;
+        } else if (original) continue;
+        delete undoneRetitles[id];
+      }
       for (const [key, retitle] of Object.entries(retitles)) {
         if (retitle.state === "failed") continue;
         // An unreachable queue is asked again next tick; only a listed absence means the rename landed.
@@ -801,7 +833,7 @@
   }
 
   $effect(() => {
-    if (!Object.values(retitles).some((retitle) => retitle.state !== "failed")) return;
+    if (!Object.keys(undoneRetitles).length && !Object.values(retitles).some((retitle) => retitle.state !== "failed")) return;
     const timer = setInterval(pollRetitles, 2000);
     return () => clearInterval(timer);
   });
