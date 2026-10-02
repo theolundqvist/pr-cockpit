@@ -1009,15 +1009,10 @@ export function buildPrAgentSummary(
       outdated: thread.isOutdated,
       comments: thread.comments.nodes.map((comment) => ({
         author: comment.author?.login ?? "unknown",
-        body: compactText(comment.body),
+        body: comment.body,
         createdAt: comment.createdAt,
       })),
     }));
-
-  const newComments: PrSummaryNewComment[] = commentsSince.map((comment) => ({
-    ...comment,
-    body: compactText(comment.body),
-  }));
 
   const checkPageComplete = checksFetched && (!rollup ||
     (rollup.contexts.pageInfo ? !rollup.contexts.pageInfo.hasNextPage : rollup.contexts.nodes.length < 100));
@@ -1055,7 +1050,7 @@ export function buildPrAgentSummary(
     openComments,
     openCommentsComplete: commentPagesComplete,
     newCommentsSince,
-    newComments,
+    newComments: commentsSince,
     newCommentsComplete: true,
     quota,
   };
@@ -1070,7 +1065,7 @@ export interface AgentSummaryFormatOptions {
 function newCommentLine(comment: PrSummaryNewComment): string {
   const location = comment.path ? ` · \`${comment.path}${comment.line == null ? "" : `:${comment.line}`}\`` : "";
   const verdict = comment.state ? ` · ${comment.state.toLowerCase().replace(/_/g, " ")}` : "";
-  return `- @${comment.author} · ${comment.kind}${verdict}${location}: ${comment.body}${comment.url ? ` — ${comment.url}` : ""}`;
+  return `- @${comment.author} · ${comment.kind}${verdict}${location}: ${compactText(comment.body)}${comment.url ? ` — ${comment.url}` : ""}`;
 }
 
 function openThreadLines(summary: PrAgentSummary, staleMarkers: string[]): string[] {
@@ -1078,7 +1073,7 @@ function openThreadLines(summary: PrAgentSummary, staleMarkers: string[]): strin
   if (summary.openComments.length === 0) lines.push("_No open review comments._");
   for (const thread of summary.openComments) {
     lines.push(`- \`${thread.handle}\` · \`${thread.path}${thread.line == null ? "" : `:${thread.line}`}\`${thread.outdated ? " · OUTDATED" : ""}${thread.outdated && thread.comments.some((comment) => staleMarkers.some((marker) => comment.body.includes(marker))) ? " · STALE AUTO-RESOLVE — resolve manually" : ""}`);
-    for (const comment of thread.comments) lines.push(`  - @${comment.author}: ${comment.body}`);
+    for (const comment of thread.comments) lines.push(`  - @${comment.author}: ${compactText(comment.body)}`);
   }
   if (!summary.openCommentsComplete) lines.push("_Partial: review threads or replies may be missing._");
   return lines;

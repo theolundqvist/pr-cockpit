@@ -625,7 +625,7 @@ describe("agent PR summary", () => {
         path: "src/calendar.ts",
         line: 42,
         outdated: false,
-        comments: [{ author: "reviewer", body: "Handle the DST boundary.", createdAt: "2026-07-22T09:00:00Z" }],
+        comments: [{ author: "reviewer", body: "Handle  the\nDST boundary.", createdAt: "2026-07-22T09:00:00Z" }],
       },
       {
         path: "src/calendar.ts",
@@ -873,6 +873,28 @@ describe("agent PR summary", () => {
     expect(output).toContain("thread · `src/calendar.ts:42`: Keep this bounded.");
     expect(output).toContain("https://github.com/example-org/webapp/pull/6133#discussion_r1");
     expect(output).not.toContain("Handle the DST boundary.");
+  });
+
+  test("keeps long comment bodies intact in the summary and compacts them only in markdown", () => {
+    const long = `${"Finding: keep this bounded.\n\n".repeat(60)}final finding`;
+    const threaded = structuredClone(detail);
+    threaded.reviewThreads.nodes[0]!.comments.nodes[0]!.body = long;
+    const summary = buildPrAgentSummary("example-org/webapp#6133", threaded, null, "2026-07-22T10:00:00Z", [{
+      kind: "comment",
+      author: "github-actions",
+      body: long,
+      createdAt: "2026-07-22T10:05:00Z",
+      path: null,
+      line: null,
+      state: null,
+      url: null,
+    }]);
+
+    expect(summary.newComments[0]!.body).toBe(long);
+    expect(summary.openComments[0]!.comments[0]!.body).toBe(long);
+    const output = formatPrAgentSummary(summary);
+    expect(output).not.toContain("final finding");
+    expect(output).toContain("Finding: keep this bounded. Finding: keep this bounded.");
   });
 
   test("digest renders only the delta: new comments plus failing checks", () => {
