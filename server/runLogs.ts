@@ -541,7 +541,10 @@ export function reconciliationError(error: unknown): string {
 }
 
 async function fetchLogs(repo: string, jobs: CompactJob[], fetchers: ActionsFetchers, background: boolean): Promise<boolean> {
-  const wanted = jobs.filter((job) => jobProducesLog(job) && getRunJobLog(repo, job.id) === null);
+  // Background prefetch keeps the evidence agents and failing-check rows need; a busy head's
+  // successful logs cost one REST request each and load when someone opens them.
+  const wanted = jobs.filter((job) => jobProducesLog(job) && getRunJobLog(repo, job.id) === null
+    && (!background || (job.conclusion !== null && LOG_WORTHY_CONCLUSION.has(job.conclusion))));
   if (wanted.length === 0) return true;
   if (background && (await fetchers.restRemaining()) - wanted.length < REST_BACKGROUND_RESERVE) {
     for (const job of wanted) saveRunJobLogError(repo, job.id, job.attempt, "log not fetched: REST quota reserved for actions");

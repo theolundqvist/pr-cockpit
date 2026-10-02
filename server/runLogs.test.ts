@@ -736,6 +736,36 @@ test("background follow-up stores a watched run's completion without waiting for
   expect(result).toEqual({ changed: true, whileLogPending: { run: "completed", log: null }, logged: true });
 });
 
+test("background reconciliation prefetches only unsuccessful logs and opening a successful job fetches it", async () => {
+  const result = await runScenario("pr-cockpit-actions-background-logs-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    const logs = [];
+    const job = (id, conclusion) => ({ id, run_id: 61, run_attempt: 1, head_sha: head, head_branch: "feature",
+      workflow_name: "CI", name: "job-" + id, status: "completed", conclusion,
+      started_at: null, completed_at: "2026-08-24T10:01:00Z", html_url: null, labels: [], steps: [] });
+    const fetchers = {
+      fetchWorkflowRuns: async () => [],
+      fetchRunJobs: async () => [job(611, "failure"), job(612, "success"), job(613, "cancelled")],
+      fetchJobLog: async (_repo, id) => { logs.push(id); return "log " + id; },
+      restRemaining: async () => 5000,
+    };
+    await actions.activateActionsLease("acme/app", 7, head, fetchers);
+    const run = { id: 61, attempt: 1, headSha: head, headBranch: "feature", workflowName: "CI",
+      status: "completed", conclusion: "failure", eventAt: "2026-08-24T10:01:00Z", htmlUrl: null };
+    await actions.ingestActionsState("acme/app", { run }, fetchers);
+    const prefetched = [...logs].sort();
+    const reconciled = dbm.latestWorkflowRunAttempt("acme/app", 61).reconciled_at !== null;
+    const opened = await actions.actionJobLog("acme/app", head, 612, fetchers);
+    console.log(JSON.stringify({ prefetched, reconciled, opened: [opened.state, opened.body], logs }));
+  `);
+  expect(result.prefetched).toEqual([611, 613]);
+  expect(result.reconciled).toBe(true);
+  expect(result.opened).toEqual(["ready", "log 612"]);
+  expect(result.logs).toEqual([611, 613, 612]);
+});
+
 test("explicit activation retries transient log failures", async () => {
   const result = await runScenario("pr-cockpit-actions-retry-", `
     const actions = await import(${JSON.stringify(runLogsUrl)});
