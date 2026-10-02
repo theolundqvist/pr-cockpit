@@ -2435,6 +2435,37 @@ async function fetchRestPrDetail(
   };
 }
 
+// A check event over REST rereads only the head's checks. The pull request and repository objects
+// embed repository timestamps that move with every push, so in a busy repository the full detail
+// is never a 304; required markers carry over from the previous read, and a push refreshes all.
+async function fetchRestPrChecks(repo: string, current: PrDetail): Promise<PrDetail> {
+  const head = current.headRefOid;
+  const required = new Set<string>();
+  for (const check of current.lastCommit.nodes[0]?.commit.statusCheckRollup?.contexts.nodes ?? []) {
+    if (!check.isRequired) continue;
+    required.add(check.__typename === "CheckRun" ? check.name : check.context);
+  }
+  const { contexts, rollup } = restChecksRollup(await fetchRestChecks(repo, head), required);
+  return {
+    ...current,
+    lastCommit: {
+      nodes: [{
+        commit: {
+          statusCheckRollup: rollup === null
+            ? null
+            : { state: rollup, contexts: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: contexts } },
+        },
+      }],
+    },
+    commitList: {
+      ...current.commitList,
+      nodes: current.commitList.nodes.map((node) => node.commit.oid === head
+        ? { ...node, commit: { ...node.commit, statusCheckRollup: rollup === null ? null : { state: rollup } } }
+        : node),
+    },
+  };
+}
+
 export type PrDetailScope = "all" | "checks" | "review";
 
 export async function fetchPrDetailPart(
@@ -2456,7 +2487,7 @@ export async function fetchPrDetailPart(
   return readWithRestFallback<PrDetail>(
     source,
     () => fetchPrDetailPartGraphql(repo, owner, name, number, current, scope, source),
-    () => fetchRestPrDetail(repo, number, current),
+    () => scope === "checks" ? fetchRestPrChecks(repo, current) : fetchRestPrDetail(repo, number, current),
   );
 }
 

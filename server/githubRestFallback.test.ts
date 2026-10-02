@@ -395,3 +395,76 @@ test("a REST inbox search skips the per-PR head and CI reads for PRs the caller 
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test("a checks refresh over REST reads only the head's checks and keeps the rest of the detail", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-rest-checks-scope-"));
+  try {
+    const script = `
+      const { mock } = await import("bun:test");
+      mock.module(${JSON.stringify(githubAuthModuleUrl)}, () => ({
+        githubAuthStatus: async () => ({ ok: true, state: "ready", login: "viewer", error: null, requiredScopes: [], missingScopes: [] }),
+        startGithubSetup: async () => ({ ok: true, state: "ready", login: "viewer", error: null, requiredScopes: [], missingScopes: [] }),
+        liveGithubToken: async () => "fixture-token",
+      }));
+      const github = await import(${JSON.stringify(githubModuleUrl)});
+      const reset = String(Math.ceil((Date.now() + 3_600_000) / 1000));
+      const head = "a".repeat(40);
+      const paths = [];
+      globalThis.fetch = async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/graphql") {
+          return Response.json({ message: "API rate limit exceeded" }, { status: 403, headers: {
+            "x-ratelimit-resource": "graphql", "x-ratelimit-remaining": "0", "x-ratelimit-reset": reset,
+          } });
+        }
+        paths.push(url.pathname);
+        const headers = { "x-ratelimit-resource": "core", "x-ratelimit-remaining": "4000" };
+        if (url.pathname.endsWith("/check-runs")) return Response.json({ check_runs: [
+          { id: 11, name: "build", status: "completed", conclusion: "failure", details_url: null, html_url: null, started_at: null, completed_at: null, app: { id: 1 }, check_suite: { id: 5 } },
+          { id: 12, name: "lint", status: "in_progress", conclusion: null, details_url: null, html_url: null, started_at: null, completed_at: null, app: { id: 1 }, check_suite: { id: 5 } },
+        ] }, { headers });
+        if (url.pathname.endsWith("/status")) return Response.json({ statuses: [] }, { headers });
+        if (url.pathname === "/repos/acme/app/actions/runs") return Response.json({ workflow_runs: [] }, { headers });
+        return Response.json({ message: "Not Found" }, { status: 404, headers });
+      };
+      const commit = (oid, state) => ({ commit: { oid, abbreviatedOid: oid.slice(0, 7), messageHeadline: "m", committedDate: "", statusCheckRollup: { state }, author: { name: "A", user: null }, parents: { nodes: [] } } });
+      const current = {
+        title: "Kept", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", headRefOid: head,
+        reviewThreads: { nodes: [{ id: "PRRT_1" }] },
+        lastCommit: { nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS", contexts: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [
+          { __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "SUCCESS", isRequired: true },
+        ] } } } }] },
+        commitList: { nodes: [commit("b".repeat(40), "SUCCESS"), commit(head, "SUCCESS")] },
+      };
+      const detail = await github.fetchPrDetailPart("acme/app", 7, current, "checks", "relay");
+      const rollup = detail.lastCommit.nodes[0].commit.statusCheckRollup;
+      console.log(JSON.stringify({
+        paths: [...new Set(paths)].sort(),
+        rollup: rollup.state,
+        checks: rollup.contexts.nodes.map((check) => [check.name, check.isRequired]),
+        commits: detail.commitList.nodes.map((node) => node.commit.statusCheckRollup.state),
+        kept: [detail.title, detail.reviewThreads.nodes[0].id],
+      }));
+    `;
+    const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "", COCKPIT_REPLICA_SSH_HOST: "", COCKPIT_PROXY: "" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect(exitCode, stderr).toBe(0);
+    expect(JSON.parse(stdout)).toEqual({
+      paths: ["/repos/acme/app/actions/runs", `/repos/acme/app/commits/${"a".repeat(40)}/check-runs`, `/repos/acme/app/commits/${"a".repeat(40)}/status`],
+      rollup: "FAILURE",
+      checks: [["build", true], ["lint", false]],
+      commits: ["SUCCESS", "FAILURE"],
+      kept: ["Kept", "PRRT_1"],
+    });
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
