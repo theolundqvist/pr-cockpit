@@ -3,6 +3,7 @@
   import { fetchQuickGenerateConfig, fetchQuickGenerateModels, quickGenerate } from "./api.js";
   import { prefs } from "./prefs.svelte.js";
   import { isRecordingShortcut } from "./shortcutCapture.js";
+  import { renderMarkdown } from "./markdown.js";
   import Kbd from "./Kbd.svelte";
 
   // The shell's standalone panel only hides, so the draft and result survive until the next ⌘⌥J.
@@ -261,7 +262,7 @@
           <div class="error" role="alert"><span>{error}</span></div>
         {/if}
         {#if result}
-          <div class="result" class:stale={generating} aria-label="Generated text" aria-busy={generating}>{result}</div>
+          <div class="result md" class:stale={generating} aria-label="Generated text" aria-busy={generating}>{@html renderMarkdown(result)}</div>
         {/if}
 
         <div class="foot">
@@ -413,7 +414,6 @@
     border-top: 1px solid var(--border);
     color: var(--text);
     font: 14px/1.6 var(--sans);
-    white-space: pre-wrap;
     overflow-wrap: anywhere;
     user-select: text;
     cursor: text;
