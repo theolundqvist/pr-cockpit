@@ -90,6 +90,7 @@ function quotaGeneration(token: string): number {
     quotaProbeInFlight.clear();
     lastQuotaProbeAt.clear();
     cachedQuota = null;
+    graphqlReading = null;
   }
   return activeQuotaGeneration;
 }
@@ -203,6 +204,8 @@ async function revalidateQuota(
   token: string,
   generation: number,
 ): Promise<void> {
+  // /rate_limit misreports GraphQL (see graphqlReading), so a GraphQL block holds until its reset.
+  if (resource === "graphql") return;
   activeQuotaBlock(resource);
   const state = blockedQuotas.get(resource);
   if (generation !== activeQuotaGeneration || !state?.primary || state.secondary) return;
@@ -517,7 +520,7 @@ async function graphql<T>(
 const GRAPHQL_WINDOW_MS = 60 * 60_000;
 
 // Background work may spend a pool only while it stays ahead of an even pace to the reset,
-// so the screen keeps a share of what is left.
+// so the screen keeps a share of what is left, and never below the reserve, in either pool.
 export function backgroundQuotaAvailable(quota: GithubQuotaResource, now = Date.now()): boolean {
   if (quota.remaining >= quota.limit) return true;
   const resetIn = Math.max(0, Date.parse(quota.resetAt) - now);
@@ -540,8 +543,13 @@ const BACKGROUND_SOURCES: ReadonlySet<GithubUsageSource> = new Set([
 function graphqlReadOnRest(source: GithubUsageSource): boolean {
   if (mockGithub || !restFallbackEnabled()) return false;
   if (activeQuotaBlock("graphql")) return true;
-  if (!BACKGROUND_SOURCES.has(source) || !cachedQuota) return false;
-  return Date.parse(cachedQuota.graphql.resetAt) > Date.now() && !backgroundQuotaAvailable(cachedQuota.graphql);
+  if (!BACKGROUND_SOURCES.has(source)) return false;
+  const reading = liveGraphqlReading();
+  return reading !== null && !backgroundQuotaAvailable(reading);
+}
+
+export function isBackgroundSource(source: GithubUsageSource): boolean {
+  return BACKGROUND_SOURCES.has(source);
 }
 
 async function readWithRestFallback<T>(
@@ -795,7 +803,14 @@ export interface GithubQuota {
 
 let cachedQuota: GithubQuota | null = null;
 const QUOTA_TTL_MS = 60_000;
+// From GraphQL responses' rateLimit and X-RateLimit headers. /rate_limit's graphql entry counts a
+// different window: it reported 18 points used while GraphQL itself reported 2,446 and went on to
+// answer RATE_LIMIT, so pacing on it never moved background reads to REST before exhaustion.
+let graphqlReading: GithubQuotaResource | null = null;
 
+function liveGraphqlReading(now = Date.now()): GithubQuotaResource | null {
+  return graphqlReading && Date.parse(graphqlReading.resetAt) > now ? graphqlReading : null;
+}
 
 function updateCachedGraphqlQuota(
   limit: number | null,
@@ -803,16 +818,19 @@ function updateCachedGraphqlQuota(
   remaining: number | null,
   resetAt: string | null,
 ): void {
-  if (!cachedQuota || limit === null || used === null || remaining === null || resetAt === null) return;
+  if (limit === null || used === null || remaining === null || resetAt === null) return;
+  graphqlReading = { limit, used, remaining, resetAt };
+  if (!cachedQuota) return;
   cachedQuota = {
     ...cachedQuota,
-    graphql: { limit, used, remaining, resetAt },
+    graphql: graphqlReading,
     fetchedAt: new Date().toISOString(),
   };
 }
 export async function fetchGithubQuota(): Promise<GithubQuota> {
   if (mockGithub) {
-    const resetAt = new Date(Date.now() + 60 * 60_000).toISOString();
+    // Half a window left, so the fixture's spend is well ahead of pace and background work runs.
+    const resetAt = new Date(Date.now() + 30 * 60_000).toISOString();
     return { rest: { limit: 5_000, used: 10, remaining: 4_990, resetAt }, graphql: { limit: 5_000, used: 20, remaining: 4_980, resetAt }, fetchedAt: new Date().toISOString() };
   }
   const token = await ghToken();
@@ -850,11 +868,10 @@ async function fetchRateLimit(token: string, generation: number): Promise<Github
     const value = body.resources[name];
     return { limit: value.limit, used: value.used, remaining: value.remaining, resetAt: new Date(value.reset * 1_000).toISOString() };
   };
-  const quota = { rest: resource("core"), graphql: resource("graphql"), fetchedAt: new Date().toISOString() };
+  const quota = { rest: resource("core"), graphql: liveGraphqlReading() ?? resource("graphql"), fetchedAt: new Date().toISOString() };
   if (responseHasActiveQuota(res)) {
     cachedQuota = quota;
     updatePrimaryQuota("core", quota.rest.remaining, quota.rest.resetAt);
-    updatePrimaryQuota("graphql", quota.graphql.remaining, quota.graphql.resetAt);
   }
   return quota;
 }

@@ -24,8 +24,11 @@ const refreshPr = mock(async (
 const invalidateInbox = mock(() => {});
 const publishPollCompleted = mock((_lastPollAt: string) => {});
 
+let restAllowed = true;
+
 const deps: PollDeps = {
   backgroundPollAllowed: async () => true,
+  backgroundRestAllowed: async () => restAllowed,
   refreshWorktreeScan: async () => {},
   trackedRepos: async () => ["acme/tracked"],
   listWebhookRegistrations: () => [...registrations],
@@ -363,6 +366,30 @@ test("event-driven polls list repo-wide Actions runs at most once per poll inter
     expect(listings).toBe(2);
   } finally {
     setSystemTime();
+  }
+});
+
+test("a REST pool at its background reserve skips the Actions listing but not the inbox poll", async () => {
+  let listings = 0;
+  const poll = createPollOnce({
+    ...deps,
+    listWebhookRegistrations: () => [],
+    actionsListingIntervalMs: () => 0,
+    searchOpenPrs: async () => [hit("acme/tracked", 1)],
+    refreshRecentActions: async () => {
+      listings++;
+      return 0;
+    },
+  });
+  restAllowed = false;
+  try {
+    expect(await poll()).toEqual({ checked: 1, refreshed: 1 });
+    expect(listings).toBe(0);
+    restAllowed = true;
+    await poll();
+    expect(listings).toBe(1);
+  } finally {
+    restAllowed = true;
   }
 });
 

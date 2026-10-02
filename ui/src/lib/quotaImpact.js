@@ -2,7 +2,8 @@
 // different half of the app down when it runs dry, so degradation is described per pool.
 // GraphQL: inbox search, PR state, checks, review threads, and every GraphQL mutation.
 // REST: diffs, file contents and history, comment/review posting, and the merge PUT.
-export const GRAPHQL_BACKGROUND_RESERVE = 200;
+// 15% of a 5,000 pool stays with the screen and the other tools that share the GitHub token.
+export const GRAPHQL_BACKGROUND_RESERVE = 750;
 
 const POOLS = {
   graphql: {

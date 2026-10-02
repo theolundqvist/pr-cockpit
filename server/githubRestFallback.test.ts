@@ -247,3 +247,97 @@ test("an exhausted GraphQL pool reads PRs over REST unless the fallback is turne
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+// /rate_limit's graphql entry disagrees with GraphQL's own accounting; pacing and blocks must follow GraphQL.
+test("GraphQL's own quota reading, not /rate_limit's, moves background reads to REST and holds a RATE_LIMIT block", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-graphql-reading-"));
+  try {
+    const script = `
+      const { mock } = await import("bun:test");
+      mock.module(${JSON.stringify(githubAuthModuleUrl)}, () => ({
+        githubAuthStatus: async () => ({ ok: true, state: "ready", login: "viewer", error: null, requiredScopes: [], missingScopes: [] }),
+        startGithubSetup: async () => ({ ok: true, state: "ready", login: "viewer", error: null, requiredScopes: [], missingScopes: [] }),
+        liveGithubToken: async () => "fixture-token",
+      }));
+      let now = Date.parse("2026-09-01T10:30:00Z");
+      Date.now = () => now;
+      const github = await import(${JSON.stringify(githubModuleUrl)});
+      const reset = Math.floor(Date.parse("2026-09-01T11:00:00Z") / 1000);
+      let graphqlRemaining = 4000;
+      let rateLimited = false;
+      const calls = { graphql: 0, search: 0, pull: 0 };
+      globalThis.fetch = async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/rate_limit") {
+          return Response.json({ resources: {
+            core: { limit: 5000, used: 100, remaining: 4900, reset },
+            graphql: { limit: 5000, used: 18, remaining: 4982, reset: reset + 900 },
+          } });
+        }
+        const core = { "x-ratelimit-resource": "core", "x-ratelimit-remaining": "4900", "x-ratelimit-reset": String(reset) };
+        if (url.pathname === "/graphql") {
+          calls.graphql++;
+          const headers = {
+            "x-ratelimit-resource": "graphql", "x-ratelimit-limit": "5000", "x-ratelimit-reset": String(reset),
+            "x-ratelimit-remaining": String(rateLimited ? 0 : graphqlRemaining), "x-ratelimit-used": String(rateLimited ? 5000 : 5000 - graphqlRemaining),
+          };
+          if (rateLimited) return Response.json({ errors: [{ type: "RATE_LIMIT", message: "API rate limit already exceeded" }] }, { headers });
+          return Response.json({ data: {
+            __prCockpitRateLimit: { cost: 1, used: 5000 - graphqlRemaining, remaining: graphqlRemaining, resetAt: new Date(reset * 1000).toISOString() },
+            search: { nodes: [] },
+          } }, { headers });
+        }
+        if (url.pathname === "/search/issues") {
+          calls.search++;
+          return Response.json({ items: [] }, { headers: { ...core, "x-ratelimit-resource": "search" } });
+        }
+        if (url.pathname === "/repos/acme/app/pulls") return Response.json([], { headers: core });
+        return Response.json({ message: "Not Found" }, { status: 404, headers: core });
+      };
+      const route = async () => {
+        const before = { ...calls };
+        await github.searchOpenPrs(["acme/app"]);
+        return calls.graphql > before.graphql ? "graphql" : calls.search > before.search ? "rest" : "none";
+      };
+      const routes = [await route()];
+      graphqlRemaining = 900;
+      routes.push(await route());
+      const paced = (await github.fetchGithubQuota()).graphql;
+      routes.push(await route());
+      graphqlRemaining = 4000;
+      const fresh = github.backgroundQuotaAvailable({ limit: 5000, used: 1000, remaining: 4000, resetAt: new Date(reset * 1000).toISOString() });
+      rateLimited = true;
+      // An interactive read answered RATE_LIMIT is served over REST and blocks GraphQL until its reset.
+      const rateLimitedRead = await github.fetchRepositoryOpenPrs("acme/app").then((prs) => "rest:" + prs.length, (error) => error.kind + ":" + error.resource);
+      now += 5 * 60_000;
+      const graphqlBefore = calls.graphql;
+      routes.push(await route());
+      const graphqlWhileBlocked = calls.graphql - graphqlBefore;
+      now = (reset + 1) * 1000;
+      rateLimited = false;
+      routes.push(await route());
+      console.log(JSON.stringify({ routes, paced: { remaining: paced.remaining, used: paced.used }, fresh, rateLimitedRead, graphqlWhileBlocked }));
+    `;
+    const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "", COCKPIT_REPLICA_SSH_HOST: "", COCKPIT_PROXY: "" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect(exitCode, stderr).toBe(0);
+    expect(JSON.parse(stdout)).toEqual({
+      // 900 points with 30 minutes left is behind an even pace, so background search moves to REST.
+      routes: ["graphql", "graphql", "rest", "rest", "graphql"],
+      paced: { remaining: 900, used: 4100 },
+      fresh: true,
+      rateLimitedRead: "rest:0",
+      graphqlWhileBlocked: 0,
+    });
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});

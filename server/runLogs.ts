@@ -41,13 +41,14 @@ import {
 } from "./github.ts";
 import { fileFromMirror, type MirrorFileResult } from "./mirror.ts";
 import { webhookCoverageSince } from "./webhookCoverage.ts";
+import { GRAPHQL_BACKGROUND_RESERVE } from "../ui/src/lib/quotaImpact.js";
 
 import { createConcurrencyLimit, forEachWithConcurrency } from "./concurrency.ts";
 
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
 
-export const REST_BACKGROUND_RESERVE = 500;
+export const REST_BACKGROUND_RESERVE = GRAPHQL_BACKGROUND_RESERVE;
 const LOG_WORTHY_CONCLUSION = new Set(["failure", "cancelled", "timed_out", "action_required", "neutral", "startup_failure", "stale"]);
 const TIMESTAMP_LINE_RE = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z /gm;
 

@@ -1,4 +1,4 @@
-import { backgroundQuotaAvailable, fetchGithubQuota, fetchPrDetail, recentGithubQuota, fetchPrDetailPart, GithubRequestError, lookupPr, searchClosedPrs, searchOpenPrs, searchRecentPrs, type GithubQuotaResource, type PrDetail, type PrDetailScope } from "./github.ts";
+import { backgroundQuotaAvailable, fetchGithubQuota, fetchPrDetail, isBackgroundSource, recentGithubQuota, fetchPrDetailPart, GithubRequestError, lookupPr, searchClosedPrs, searchOpenPrs, searchRecentPrs, type GithubQuota, type PrDetail, type PrDetailScope } from "./github.ts";
 import type { GithubUsageSource } from "./githubUsage.ts";
 import {
   deleteWebhookRegistrationsForPr,
@@ -52,11 +52,20 @@ export { backgroundQuotaAvailable };
 // trip (~0.5s) to the first relay refresh after every quiet minute.
 const BACKGROUND_QUOTA_MAX_AGE_MS = 5 * 60_000;
 
-export async function backgroundPollAllowed(): Promise<boolean> {
+async function backgroundQuota(): Promise<GithubQuota> {
   const recent = recentGithubQuota(BACKGROUND_QUOTA_MAX_AGE_MS);
   // fetchGithubQuota answers from cache while the reading is fresh, so this only calls out when stale.
   if (recent) void fetchGithubQuota().catch(() => {});
-  const quota = recent ?? await fetchGithubQuota();
+  return recent ?? await fetchGithubQuota();
+}
+
+// Gates background work that spends REST whichever pool its reads use: Actions listings and catalogs.
+export async function backgroundRestAllowed(): Promise<boolean> {
+  return backgroundQuotaAvailable((await backgroundQuota()).rest);
+}
+
+export async function backgroundPollAllowed(): Promise<boolean> {
+  const quota = await backgroundQuota();
   // With the REST fallback on, background reads move to the REST pool once GraphQL is low.
   if (backgroundQuotaAvailable(quota.graphql) || (restFallbackEnabled() && backgroundQuotaAvailable(quota.rest))) {
     quotaPauseResetAt = null;
@@ -207,7 +216,7 @@ async function refreshPrNow(
   invalidatePr(repo, number);
   invalidateInbox();
 
-  if (scope !== "review") {
+  if (scope !== "review" && (!isBackgroundSource(source) || await backgroundRestAllowed())) {
     // Cache the native run catalog alongside check contexts, including queued runs
     // without jobs and run IDs that selected-run cache reads will advertise. It takes a
     // REST round trip or more, so the checks and status above are published first and the
@@ -229,6 +238,7 @@ export interface PollDeps {
   listWebhookRegistrations: typeof listWebhookRegistrations;
   refreshRecentActions?: typeof refreshRecentActions;
   actionsListingIntervalMs?: () => number;
+  backgroundRestAllowed?: typeof backgroundRestAllowed;
   searchOpenPrs: typeof searchOpenPrs;
   searchRecentPrs: typeof searchRecentPrs;
   searchClosedPrs: typeof searchClosedPrs;
@@ -289,7 +299,8 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
     // poll interval; webhooks deliver the runs in between.
     const refreshActions = deps.refreshRecentActions;
     const listingInterval = (deps.actionsListingIntervalMs ?? pollIntervalMs)();
-    if (refreshActions && !actionsListing && Date.now() - actionsListedAt >= listingInterval) {
+    if (refreshActions && !actionsListing && Date.now() - actionsListedAt >= listingInterval
+      && await (deps.backgroundRestAllowed ?? backgroundRestAllowed)()) {
       actionsListedAt = Date.now();
       actionsListing = Promise.allSettled(repos.map((repo) => refreshActions(repo))).then((results) => {
         results.forEach((result, index) => {
