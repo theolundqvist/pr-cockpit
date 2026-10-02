@@ -40,6 +40,7 @@ import {
   fetchWorkflowRunsForWorkflow,
 } from "./github.ts";
 import { fileFromMirror, type MirrorFileResult } from "./mirror.ts";
+import { webhookCoverageSince } from "./webhookCoverage.ts";
 
 import { createConcurrencyLimit, forEachWithConcurrency } from "./concurrency.ts";
 
@@ -116,6 +117,8 @@ export interface ActionsFetchers {
   fetchRunJobs: typeof fetchRunJobs;
   fetchJobLog: typeof fetchJobLog;
   restRemaining: () => Promise<number>;
+  // Since when every webhook for the repository has been ingested; null while uncovered.
+  webhookCoveredSince?: (repo: string) => number | null;
 }
 
 const liveFetchers: ActionsFetchers = {
@@ -123,6 +126,7 @@ const liveFetchers: ActionsFetchers = {
   fetchRunJobs,
   fetchJobLog,
   restRemaining: async () => (await fetchGithubQuota()).rest.remaining,
+  webhookCoveredSince: webhookCoverageSince,
 };
 
 export interface RequestedRunFetchers extends ActionsFetchers {
@@ -702,7 +706,13 @@ export async function cacheGithubActionsForCommit(
   fetchers: ActionsFetchers = liveFetchers,
   currentHead = false,
 ): Promise<void> {
-  if (currentHead) renewActionsLease(repo, number, headSha);
+  if (currentHead) {
+    const lease = renewActionsLease(repo, number, headSha);
+    // Once this head is read in full, webhooks deliver every later run and job change, so
+    // rereading it on each check event only spent REST quota (a job list per running workflow).
+    const coveredSince = fetchers.webhookCoveredSince?.(repo) ?? null;
+    if (lease.bootstrapped_at !== null && coveredSince !== null && coveredSince <= Date.parse(lease.bootstrapped_at)) return;
+  }
   const runs = (await catalogRequest(() => fetchers.fetchWorkflowRuns(repo, headSha))).map(compactRun);
   for (const run of runs) storeRun(repo, number, run);
   const stale = runs.filter((run) => {

@@ -518,6 +518,48 @@ test("current-head catalog refresh fetches running workflows' jobs in parallel, 
   expect(result.peak).toBe(4);
 });
 
+test("a head read in full under webhook coverage is not reread until coverage restarts or the head moves", async () => {
+  const result = await runScenario("pr-cockpit-actions-covered-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    const run = (id) => ({
+      id, run_attempt: 1, head_sha: head, head_branch: "feature", name: "W" + id,
+      path: ".github/workflows/w" + id + ".yml", event: "pull_request",
+      status: "in_progress", conclusion: null, updated_at: "2026-09-17T02:40:00Z", html_url: null,
+    });
+    let coveredSince = null;
+    const calls = [];
+    const fetchers = {
+      fetchWorkflowRuns: async (_repo, sha) => { calls.push("runs:" + sha.slice(0, 1)); return [run(90)]; },
+      fetchRunJobs: async (_repo, runId) => { calls.push("jobs:" + runId); return []; },
+      fetchJobLog: async () => "",
+      restRemaining: async () => 5000,
+      webhookCoveredSince: () => coveredSince,
+    };
+    const pass = async (sha = head) => {
+      calls.length = 0;
+      await actions.cacheGithubActionsForCommit("acme/app", 7, sha, fetchers, true);
+      return [...calls];
+    };
+    const uncovered = [await pass(), await pass()];
+    coveredSince = Date.now() - 60_000;
+    const covered = await pass();
+    await Bun.sleep(5);
+    coveredSince = Date.now();
+    const reconnected = await pass();
+    const afterReconnect = await pass();
+    const newHead = await pass("b".repeat(40));
+    console.log(JSON.stringify({ uncovered, covered, reconnected, afterReconnect, newHead }));
+  `);
+  expect(result.uncovered).toEqual([["runs:a", "jobs:90"], ["runs:a", "jobs:90"]]);
+  expect(result.covered).toEqual([]);
+  // Coverage that began after the last full read may have missed events in between.
+  expect(result.reconnected).toEqual(["runs:a", "jobs:90"]);
+  expect(result.afterReconnect).toEqual([]);
+  expect(result.newHead).toEqual(["runs:b", "jobs:90"]);
+});
+
 test("concurrent catalogs across many PRs share one process-wide bound on Actions REST requests", async () => {
   const result = await runScenario("pr-cockpit-actions-global-bound-", `
     const actions = await import(${JSON.stringify(runLogsUrl)});

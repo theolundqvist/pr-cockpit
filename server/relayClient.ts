@@ -8,6 +8,7 @@ import { watchForWake } from "./wake.ts";
 import { refreshCachedPrDetail } from "./cachedPrDetail.ts";
 import { prsViewedRecently, prViewedRecently } from "./recentPrViews.ts";
 import { forwarderCoveredSince } from "./forwarders.ts";
+import { setWebhookCoverage } from "./webhookCoverage.ts";
 
 const POLL_MS = 5_000;
 const ERROR_BACKOFF_MS = 60_000;
@@ -98,6 +99,8 @@ export function webhookCoveredSince(repo: string): number | null {
   if (relay === null || forwarder === null) return relay ?? forwarder;
   return Math.min(relay, forwarder);
 }
+
+setWebhookCoverage(webhookCoveredSince);
 
 const requestFullPoll = createPollRequester(
   () => pollOnce(),
