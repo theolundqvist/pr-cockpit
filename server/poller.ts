@@ -228,6 +228,7 @@ export interface PollDeps {
   trackedRepos: typeof trackedRepos;
   listWebhookRegistrations: typeof listWebhookRegistrations;
   refreshRecentActions?: typeof refreshRecentActions;
+  actionsListingIntervalMs?: () => number;
   searchOpenPrs: typeof searchOpenPrs;
   searchRecentPrs: typeof searchRecentPrs;
   searchClosedPrs: typeof searchClosedPrs;
@@ -252,6 +253,7 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
   // PRs updated since then, and the first sweep after start takes the most recent page.
   let closedSweptAt: number | null = null;
   let actionsListing: Promise<void> | null = null;
+  let actionsListedAt = Number.NEGATIVE_INFINITY;
   let indexSweep: Promise<void> | null = null;
   let mirrorPrune: Promise<void> | null = null;
 
@@ -282,9 +284,13 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
     // The repo-wide recent-runs listing (two ~2.5s pages per repo) feeds only the Actions page,
     // so the poll neither waits for it nor stacks a second one behind a listing still running.
     // Awaiting it held every poll, and the merges and refreshes awaiting a poll, ~4s past its
-    // last inbox change.
+    // last inbox change. Relay events ask for a poll every 30 seconds in a busy repository, and
+    // each listing costs a few REST requests that ETags rarely save there, so it keeps to the
+    // poll interval; webhooks deliver the runs in between.
     const refreshActions = deps.refreshRecentActions;
-    if (refreshActions && !actionsListing) {
+    const listingInterval = (deps.actionsListingIntervalMs ?? pollIntervalMs)();
+    if (refreshActions && !actionsListing && Date.now() - actionsListedAt >= listingInterval) {
+      actionsListedAt = Date.now();
       actionsListing = Promise.allSettled(repos.map((repo) => refreshActions(repo))).then((results) => {
         results.forEach((result, index) => {
           if (result.status === "rejected") {

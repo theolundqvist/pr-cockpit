@@ -308,6 +308,7 @@ test("a poll completes without waiting for the repo-wide Actions listing, and ne
   const poll = createPollOnce({
     ...deps,
     listWebhookRegistrations: () => [],
+    actionsListingIntervalMs: () => 0,
     refreshRecentActions: async () => {
       listings++;
       await actionsGate;
@@ -335,6 +336,34 @@ test("a poll completes without waiting for the repo-wide Actions listing, and ne
   await Bun.sleep(1);
   await poll();
   expect(listings).toBe(2);
+});
+
+test("event-driven polls list repo-wide Actions runs at most once per poll interval", async () => {
+  let listings = 0;
+  const poll = createPollOnce({
+    ...deps,
+    listWebhookRegistrations: () => [],
+    actionsListingIntervalMs: () => 180_000,
+    refreshRecentActions: async () => {
+      listings++;
+      return 0;
+    },
+  });
+  try {
+    setSystemTime(new Date("2026-09-24T08:00:00.000Z"));
+    await poll();
+    await Bun.sleep(1);
+    setSystemTime(new Date("2026-09-24T08:00:30.000Z"));
+    await poll();
+    setSystemTime(new Date("2026-09-24T08:02:59.000Z"));
+    await poll();
+    expect(listings).toBe(1);
+    setSystemTime(new Date("2026-09-24T08:03:00.000Z"));
+    await poll();
+    expect(listings).toBe(2);
+  } finally {
+    setSystemTime();
+  }
 });
 
 test("a poll searches without waiting for mirror pruning, and never stacks two prunes", async () => {
