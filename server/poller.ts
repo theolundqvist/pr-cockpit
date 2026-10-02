@@ -266,6 +266,9 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
   let closedSweptAt: number | null = null;
   let actionsListing: Promise<void> | null = null;
   let actionsListedAt = Number.NEGATIVE_INFINITY;
+  // When a search last found each PR matching its cached head, update time, and CI; such a PR is
+  // not refreshed, so its fetched_at alone would never let a REST search vouch for it again.
+  const confirmedAt = new Map<string, number>();
   let indexSweep: Promise<void> | null = null;
   let mirrorPrune: Promise<void> | null = null;
 
@@ -315,12 +318,14 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
       });
     }
 
+    const searchedAt = Date.now();
     const hits = await deps.searchOpenPrs(searchRepos, (repo, number, updatedAt) => {
       const cached = deps.getPr(repo, number);
       if (!cached || cached.updated_at !== updatedAt) return null;
-      // CI moves without touching updatedAt; only webhooks covering the time since this snapshot reveal it.
+      // CI moves without touching updatedAt; only webhooks covering the time since this state was last known reveal it.
       const coveredSince = (deps.webhookCoveredSince ?? webhookCoverageSince)(repo);
-      if (coveredSince === null || coveredSince > Date.parse(cached.fetched_at)) return null;
+      const knownAt = Math.max(Date.parse(cached.fetched_at), confirmedAt.get(prKeyOf(repo, number)) ?? Number.NEGATIVE_INFINITY);
+      if (coveredSince === null || coveredSince > knownAt) return null;
       return { headRefOid: cached.head_sha, ciState: cached.ci_status };
     });
     const nextOpenInboxKeys = new Set(hits.map((hit) => prKeyOf(hit.repo, hit.number)));
@@ -331,8 +336,11 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
       if (!tracked.has(hit.repo) && !registered.has(prKeyOf(hit.repo, hit.number))) return false;
       const cached = deps.getPr(hit.repo, hit.number);
       // fetched_at deliberately stays put: thread resolution moves none of these fields, so only detail staleness repairs it.
-      return !(cached && cached.head_sha === hit.headRefOid && cached.updated_at === hit.updatedAt && cached.ci_status === hit.ciState);
+      const unchanged = !!cached && cached.head_sha === hit.headRefOid && cached.updated_at === hit.updatedAt && cached.ci_status === hit.ciState;
+      if (unchanged) confirmedAt.set(prKeyOf(hit.repo, hit.number), searchedAt);
+      return !unchanged;
     });
+    for (const key of confirmedAt.keys()) if (!nextOpenInboxKeys.has(key)) confirmedAt.delete(key);
     // Each refresh is a GraphQL detail plus its Actions catalog (1-3s); after a burst of activity,
     // refreshing one PR at a time held the last one's update for the sum. Quota spend is unchanged.
     // A slot frees once the PR's detail is published: its catalog, which publishes the PR again

@@ -261,6 +261,30 @@ describe("poll-loop registration lifecycle", () => {
     expect(answers).toEqual([null, { headRefOid: "abc", ciState: "PENDING" }, null, null]);
   });
 
+  test("a search that confirms an unchanged PR lets later REST searches vouch for it under newer coverage", async () => {
+    searchHits = [{ ...hit("acme/tracked", 5), ciState: "PENDING" }];
+    const row = {
+      head_sha: "abc",
+      updated_at: "2026-07-25T00:00:00Z",
+      ci_status: "PENDING",
+      fetched_at: "2026-07-20T00:00:00.000Z",
+    } as PrRow;
+    const answers: unknown[] = [];
+    const poll = createPollOnce({
+      ...deps,
+      getPr: () => row,
+      webhookCoveredSince: () => Date.parse("2026-07-24T00:00:00Z"),
+      searchOpenPrs: async (_repos, known) => {
+        answers.push(known!("acme/tracked", 5, "2026-07-25T00:00:00Z"));
+        return searchHits;
+      },
+    });
+    await poll();
+    await poll();
+    expect(answers).toEqual([null, { headRefOid: "abc", ciState: "PENDING" }]);
+    expect(refreshPr).not.toHaveBeenCalled();
+  });
+
   test("untracked unregistered hit is ignored", async () => {
     searchHits = [hit("ext/other", 9)];
     await createPollOnce(deps)();
