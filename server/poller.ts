@@ -31,6 +31,7 @@ import { captureError } from "./sentry.ts";
 import { reportStorageFailure, repositoryAvailable } from "./systemIssues.ts";
 import { watchForWake } from "./wake.ts";
 import { forEachWithConcurrency } from "./concurrency.ts";
+import { webhookCoverageSince } from "./webhookCoverage.ts";
 
 const INDEX_SWEEP_MS = 1_800_000;
 const POLL_REFRESH_CONCURRENCY = 3;
@@ -239,6 +240,7 @@ export interface PollDeps {
   refreshRecentActions?: typeof refreshRecentActions;
   actionsListingIntervalMs?: () => number;
   backgroundRestAllowed?: typeof backgroundRestAllowed;
+  webhookCoveredSince?: typeof webhookCoverageSince;
   searchOpenPrs: typeof searchOpenPrs;
   searchRecentPrs: typeof searchRecentPrs;
   searchClosedPrs: typeof searchClosedPrs;
@@ -313,7 +315,14 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
       });
     }
 
-    const hits = await deps.searchOpenPrs(searchRepos);
+    const hits = await deps.searchOpenPrs(searchRepos, (repo, number, updatedAt) => {
+      const cached = deps.getPr(repo, number);
+      if (!cached || cached.updated_at !== updatedAt) return null;
+      // CI moves without touching updatedAt; only webhooks covering the time since this snapshot reveal it.
+      const coveredSince = (deps.webhookCoveredSince ?? webhookCoverageSince)(repo);
+      if (coveredSince === null || coveredSince > Date.parse(cached.fetched_at)) return null;
+      return { headRefOid: cached.head_sha, ciState: cached.ci_status };
+    });
     const nextOpenInboxKeys = new Set(hits.map((hit) => prKeyOf(hit.repo, hit.number)));
     const openInboxChanged = nextOpenInboxKeys.size !== openInboxKeys.size
       || [...nextOpenInboxKeys].some((key) => !openInboxKeys.has(key));

@@ -235,6 +235,32 @@ describe("poll-loop registration lifecycle", () => {
     expect(refreshPr).not.toHaveBeenCalled();
   });
 
+  test("a REST search reuses cached head and CI only while webhooks covered the time since the snapshot", async () => {
+    const row = {
+      head_sha: "abc",
+      updated_at: "2026-07-25T00:00:00Z",
+      ci_status: "PENDING",
+      fetched_at: "2026-07-25T00:05:00.000Z",
+    } as PrRow;
+    let coveredSince: number | null = null;
+    const answers: unknown[] = [];
+    await createPollOnce({
+      ...deps,
+      getPr: () => row,
+      webhookCoveredSince: () => coveredSince,
+      searchOpenPrs: async (_repos, known) => {
+        answers.push(known!("acme/tracked", 5, "2026-07-25T00:00:00Z"));
+        coveredSince = Date.parse("2026-07-25T00:04:00Z");
+        answers.push(known!("acme/tracked", 5, "2026-07-25T00:00:00Z"));
+        answers.push(known!("acme/tracked", 5, "2026-07-25T00:09:00Z"));
+        coveredSince = Date.parse("2026-07-25T00:06:00Z");
+        answers.push(known!("acme/tracked", 5, "2026-07-25T00:00:00Z"));
+        return [];
+      },
+    })();
+    expect(answers).toEqual([null, { headRefOid: "abc", ciState: "PENDING" }, null, null]);
+  });
+
   test("untracked unregistered hit is ignored", async () => {
     searchHits = [hit("ext/other", 9)];
     await createPollOnce(deps)();

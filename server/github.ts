@@ -939,13 +939,19 @@ async function searchOpenPrsGraphql(searchQuery: string): Promise<SearchHit[]> {
   }));
 }
 
-// REST search finds the PRs; each one's head and CI come from its own conditional reads.
-async function searchOpenPrsRest(searchQuery: string): Promise<SearchHit[]> {
+// Head and CI for a PR whose update time is unchanged, when something other than the poll keeps them current.
+export type KnownSearchHit = (repo: string, number: number, updatedAt: string) => Pick<SearchHit, "headRefOid" | "ciState"> | null;
+
+// REST search finds the PRs; each one's head and CI come from its own conditional reads, which
+// cost quota whenever CI moved, so a PR the caller already knows skips them.
+async function searchOpenPrsRest(searchQuery: string, known: KnownSearchHit): Promise<SearchHit[]> {
   const items = await restSearchPrs(searchQuery, 100);
   if (items.length === 100) console.warn(`search hit the 100-result cap, PRs may be missing: ${searchQuery}`);
   const limit = createConcurrencyLimit(REST_FANOUT);
   return Promise.all(items.map((item) => limit(async () => {
     const repo = restSearchRepo(item);
+    const cached = known(repo, item.number, item.updated_at);
+    if (cached) return { repo, number: item.number, title: item.title, updatedAt: item.updated_at, ...cached };
     const { pull, rollup } = await fetchRestPullWithRollup(repo, item.number);
     return {
       repo,
@@ -986,14 +992,14 @@ async function searchOpenPrBatch(repos: string[], search: (searchQuery: string) 
   }
 }
 
-export async function searchOpenPrs(repos: string[]): Promise<SearchHit[]> {
+export async function searchOpenPrs(repos: string[], known: KnownSearchHit = () => null): Promise<SearchHit[]> {
   if (mockGithub) return mockGithub.searchOpenPrs(repos);
   const available = repos.filter(repositoryAvailable);
   if (available.length === 0) return [];
   return readWithRestFallback(
     "background poll",
     () => searchOpenPrBatch(available, searchOpenPrsGraphql),
-    () => searchOpenPrBatch(available, searchOpenPrsRest),
+    () => searchOpenPrBatch(available, (searchQuery) => searchOpenPrsRest(searchQuery, known)),
   );
 }
 

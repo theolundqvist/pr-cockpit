@@ -341,3 +341,57 @@ test("GraphQL's own quota reading, not /rate_limit's, moves background reads to 
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test("a REST inbox search skips the per-PR head and CI reads for PRs the caller already knows", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-rest-known-hits-"));
+  try {
+    const script = `
+      const { mock } = await import("bun:test");
+      mock.module(${JSON.stringify(githubAuthModuleUrl)}, () => ({
+        githubAuthStatus: async () => ({ ok: true, state: "ready", login: "viewer", error: null, requiredScopes: [], missingScopes: [] }),
+        startGithubSetup: async () => ({ ok: true, state: "ready", login: "viewer", error: null, requiredScopes: [], missingScopes: [] }),
+        liveGithubToken: async () => "fixture-token",
+      }));
+      const github = await import(${JSON.stringify(githubModuleUrl)});
+      const reset = String(Math.ceil((Date.now() + 3_600_000) / 1000));
+      const head = "c".repeat(40);
+      const paths = [];
+      globalThis.fetch = async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/graphql") {
+          return Response.json({ message: "API rate limit exceeded" }, { status: 403, headers: {
+            "x-ratelimit-resource": "graphql", "x-ratelimit-remaining": "0", "x-ratelimit-reset": reset,
+          } });
+        }
+        paths.push(url.pathname);
+        const headers = { "x-ratelimit-resource": url.pathname.startsWith("/search/") ? "search" : "core", "x-ratelimit-remaining": "4000" };
+        const item = (number) => ({ number, title: "PR " + number, updated_at: "2026-09-01T10:00:00Z", repository_url: "https://api.github.com/repos/acme/app" });
+        if (url.pathname === "/search/issues") return Response.json({ items: [item(7), item(8)] }, { headers });
+        if (url.pathname === "/repos/acme/app/pulls/8") return Response.json({ number: 8, title: "PR 8", updated_at: "2026-09-01T10:00:00Z", head: { sha: head } }, { headers });
+        if (url.pathname.endsWith("/check-runs")) return Response.json({ check_runs: [] }, { headers });
+        if (url.pathname.endsWith("/status")) return Response.json({ statuses: [] }, { headers });
+        if (url.pathname === "/repos/acme/app/actions/runs") return Response.json({ workflow_runs: [] }, { headers });
+        return Response.json({ message: "Not Found" }, { status: 404, headers });
+      };
+      const hits = await github.searchOpenPrs(["acme/app"], (repo, number) => number === 7 ? { headRefOid: "a".repeat(40), ciState: "PENDING" } : null);
+      console.log(JSON.stringify({ hits: hits.map((hit) => [hit.number, hit.headRefOid.slice(0, 1), hit.ciState]), pulls: paths.filter((path) => path.includes("/pulls/")) }));
+    `;
+    const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "", COCKPIT_REPLICA_SSH_HOST: "", COCKPIT_PROXY: "" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect(exitCode, stderr).toBe(0);
+    expect(JSON.parse(stdout)).toEqual({
+      hits: [[7, "a", "PENDING"], [8, "c", "NONE"]],
+      pulls: ["/repos/acme/app/pulls/8"],
+    });
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
