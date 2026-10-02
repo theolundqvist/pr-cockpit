@@ -236,6 +236,24 @@ export function safeMergeApprovalEnabled(): boolean {
   return getSetting("safe_merge_approval_enabled") === "true";
 }
 
+export function quickGenerateEnabled(): boolean {
+  return getSetting("quick_generate_enabled") === "true";
+}
+
+function normalizeQuickGenerateKey(value: unknown): string {
+  if (typeof value !== "string") throw new Error("invalid quick generate key");
+  const key = value.trim();
+  if (key !== "" && !/^[A-Z][A-Z0-9_]*$/.test(key)) throw new Error("invalid quick generate key");
+  return key;
+}
+
+function normalizeQuickGenerateText(value: unknown, field: string, maxLength: number): string {
+  if (typeof value !== "string") throw new Error(`invalid quick generate ${field}`);
+  const text = value.trim();
+  if (text.length > maxLength || /[\u0000-\u001f\u007f]/.test(text)) throw new Error(`invalid quick generate ${field}`);
+  return text;
+}
+
 function readPrGrouping(): PrGrouping {
   try { return normalizePrGrouping(JSON.parse(getSetting("pr_grouping") ?? "null")); }
   catch { return normalizePrGrouping(null); }
@@ -276,6 +294,10 @@ export interface Settings {
   safe_merge_approval_enabled: boolean;
   group_drag_enabled: boolean;
   rest_fallback_enabled: boolean;
+  quick_generate_enabled: boolean;
+  quick_generate_key: string;
+  quick_generate_model: string;
+  quick_generate_env_file: string;
   pr_grouping: PrGrouping;
   agent_harness: Harness;
   relay_url: string;
@@ -321,6 +343,10 @@ export function readSettings(): Settings {
     safe_merge_approval_enabled: safeMergeApprovalEnabled(),
     group_drag_enabled: getSetting("group_drag_enabled") === "true",
     rest_fallback_enabled: restFallbackEnabled(),
+    quick_generate_enabled: quickGenerateEnabled(),
+    quick_generate_key: getSetting("quick_generate_key") ?? "",
+    quick_generate_model: getSetting("quick_generate_model") ?? "",
+    quick_generate_env_file: getSetting("quick_generate_env_file") ?? "",
     pr_grouping: readPrGrouping(),
     agent_harness: normalizeHarness(getSetting("agent_harness")),
     relay_url: relayConfig().url,
@@ -363,6 +389,10 @@ export function writeSettings(
     safe_merge_approval_enabled: boolean;
     group_drag_enabled: boolean;
     rest_fallback_enabled: boolean;
+    quick_generate_enabled: boolean;
+    quick_generate_key: string;
+    quick_generate_model: string;
+    quick_generate_env_file: string;
     pr_grouping: PrGrouping;
     agent_harness: string;
     relay_url: string;
@@ -378,6 +408,13 @@ export function writeSettings(
   if (replicaSshHost === "" && (typeof patch.replica_ssh_host !== "string" || patch.replica_ssh_host.trim() !== "")) {
     throw new Error("invalid replica SSH host");
   }
+  const quickGenerateKey = patch.quick_generate_key === undefined ? undefined : normalizeQuickGenerateKey(patch.quick_generate_key);
+  const quickGenerateModel = patch.quick_generate_model === undefined
+    ? undefined
+    : normalizeQuickGenerateText(patch.quick_generate_model, "model", 200);
+  const quickGenerateEnvFile = patch.quick_generate_env_file === undefined
+    ? undefined
+    : normalizeQuickGenerateText(patch.quick_generate_env_file, "env file", 4096);
   if (patch.pr_grouping !== undefined) setSetting("pr_grouping", JSON.stringify(normalizePrGrouping(patch.pr_grouping)));
   if (patch.repos !== undefined) setSetting("repos", patch.repos);
   if (patch.default_repo !== undefined) setSetting("default_repo", patch.default_repo);
@@ -438,6 +475,19 @@ export function writeSettings(
       setSetting("rest_fallback_enabled", enabled ? "true" : "false");
       invalidateSettings();
     }
+  }
+  if (patch.quick_generate_enabled !== undefined) {
+    const enabled = patch.quick_generate_enabled === true;
+    if (quickGenerateEnabled() !== enabled) {
+      setSetting("quick_generate_enabled", enabled ? "true" : "false");
+      invalidateSettings();
+    }
+  }
+  if (quickGenerateKey !== undefined) setSetting("quick_generate_key", quickGenerateKey);
+  if (quickGenerateModel !== undefined) setSetting("quick_generate_model", quickGenerateModel);
+  if (quickGenerateEnvFile !== undefined && quickGenerateEnvFile !== (getSetting("quick_generate_env_file") ?? "")) {
+    setSetting("quick_generate_env_file", quickGenerateEnvFile);
+    invalidateSettings();
   }
   if (patch.agent_harness !== undefined) setSetting("agent_harness", normalizeHarness(patch.agent_harness));
   if (patch.relay_url !== undefined) setSetting("relay_url", patch.relay_url.trim());

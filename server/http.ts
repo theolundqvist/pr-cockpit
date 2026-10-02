@@ -108,9 +108,10 @@ import { commitsFromMirror, commitStatsFromMirror, conflictFilesFromMirror, diff
 import { checkState, currentChecks, type CheckState } from "./checkState.ts";
 import { currentBaseRef, discardMutation, enqueueMutation, mutationsForPr, retryMutation, type MutationPayload } from "./mutations.ts";
 import { isMergeMethod, mergeMethodFor, mergeMethodSourceFor, setMergeMethodPreference } from "./mergeMethod.ts";
-import { AGENT_DEFAULTS, pendingReviewsEnabled, readSettings, relayConfig, restFallbackEnabled, RELAY_APP_INSTALL_URL, RELAY_APP_SLUG, safeMergeApprovalEnabled, settingsRepos, writeSettings, type AgentSetting, type Settings } from "./settings.ts";
+import { AGENT_DEFAULTS, pendingReviewsEnabled, quickGenerateEnabled, readSettings, relayConfig, restFallbackEnabled, RELAY_APP_INSTALL_URL, RELAY_APP_SLUG, safeMergeApprovalEnabled, settingsRepos, writeSettings, type AgentSetting, type Settings } from "./settings.ts";
 import { claudeBinPath, codexBinPath, ompBinPath } from "./harness.ts";
 import { CommitMessageError, generateCommitMessage } from "./commitMessage.ts";
+import { QuickGenerateError, quickGenerate, quickGenerateConfig, quickGenerateModels } from "./quickGenerate.ts";
 import { relayStatus, webhookCoveredSince } from "./relayClient.ts";
 import { relayCoverage } from "./relayCoverage.ts";
 import { refreshCachedPrDetail } from "./cachedPrDetail.ts";
@@ -2431,6 +2432,35 @@ async function handleCommitMessage(req: Request, runtime: HttpRuntime): Promise<
   }
 }
 
+// Config and model discovery serve the Settings form before the feature is saved on; only generation is gated.
+async function handleQuickGenerate(req: Request, url: URL): Promise<Response> {
+  try {
+    if (req.method === "GET" && url.pathname === "/api/quick-generate/config") return json(quickGenerateConfig());
+    if (req.method === "GET" && url.pathname === "/api/quick-generate/models") {
+      return json({ models: await quickGenerateModels(url.searchParams.get("key") ?? "", req.signal) });
+    }
+    if (req.method !== "POST" || url.pathname !== "/api/quick-generate") return json({ error: "not found" }, 404);
+    if (!quickGenerateEnabled()) return json({ error: "Quick generate is disabled in Settings." }, 403);
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: "invalid JSON body" }, 400);
+    }
+    const key: unknown = body && typeof body === "object" && "key" in body ? body.key : "";
+    const model: unknown = body && typeof body === "object" && "model" in body ? body.model : "";
+    const prompt: unknown = body && typeof body === "object" && "prompt" in body ? body.prompt : undefined;
+    if (typeof key !== "string" || typeof model !== "string" || typeof prompt !== "string") {
+      return json({ error: "invalid quick generate request" }, 400);
+    }
+    return json({ text: await quickGenerate({ key: key.trim(), model: model.trim(), prompt }, req.signal) });
+  } catch (error) {
+    if (error instanceof QuickGenerateError) return json({ error: error.message }, error.status);
+    console.error("Quick generate failed:", error);
+    return json({ error: "Quick generate failed." }, 500);
+  }
+}
+
 const REPO_RE = /^[^/]+\/[^/]+$/;
 // headRef reaches `git fetch origin <ref>` - a leading-dash value would be parsed as a git option, so forbid it
 const REF_RE = /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/;
@@ -2711,6 +2741,10 @@ async function handlePutSettings(req: Request, runtime: HttpRuntime): Promise<Re
     safe_merge_approval_enabled: boolean;
     group_drag_enabled: boolean;
     rest_fallback_enabled: boolean;
+    quick_generate_enabled: boolean;
+    quick_generate_key: string;
+    quick_generate_model: string;
+    quick_generate_env_file: string;
     pr_grouping: Settings["pr_grouping"];
   }>;
   try {
@@ -3100,6 +3134,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       let allowed = (req.method === "POST" && url.pathname === "/api/archive")
         || (req.method === "POST" && url.pathname === "/api/inbox/reorder")
         || (req.method === "POST" && url.pathname === "/api/commit-message")
+        || (req.method === "POST" && url.pathname === "/api/quick-generate")
         || (req.method === "POST" && url.pathname === "/api/auth/setup")
         || (req.method === "PUT" && url.pathname === "/api/settings")
         || (req.method === "PUT" && url.pathname === "/api/whiteboard")
@@ -3144,6 +3179,10 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     }
     // Personal board data belongs to this installation, never to a replica's upstream.
     if (url.pathname === "/api/whiteboard") return handleWhiteboard(req);
+    // Provider keys live on this machine, so quick generation never reaches a replica's source.
+    if (url.pathname === "/api/quick-generate" || url.pathname.startsWith("/api/quick-generate/")) {
+      return handleQuickGenerate(req, url);
+    }
     const replicaResponse = await proxyReplicaRequest(req, url);
     if (replicaResponse) return replicaResponse;
 

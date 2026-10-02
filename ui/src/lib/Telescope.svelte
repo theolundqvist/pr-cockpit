@@ -1,6 +1,7 @@
 <script>
   import { tick, untrack } from "svelte";
   import { repoSearch, repoFiles, repoFile, repoDefinition } from "./api.js";
+  import { isQuickGenerateOpen } from "./dom.js";
   import { langForPath } from "./highlight.js";
   import { tokenizeLines } from "./offThreadHighlight.js";
   import { theme } from "./theme.svelte.js";
@@ -414,6 +415,7 @@
 
   $effect(() => {
     function onKey(e) {
+      if (isQuickGenerateOpen()) return;
       const meta = e.metaKey || e.ctrlKey;
       if (meta && e.shiftKey && e.key.toLowerCase() === "f") {
         e.preventDefault();

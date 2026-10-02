@@ -1,10 +1,12 @@
 {
   "darwin": {
     "openApp": "Command+Control+G",
-    "openPalette": "Command+Option+K"
+    "openPalette": "Command+Option+K",
+    "quickGenerate": "Command+Option+J"
   },
   "linux": {
     "openApp": "Super+Control+G",
-    "openPalette": "Super+Alt+K"
+    "openPalette": "Super+Alt+K",
+    "quickGenerate": "Super+Alt+J"
   }
 }

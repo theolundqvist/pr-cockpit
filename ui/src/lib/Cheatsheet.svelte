@@ -1,6 +1,6 @@
 <script>
   import Kbd from "./Kbd.svelte";
-  import { isTypingTarget } from "./dom.js";
+  import { isQuickGenerateOpen, isTypingTarget } from "./dom.js";
   import { prefs } from "./prefs.svelte.js";
   import { PAGE_NAVIGATION } from "./navigationShortcuts.js";
 
@@ -79,6 +79,7 @@
 
   $effect(() => {
     function onKey(e) {
+      if (isQuickGenerateOpen()) return;
       if (!open) {
         if (e.key === "?" && !isTypingTarget(e.target)) {
           open = true;

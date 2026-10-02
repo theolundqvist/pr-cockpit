@@ -58,13 +58,15 @@ export function startCockpitServer(port: number, fetchHandler: FetchHandler, all
     port,
     hostname: "127.0.0.1",
     fetch(request, bunServer) {
-      if (new URL(request.url).pathname === "/api/events") {
+      const pathname = new URL(request.url).pathname;
+      if (pathname === "/api/events") {
         if (!originAllowed(request)) return new Response("Forbidden", { status: 403 });
         return bunServer.upgrade(request)
           ? undefined
           : new Response("WebSocket upgrade required", { status: 426 });
       }
-      if (UNSAFE_BROWSER_METHODS[request.method] && !originAllowed(request)) {
+      // Model discovery spends the user's provider key, so a cross-site page must not trigger it even as a GET.
+      if ((UNSAFE_BROWSER_METHODS[request.method] || pathname === "/api/quick-generate/models") && !originAllowed(request)) {
         return new Response("Forbidden", { status: 403 });
       }
       return fetchHandler(request);

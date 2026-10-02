@@ -48,8 +48,10 @@ const startHidden = process.argv.includes("--cockpit-hidden");
 const initialUrl = cockpitUrlFromArgv(process.argv) || process.env.COCKPIT_URL || "http://127.0.0.1:4820";
 const serverOrigin = new URL(initialUrl).origin;
 const paletteUrl = `${serverOrigin}/#/palette`;
+const quickGenerateUrl = `${serverOrigin}/#/quick-generate`;
 const DEFAULT_OPEN_APP = desktopPolicy.shortcuts.openApp;
 const DEFAULT_OPEN_PALETTE = desktopPolicy.shortcuts.openPalette;
+const QUICK_GENERATE_SHORTCUT = desktopPolicy.shortcuts.quickGenerate;
 
 const editorPreparations = new Map();
 const editorCheckoutPaths = new Map();
@@ -149,6 +151,8 @@ let perViewPositionEnabled = false;
 let shellThemePreference = "system";
 let win = null;
 let paletteWin = null;
+// Exists only while Quick Generate is enabled in settings.
+let quickGenerateWin = null;
 const extraWindows = new Set();
 
 function cockpitWindows() {
@@ -167,7 +171,9 @@ function windowBackgroundColor() {
 function syncWindowBackground() {
   const backgroundColor = windowBackgroundColor();
   for (const window of cockpitWindows()) window.setBackgroundColor(backgroundColor);
-  if (paletteWin && !paletteWin.isDestroyed()) paletteWin.setBackgroundColor("#00000000");
+  for (const panel of [paletteWin, quickGenerateWin]) {
+    if (panel && !panel.isDestroyed()) panel.setBackgroundColor("#00000000");
+  }
 }
 
 function applyShellSettings(data) {
@@ -185,7 +191,7 @@ function currentNativePalette() {
 
 function broadcastNativePalette() {
   const palette = currentNativePalette();
-  for (const window of [...cockpitWindows(), paletteWin]) {
+  for (const window of [...cockpitWindows(), paletteWin, quickGenerateWin]) {
     if (palette && window && !window.isDestroyed()) window.webContents.send("cockpit:native-palette-changed", palette);
   }
 }
@@ -271,7 +277,7 @@ if (!app.requestSingleInstanceLock()) {
   // deep link, palette, or per-view bounds state, and ⌘W really closes it.
   function openExtraWindow(hash = null) {
     const focused = BrowserWindow.getFocusedWindow();
-    const source = focused && focused !== paletteWin ? focused : win;
+    const source = focused && focused !== paletteWin && focused !== quickGenerateWin ? focused : win;
     const anchor = source && !source.isDestroyed() ? source.getBounds() : null;
     const extra = new BrowserWindow({
       width: anchor?.width ?? 1440,
@@ -352,7 +358,9 @@ if (!app.requestSingleInstanceLock()) {
     hideMainWindow();
     // extras carry no restorable state and showMainWindow() cannot bring them back, so close them
     for (const extra of [...extraWindows]) extra.close();
-    if (paletteWin && !paletteWin.isDestroyed()) paletteWin.hide();
+    for (const panel of [paletteWin, quickGenerateWin]) {
+      if (panel && !panel.isDestroyed()) panel.hide();
+    }
     hideDockIcon();
   }
 
@@ -819,7 +827,7 @@ if (!app.requestSingleInstanceLock()) {
 
     // Pick up freshly-saved keybinds. Blur is when you'd leave the app to test a global
     // shortcut; the guard inside applyShortcuts makes the settings re-read a no-op unless
-    // something changed. ponytail: no renderer→main IPC, so this leans on blur + navigation.
+    // something changed. Keybind saves publish no settings invalidation, so they lean on blur + navigation.
     win.on("blur", () => applyShortcuts());
 
     win.on("swipe", (event, direction) => {
@@ -830,80 +838,127 @@ if (!app.requestSingleInstanceLock()) {
 
     win.loadURL(firstUrl);
 
-    paletteWin = new BrowserWindow({
+    // Panels only hide, so their renderer keeps its state between presentations.
+    function createPanel({ name, url, width, height, openEvent, closeHash, onNavigate = () => false }) {
+      const baseHash = new URL(url).hash;
+      const panelWin = new BrowserWindow({
+        width,
+        height,
+        // nonactivating NSPanel: takes keyboard focus while another app stays active —
+        // app.focus({steal:true}) is ignored by modern macOS cooperative activation
+        ...desktopPolicy.paletteWindow,
+        frame: false,
+        resizable: false,
+        alwaysOnTop: true,
+        skipTaskbar: true,
+        show: false,
+        transparent: true,
+        hasShadow: false,
+        backgroundColor: "#00000000",
+        webPreferences: { sandbox: true, preload: path.join(__dirname, "preload.js") },
+      });
+      let ready = false;
+      let retryTimer = null;
+      let loadFailed = false;
+      let loading = false;
+      let showPending = false;
+      function load() {
+        clearTimeout(retryTimer);
+        if (panelWin.isDestroyed() || loading) return;
+        ready = false;
+        loading = true;
+        panelWin.loadURL(url).catch(() => {});
+      }
+      function hide() {
+        showPending = false;
+        if (!panelWin.isDestroyed()) panelWin.hide();
+      }
+      function present() {
+        if (isQuitting || panelWin.isDestroyed() || !ready) return;
+        showPending = false;
+        panelWin.webContents
+          .executeJavaScript(`window.dispatchEvent(new Event(${JSON.stringify(openEvent)}))`)
+          .catch(() => {});
+        panelWin.center();
+        panelWin.show();
+        panelWin.focus();
+        panelWin.webContents.focus();
+      }
+      function show() {
+        if (isQuitting || panelWin.isDestroyed()) return;
+        if (!ready) {
+          showPending = true;
+          load();
+          return;
+        }
+        present();
+      }
+      load();
+      panelWin.webContents.on("did-finish-load", () => {
+        loading = false;
+        if (loadFailed) {
+          loadFailed = false; // Chromium fires did-finish-load for its own error page after did-fail-load
+          return;
+        }
+        ready = true;
+        if (showPending) present();
+      });
+      panelWin.webContents.on("did-fail-load", (event, errorCode, desc, failedUrl, isMainFrame) => {
+        if (!isMainFrame || errorCode === -3) return; // -3 ERR_ABORTED: a load we superseded, not a real failure
+        ready = false;
+        loading = false;
+        loadFailed = true;
+        panelWin.hide();
+        retryTimer = setTimeout(load, 1500);
+      });
+      panelWin.webContents.on("render-process-gone", (event, details) => {
+        if (isQuitting || panelWin.isDestroyed()) return;
+        showPending ||= panelWin.isVisible();
+        ready = false;
+        loading = false;
+        panelWin.hide();
+        console.error(`pr-cockpit: ${name} renderer gone (${details.reason}, exitCode=${details.exitCode})`);
+        load();
+      });
+      panelWin.on("blur", hide);
+      panelWin.on("close", (e) => {
+        if (isQuitting) return;
+        e.preventDefault();
+        hide();
+      });
+      panelWin.webContents.on("did-navigate-in-page", (event, navigatedUrl) => {
+        const hash = new URL(navigatedUrl).hash;
+        if (hash !== closeHash && !onNavigate(hash)) return;
+        hide();
+        panelWin.webContents.executeJavaScript(`history.replaceState(null, '', ${JSON.stringify(baseHash)})`).catch(() => {});
+      });
+      return {
+        win: panelWin,
+        show,
+        destroy() {
+          clearTimeout(retryTimer);
+          if (!panelWin.isDestroyed()) panelWin.destroy();
+        },
+      };
+    }
+
+    const palette = createPanel({
+      name: "palette",
+      url: paletteUrl,
       width: 680,
       height: 440,
-      // nonactivating NSPanel: takes keyboard focus while another app stays active —
-      // app.focus({steal:true}) is ignored by modern macOS cooperative activation
-      ...desktopPolicy.paletteWindow,
-      frame: false,
-      resizable: false,
-      alwaysOnTop: true,
-      skipTaskbar: true,
-      show: false,
-      transparent: true,
-      hasShadow: false,
-      backgroundColor: "#00000000",
-      webPreferences: { sandbox: true, preload: path.join(__dirname, "preload.js") },
-    });
-    let paletteReady = false;
-    let paletteRetryTimer = null;
-    let paletteLoadFailed = false;
-    let paletteLoading = false;
-    let paletteShowPending = false;
-    function loadPalette() {
-      clearTimeout(paletteRetryTimer);
-      if (!paletteWin || paletteWin.isDestroyed() || paletteLoading) return;
-      paletteReady = false;
-      paletteLoading = true;
-      paletteWin.loadURL(paletteUrl).catch(() => {});
-    }
-    loadPalette();
-    paletteWin.webContents.on("did-finish-load", () => {
-      paletteLoading = false;
-      if (paletteLoadFailed) {
-        paletteLoadFailed = false; // Chromium fires did-finish-load for its own error page after did-fail-load
-        return;
-      }
-      paletteReady = true;
-      if (paletteShowPending) presentPalette();
-    });
-    paletteWin.webContents.on("did-fail-load", (event, errorCode, desc, url, isMainFrame) => {
-      if (!isMainFrame || errorCode === -3) return; // -3 ERR_ABORTED: a load we superseded, not a real failure
-      paletteReady = false;
-      paletteLoading = false;
-      paletteLoadFailed = true;
-      paletteWin.hide();
-      paletteRetryTimer = setTimeout(loadPalette, 1500);
-    });
-    paletteWin.webContents.on("render-process-gone", (event, details) => {
-      if (isQuitting || !paletteWin || paletteWin.isDestroyed()) return;
-      paletteShowPending ||= paletteWin.isVisible();
-      paletteReady = false;
-      paletteLoading = false;
-      paletteWin.hide();
-      console.error(`pr-cockpit: palette renderer gone (${details.reason}, exitCode=${details.exitCode})`);
-      loadPalette();
-    });
-    paletteWin.on("blur", () => {
-      paletteShowPending = false;
-      paletteWin.hide();
-    });
-    paletteWin.on("close", (e) => {
-      if (isQuitting) return;
-      e.preventDefault();
-      paletteShowPending = false;
-      paletteWin.hide();
-    });
-    paletteWin.webContents.on("did-navigate-in-page", (event, url) => {
-      const hash = new URL(url).hash;
-      const go = hash.match(/^#\/palette\/(go|window|github)\/([^/]+\/[^/]+)\/(\d+)$/);
-      const route = hash.match(/^#\/palette\/route\/(inbox|actions|settings)$/);
-      if (route) {
-        const destinations = { inbox: "#/", actions: "#/actions", settings: "#/settings" };
-        win.webContents.executeJavaScript(`location.hash = ${JSON.stringify(destinations[route[1]])}`);
-        showMainWindow();
-      } else if (go) {
+      openEvent: "cockpit:open-palette",
+      closeHash: "#/palette/close",
+      onNavigate(hash) {
+        const go = hash.match(/^#\/palette\/(go|window|github)\/([^/]+\/[^/]+)\/(\d+)$/);
+        const route = hash.match(/^#\/palette\/route\/(inbox|actions|settings)$/);
+        if (route) {
+          const destinations = { inbox: "#/", actions: "#/actions", settings: "#/settings" };
+          win.webContents.executeJavaScript(`location.hash = ${JSON.stringify(destinations[route[1]])}`);
+          showMainWindow();
+          return true;
+        }
+        if (!go) return false;
         const [, verb, repo, number] = go;
         if (verb === "github") shell.openExternal(`https://github.com/${repo}/pull/${number}`);
         else if (verb === "window") openExtraWindow(`#/pr/${repo}/${number}`);
@@ -911,34 +966,35 @@ if (!app.requestSingleInstanceLock()) {
           win.webContents.executeJavaScript(`location.hash = ${JSON.stringify(`#/pr/${repo}/${number}`)}`);
           showMainWindow();
         }
-      } else if (hash !== "#/palette/close") {
-        return;
-      }
-      paletteShowPending = false;
-      paletteWin.hide();
-      paletteWin.webContents.executeJavaScript("history.replaceState(null, '', '#/palette')").catch(() => {});
+        return true;
+      },
     });
+    paletteWin = palette.win;
+    const showPalette = palette.show;
 
-    function presentPalette() {
-      if (isQuitting || !paletteWin || paletteWin.isDestroyed() || !paletteReady) return;
-      paletteShowPending = false;
-      paletteWin.webContents
-        .executeJavaScript("window.dispatchEvent(new Event('cockpit:open-palette'))")
-        .catch(() => {});
-      paletteWin.center();
-      paletteWin.show();
-      paletteWin.focus();
-      paletteWin.webContents.focus();
+    // Quick Generate is opt-in: its panel and shortcut exist only while the setting is on, and
+    // turning it off destroys the panel along with any draft in it.
+    let quickGeneratePanel = null;
+    function setQuickGenerateEnabled(enabled) {
+      if (enabled && !quickGeneratePanel) {
+        quickGeneratePanel = createPanel({
+          name: "quick generate",
+          url: quickGenerateUrl,
+          width: 784,
+          height: 620,
+          openEvent: "cockpit:open-quick-generate",
+          closeHash: "#/quick-generate/close",
+        });
+        quickGenerateWin = quickGeneratePanel.win;
+      } else if (!enabled && quickGeneratePanel) {
+        quickGeneratePanel.destroy();
+        quickGeneratePanel = null;
+        quickGenerateWin = null;
+      }
     }
 
-    function showPalette() {
-      if (isQuitting || !paletteWin || paletteWin.isDestroyed()) return;
-      if (!paletteReady) {
-        paletteShowPending = true;
-        loadPalette();
-        return;
-      }
-      presentPalette();
+    function showQuickGenerate() {
+      quickGeneratePanel?.show();
     }
 
     function flashRenderer(message) {
@@ -977,6 +1033,7 @@ if (!app.requestSingleInstanceLock()) {
 
     let appliedApp = null;
     let appliedPalette = null;
+    let appliedQuickGenerate = false;
 
     async function applyShortcuts() {
       const settings = await fetchSettings();
@@ -987,14 +1044,21 @@ if (!app.requestSingleInstanceLock()) {
       const shortcuts = configuredShortcuts(process.platform, settings);
       const openApp = shortcuts.openApp;
       const openPalette = shortcuts.openPalette;
-      if (openApp === appliedApp && openPalette === appliedPalette) return;
+      // An unreachable server keeps Quick Generate as it was instead of tearing down its draft.
+      const quickGenerate = settings ? settings.quick_generate_enabled === true : appliedQuickGenerate;
+      if (openApp === appliedApp && openPalette === appliedPalette && quickGenerate === appliedQuickGenerate) return;
       appliedApp = openApp;
       appliedPalette = openPalette;
+      appliedQuickGenerate = quickGenerate;
       globalShortcut.unregisterAll();
       registerOrDefault(openApp, DEFAULT_OPEN_APP, showMainWindow);
       registerOrDefault(openPalette, DEFAULT_OPEN_PALETTE, showPalette);
+      setQuickGenerateEnabled(quickGenerate);
+      if (quickGenerate) registerOrDefault(QUICK_GENERATE_SHORTCUT, QUICK_GENERATE_SHORTCUT, showQuickGenerate);
     }
 
     applyShortcuts();
+    // Renderers relay the server's settings invalidations, which arrive even while the app is hidden.
+    ipcMain.on("cockpit:settings-changed", () => applyShortcuts());
   });
 }

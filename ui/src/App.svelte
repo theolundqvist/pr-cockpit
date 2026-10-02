@@ -3,6 +3,7 @@
   import Inbox from "./lib/Inbox.svelte";
   import PrDetail from "./lib/PrDetail.svelte";
   import Palette from "./lib/Palette.svelte";
+  import QuickGenerate from "./lib/QuickGenerate.svelte";
   import Settings from "./lib/Settings.svelte";
   import Usage from "./lib/Usage.svelte";
   import ActionsPage from "./lib/ActionsPage.svelte";
@@ -26,6 +27,7 @@
   import { quotaImpact } from "./lib/quotaImpact.js";
   import { navigationForShortcut } from "./lib/navigationShortcuts.js";
   import { isRecordingShortcut } from "./lib/shortcutCapture.js";
+  import { isQuickGenerateOpen } from "./lib/dom.js";
   import { SETTINGS_SECTION_KEY, SETTINGS_SECTIONS, normalizeSettingsSection, settingsSectionHref } from "./lib/settingsSections.js";
 
   window.cockpitFlash = showFlash;
@@ -88,6 +90,7 @@
       return { name: "settings", section: normalizeSettingsSection(requestedSection) };
     }
     if (hash.startsWith("#/palette")) return { name: "palette" };
+    if (hash.startsWith("#/quick-generate")) return { name: "quickGenerate" };
     return { name: "inbox" };
   }
 
@@ -137,7 +140,7 @@
 
   $effect(() => {
     const navigate = (event) => {
-      if (isRecordingShortcut()) return;
+      if (isRecordingShortcut() || isQuickGenerateOpen()) return;
       const destination = navigationForShortcut(event);
       if (!destination) return;
       event.preventDefault();
@@ -230,6 +233,8 @@
           drainPending();
         } else if (invalidation.type === "notification-settings" || invalidation.type === "settings") {
           fetchSettings().then(setPrefs).catch(() => {});
+          // The shell's global shortcuts follow settings; older shells lack this hook.
+          if (invalidation.type === "settings") window.cockpitShell?.refreshSettings?.();
         } else if (invalidation.type === "inbox" && route.name === "inbox") {
           inboxRefresh.trigger();
         } else if (
@@ -286,6 +291,8 @@
 
 {#if route.name === "palette"}
   <Palette standalone />
+{:else if route.name === "quickGenerate"}
+  <QuickGenerate standalone />
 {:else}
   <div
     class="app-shell"
@@ -445,6 +452,7 @@
 
     <SetAsideTray />
     <Palette />
+    {#if prefs.quickGenerateEnabled}<QuickGenerate />{/if}
     <FlashBar />
     <Cheatsheet />
     <Lightbox />

@@ -1,7 +1,7 @@
 <script>
   import { tick } from "svelte";
   import { fetchInbox, fetchPrIndex, searchPrs } from "./api.js";
-  import { isTypingTarget } from "./dom.js";
+  import { isQuickGenerateOpen, isTypingTarget } from "./dom.js";
   import { isRecordingShortcut } from "./shortcutCapture.js";
   import { prKey } from "./prKey.js";
   import { pageNavigationResults } from "./navigationShortcuts.js";
@@ -215,7 +215,7 @@
 
   $effect(() => {
     function onKey(e) {
-      if (isRecordingShortcut()) return; // a ShortcutInput is capturing this key
+      if (isRecordingShortcut() || isQuickGenerateOpen()) return; // a ShortcutInput or Quick Generate owns this key
       if (!open) {
         if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "k") {
           e.preventDefault();

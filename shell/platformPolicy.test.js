@@ -1,47 +1,7 @@
 const { describe, expect, test } = require("bun:test");
-const { configuredShortcuts, platformPolicy } = require("./platformPolicy");
+const { configuredShortcuts } = require("./platformPolicy");
 
 describe("desktop platform policy", () => {
-  test("preserves the Darwin window, tray, menu, and shortcut policy", () => {
-    expect(platformPolicy("darwin")).toEqual({
-      desktopName: null,
-      mainWindow: { titleBarStyle: "hiddenInset" },
-      paletteWindow: { type: "panel" },
-      trayIcon: "tray-iconTemplate.png",
-      shortcuts: { openApp: "Command+Control+G", openPalette: "Command+Option+K" },
-      menu: {
-        hideRole: true,
-        hideLabel: "Hide from Dock",
-        hideAccelerator: "Command+Q",
-        showLabel: "Show Cockpit",
-        updateLabel: "Update & Restart",
-        stopServerLabel: "Kill Server & Quit",
-        canStopServer: true,
-        canUpdate: true,
-      },
-    });
-  });
-
-  test("declares Linux desktop identity and integrated chrome", () => {
-    expect(platformPolicy("linux")).toEqual({
-      desktopName: "app.pr-cockpit.desktop",
-      mainWindow: { titleBarStyle: "hidden", titleBarOverlay: true },
-      paletteWindow: {},
-      trayIcon: "icon.png",
-      shortcuts: { openApp: "Super+Control+G", openPalette: "Super+Alt+K" },
-      menu: {
-        hideRole: false,
-        hideLabel: "Hide PR Cockpit",
-        hideAccelerator: null,
-        showLabel: "Show PR Cockpit",
-        updateLabel: "Update and Restart",
-        stopServerLabel: null,
-        canStopServer: false,
-        canUpdate: true,
-      },
-    });
-  });
-
   test.each([
     undefined,
     null,

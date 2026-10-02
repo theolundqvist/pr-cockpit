@@ -404,6 +404,35 @@ export async function saveSettings(patch) {
   return body;
 }
 
+async function quickGenerateJson(res, label) {
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.error || `${label} ${res.status}`);
+  return body;
+}
+
+export async function fetchQuickGenerateConfig(signal = null) {
+  return quickGenerateJson(await fetch("/api/quick-generate/config", { signal }), "quick-generate config");
+}
+
+export async function fetchQuickGenerateModels(key, signal = null) {
+  const body = await quickGenerateJson(
+    await fetch(`/api/quick-generate/models?key=${encodeURIComponent(key)}`, { signal }),
+    "quick-generate models",
+  );
+  return body.models;
+}
+
+export async function quickGenerate({ key, model, prompt }, signal = null) {
+  const res = await fetch("/api/quick-generate", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ key, model, prompt }),
+    signal,
+  });
+  const body = await quickGenerateJson(res, "quick-generate");
+  return body.text;
+}
+
 export async function claimNotifications() {
   const res = await fetch("/api/notifications/claim", { method: "POST" });
   if (!res.ok) throw new Error(`notifications ${res.status}`);

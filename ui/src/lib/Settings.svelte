@@ -1,11 +1,12 @@
 <script>
+  import { untrack } from "svelte";
   import { normalizePrGrouping } from "../../../shared/prGrouping.ts";
-  import { fetchRelayCoverage, fetchRelayStatus, fetchSettings, saveSettings } from "./api.js";
+  import { fetchQuickGenerateConfig, fetchQuickGenerateModels, fetchRelayCoverage, fetchRelayStatus, fetchSettings, saveSettings } from "./api.js";
   import { cachedView, cacheView } from "./detailCache.js";
   import { setCodeTheme, setFonts, setScales, setTheme } from "./theme.svelte.js";
-  import { setPrefs } from "./prefs.svelte.js";
+  import { prefs, setPrefs } from "./prefs.svelte.js";
   import { BUILTIN_TEST_PATH } from "./testPath.js";
-  import { isTypingTarget } from "./dom.js";
+  import { isQuickGenerateOpen, isTypingTarget } from "./dom.js";
   import { scrollStep, scrollPage, scrollEdge } from "./scroll.js";
   import KeyBar from "./KeyBar.svelte";
   import ShortcutInput from "./ShortcutInput.svelte";
@@ -54,6 +55,22 @@
   let agents = $state([]);
   let keybindOpenApp = $state("");
   let keybindOpenPalette = $state("");
+  let quickGenerateEnabled = $state(false);
+  let quickGenerateKey = $state("");
+  let quickGenerateModel = $state("");
+  let savedQuickGenerateKey = $state("");
+  let quickGenerateEnvFile = $state("");
+  let savedQuickGenerateEnvFile = $state("");
+  // Read from the host only while the toggle is on and this tab is open.
+  let quickGenerateConfig = $state(null);
+  let quickGenerateConfigError = $state(null);
+  let quickGenerateConfigLoading = $state(false);
+  let quickGenerateModels = $state([]);
+  let quickGenerateModelsFor = $state(null);
+  let quickGenerateModelsLoading = $state(false);
+  let quickGenerateModelsError = $state(null);
+  let quickGenerateConfigRequest = null;
+  let quickGenerateModelsRequest = null;
   let relayUrl = $state("");
   let desktopPlatform = $state("darwin");
   let replicaSshHost = $state("");
@@ -161,6 +178,15 @@
     desktopPlatform = s.desktop_platform ?? "darwin";
     keybindOpenApp = s.keybind_open_app;
     keybindOpenPalette = s.keybind_open_palette;
+    quickGenerateEnabled = s.quick_generate_enabled === true;
+    quickGenerateKey = s.quick_generate_key ?? "";
+    savedQuickGenerateKey = quickGenerateKey;
+    quickGenerateModel = s.quick_generate_model ?? "";
+    quickGenerateEnvFile = s.quick_generate_env_file ?? "";
+    savedQuickGenerateEnvFile = quickGenerateEnvFile;
+    cancelQuickGenerateRequests();
+    quickGenerateConfig = null;
+    quickGenerateConfigError = null;
     relayUrl = s.relay_url;
     testPathRegex = s.test_path_regex || BUILTIN_TEST_PATH.source;
     health = s.tailscale_serve ? { tailscaleServe: s.tailscale_serve } : null;
@@ -237,6 +263,80 @@
       .catch(() => {});
   });
 
+  async function loadQuickGenerateConfig() {
+    quickGenerateConfigRequest?.abort();
+    const request = new AbortController();
+    quickGenerateConfigRequest = request;
+    quickGenerateConfigLoading = true;
+    quickGenerateConfigError = null;
+    try {
+      const config = await fetchQuickGenerateConfig(request.signal);
+      if (request.signal.aborted) return;
+      quickGenerateConfig = config;
+      // The same key name may now hold another account's key, so its catalog is reread.
+      quickGenerateModelsFor = null;
+    } catch (e) {
+      if (!request.signal.aborted) quickGenerateConfigError = e instanceof Error ? e.message : String(e);
+    } finally {
+      if (!request.signal.aborted) quickGenerateConfigLoading = false;
+    }
+  }
+
+  async function loadQuickGenerateModels(key) {
+    quickGenerateModelsRequest?.abort();
+    const request = new AbortController();
+    quickGenerateModelsRequest = request;
+    quickGenerateModelsFor = key;
+    quickGenerateModels = [];
+    quickGenerateModelsError = null;
+    quickGenerateModelsLoading = true;
+    try {
+      const models = await fetchQuickGenerateModels(key, request.signal);
+      if (!request.signal.aborted) quickGenerateModels = models;
+    } catch (e) {
+      if (!request.signal.aborted) quickGenerateModelsError = e instanceof Error ? e.message : String(e);
+    } finally {
+      if (!request.signal.aborted) quickGenerateModelsLoading = false;
+    }
+  }
+
+  function cancelQuickGenerateRequests() {
+    quickGenerateConfigRequest?.abort();
+    quickGenerateModelsRequest?.abort();
+    quickGenerateConfigLoading = false;
+    quickGenerateModelsLoading = false;
+    quickGenerateModelsFor = null;
+  }
+
+  let quickGenerateActive = $derived(loaded && activeTab === "automerge" && quickGenerateEnabled);
+  $effect(() => {
+    if (quickGenerateActive && !quickGenerateConfig && !quickGenerateConfigError && !quickGenerateConfigLoading) loadQuickGenerateConfig();
+  });
+  $effect(() => {
+    if (quickGenerateActive && quickGenerateConfig && quickGenerateKey && quickGenerateModelsFor !== quickGenerateKey) loadQuickGenerateModels(quickGenerateKey);
+  });
+  $effect(() => {
+    if (!quickGenerateActive) untrack(cancelQuickGenerateRequests);
+  });
+  $effect(() => () => {
+    quickGenerateConfigRequest?.abort();
+    quickGenerateModelsRequest?.abort();
+  });
+  let quickGenerateShortcut = $derived(desktopShortcutDefaults(desktopPlatform).quickGenerate);
+  // Only describes Automatic when no key was saved, since the server resolves it from the saved key.
+  let quickGenerateAutoKey = $derived(
+    savedQuickGenerateKey ? null : quickGenerateConfig?.keys.find((item) => item.id === quickGenerateConfig.defaultKey) ?? null,
+  );
+
+  function chooseQuickGenerateKey(key) {
+    quickGenerateKey = key;
+    quickGenerateModel = "";
+  }
+
+  function openQuickGenerate() {
+    window.dispatchEvent(new Event("cockpit:open-quick-generate"));
+  }
+
   async function save() {
     if (!loaded || saving || saveBlocked) return;
     saving = true;
@@ -283,6 +383,10 @@
         })),
         keybind_open_app: keybindOpenApp,
         keybind_open_palette: keybindOpenPalette,
+        quick_generate_enabled: quickGenerateEnabled,
+        quick_generate_key: quickGenerateKey,
+        quick_generate_model: quickGenerateKey ? quickGenerateModel : "",
+        quick_generate_env_file: quickGenerateEnvFile.trim(),
         relay_url: relayUrl.trim(),
         notifications: serializeNotificationSettings(notifications),
       });
@@ -306,6 +410,7 @@
 
   $effect(() => {
     function onKey(e) {
+      if (isQuickGenerateOpen()) return;
       if (activeTab !== "analytics" && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
         save();
@@ -720,6 +825,93 @@
         {/each}
 
         <button class="btn" type="button" onclick={addAgent}>Add custom agent</button>
+        <div class="quick-generate-settings">
+          <label class="check-field settings-option">
+            <input class="check" type="checkbox" bind:checked={quickGenerateEnabled} />
+            <span class="check-text">
+              <span class="check-label">Quick Generate</span>
+              <span class="hint">Press <Kbd keys={quickGenerateShortcut} /> anywhere to draft text from a prompt. Each API key goes only to its provider.</span>
+            </span>
+          </label>
+          {#if quickGenerateEnabled}
+            <div class="settings-grid quick-generate-grid">
+              <label class="field field-wide">
+                <span class="label">API key file</span>
+                {#if quickGenerateEnvFile.trim() !== savedQuickGenerateEnvFile}
+                  <span class="hint">Save to use a different file.</span>
+                {:else if quickGenerateConfigError}
+                  <span class="hint invalid-hint" role="alert">{quickGenerateConfigError}</span>
+                {:else if quickGenerateConfig?.envFiles.length}
+                  <span class="hint">Reading {quickGenerateConfig.envFiles.join(", ")}.</span>
+                {:else if quickGenerateConfig}
+                  <span class="hint">No key file found.</span>
+                {:else}
+                  <span class="hint">Empty: automatic.</span>
+                {/if}
+                <input
+                  class="input mono"
+                  bind:value={quickGenerateEnvFile}
+                  placeholder={quickGenerateConfig?.defaultEnvFile || "~/.config/.env"}
+                  spellcheck="false"
+                  autocomplete="off"
+                  class:invalid={!!quickGenerateConfigError && quickGenerateEnvFile.trim() === savedQuickGenerateEnvFile}
+                  aria-invalid={!!quickGenerateConfigError && quickGenerateEnvFile.trim() === savedQuickGenerateEnvFile}
+                />
+                {#if quickGenerateConfigError}
+                  <button class="reset-link" type="button" onclick={() => (quickGenerateConfigError = null)}>Try again</button>
+                {/if}
+              </label>
+
+              <label class="field">
+                <span class="label">API key</span>
+                {#if quickGenerateConfigError}
+                  <span class="hint">Fix the key file to list keys.</span>
+                {:else if quickGenerateConfig && !quickGenerateConfig.keys.length}
+                  <span class="hint invalid-hint">No keys found. Add CEREBRAS_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, or GROQ_API_KEY to the key file.</span>
+                {:else}
+                  <span class="hint">Detected on the Cockpit host.</span>
+                {/if}
+                <select class="input" bind:value={() => quickGenerateKey, chooseQuickGenerateKey} disabled={!quickGenerateConfig}>
+                  <option value="">Automatic{quickGenerateAutoKey ? ` (${quickGenerateAutoKey.label})` : ""}</option>
+                  {#each quickGenerateConfig?.keys ?? [] as item (item.id)}
+                    <option value={item.id}>{item.label}</option>
+                  {/each}
+                  {#if quickGenerateKey && quickGenerateConfig && !quickGenerateConfig.keys.some((item) => item.id === quickGenerateKey)}
+                    <option value={quickGenerateKey}>{quickGenerateKey} (not found)</option>
+                  {/if}
+                </select>
+              </label>
+
+              <label class="field">
+                <span class="label">Model</span>
+                {#if !quickGenerateKey}
+                  <span class="hint">Choose a key to pick its model.</span>
+                {:else if quickGenerateModelsError}
+                  <span class="hint invalid-hint" role="alert">Couldn't list models: {quickGenerateModelsError}</span>
+                {:else}
+                  <span class="hint">{quickGenerateModelsLoading ? "Loading models…" : "From the provider."}</span>
+                {/if}
+                <select class="input" bind:value={quickGenerateModel} disabled={!quickGenerateKey || quickGenerateModelsLoading}>
+                  <option value="">Automatic{quickGenerateKey && quickGenerateModels[0] ? ` (${quickGenerateModels[0].label})` : ""}</option>
+                  {#each quickGenerateModels as item (item.id)}
+                    <option value={item.id}>{item.label}</option>
+                  {/each}
+                  {#if quickGenerateModel && !quickGenerateModelsLoading && !quickGenerateModels.some((item) => item.id === quickGenerateModel)}
+                    <option value={quickGenerateModel}>{quickGenerateModel}</option>
+                  {/if}
+                </select>
+                {#if quickGenerateModelsError}
+                  <button class="reset-link" type="button" onclick={() => (quickGenerateModelsFor = null)}>Try again</button>
+                {/if}
+              </label>
+            </div>
+            <div class="quick-generate-open">
+              <button class="btn" type="button" disabled={!prefs.quickGenerateEnabled} onclick={openQuickGenerate}>Open prompt</button>
+              {#if !prefs.quickGenerateEnabled}<span class="hint">Save to turn it on.</span>{/if}
+            </div>
+          {/if}
+        </div>
+
         <details class="disclosure merge-disclosure">
           <summary>Bypass required approval</summary>
           <div class="disclosure-body">
@@ -979,6 +1171,10 @@
   .reset-link { display: block; margin-top: 8px; }
   .reset-link:hover, .link-btn:hover { text-decoration: underline; }
   .remove-agent { margin-bottom: 12px; }
+  .quick-generate-settings { margin-top: 24px; }
+  .quick-generate-settings .hint :global(.kbd) { vertical-align: middle; }
+  .quick-generate-open { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding-bottom: 6px; }
+  .quick-generate-open .hint { margin-bottom: 0; }
   .repo-toggles { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
   .repo-toggles .check-label { overflow-wrap: anywhere; }
   .private-access { padding-inline: 14px; background: var(--surface); border-radius: var(--radius-md); }

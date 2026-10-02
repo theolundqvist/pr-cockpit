@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld("cockpitShell", {
   installGit: () => ipcRenderer.invoke("cockpit:install-git"),
   openDataFolder: () => ipcRenderer.invoke("cockpit:open-data-folder"),
   openWindow: (hash) => ipcRenderer.invoke("cockpit:open-window", hash),
+  refreshSettings: () => ipcRenderer.send("cockpit:settings-changed"),
   getNativePalette: () => ipcRenderer.invoke("cockpit:native-palette"),
   onNativePaletteChanged: (callback) => {
     const listener = (_event, palette) => callback(palette);
