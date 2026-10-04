@@ -47,6 +47,7 @@
   // Approval consent belongs to the source Cockpit, so a save forwards it only when this toggle changed.
   let savedSafeMergeApproval = false;
   let groupDragEnabled = $state(false);
+  let queueTimeControlsEnabled = $state(false);
   let testPathRegex = $state("");
   let diffLayout = $state("split");
   let forceMergeRepos = $state([]);
@@ -168,6 +169,7 @@
     safeMergeApprovalEnabled = s.safe_merge_approval_enabled === true;
     savedSafeMergeApproval = safeMergeApprovalEnabled;
     groupDragEnabled = s.group_drag_enabled === true;
+    queueTimeControlsEnabled = s.queue_time_controls_enabled === true;
     restFallbackEnabled = s.rest_fallback_enabled !== false;
     diffLayout = s.diff_layout;
     forceMergeRepos = s.force_merge_repos.split(",").map((r) => r.trim()).filter(Boolean);
@@ -367,6 +369,7 @@
         whiteboard_enabled: whiteboardEnabled,
         ...(safeMergeApprovalEnabled !== savedSafeMergeApproval ? { safe_merge_approval_enabled: safeMergeApprovalEnabled } : {}),
         group_drag_enabled: groupDragEnabled,
+        queue_time_controls_enabled: queueTimeControlsEnabled,
         rest_fallback_enabled: restFallbackEnabled,
         test_path_regex: testPathRegex.trim() === BUILTIN_TEST_PATH.source.trim() ? "" : testPathRegex.trim(),
         diff_layout: diffLayout,
@@ -575,6 +578,14 @@
             <span class="check-text">
               <span class="check-label">Rename and move PRs between groups</span>
               <span class="hint">Rename from the right-click menu, or drag to change a title's type or scope, a manual group, a pin, or approval.</span>
+            </span>
+          </label>
+
+          <label class="check-field settings-option field-wide">
+            <input class="check" type="checkbox" bind:checked={queueTimeControlsEnabled} />
+            <span class="check-text">
+              <span class="check-label">Date filters and sorting</span>
+              <span class="hint">Filter PR lists by when each PR was opened and order them by opened or updated time. Pins, approvals, stacks and the Whiteboard keep their place.</span>
             </span>
           </label>
         </div>

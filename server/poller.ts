@@ -203,6 +203,7 @@ async function refreshPrNow(
     mergedAt: detail.mergedAt,
     closedAt: detail.closedAt,
     involvesMe: openInboxKeys.has(prKeyOf(repo, number)),
+    createdAt: detail.createdAt ?? null,
     updatedAt: detail.updatedAt,
   }]);
 

@@ -19,6 +19,7 @@ export const prefs = $state({
   whiteboardEnabled: false,
   safeMergeApprovalEnabled: false,
   groupDragEnabled: false,
+  queueTimeControlsEnabled: false,
   restFallbackEnabled: true,
   quickGenerateEnabled: false,
   quickGenerateEnvFile: "",
@@ -42,6 +43,7 @@ export function setPrefs(settings) {
   prefs.whiteboardEnabled = settings.whiteboard_enabled === true;
   prefs.safeMergeApprovalEnabled = settings.safe_merge_approval_enabled === true;
   prefs.groupDragEnabled = settings.group_drag_enabled === true;
+  prefs.queueTimeControlsEnabled = settings.queue_time_controls_enabled === true;
   prefs.restFallbackEnabled = settings.rest_fallback_enabled !== false;
   prefs.quickGenerateEnabled = settings.quick_generate_enabled === true;
   prefs.quickGenerateEnvFile = settings.quick_generate_env_file ?? "";

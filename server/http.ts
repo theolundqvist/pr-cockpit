@@ -25,6 +25,7 @@ import {
   listFailedMergeKeys,
   listClosedPrs,
   listPrIndex,
+  prIndexCreatedAt,
   listActionWorkflows,
   latestWorkflowRunAttempt,
   listPrs,
@@ -316,6 +317,7 @@ function handleClosed(url: URL): Response {
     author: pr.author,
     state: pr.state,
     isDraft: pr.is_draft === 1,
+    createdAt: pr.created_at,
     updatedAt: pr.updated_at,
     mergedAt: pr.merged_at,
     closedAt: pr.closed_at,
@@ -365,6 +367,9 @@ async function handleInbox(url: URL): Promise<Response> {
       baseRef: pr.base_ref,
       headRef: pr.head_ref,
       headSha: pr.head_sha,
+      // Tracked details carry GitHub's creation time; historical stubs and details cached before the field
+      // fall back to what the index recorded, else null — never updatedAt.
+      createdAt: typeof detail.createdAt === "string" ? detail.createdAt : prIndexCreatedAt(pr.repo, pr.number),
       updatedAt: pr.updated_at,
       additions: stats.additions,
       deletions: stats.deletions,
@@ -2664,6 +2669,7 @@ async function handlePrIndex(url: URL, runtime: HttpRuntime): Promise<Response> 
         updated_at: entry.updatedAt,
         closed_at: entry.closedAt ?? null,
         merged_at: entry.mergedAt ?? null,
+        created_at: entry.createdAt ?? null,
         involves_me: entry.involvesMe ? 1 : 0,
       });
     }
@@ -2740,6 +2746,7 @@ async function handlePutSettings(req: Request, runtime: HttpRuntime): Promise<Re
     whiteboard_enabled: boolean;
     safe_merge_approval_enabled: boolean;
     group_drag_enabled: boolean;
+    queue_time_controls_enabled: boolean;
     rest_fallback_enabled: boolean;
     quick_generate_enabled: boolean;
     quick_generate_key: string;

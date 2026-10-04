@@ -126,6 +126,8 @@ CREATE TABLE IF NOT EXISTS pr_index (
   updated_at TEXT NOT NULL,
   merged_at TEXT,
   closed_at TEXT,
+  -- GitHub's creation time, immutable once known; NULL when no ingestion source has reported it yet.
+  created_at TEXT,
   involves_me INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (repo, number)
 );
@@ -399,6 +401,22 @@ if (!prsColumns.some((c) => c.name === "body_digest")) {
   })();
 }
 
+// GitHub's creation time as a locally cached detail already recorded it (tracked first, then untracked), else NULL.
+// Every pr_index write path resolves through this so a known time is never lost for want of a network read.
+function cachedDetailCreatedAtSql(repo: string, number: string): string {
+  return `COALESCE(
+    (SELECT json_extract(prs.detail_json, '$.createdAt') FROM prs
+      WHERE prs.repo = ${repo} AND prs.number = ${number} AND json_type(prs.detail_json, '$.createdAt') = 'text'),
+    (SELECT json_extract(pr_detail_cache.detail_json, '$.createdAt') FROM pr_detail_cache
+      WHERE pr_detail_cache.repo = ${repo} AND pr_detail_cache.number = ${number}
+        AND json_type(pr_detail_cache.detail_json, '$.createdAt') = 'text')
+  )`;
+}
+
+// Fills only unknown creation times; never a stand-in such as updated_at.
+const BACKFILL_PR_INDEX_CREATED_AT_SQL =
+  `UPDATE pr_index SET created_at = ${cachedDetailCreatedAtSql("pr_index.repo", "pr_index.number")} WHERE created_at IS NULL`;
+
 const prIndexColumns = db.query("PRAGMA table_info(pr_index)").all() as Array<{ name: string }>;
 if (!prIndexColumns.some((c) => c.name === "merged_at")) {
   db.exec("ALTER TABLE pr_index ADD COLUMN merged_at TEXT");
@@ -408,6 +426,12 @@ if (!prIndexColumns.some((c) => c.name === "closed_at")) {
 }
 if (!prIndexColumns.some((c) => c.name === "involves_me")) {
   db.exec("ALTER TABLE pr_index ADD COLUMN involves_me INTEGER NOT NULL DEFAULT 0");
+}
+if (!prIndexColumns.some((c) => c.name === "created_at")) {
+  db.transaction(() => {
+    db.exec("ALTER TABLE pr_index ADD COLUMN created_at TEXT");
+    db.exec(BACKFILL_PR_INDEX_CREATED_AT_SQL);
+  })();
 }
 db.exec("CREATE INDEX IF NOT EXISTS pr_index_terminal_idx ON pr_index (involves_me, state, COALESCE(merged_at, closed_at, updated_at) DESC)");
 
@@ -612,6 +636,12 @@ ON CONFLICT (repo, number) DO UPDATE SET
 WHERE excluded.fetched_at >= prs.fetched_at
 `);
 
+// A detail write is the authoritative local source of creation time; an index row written before it learns it here.
+const learnPrIndexCreatedAtStmt = db.prepare(`
+UPDATE pr_index SET created_at = ${cachedDetailCreatedAtSql("$repo", "$number")}
+WHERE repo = $repo AND number = $number AND created_at IS NULL
+`);
+
 export function upsertPr(row: PrRow): void {
   const body = detailBody(row.detail_json);
   upsertStmt.run({
@@ -647,6 +677,7 @@ export function upsertPr(row: PrRow): void {
     $body_media: bodyMediaJson(body),
     $body_digest: body === null ? null : descriptionDigest(body),
   });
+  learnPrIndexCreatedAtStmt.run({ $repo: row.repo, $number: row.number });
 }
 
 const getPrStmt = db.prepare<PrRow, [string, number]>(
@@ -1428,6 +1459,7 @@ export interface PrIndexRow {
   updated_at: string;
   merged_at: string | null;
   closed_at: string | null;
+  created_at: string | null;
   involves_me: number;
 }
 
@@ -1435,10 +1467,11 @@ export interface PrIndexRow {
 // older than the stored row keeps the row's fields and only adds what never goes back.
 const upsertPrIndexStmt = db.prepare(`
 INSERT INTO pr_index (
-  repo, number, title, state, is_draft, author, updated_at, merged_at, closed_at, involves_me
+  repo, number, title, state, is_draft, author, updated_at, merged_at, closed_at, created_at, involves_me
 )
 VALUES (
-  $repo, $number, $title, $state, $is_draft, $author, $updated_at, $merged_at, $closed_at, $involves_me
+  $repo, $number, $title, $state, $is_draft, $author, $updated_at, $merged_at, $closed_at,
+  COALESCE($created_at, ${cachedDetailCreatedAtSql("$repo", "$number")}), $involves_me
 )
 ON CONFLICT (repo, number) DO UPDATE SET
   title = CASE WHEN {newer} THEN excluded.title ELSE pr_index.title END,
@@ -1448,6 +1481,7 @@ ON CONFLICT (repo, number) DO UPDATE SET
   updated_at = CASE WHEN {newer} THEN excluded.updated_at ELSE pr_index.updated_at END,
   merged_at = COALESCE(excluded.merged_at, pr_index.merged_at),
   closed_at = COALESCE(excluded.closed_at, pr_index.closed_at),
+  created_at = COALESCE(pr_index.created_at, excluded.created_at),
   involves_me = MAX(pr_index.involves_me, excluded.involves_me)
 `.replaceAll("{newer}", "excluded.updated_at >= pr_index.updated_at"));
 
@@ -1463,6 +1497,7 @@ const upsertPrIndexTxn = db.transaction((entries: PrIndexEntry[]) => {
       $updated_at: entry.updatedAt,
       $merged_at: entry.mergedAt ?? null,
       $closed_at: entry.closedAt ?? null,
+      $created_at: entry.createdAt ?? null,
       $involves_me: entry.involvesMe ? 1 : 0,
     });
   }
@@ -1470,6 +1505,15 @@ const upsertPrIndexTxn = db.transaction((entries: PrIndexEntry[]) => {
 
 export function upsertPrIndex(entries: PrIndexEntry[]): void {
   upsertPrIndexTxn(entries);
+}
+
+const prIndexCreatedAtStmt = db.prepare<{ created_at: string | null }, [string, number]>(
+  "SELECT created_at FROM pr_index WHERE repo = ? AND number = ?",
+);
+
+// Creation time a sweep or lookup recorded for a PR whose cached detail predates the field.
+export function prIndexCreatedAt(repo: string, number: number): string | null {
+  return prIndexCreatedAtStmt.get(repo, number)?.created_at ?? null;
 }
 
 const listPrIndexStmt = db.prepare<PrIndexRow, []>(
@@ -1672,6 +1716,7 @@ export function upsertCachedPrDetail(row: CachedPrDetailRow): void {
     $detail_json: row.detail_json,
     $fetched_at: row.fetched_at,
   });
+  learnPrIndexCreatedAtStmt.run({ $repo: row.repo, $number: row.number });
 }
 
 const getCachedPrDetailStmt = db.prepare<CachedPrDetailRow, [string, number]>(
@@ -1887,16 +1932,27 @@ const replaceInboxReplicaTxn = db.transaction((snapshot: InboxReplica) => {
   // not discard the newest detail already observed by this replica.
   preservePrDetails("1", []);
   const previousPrs = new Map(listPrs().map((row) => [`${row.repo}#${row.number}`, row]));
+  // Creation time never changes, so a source that has not learned it (or predates the column) cannot erase it.
+  const previousCreatedAt = new Map(
+    db.query<{ repo: string; number: number; created_at: string }, []>(
+      "SELECT repo, number, created_at FROM pr_index WHERE created_at IS NOT NULL",
+    ).all().map((row) => [`${row.repo}#${row.number}`, row.created_at]),
+  );
   for (const table of REPLICA_TABLES) {
     const columns = db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().map((column) => column.name);
     const insert = db.prepare(`INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`);
     db.exec(`DELETE FROM ${table}`);
     for (const row of snapshot[table]) {
       const previous = table === "prs" ? previousPrs.get(`${row.repo}#${row.number}`) : undefined;
-      const next = previous && previous.fetched_at > String(row.fetched_at) ? previous : row;
-      insert.run(...columns.map((column) => replicaBinding((next as Record<string, unknown>)[column] ?? null)));
+      let next = (previous && previous.fetched_at > String(row.fetched_at) ? previous : row) as Record<string, unknown>;
+      if (table === "pr_index" && typeof row.created_at !== "string") {
+        next = { ...row, created_at: previousCreatedAt.get(`${row.repo}#${row.number}`) ?? null };
+      }
+      insert.run(...columns.map((column) => replicaBinding(next[column] ?? null)));
     }
   }
+  // An older source's index lacks the column even though its tracked details, now in prs, carry the time.
+  db.exec(BACKFILL_PR_INDEX_CREATED_AT_SQL);
 });
 
 export function replaceInboxReplica(snapshot: InboxReplica): void {

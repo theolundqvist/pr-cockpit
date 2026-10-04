@@ -219,7 +219,7 @@ describe("all PRs", () => {
   const url = "http://127.0.0.1:4820/api/all-prs";
   const row = {
     repo: "acme/widgets", number: 1, title: "Outside my queue", author: "other-contributor",
-    state: "OPEN" as const, isDraft: false, updatedAt: "2026-09-01T00:00:00Z",
+    state: "OPEN" as const, isDraft: false, createdAt: "2026-08-20T00:00:00Z", updatedAt: "2026-09-01T00:00:00Z",
   };
 
   test("shows a completed rename over a cached repository list without letting older details win", async () => {
@@ -2042,6 +2042,8 @@ describe("recently closed PRs", () => {
         state: number % 2 === 0 ? "MERGED" : "CLOSED",
         isDraft: false,
         author: "theo",
+        // Odd rows model index entries from before creation time was recorded.
+        createdAt: number % 2 === 0 ? new Date(Date.UTC(2026, 5, 1, 0, 0, number)).toISOString() : null,
         updatedAt: "2026-07-01T00:00:00.000Z",
         mergedAt: number % 2 === 0 ? terminalAt : null,
         closedAt: number % 2 === 0 ? null : terminalAt,
@@ -2064,11 +2066,13 @@ describe("recently closed PRs", () => {
         author: "theo",
         state: "MERGED",
         isDraft: false,
+        createdAt: "2026-06-01T00:03:24.000Z",
         updatedAt: "2026-07-01T00:00:00.000Z",
         mergedAt: "2026-08-01T00:03:24.000Z",
         closedAt: null,
         terminalAt: "2026-08-01T00:03:24.000Z",
       });
+      expect(limited.prs[1]?.createdAt).toBeNull();
 
       const cappedResponse = await fetchHandler(new Request("http://127.0.0.1:4820/api/closed?limit=999"));
       const capped = await cappedResponse.json() as { prs: unknown[] };
@@ -2082,6 +2086,47 @@ describe("recently closed PRs", () => {
       const defaults = await defaultResponse.json() as { prs: unknown[] };
       expect(defaults.prs).toHaveLength(100);
     } finally {
+      db.query("DELETE FROM pr_index WHERE repo = ?").run(repo);
+    }
+  });
+});
+
+describe("PR creation time", () => {
+  test("lists actual creation time, keeps the first known value, and reports unknowns as null", async () => {
+    const repo = "cockpit-test/created-at";
+    const tracked = (number: number, createdAt?: string) => {
+      const row = trackedPrRow({ repo, number, fetchedAt: new Date().toISOString() });
+      row.detail_json = JSON.stringify({ ...JSON.parse(row.detail_json), ...(createdAt ? { createdAt } : {}) });
+      return row;
+    };
+    const entry = (number: number, createdAt: string | null | undefined, updatedAt: string) => ({
+      repo, number, title: `PR ${number}`, state: "MERGED", isDraft: false, author: "theo",
+      updatedAt, mergedAt: updatedAt, involvesMe: true, ...(createdAt === undefined ? {} : { createdAt }),
+    });
+    upsertPr(tracked(1, "2026-05-01T00:00:00Z"));
+    // Detail cached before creation time was fetched: the index's recorded value fills in.
+    upsertPr(tracked(2));
+    upsertPrIndex([{ ...entry(2, "2026-05-02T00:00:00Z", "2026-07-25T00:00:00Z"), state: "OPEN", mergedAt: null }]);
+    upsertPr(tracked(3));
+    upsertPrIndex([entry(4, "2026-05-04T00:00:00Z", "2026-07-01T00:00:00Z")]);
+    // Later sweeps that disagree or omit the field never move an already-known creation time.
+    upsertPrIndex([entry(4, "2026-06-30T00:00:00Z", "2026-07-02T00:00:00Z")]);
+    upsertPrIndex([entry(4, null, "2026-07-03T00:00:00Z"), entry(5, undefined, "2026-07-03T00:00:00Z")]);
+    const fetchHandler = buildFetchHandler(4820);
+    const createdAtByNumber = async (path: string) => {
+      const body = await (await fetchHandler(new Request(`http://127.0.0.1:4820${path}`))).json() as {
+        prs: Array<{ repo: string; number: number; createdAt: string | null }>;
+      };
+      return Object.fromEntries(body.prs.filter((pr) => pr.repo === repo).map((pr) => [pr.number, pr.createdAt]));
+    };
+
+    try {
+      expect(await createdAtByNumber("/api/inbox")).toEqual({ 1: "2026-05-01T00:00:00Z", 2: "2026-05-02T00:00:00Z", 3: null });
+      expect(await createdAtByNumber(`/api/inbox?q=${encodeURIComponent(`state:merged repo:${repo}`)}`))
+        .toEqual({ 4: "2026-05-04T00:00:00Z", 5: null });
+      expect(await createdAtByNumber("/api/closed?limit=200")).toEqual({ 4: "2026-05-04T00:00:00Z", 5: null });
+    } finally {
+      db.query("DELETE FROM prs WHERE repo = ?").run(repo);
       db.query("DELETE FROM pr_index WHERE repo = ?").run(repo);
     }
   });

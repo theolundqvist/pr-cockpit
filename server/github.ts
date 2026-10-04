@@ -1011,6 +1011,7 @@ export interface RepositoryOpenPr {
   state: "OPEN";
   isDraft: boolean;
   updatedAt: string;
+  createdAt: string | null;
 }
 
 const REPOSITORY_OPEN_PRS_QUERY = `
@@ -1022,7 +1023,7 @@ query($owner: String!, $name: String!, $cursor: String) {
       after: $cursor
       orderBy: { field: UPDATED_AT, direction: DESC }
     ) {
-      nodes { number title author { login } isDraft updatedAt }
+      nodes { number title author { login } isDraft createdAt updatedAt }
       pageInfo { hasNextPage endCursor }
     }
   }
@@ -1036,7 +1037,7 @@ export async function fetchRepositoryOpenPrs(repo: string): Promise<RepositoryOp
       .filter((entry) => entry.state === "OPEN")
       .map((entry) => ({
         repo, number: entry.number, title: entry.title, author: entry.author,
-        state: "OPEN", isDraft: entry.isDraft, updatedAt: entry.updatedAt,
+        state: "OPEN", isDraft: entry.isDraft, createdAt: entry.createdAt ?? null, updatedAt: entry.updatedAt,
       }));
   }
   return readWithRestFallback(
@@ -1053,7 +1054,7 @@ async function fetchRepositoryOpenPrsRest(repo: string): Promise<RepositoryOpenP
     if (previous && previous.updatedAt >= pull.updated_at) continue;
     prs.set(pull.number, {
       repo, number: pull.number, title: pull.title, author: restAuthor(pull.user)?.login ?? "unknown",
-      state: "OPEN", isDraft: pull.draft, updatedAt: pull.updated_at,
+      state: "OPEN", isDraft: pull.draft, createdAt: pull.created_at, updatedAt: pull.updated_at,
     });
   }
   return [...prs.values()];
@@ -1072,6 +1073,7 @@ async function fetchRepositoryOpenPrsGraphql(repo: string, owner: string, name: 
             title: string;
             author: { login: string } | null;
             isDraft: boolean;
+            createdAt: string;
             updatedAt: string;
           }>;
           pageInfo: { hasNextPage: boolean; endCursor: string | null };
@@ -1085,7 +1087,7 @@ async function fetchRepositoryOpenPrsGraphql(repo: string, owner: string, name: 
       if (!previous || entry.updatedAt > previous.updatedAt) {
         prs.set(entry.number, {
           repo, number: entry.number, title: entry.title, author: entry.author?.login ?? "unknown",
-          state: "OPEN", isDraft: entry.isDraft, updatedAt: entry.updatedAt,
+          state: "OPEN", isDraft: entry.isDraft, createdAt: entry.createdAt, updatedAt: entry.updatedAt,
         });
       }
     }
@@ -1123,6 +1125,7 @@ type RawPrIndexEntry = {
   title: string;
   state: string;
   isDraft: boolean;
+  createdAt: string;
   updatedAt: string;
   author: { login: string } | null;
   mergedAt?: string | null;
@@ -1134,6 +1137,7 @@ type RestPrSearchItem = {
   title: string;
   state: "open" | "closed";
   draft: boolean;
+  created_at: string;
   updated_at: string;
   closed_at: string | null;
   user: { login: string } | null;
@@ -1194,6 +1198,7 @@ async function lookupPrIndexesRest(repo: string, numbers: number[]): Promise<PrI
     state: restPullState(pull),
     isDraft: pull.draft,
     author: restAuthor(pull.user)?.login ?? "unknown",
+    createdAt: pull.created_at,
     updatedAt: pull.updated_at,
   }] : []);
 }
@@ -1201,7 +1206,7 @@ async function lookupPrIndexesRest(repo: string, numbers: number[]): Promise<PrI
 async function lookupPrIndexesGraphql(repo: string, owner: string, name: string, unique: number[]): Promise<PrIndexEntry[]> {
   const selections = unique
     .map((number, index) => `pr${index}: pullRequest(number: ${number}) {
-      number title state isDraft updatedAt author { login }
+      number title state isDraft createdAt updatedAt author { login }
     }`)
     .join("\n");
   const data = await graphql<{
@@ -1226,6 +1231,7 @@ async function lookupPrIndexesGraphql(repo: string, owner: string, name: string,
       state: entry.state,
       isDraft: entry.isDraft,
       author: entry.author?.login ?? "unknown",
+      createdAt: entry.createdAt,
       updatedAt: entry.updatedAt,
     }] : [];
   });
@@ -1249,6 +1255,8 @@ export interface PrIndexEntry {
   isDraft: boolean;
   author: string;
   updatedAt: string;
+  // GitHub's creation time; absent from producers that never read it, so the index keeps what it has.
+  createdAt?: string | null;
   mergedAt?: string | null;
   closedAt?: string | null;
   involvesMe?: boolean;
@@ -1269,6 +1277,7 @@ export async function searchRecentPrs(repo: string): Promise<PrIndexEntry[]> {
       state: restSearchState(item),
       isDraft: item.draft,
       author: item.user?.login ?? "unknown",
+      createdAt: item.created_at,
       updatedAt: item.updated_at,
       mergedAt: item.pull_request.merged_at,
       closedAt: item.closed_at,
@@ -1320,6 +1329,7 @@ export async function searchClosedPrs(repos: string[], updatedSince: string | nu
         state: restSearchState(item),
         isDraft: item.draft,
         author: item.user?.login ?? "unknown",
+        createdAt: item.created_at,
         updatedAt: item.updated_at,
         mergedAt: item.pull_request.merged_at,
         closedAt: item.closed_at,

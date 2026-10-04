@@ -16,6 +16,7 @@
   import { cacheDetail, cachedHeadSha, cachedView, cacheView } from "./detailCache.js";
   import { preloadPr } from "./preload.js";
   import { filterPrs, countMatches, wantsHistory } from "./prFilter.js";
+  import { customOpenedRange, filterByOpened, isRollingRange, OPENED_RANGES, openedBounds, sortByTime, TIME_ORDERS } from "./prTime.js";
   import { relativeTime } from "./time.js";
   import { classify, GROUP_ORDER, GROUP_TITLES } from "./whoseMove.js";
   import { mergeGate } from "./mergeGate.js";
@@ -64,6 +65,16 @@
   let filterOpen = $state(false);
   let filterQuery = $state("");
   let filterInput;
+  // Opened-date filter and timestamp order stay local to this window and start at All time / Queue order.
+  // `openedChoice` is the select's value; `openedRange` is what the lists apply, so a custom range in
+  // progress never changes the lists until Apply commits a valid one.
+  let openedChoice = $state("all");
+  let openedRange = $state("all");
+  let timeOrder = $state("queue");
+  let customFrom = $state("");
+  let customTo = $state("");
+  let appliedCustom = $state(null);
+  let clock = $state(Date.now());
   const copied = timedFlag(1200);
   let inboxSeq = 0;
   let archivedSeq = 0;
@@ -432,7 +443,7 @@
       const selectedKey = view === "closed" && ordered[selected] ? prKey(ordered[selected]) : null;
       closedPrs = res.prs;
       if (selectedKey !== null) {
-        const idx = filterByRepositories(closedPrs, selectedRepos).findIndex((pr) => prKey(pr) === selectedKey);
+        const idx = filteredClosedPrs.findIndex((pr) => prKey(pr) === selectedKey);
         if (idx >= 0) selected = idx;
       }
     } catch {
@@ -532,11 +543,66 @@
     return () => clearTimeout(timer);
   });
 
+  // The Whiteboard reads `groups` too, so it never sees the date filter or timestamp order.
+  let timeControlsActive = $derived(prefs.queueTimeControlsEnabled && view !== "whiteboard");
+  let openedFilter = $derived(timeControlsActive ? openedBounds(openedRange, clock) : null);
+  let listOrder = $derived(timeControlsActive ? timeOrder : "queue");
+  let customDraft = $derived(customOpenedRange(customFrom, customTo));
+  let customApplied = $derived(appliedCustom !== null && typeof openedRange === "object" && appliedCustom.from === customFrom && appliedCustom.to === customTo);
+  let appliedRangeLabel = $derived(typeof openedRange === "object"
+    ? `${appliedCustom.from ? new Date(appliedCustom.from).toLocaleString() : "Any time"} – ${appliedCustom.to ? new Date(appliedCustom.to).toLocaleString() : "Any time"}`
+    : OPENED_RANGES.find((option) => option.value === openedRange).label);
+
+  $effect(() => {
+    if (prefs.queueTimeControlsEnabled) return;
+    openedChoice = "all";
+    openedRange = "all";
+    timeOrder = "queue";
+    customFrom = "";
+    customTo = "";
+    appliedCustom = null;
+  });
+
+  // Rolling presets re-evaluate once a minute; the clock runs only while one is applied.
+  $effect(() => {
+    if (!active || !timeControlsActive || !isRollingRange(openedRange)) return;
+    clock = Date.now();
+    const timer = setInterval(() => { clock = Date.now(); }, 60_000);
+    return () => clearInterval(timer);
+  });
+
+  function chooseOpened(value) {
+    openedChoice = value;
+    if (value === "custom") return;
+    clock = Date.now();
+    openedRange = value;
+    selected = 0;
+    multiAnchor = null;
+  }
+
+  function chooseOrder(value) {
+    timeOrder = value;
+    selected = 0;
+    multiAnchor = null;
+  }
+
+  function applyCustomRange(event) {
+    event.preventDefault();
+    const { range } = customDraft;
+    if (!range) return;
+    appliedCustom = { from: customFrom, to: customTo };
+    openedRange = range;
+    selected = 0;
+    multiAnchor = null;
+  }
+
   let historyActive = $derived(wantsHistory(filterQuery) && historyQuery === filterQuery.trim() && !historyLoading);
   let queryFilteredPrs = $derived(wantsHistory(filterQuery) ? (historyQuery === filterQuery.trim() ? historyPrs : []) : filterPrs(prs, filterQuery, showArchived));
   let availableRepos = $derived(availableRepositories(view === "all" ? [...configuredRepos, ...allPrsRepos, ...selectedRepos] : configuredRepos, prs, archivedPrs, closedPrs));
-  let filteredPrs = $derived(filterByRepositories(queryFilteredPrs.filter((pr) => !isSetAside(pr)), selectedRepos));
-  let filteredClosedPrs = $derived(orderQueueUnits(filterByRepositories(closedPrs.filter((pr) => !isSetAside(pr)), selectedRepos)));
+  let scopedPrs = $derived(filterByRepositories(queryFilteredPrs.filter((pr) => !isSetAside(pr)), selectedRepos));
+  let filteredPrs = $derived(filterByOpened(scopedPrs, openedFilter));
+  let scopedClosedPrs = $derived(filterByRepositories(closedPrs.filter((pr) => !isSetAside(pr)), selectedRepos));
+  let filteredClosedPrs = $derived(sortByTime(orderQueueUnits(filterByOpened(scopedClosedPrs, openedFilter)), listOrder));
   let actionsHref = $derived.by(() => {
     const params = new URLSearchParams();
     if (selectedRepos.length === 0) params.append("repo", "");
@@ -663,22 +729,24 @@
         : mode === "feature" ? [...buckets.keys()].filter((id) => id.startsWith("feature:")).sort().map((id) => ({ id, title: id.slice("feature:".length) }))
         : prefs.prGrouping.groups.map((group) => ({ id: `group:${group.id}`, title: group.name }))),
         { id: "other", title: mode === "manual" ? "Ungrouped" : "Other" }];
-    // A stack sorts by its root row; feature groups also order by status, then type.
+    // A stack sorts by its root row; feature groups also order by status, then type. A timestamp order
+    // re-sorts only unpinned roots inside each section, with queue order breaking ties.
     const statusRank = mode === "feature" ? (pr) => GROUP_ORDER.indexOf(classify(pr, viewerLogin).group) : undefined;
+    const sortUnits = (units) => sortByTime(orderQueueUnits(units, statusRank), listOrder);
     // An active drag also shows the empty sections it could land in; feature mode offers only scopes that
     // already exist, plus Other.
     const shown = (id, rows) => rows.length > 0 || (revealKey !== null && revealKey === dragKey && dropPlan(dragKey, id) !== null);
     const statusGroups = categories.filter(({ id }) => shown(id, buckets.get(id) ?? [])).map(({ id, title }) => {
-      const { units, unrankedCount, items } = orderGroup(buckets.get(id) ?? [], (units) => orderQueueUnits(units, statusRank));
+      const { units, unrankedCount, items } = orderGroup(buckets.get(id) ?? [], sortUnits);
       return { id, title, units, unrankedCount, items };
     });
     const leading = [];
     if (failed.length) {
-      const { units, unrankedCount, items } = orderGroup(failed, (units) => orderQueueUnits(units, statusRank));
+      const { units, unrankedCount, items } = orderGroup(failed, sortUnits);
       leading.push({ id: "merge-failed", title: "FAILED TO MERGE", units, unrankedCount, items });
     }
     if (shown("approved", approved)) {
-      const { units, unrankedCount, items } = orderGroup(approved, (units) => orderQueueUnits(units, statusRank));
+      const { units, unrankedCount, items } = orderGroup(approved, sortUnits);
       leading.push({ id: "approved", title: "Approved for safe merge", units, unrankedCount, items });
     }
     if (shown("pinned", pinned)) {
@@ -1049,8 +1117,10 @@
     const pr = prs.find((p) => prKey(p) === dragKey);
     return pr ? groupId(pr) : null;
   });
-  let visibleAllPrs = $derived(orderQueueUnits(allPrs.filter((pr) => !isSetAside(pr))));
-  let visibleArchivedPrs = $derived(archivedPrs.filter((pr) => !isSetAside(pr)));
+  let scopedAllPrs = $derived(allPrs.filter((pr) => !isSetAside(pr)));
+  let visibleAllPrs = $derived(sortByTime(orderQueueUnits(filterByOpened(scopedAllPrs, openedFilter)), listOrder));
+  let scopedArchivedPrs = $derived(archivedPrs.filter((pr) => !isSetAside(pr)));
+  let visibleArchivedPrs = $derived(sortByTime(filterByOpened(scopedArchivedPrs, openedFilter), listOrder));
   let ordered = $derived(view === "all" ? visibleAllPrs : view === "closed" ? filteredClosedPrs : showArchived ? [...openOrdered, ...visibleArchivedPrs] : openOrdered);
   let archivedSet = $derived(new Set(archivedPrs.map((pr) => prKey(pr))));
   const isArchived = (pr) => archivedSet.has(prKey(pr));
@@ -1361,6 +1431,22 @@
         {/if}
       </div>
       {#if view !== "whiteboard"}
+      {#if prefs.queueTimeControlsEnabled}
+        <div class="time-controls">
+          <label class="time-field">
+            <span class="time-field-label">Opened</span>
+            <select class="time-select" value={openedChoice} onchange={(event) => chooseOpened(event.currentTarget.value)}>
+              {#each OPENED_RANGES as option (option.value)}<option value={option.value}>{option.label}</option>{/each}
+            </select>
+          </label>
+          <label class="time-field">
+            <span class="time-field-label">Order</span>
+            <select class="time-select" value={timeOrder} onchange={(event) => chooseOrder(event.currentTarget.value)}>
+              {#each TIME_ORDERS as option (option.value)}<option value={option.value}>{option.label}</option>{/each}
+            </select>
+          </label>
+        </div>
+      {/if}
       <div class="repo-filter">
         <MultiSelectDropdown
           label="Repository"
@@ -1382,6 +1468,22 @@
         <div role="alert">Whiteboard could not load: {whiteboardLoadError} <button onclick={() => location.reload()}>Reload</button></div>
       {:else}<div role="status">Loading whiteboard…</div>{/if}
     {:else}
+    {#if prefs.queueTimeControlsEnabled && openedChoice === "custom"}
+      <form class="time-range-row" aria-label="Custom opened range" onsubmit={applyCustomRange}>
+        <label class="time-field">
+          <span class="time-field-label">From</span>
+          <input class="time-input" type="datetime-local" bind:value={customFrom} max={customTo || undefined} />
+        </label>
+        <label class="time-field">
+          <span class="time-field-label">To</span>
+          <input class="time-input" type="datetime-local" bind:value={customTo} min={customFrom || undefined} />
+        </label>
+        <button class="time-apply" type="submit" disabled={!customDraft.range}>Apply</button>
+        <span class="time-range-state" role="status">
+          {#if customApplied}Applied{:else}{customDraft.error && (customFrom || customTo) ? `${customDraft.error} ` : ""}Using {appliedRangeLabel}.{/if}
+        </span>
+      </form>
+    {/if}
     {#if prefs.prGrouping.mode !== "status" && view === "open"}
       <div class="grouping-toolbar">
         <a href="#/settings/general">Grouping: {prefs.prGrouping.mode === "manual" ? "Manual" : prefs.prGrouping.mode === "feature" ? "Feature area" : "PR type"}</a>
@@ -1662,6 +1764,8 @@
             </div>
           {:else if allPrsLoading && allPrs.length === 0}
             <div class="empty" role="status">Loading all PRs…</div>
+          {:else if visibleAllPrs.length === 0 && openedFilter && scopedAllPrs.length > 0}
+            <div class="empty">No PRs match this time range</div>
           {:else if visibleAllPrs.length === 0}
             <div class="empty">No open pull requests in {selectedRepos.length ? "the selected" : "tracked"} repositories</div>
           {:else}
@@ -1676,8 +1780,10 @@
             <div class="empty">Loading recent merges…</div>
           {:else if closedPrs.length === 0}
             <div class="empty">Nothing merged or closed yet</div>
-          {:else if filteredClosedPrs.length === 0}
+          {:else if scopedClosedPrs.length === 0}
             <div class="empty">Nothing merged or closed in the selected repositories</div>
+          {:else if filteredClosedPrs.length === 0}
+            <div class="empty">No PRs match this time range</div>
           {/if}
           <section class="queue-group">
             <div class="group-body">
@@ -1691,14 +1797,16 @@
             <div class="empty">Syncing with GitHub…</div>
           {:else if loaded && prs.length === 0}
             <div class="empty">No open pull requests involving you. Use All PRs to see every tracked repository.</div>
-          {:else if !filterQuery && filteredPrs.length === 0 && prs.some(isSetAside)}
+          {:else if !filterQuery && scopedPrs.length === 0 && prs.some(isSetAside)}
             <div class="empty">You’re all caught up here. Your set-aside PRs are in the tray.</div>
-          {:else if selectedRepos.length && filteredPrs.length === 0}
+          {:else if selectedRepos.length && scopedPrs.length === 0}
             <div class="empty">No pull requests involving you in the selected repositories. Use All PRs to see every open pull request.</div>
           {:else if wantsHistory(filterQuery) && !historyActive}
             <div class="empty">Searching history…</div>
-          {:else if filterQuery && filteredPrs.length === 0}
+          {:else if filterQuery && scopedPrs.length === 0}
             <div class="empty">No matches for “{filterQuery}”</div>
+          {:else if openedFilter && filteredPrs.length === 0}
+            <div class="empty">No PRs match this time range</div>
           {/if}
 
           {#each groups as group (group.id)}
@@ -1723,7 +1831,9 @@
             <section class="queue-group archived-group">
               <div class="group-label archived-label"><span>Archived</span><span class="group-count">{visibleArchivedPrs.length}</span></div>
               <div class="group-body">
-                {#if visibleArchivedPrs.length === 0}
+                {#if visibleArchivedPrs.length === 0 && openedFilter && scopedArchivedPrs.length > 0}
+                  <div class="empty">No PRs match this time range</div>
+                {:else if visibleArchivedPrs.length === 0}
                   <div class="empty">Nothing archived</div>
                 {/if}
                 {#each visibleArchivedPrs as pr (prKey(pr))}{@render row(pr)}{/each}
@@ -2492,6 +2602,71 @@
   .repo-filter {
     margin-left: auto;
   }
+  .time-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-left: auto;
+  }
+  .time-controls + .repo-filter {
+    margin-left: 0;
+  }
+  .time-field {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .time-field-label {
+    color: var(--text-faint);
+    font-size: 11px;
+  }
+  .time-select,
+  .time-input,
+  .time-apply {
+    height: 30px;
+    padding: 0 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    background: var(--panel);
+    font: 500 12px var(--sans);
+  }
+  .time-select:hover,
+  .time-input:hover,
+  .time-apply:hover:not(:disabled) {
+    border-color: var(--border-hover);
+  }
+  .time-select:focus-visible,
+  .time-input:focus-visible,
+  .time-apply:focus-visible {
+    outline: none;
+    border-color: var(--link);
+    box-shadow: 0 0 0 2px var(--focus-ring);
+  }
+  .time-input:invalid {
+    border-color: var(--fail);
+  }
+  .time-range-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    margin: -6px 0 16px;
+  }
+  .time-apply {
+    padding: 0 12px;
+    cursor: pointer;
+  }
+  .time-apply:disabled {
+    color: var(--text-faint);
+    cursor: default;
+  }
+  .time-range-state {
+    min-width: 0;
+    color: var(--text-faint);
+    font-size: 11px;
+  }
   .view-tab {
     display: flex;
     align-items: center;
@@ -3209,6 +3384,22 @@
     .repo-filter {
       width: 100%;
       margin-left: 0;
+    }
+    .time-controls {
+      width: 100%;
+      margin-left: 0;
+      flex-wrap: wrap;
+    }
+    .time-field {
+      flex: 1;
+    }
+    .time-select {
+      flex: 1;
+      min-width: 0;
+    }
+    .time-range-row {
+      justify-content: flex-start;
+      margin-top: 0;
     }
     .row {
       display: grid;

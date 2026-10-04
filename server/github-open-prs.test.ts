@@ -22,11 +22,11 @@ test("repository open PR listing completes more than 100 results and rejects inc
       const nodes = Array.from({ length: offset ? 3 : 100 }, (_, i) => ({
         number: offset + i + 1, title: "Pull request " + (offset + i + 1),
         author: i === 0 ? null : { login: "unrelated-contributor" },
-        isDraft: i === 1, updatedAt: "2026-09-01T00:00:00Z",
+        isDraft: i === 1, createdAt: "2026-08-0" + (i % 9 + 1) + "T00:00:00Z", updatedAt: "2026-09-01T00:00:00Z",
       }));
       if (mode === "overlap" && offset) nodes.push({
         number: 1, title: "Updated during pagination", author: { login: "unrelated-contributor" },
-        isDraft: false, updatedAt: "2026-09-02T00:00:00Z",
+        isDraft: false, createdAt: "2026-08-01T00:00:00Z", updatedAt: "2026-09-02T00:00:00Z",
       });
       return Response.json({ data: { repository: { pullRequests: {
         nodes,
@@ -75,7 +75,7 @@ test("repository open PR listing completes more than 100 results and rejects inc
   expect(result.prs.map((pr: { number: number }) => pr.number)).toEqual(Array.from({ length: 103 }, (_, i) => i + 1));
   expect(result.prs[1]).toEqual({
     repo: "acme/widgets", number: 2, title: "Pull request 2", author: "unrelated-contributor",
-    state: "OPEN", isDraft: true, updatedAt: "2026-09-01T00:00:00Z",
+    state: "OPEN", isDraft: true, createdAt: "2026-08-02T00:00:00Z", updatedAt: "2026-09-01T00:00:00Z",
   });
   expect(result.prs[0].author).toBe("unknown");
   expect(result.overlapping.map((pr: { number: number }) => pr.number)).toEqual(Array.from({ length: 103 }, (_, i) => i + 1));

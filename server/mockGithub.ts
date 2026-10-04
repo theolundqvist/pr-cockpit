@@ -626,6 +626,7 @@ export const mockGithub = isMockGithub ? {
       state: detail.state,
       isDraft: detail.isDraft,
       author: detail.author?.login ?? "unknown",
+      createdAt: detail.createdAt ?? null,
       updatedAt: detail.updatedAt,
       mergedAt: detail.mergedAt,
       closedAt: detail.closedAt,
@@ -804,7 +805,7 @@ export function seedMockDatabase(db: Database, dataDir: string): void {
     INSERT INTO prs (repo, number, state, is_draft, title, author, base_ref, head_ref, head_sha, updated_at, additions, deletions, changed_files, commit_count, mergeable, merge_state_status, auto_merge_enabled, viewer_is_author, viewer_review_requested, viewer_review_state, ci_status, review_decision, unresolved_count, needs_me_rank, greptile_confidence, greptile_reviewed_sha, greptile_unresolved_count, detail_json, fetched_at, body_media, body_digest)
     VALUES ($repo, $number, $state, $is_draft, $title, $author, $base_ref, $head_ref, $head_sha, $updated_at, $additions, $deletions, $changed_files, $commit_count, $mergeable, $merge_state_status, $auto_merge_enabled, $viewer_is_author, $viewer_review_requested, $viewer_review_state, $ci_status, $review_decision, $unresolved_count, $needs_me_rank, $greptile_confidence, $greptile_reviewed_sha, $greptile_unresolved_count, $detail_json, $fetched_at, $body_media, $body_digest)
   `);
-  const insertIndex = db.prepare("INSERT INTO pr_index (repo, number, title, state, is_draft, author, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)");
+  const insertIndex = db.prepare("INSERT INTO pr_index (repo, number, title, state, is_draft, author, updated_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
   const insertDiff = db.prepare("INSERT INTO diffs (head_sha, patch, fetched_at) VALUES (?, ?, datetime('now'))");
   const seed = db.transaction(() => {
     for (const [key, detail] of Object.entries(details)) {
@@ -848,7 +849,7 @@ export function seedMockDatabase(db: Database, dataDir: string): void {
         $body_media: JSON.stringify(extractGithubMedia(detail.body, { videos: true })),
         $body_digest: descriptionDigest(detail.body),
       });
-      insertIndex.run(repo, detail.number, detail.title, detail.state, detail.isDraft ? 1 : 0, detail.author?.login ?? "unknown", detail.updatedAt);
+      insertIndex.run(repo, detail.number, detail.title, detail.state, detail.isDraft ? 1 : 0, detail.author?.login ?? "unknown", detail.updatedAt, detail.createdAt ?? null);
       insertDiff.run(detail.headRefOid, prPatch(detail.number));
     }
   });

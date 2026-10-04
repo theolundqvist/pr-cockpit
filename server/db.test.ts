@@ -360,6 +360,102 @@ test("migrates populated PR index and preserves terminal metadata on partial ups
   }
 });
 
+test("PR index creation time comes from cached details, is learned later, and survives older replica sources", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-index-created-at-"));
+  const scenario = `
+    const { Database } = await import("bun:sqlite");
+    const legacy = new Database(${JSON.stringify(join(dataDir, "cockpit.db"))});
+    legacy.exec(\`
+      CREATE TABLE pr_index (
+        repo TEXT NOT NULL, number INTEGER NOT NULL, title TEXT NOT NULL, state TEXT NOT NULL,
+        is_draft INTEGER NOT NULL, author TEXT NOT NULL, updated_at TEXT NOT NULL,
+        merged_at TEXT, closed_at TEXT, involves_me INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (repo, number)
+      );
+      CREATE TABLE pr_detail_cache (
+        repo TEXT NOT NULL, number INTEGER NOT NULL, head_sha TEXT NOT NULL,
+        detail_json TEXT NOT NULL, fetched_at TEXT NOT NULL, PRIMARY KEY (repo, number)
+      );
+      INSERT INTO pr_index (repo, number, title, state, is_draft, author, updated_at, merged_at, involves_me) VALUES
+        ('test/repo', 1, 'cached', 'MERGED', 0, 'theo', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z', 1),
+        ('test/repo', 2, 'never fetched', 'MERGED', 0, 'theo', '2026-08-02T00:00:00Z', '2026-08-02T00:00:00Z', 1),
+        ('test/repo', 3, 'malformed', 'MERGED', 0, 'theo', '2026-08-03T00:00:00Z', '2026-08-03T00:00:00Z', 1);
+      INSERT INTO pr_detail_cache VALUES
+        ('test/repo', 1, 'h', '{"createdAt":"2026-07-01T00:00:00Z","updatedAt":"2026-08-01T00:00:00Z"}', '2026-08-01T00:00:00Z'),
+        ('test/repo', 3, 'h', '{"createdAt":1,"updatedAt":"2026-08-01T00:00:00Z"}', '2026-08-01T00:00:00Z');
+    \`);
+    legacy.close();
+
+    const { db, listClosedPrs, readInboxReplica, replaceInboxReplica, upsertCachedPrDetail, upsertPrIndex } = await import(${JSON.stringify(dbModuleUrl)});
+    // Replica snapshots include fixer_agents, which agents.ts creates.
+    await import(${JSON.stringify(agentsModuleUrl)});
+    const createdAt = () => Object.fromEntries(
+      db.query("SELECT number, created_at FROM pr_index ORDER BY number").all().map((row) => [row.number, row.created_at]),
+    );
+    const closedCreatedAt = () => Object.fromEntries(listClosedPrs(10).map((row) => [row.number, row.created_at]));
+    const migrated = createdAt();
+
+    // Opening a migrated historical PR caches its detail; the index learns that time, and the first one sticks.
+    const cacheDetail = (number, createdAt, fetchedAt) => upsertCachedPrDetail({
+      repo: "test/repo", number, head_sha: "h", detail_json: JSON.stringify({ createdAt }), fetched_at: fetchedAt,
+    });
+    cacheDetail(2, "2026-07-02T00:00:00Z", "2026-08-05T00:00:00Z");
+    cacheDetail(2, "2026-07-20T00:00:00Z", "2026-08-06T00:00:00Z");
+    // An index entry first written after its detail was cached resolves the cached time.
+    cacheDetail(5, "2026-07-05T00:00:00Z", "2026-08-05T00:00:00Z");
+    upsertPrIndex([{ repo: "test/repo", number: 5, title: "opened later", state: "CLOSED", isDraft: false, author: "theo",
+      updatedAt: "2026-08-05T00:00:00Z", closedAt: "2026-08-05T00:00:00Z", involvesMe: true }]);
+    const learned = closedCreatedAt();
+
+    // A replica of a source predating the column: its index rows lack created_at (one sends explicit null), so known
+    // local times must survive, and #4 — new to this replica — takes the time its tracked detail carries.
+    const fresh = readInboxReplica();
+    const sourceIndex = [...fresh.pr_index, {
+      repo: "test/repo", number: 4, title: "replicated", state: "MERGED", is_draft: 0, author: "theo",
+      updated_at: "2026-08-04T00:00:00Z", merged_at: "2026-08-04T00:00:00Z", closed_at: null, involves_me: 1,
+    }].map(({ created_at, ...row }) => row.number === 3 ? { ...row, created_at: null } : row);
+    const sourcePr = {
+      repo: "test/repo", number: 4, state: "MERGED", is_draft: 0, title: "replicated", author: "theo",
+      base_ref: "main", head_ref: "f", head_sha: "h", updated_at: "2026-08-04T00:00:00Z", additions: 0, deletions: 0,
+      changed_files: 0, commit_count: 1, mergeable: "UNKNOWN", merge_state_status: "", auto_merge_enabled: 0,
+      viewer_is_author: 1, viewer_review_requested: 0, ci_status: "NONE", unresolved_count: 0, needs_me_rank: 0,
+      greptile_unresolved_count: 0, detail_json: JSON.stringify({ createdAt: "2026-07-04T00:00:00Z" }),
+      fetched_at: "2026-08-04T00:00:00Z",
+    };
+    replaceInboxReplica({ ...fresh, pr_index: sourceIndex, prs: [sourcePr] });
+    const replicated = closedCreatedAt();
+    // The source later drops #4 from its tracked rows; the terminal history row keeps the time.
+    replaceInboxReplica({ ...fresh, pr_index: sourceIndex, prs: [] });
+    const afterEviction = closedCreatedAt();
+    console.log(JSON.stringify({ migrated, learned, replicated, afterEviction }));
+    db.close();
+  `;
+
+  try {
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      process.exited,
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(stderr);
+    const learned = { 1: "2026-07-01T00:00:00Z", 2: "2026-07-02T00:00:00Z", 3: null, 5: "2026-07-05T00:00:00Z" };
+    const replicated = { ...learned, 4: "2026-07-04T00:00:00Z" };
+    expect(JSON.parse(stdout)).toEqual({
+      migrated: { 1: "2026-07-01T00:00:00Z", 2: null, 3: null },
+      learned,
+      replicated,
+      afterEviction: replicated,
+    });
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("schema updates preserve the normalized PR cache", () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-schema-cache-"));
   const seed = `
