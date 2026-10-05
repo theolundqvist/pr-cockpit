@@ -75,6 +75,11 @@ const quotaProbeInFlight = new Map<GithubQuotaResourceName, {
 }>();
 const lastQuotaProbeAt = new Map<GithubQuotaResourceName, number>();
 const QUOTA_PROBE_INTERVAL_MS = 30_000;
+// GitHub's /rate_limit counts a different core window than the one requests are charged against:
+// it reported 1 used and its own reset while charged responses reported 1,143 used and another
+// reset, and it reported the full 5,000 while every charged request answered "API rate limit
+// exceeded". Only a charged request's X-RateLimit headers describe the token's real core budget.
+const CORE_QUOTA_PROBE_PATH = "/user";
 // A socket that dies silently (sleep, network change) never settles its fetch, and one hung
 // request stalls the poll loop until restart, so every GitHub request carries a deadline.
 const GITHUB_REQUEST_TIMEOUT_MS = 60_000;
@@ -91,6 +96,7 @@ function quotaGeneration(token: string): number {
     lastQuotaProbeAt.clear();
     cachedQuota = null;
     graphqlReading = null;
+    coreReading = null;
   }
   return activeQuotaGeneration;
 }
@@ -160,27 +166,43 @@ function primaryResetDeadline(response: Response): QuotaDeadline | null {
   return { status: response.ok ? 403 : response.status, until, resetAt: new Date(until).toISOString() };
 }
 
-function responseQuotaResource(response: Response, fallback: GithubQuotaResourceName): GithubQuotaResourceName {
-  const value = response.headers.get("x-ratelimit-resource");
-  return value === "core" || value === "search" || value === "graphql"
-    ? value
-    : responseQuotaResources.get(response) ?? fallback;
+function rateLimitHeader(response: Response, name: string): number | null {
+  const raw = response.headers.get(name);
+  if (raw === null) return null;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
 }
 
-function accountQuota(response: Response, fallback: GithubQuotaResourceName, generation: number): void {
+// null when GitHub charged the request to a budget Cockpit does not gate (code_scanning_autofix,
+// dependency_snapshots, ...): exhausting one of those says nothing about core, search, or GraphQL.
+function responseQuotaResource(response: Response, fallback: GithubQuotaResourceName): GithubQuotaResourceName | null {
+  const value = response.headers.get("x-ratelimit-resource");
+  if (value === "core" || value === "search" || value === "graphql") return value;
+  if (value !== null) return null;
+  return responseQuotaResources.get(response) ?? fallback;
+}
+
+function accountQuota(
+  response: Response,
+  fallback: GithubQuotaResourceName,
+  generation: number,
+  chargesPrimary: boolean,
+): void {
   if (generation !== activeQuotaGeneration) return;
   const resource = responseQuotaResource(response, fallback);
-  const rawRemaining = response.headers.get("x-ratelimit-remaining");
-  const remaining = rawRemaining === null ? Number.NaN : Number(rawRemaining);
-  const primary = primaryResetDeadline(response);
-  if (remaining === 0 && primary) {
-    updatePrimaryQuota(resource, 0, primary.resetAt, primary.status);
-  } else if (Number.isFinite(remaining) && remaining > 0) {
-    updatePrimaryQuota(resource, remaining, null);
+  if (resource !== null && chargesPrimary) {
+    const remaining = rateLimitHeader(response, "x-ratelimit-remaining");
+    const primary = primaryResetDeadline(response);
+    if (remaining === 0 && primary) {
+      updatePrimaryQuota(resource, 0, primary.resetAt, primary.status);
+    } else if (remaining !== null && remaining > 0) {
+      updatePrimaryQuota(resource, remaining, null);
+    }
+    if (resource === "core") recordCoreReading(response);
   }
   if ((response.status === 403 || response.status === 429) && response.headers.has("retry-after")) {
     const secondary = retryAfterDeadline(response);
-    if (secondary) updateSecondaryQuota(resource, secondary);
+    if (secondary) updateSecondaryQuota(resource ?? fallback, secondary);
   }
 }
 
@@ -204,8 +226,9 @@ async function revalidateQuota(
   token: string,
   generation: number,
 ): Promise<void> {
-  // /rate_limit misreports GraphQL (see graphqlReading), so a GraphQL block holds until its reset.
-  if (resource === "graphql") return;
+  // A GraphQL block holds until its reset because /rate_limit misreports GraphQL (see
+  // graphqlReading); a search block's window is a minute, so probing would cost more than waiting.
+  if (resource !== "core") return;
   activeQuotaBlock(resource);
   const state = blockedQuotas.get(resource);
   if (generation !== activeQuotaGeneration || !state?.primary || state.secondary) return;
@@ -225,7 +248,9 @@ async function revalidateQuota(
   } = { generation, primary, promise: Promise.resolve() };
   entry.promise = (async () => {
     try {
-      const response = await fetch("https://api.github.com/rate_limit", {
+      // A charged request with the token the refused request would use, so its headers are that
+      // token's own core budget (see CORE_QUOTA_PROBE_PATH). A refused probe is not charged.
+      const response = await fetch(`https://api.github.com${CORE_QUOTA_PROBE_PATH}`, {
         signal: AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS),
         headers: {
           Authorization: `bearer ${token}`,
@@ -237,20 +262,18 @@ async function revalidateQuota(
       if ((response.status === 403 || response.status === 429) && secondary) {
         updateSecondaryQuota(resource, secondary);
       }
-      if (!response.ok) return;
-      const body = (await response.json()) as {
-        resources?: Record<string, { remaining?: number } | undefined>;
-      };
-      const remaining = body.resources?.[resource]?.remaining;
+      if (responseQuotaResource(response, resource) !== resource) return;
+      recordCoreReading(response);
+      const remaining = rateLimitHeader(response, "x-ratelimit-remaining");
       const current = blockedQuotas.get(resource);
-      if (
-        typeof remaining === "number"
-        && remaining > 0
-        && generation === activeQuotaGeneration
-        && current?.primary === primary
-      ) {
+      // A response that settled while the probe was in flight may have recorded a newer block.
+      if (current?.primary !== primary) return;
+      const reset = primaryResetDeadline(response);
+      if (remaining !== null && remaining > 0) {
         delete current.primary;
         removeEmptyQuotaState(resource, current);
+      } else if (remaining === 0 && reset) {
+        current.primary = reset;
       }
     } catch {
       // Keep the recorded block when the probe is unreachable or malformed.
@@ -270,8 +293,11 @@ function gatingQuotaBlock(resource: GithubQuotaResourceName, includePrimary: boo
 function assertQuotaAvailable(resource: GithubQuotaResourceName, includePrimary = true): void {
   const blocked = gatingQuotaBlock(resource, includePrimary);
   if (!blocked) return;
+  const secondary = blockedQuotas.get(resource)?.secondary === blocked;
   throw new GithubRequestError(
-    `GitHub ${resource} quota exhausted until ${blocked.resetAt}`,
+    secondary
+      ? `GitHub ${resource} secondary rate limit cooling down until ${blocked.resetAt}`
+      : `GitHub ${resource} quota exhausted until ${blocked.resetAt}`,
     blocked.status,
     [],
     "quota",
@@ -304,8 +330,9 @@ async function githubApiResponse(
   } = {},
 ): Promise<Response> {
   const resource = quotaResource(path);
-  // GitHub does not charge GET /rate_limit to the primary REST limit, so quota stays readable
-  // while core is exhausted; the read is itself the revalidation. Secondary cooldowns still apply.
+  // GitHub does not charge GET /rate_limit, so quota stays readable while core is exhausted. Its
+  // counts are not the charged window (see CORE_QUOTA_PROBE_PATH), so it neither records nor
+  // clears a primary block. Secondary cooldowns still apply.
   const rateLimitRead = method === "GET" && path === "/rate_limit";
   const { token, generation } = await requireQuota(resource, options.authentication, !rateLimitRead);
   let response: Response;
@@ -336,12 +363,15 @@ async function githubApiResponse(
   responseQuotaResources.set(response, resource);
   responseQuotaGenerations.set(response, generation);
   if (rateLimitRead) primaryExemptResponses.add(response);
-  accountQuota(response, resource, generation);
+  accountQuota(response, resource, generation, !rateLimitRead);
   return response;
 }
 
 async function githubResponseError(label: string, response: Response): Promise<GithubRequestError> {
-  const resource = responseQuotaResource(response, quotaResource(new URL(response.url || "https://api.github.com").pathname));
+  const fallback = responseQuotaResources.get(response)
+    ?? quotaResource(new URL(response.url || "https://api.github.com").pathname);
+  const charged = responseQuotaResource(response, fallback);
+  const resource = charged ?? fallback;
   const body = await response.text();
   const secondaryWithoutDeadline = response.status === 403
     && !response.headers.has("retry-after")
@@ -360,15 +390,21 @@ async function githubResponseError(label: string, response: Response): Promise<G
       || response.headers.has("retry-after")
       || /rate limit/i.test(body)
     ));
-  const resetAt = quota && responseHasActiveQuota(response)
-    ? gatingQuotaBlock(resource, !primaryExemptResponses.has(response))?.resetAt ?? null
-    : null;
+  // An untracked budget has no recorded block, so its own headers carry the wait.
+  const resetAt = !quota
+    ? null
+    : charged === null
+      ? (retryAfterDeadline(response)
+        ?? (response.headers.get("x-ratelimit-remaining") === "0" ? primaryResetDeadline(response) : null))?.resetAt ?? null
+      : responseHasActiveQuota(response)
+        ? gatingQuotaBlock(charged, !primaryExemptResponses.has(response))?.resetAt ?? null
+        : null;
   return new GithubRequestError(
     `${label}: ${response.status}${body ? ` ${body}` : ""}`,
     response.status,
     [],
     quota ? "quota" : "http",
-    resource,
+    charged,
     resetAt,
   );
 }
@@ -443,23 +479,17 @@ async function graphql<T>(
     }
     throw error;
   }
-  const headerNumber = (name: string): number | null => {
-    const raw = res.headers.get(name);
-    if (raw === null) return null;
-    const value = Number(raw);
-    return Number.isFinite(value) ? value : null;
-  };
-  const headerReset = headerNumber("x-ratelimit-reset");
+  const headerReset = rateLimitHeader(res, "x-ratelimit-reset");
   const record = (
     rateLimit: { cost: number; used: number; remaining: number; resetAt: string } | null,
     status: "ok" | "error",
   ) => {
     if (!responseHasActiveQuota(res)) return;
-    const used = rateLimit?.used ?? headerNumber("x-ratelimit-used");
-    const remaining = rateLimit?.remaining ?? headerNumber("x-ratelimit-remaining");
+    const used = rateLimit?.used ?? rateLimitHeader(res, "x-ratelimit-used");
+    const remaining = rateLimit?.remaining ?? rateLimitHeader(res, "x-ratelimit-remaining");
     const resetAt = rateLimit?.resetAt ?? (headerReset === null ? null : new Date(headerReset * 1_000).toISOString());
     updateCachedGraphqlQuota(
-      headerNumber("x-ratelimit-limit"),
+      rateLimitHeader(res, "x-ratelimit-limit"),
       used,
       remaining,
       resetAt,
@@ -827,6 +857,23 @@ function updateCachedGraphqlQuota(
     fetchedAt: new Date().toISOString(),
   };
 }
+
+// From charged core responses' X-RateLimit headers, for the same reason as graphqlReading: see
+// CORE_QUOTA_PROBE_PATH for how far /rate_limit's core entry drifted from the charged window.
+let coreReading: GithubQuotaResource | null = null;
+
+function recordCoreReading(response: Response): void {
+  const limit = rateLimitHeader(response, "x-ratelimit-limit");
+  const used = rateLimitHeader(response, "x-ratelimit-used");
+  const remaining = rateLimitHeader(response, "x-ratelimit-remaining");
+  const reset = rateLimitHeader(response, "x-ratelimit-reset");
+  if (limit === null || used === null || remaining === null || reset === null) return;
+  const resetAt = new Date(reset * 1_000).toISOString();
+  // Concurrent responses settle out of order; an earlier one must not undo a later spend.
+  if (coreReading?.resetAt === resetAt && coreReading.used > used) return;
+  coreReading = { limit, used, remaining, resetAt };
+  if (cachedQuota) cachedQuota = { ...cachedQuota, rest: coreReading };
+}
 export async function fetchGithubQuota(): Promise<GithubQuota> {
   if (mockGithub) {
     // Half a window left, so the fixture's spend is well ahead of pace and background work runs.
@@ -868,11 +915,12 @@ async function fetchRateLimit(token: string, generation: number): Promise<Github
     const value = body.resources[name];
     return { limit: value.limit, used: value.used, remaining: value.remaining, resetAt: new Date(value.reset * 1_000).toISOString() };
   };
-  const quota = { rest: resource("core"), graphql: liveGraphqlReading() ?? resource("graphql"), fetchedAt: new Date().toISOString() };
-  if (responseHasActiveQuota(res)) {
-    cachedQuota = quota;
-    updatePrimaryQuota("core", quota.rest.remaining, quota.rest.resetAt);
-  }
+  const quota = {
+    rest: coreReading && Date.parse(coreReading.resetAt) > Date.now() ? coreReading : resource("core"),
+    graphql: liveGraphqlReading() ?? resource("graphql"),
+    fetchedAt: new Date().toISOString(),
+  };
+  if (responseHasActiveQuota(res)) cachedQuota = quota;
   return quota;
 }
 

@@ -292,12 +292,13 @@ test("quota boundaries isolate search, GraphQL, and core while transport and mut
       let coreLimited = false;
       globalThis.fetch = async (input, init) => {
         const url = new URL(String(input));
-        // A blocked resource is revalidated against /rate_limit before being refused. Exhaustion is
-        // genuine here, so report zero and let the recorded block stand.
-        if (url.pathname === "/rate_limit") {
-          return Response.json({
-            resources: { core: { remaining: 0 }, search: { remaining: 0 }, graphql: { remaining: 0 } },
-          });
+        // A blocked core is revalidated with a charged probe before being refused. Exhaustion is
+        // genuine here, so the probe is refused too and the recorded block stands.
+        if (url.pathname === "/user") {
+          return Response.json({ message: "API rate limit exceeded" }, { status: 403, headers: {
+            "x-ratelimit-resource": "core",
+            "x-ratelimit-remaining": "0",
+          } });
         }
         if (url.pathname === "/search/issues") {
           calls.search++;
@@ -431,11 +432,12 @@ test("quota state follows auth changes and ignores late responses from the previ
       globalThis.fetch = async (input, init) => {
         const url = new URL(String(input));
         const authorization = new Headers(init?.headers).get("authorization");
-        // Revalidation probe before a refusal. Exhaustion is genuine here, so report zero.
-        if (url.pathname === "/rate_limit") {
-          return Response.json({
-            resources: { core: { remaining: 0 }, search: { remaining: 0 }, graphql: { remaining: 0 } },
-          });
+        // Revalidation probe before a refusal. Exhaustion is genuine here, so the probe is refused too.
+        if (url.pathname === "/user") {
+          return Response.json({ message: "API rate limit exceeded" }, { status: 403, headers: {
+            "x-ratelimit-resource": "core",
+            "x-ratelimit-remaining": "0",
+          } });
         }
         if (url.pathname === "/search/issues") {
           searchCalls++;
@@ -520,9 +522,9 @@ test("a positive primary budget cannot bypass a secondary retry-after cooldown",
       let targetCalls = 0;
       globalThis.fetch = async (input) => {
         const url = new URL(String(input));
-        if (url.pathname === "/rate_limit") {
+        if (url.pathname === "/user") {
           probes++;
-          return Response.json({ resources: { core: { remaining: 4999 } } });
+          return Response.json({}, { headers: { "x-ratelimit-resource": "core", "x-ratelimit-remaining": "4999" } });
         }
         targetCalls++;
         if (limited) {
@@ -590,9 +592,9 @@ test("a body-only secondary limit establishes a fallback cooldown", async () => 
       let targetCalls = 0;
       globalThis.fetch = async (input) => {
         const url = new URL(String(input));
-        if (url.pathname === "/rate_limit") {
+        if (url.pathname === "/user") {
           probes++;
-          return Response.json({ resources: { core: { remaining: 4999 } } });
+          return Response.json({}, { headers: { "x-ratelimit-resource": "core", "x-ratelimit-remaining": "4999" } });
         }
         targetCalls++;
         if (limited) {
@@ -657,9 +659,9 @@ test("a concurrent successful response cannot clear a newer secondary cooldown",
       let probes = 0;
       globalThis.fetch = async (input) => {
         const url = new URL(String(input));
-        if (url.pathname === "/rate_limit") {
+        if (url.pathname === "/user") {
           probes++;
-          return Response.json({ resources: { core: { remaining: 4999 } } });
+          return Response.json({}, { headers: { "x-ratelimit-resource": "core", "x-ratelimit-remaining": "4999" } });
         }
         targetCalls++;
         if (targetCalls === 1) {
@@ -729,9 +731,9 @@ test("primary exhaustion and secondary cooldown from one response are both retai
       let targetCalls = 0;
       globalThis.fetch = async (input) => {
         const url = new URL(String(input));
-        if (url.pathname === "/rate_limit") {
+        if (url.pathname === "/user") {
           probes++;
-          return Response.json({ resources: { core: { remaining: 5000 } } });
+          return Response.json({}, { headers: { "x-ratelimit-resource": "core", "x-ratelimit-remaining": "5000" } });
         }
         targetCalls++;
         if (limited) {
@@ -797,10 +799,13 @@ test("primary quota revalidation is bounded and clears a refilled budget", async
       let probes = 0;
       globalThis.fetch = async (input) => {
         const url = new URL(String(input));
-        if (url.pathname === "/rate_limit") {
+        if (url.pathname === "/user") {
           probes++;
           await Promise.resolve();
-          return Response.json({ resources: { core: { remaining: refilled ? 5000 : 0 } } });
+          return Response.json({}, { status: refilled ? 200 : 403, headers: {
+            "x-ratelimit-resource": "core",
+            "x-ratelimit-remaining": refilled ? "5000" : "0",
+          } });
         }
         if (limited) {
           limited = false;
@@ -867,7 +872,7 @@ test("a stale positive probe cannot clear a newer primary block", async () => {
       let probes = 0;
       globalThis.fetch = async (input) => {
         const url = new URL(String(input));
-        if (url.pathname === "/rate_limit") {
+        if (url.pathname === "/user") {
           probes++;
           markProbeStarted();
           return probeResponse;
@@ -899,7 +904,7 @@ test("a stale positive probe cannot clear a newer primary block", async () => {
         "x-ratelimit-reset": String((Date.now() + 120_000) / 1000),
       } }));
       await pending;
-      resolveProbe(Response.json({ resources: { core: { remaining: 5000 } } }));
+      resolveProbe(Response.json({}, { headers: { "x-ratelimit-resource": "core", "x-ratelimit-remaining": "5000" } }));
       const staleProbeRequest = await probing;
       const afterStaleProbe = await capture(() => github.fetchActionWorkflows("acme/app"));
       console.log(JSON.stringify({
@@ -942,7 +947,7 @@ test("PR detail spends no GraphQL while its REST half is quota-blocked", async (
       let graphqlCalls = 0;
       globalThis.fetch = async (input) => {
         const url = new URL(String(input));
-        if (url.pathname === "/rate_limit") return Response.json({ resources: { core: { remaining: 0 } } });
+        if (url.pathname === "/user") return Response.json({}, { status: 403, headers: { "x-ratelimit-resource": "core", "x-ratelimit-remaining": "0" } });
         if (url.pathname === "/graphql") graphqlCalls++;
         return Response.json({ message: "API rate limit exceeded" }, { status: 403, headers: {
           "x-ratelimit-resource": "core",
@@ -993,13 +998,13 @@ test("a stale quota probe cannot change the next account's block", async () => {
       globalThis.fetch = async (input, init) => {
         const url = new URL(String(input));
         const authorization = new Headers(init?.headers).get("authorization");
-        if (url.pathname === "/rate_limit") {
+        if (url.pathname === "/user") {
           probes.push(authorization);
           if (authorization === "bearer old-token") {
             markOldProbeStarted();
             return oldProbeResponse;
           }
-          return Response.json({ resources: { core: { remaining: 0 } } });
+          return Response.json({}, { status: 403, headers: { "x-ratelimit-resource": "core", "x-ratelimit-remaining": "0" } });
         }
         if (authorization === "bearer old-token" && !oldLimited) {
           oldLimited = true;
@@ -1029,7 +1034,7 @@ test("a stale quota probe cannot change the next account's block", async () => {
       await oldProbeStarted;
       token = "new-token";
       const newLimitedError = await capture(() => github.fetchActionWorkflows("acme/app"));
-      resolveOldProbe(Response.json({ resources: { core: { remaining: 5000 } } }));
+      resolveOldProbe(Response.json({}, { headers: { "x-ratelimit-resource": "core", "x-ratelimit-remaining": "5000" } }));
       const staleOldRequest = await oldBlocked;
       const newBlocked = await capture(() => github.fetchActionWorkflows("acme/app"));
       console.log(JSON.stringify({
@@ -1076,7 +1081,7 @@ test("a retry-after from a quota probe prevents further probes and API requests"
       let targetCalls = 0;
       globalThis.fetch = async (input) => {
         const url = new URL(String(input));
-        if (url.pathname === "/rate_limit") {
+        if (url.pathname === "/user") {
           probes++;
           return Response.json({ message: "slow down" }, { status: 429, headers: { "retry-after": "60" } });
         }
@@ -1151,19 +1156,26 @@ test("quota stays readable while core is exhausted but not during a secondary co
       let secondary = false;
       let rateLimitCalls = 0;
       let targetCalls = 0;
+      let probes = 0;
       globalThis.fetch = async (input) => {
         const url = new URL(String(input));
         if (url.pathname === "/rate_limit") {
           rateLimitCalls++;
           if (secondary) return Response.json({ message: "secondary rate limit" }, { status: 429, headers: { "retry-after": "120" } });
+          // /rate_limit's core entry counts a window the charged requests are not on: it reports
+          // the full budget while every charged request is refused.
           return Response.json({ resources: {
-            core: { limit: 5000, used: 5000, remaining: 0, reset: coreReset },
+            core: { limit: 5000, used: 0, remaining: 5000, reset: coreReset + 1_200 },
             graphql: { limit: 5000, used: 120, remaining: 4880, reset: coreReset },
           } });
         }
-        targetCalls++;
+        // The charged revalidation probe is refused exactly like the workflow read.
+        if (url.pathname === "/user") probes++;
+        else targetCalls++;
         return Response.json({ message: "API rate limit exceeded" }, { status: 403, headers: {
           "x-ratelimit-resource": "core",
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-used": "5000",
           "x-ratelimit-remaining": "0",
           "x-ratelimit-reset": String(coreReset),
         } });
@@ -1191,6 +1203,7 @@ test("quota stays readable while core is exhausted but not during a secondary co
         readsWhileExhausted,
         restStillBlocked: restAfterRead.error?.kind === "quota" && restAfterRead.error.resource === "core",
         targetCalls,
+        probes,
         limited,
         cooling,
         coolingRefusedLocally: readsWhileCooling === readsAfterLimit,
@@ -1212,14 +1225,133 @@ test("quota stays readable while core is exhausted but not during a secondary co
     // The exempt read is gated only by GitHub's 120s Retry-After, never by the 600s core reset.
     const cooldownEnds = "2033-05-18T03:36:21.000Z";
     expect(result).toEqual({
+      // The charged reading wins over /rate_limit's full-looking core entry.
       exhausted: { rest: 0, graphql: 4880 },
       readsWhileExhausted: 1,
       restStillBlocked: true,
       targetCalls: 1,
+      probes: 1,
       limited: { status: 429, retryAfter: "120", kind: "quota", resetAt: cooldownEnds },
       cooling: { status: 429, retryAfter: "59", kind: "quota", resetAt: cooldownEnds },
       coolingRefusedLocally: true,
       recovered: 4880,
+    });
+  } finally {
+    rmSync(fakeGhDir, { recursive: true, force: true });
+  }
+});
+
+test("a merge is gated by its token's charged core budget, not /rate_limit or another budget", async () => {
+  const fakeGhDir = mkdtempSync(join(tmpdir(), "pr-cockpit-merge-core-budget-"));
+  const fakeGh = join(fakeGhDir, "gh");
+  writeFileSync(fakeGh, "#!/bin/sh\nprintf 'fixture-token\\n'\n");
+  chmodSync(fakeGh, 0o755);
+  try {
+    const script = `
+      let now = 2_000_000_000_000;
+      Date.now = () => now;
+      const github = await import(${JSON.stringify(githubModuleUrl)});
+      const reset = (now + 30 * 60_000) / 1000;
+      const charged = (remaining) => ({
+        "x-ratelimit-resource": "core",
+        "x-ratelimit-limit": "5000",
+        "x-ratelimit-used": String(5000 - remaining),
+        "x-ratelimit-remaining": String(remaining),
+        "x-ratelimit-reset": String(reset),
+      });
+      let readBudget = "other";
+      let coreExhausted = true;
+      let secondaryNext = false;
+      const merges = [];
+      const probes = [];
+      globalThis.fetch = async (input, init) => {
+        const url = new URL(String(input));
+        const authorization = new Headers(init?.headers).get("authorization");
+        // GitHub's /rate_limit reports a fresh core window while charged requests are refused.
+        if (url.pathname === "/rate_limit") {
+          const window = { limit: 5000, used: 0, remaining: 5000, reset: reset + 600 };
+          return Response.json({ resources: { core: window, graphql: window } });
+        }
+        if (url.pathname === "/user") {
+          probes.push(authorization);
+          return coreExhausted
+            ? Response.json({ message: "API rate limit exceeded" }, { status: 403, headers: charged(0) })
+            : Response.json({ login: "fixture" }, { headers: charged(4999) });
+        }
+        if (url.pathname.endsWith("/merge")) {
+          merges.push(authorization);
+          if (secondaryNext) {
+            secondaryNext = false;
+            return Response.json({ message: "You have exceeded a secondary rate limit" }, { status: 403, headers: {
+              ...charged(4000),
+              "retry-after": "60",
+            } });
+          }
+          return Response.json({ merged: true }, { headers: charged(4998) });
+        }
+        if (readBudget === "other") {
+          return Response.json({ message: "API rate limit exceeded" }, { status: 403, headers: {
+            "x-ratelimit-resource": "code_scanning_autofix",
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": String(reset + 3_600),
+          } });
+        }
+        return Response.json({ message: "API rate limit exceeded" }, { status: 403, headers: charged(0) });
+      };
+      const capture = async (fn) => { try { await fn(); return null; } catch (error) { return error; } };
+      const merge = () => capture(() => github.mergePullRequest("acme/app", 7, "squash"));
+
+      const otherBudgetRead = await capture(() => github.fetchActionWorkflows("acme/app"));
+      const afterOtherBudget = await merge();
+
+      readBudget = "core";
+      await capture(() => github.fetchActionWorkflows("acme/app"));
+      const quota = await github.fetchGithubQuota();
+      const whileExhausted = await merge();
+
+      coreExhausted = false;
+      now += 30_001;
+      const afterRefill = await merge();
+
+      secondaryNext = true;
+      await merge();
+      const duringSecondary = await merge();
+      console.log(JSON.stringify({
+        otherBudgetRead: { kind: otherBudgetRead?.kind, resource: otherBudgetRead?.resource },
+        afterOtherBudget,
+        restRemaining: quota.rest.remaining,
+        whileExhausted: whileExhausted && { kind: whileExhausted.kind, message: whileExhausted.message, resetAt: whileExhausted.resetAt },
+        afterRefill,
+        duringSecondary: duringSecondary && { kind: duringSecondary.kind, message: duringSecondary.message },
+        merges,
+        probes,
+      }));
+    `;
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: { ...Bun.env, COCKPIT_GH_BIN: fakeGh, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      process.exited,
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+    ]);
+    expect(exitCode, stderr).toBe(0);
+    const resetAt = new Date(2_000_000_000_000 + 30 * 60_000).toISOString();
+    const cooldownEnds = new Date(2_000_000_000_000 + 30_001 + 60_000).toISOString();
+    expect(JSON.parse(stdout)).toEqual({
+      // Another budget's exhaustion records no core block, so the merge goes straight out.
+      otherBudgetRead: { kind: "quota", resource: null },
+      afterOtherBudget: null,
+      // /rate_limit's full core entry neither clears the charged block nor shows as remaining.
+      restRemaining: 0,
+      whileExhausted: { kind: "quota", message: `GitHub core quota exhausted until ${resetAt}`, resetAt },
+      // The merge token's own charged probe reports budget again, so the merge proceeds.
+      afterRefill: null,
+      duringSecondary: { kind: "quota", message: `GitHub core secondary rate limit cooling down until ${cooldownEnds}` },
+      merges: ["bearer fixture-token", "bearer fixture-token", "bearer fixture-token"],
+      probes: ["bearer fixture-token", "bearer fixture-token"],
     });
   } finally {
     rmSync(fakeGhDir, { recursive: true, force: true });
