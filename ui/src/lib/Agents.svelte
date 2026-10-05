@@ -352,7 +352,7 @@
   });
   $effect(() => {
     const text = taskText;
-    if (!text) return;
+    if (!text || taskExpanded) return;
     const observer = new ResizeObserver(() => {
       if (taskText === text && !taskExpanded) taskOverflow = text.scrollHeight > text.clientHeight + 1;
     });
