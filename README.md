@@ -129,6 +129,8 @@ Safe-merge approval is also visible in CLI output and as `approvedForSafeMerge` 
 
 The Agents tab renders Markdown answers, groups tool activity into expandable details, and shows an identical final-answer echo only once. Full tool inputs, errors, and raw logs remain available.
 
+Enable **Agent conversations** in **Settings → Agents & merging** for an **Agents** tab beside the inbox tabs. It lists current agents and completed conversations across PRs, including closed PRs, with their state and run history. Select a conversation to read its transcript. PR filters and grouping sit below the tabs.
+
 Enable **Quick Generate** in **Settings → Agents & merging** to draft text from anywhere with <kbd>⌥⌘J</kbd> on macOS or <kbd>Super+Alt+J</kbd> on Linux X11. Choose an API key and model, write a prompt, then press <kbd>⌘Enter</kbd> to generate. Results render Markdown with Cockpit’s syntax-highlighted code blocks; **Copy** keeps the original Markdown. Closing the prompt keeps its draft and result. Updating an older desktop shell requires a normal relaunch for the global shortcut.
 
 Keys are detected from `$XDG_CONFIG_HOME/.env` (or `~/.config/.env`), then `~/.env`, then the Cockpit server's environment; the first nonempty value wins. **API key file** selects a different file and accepts absolute paths, `~/`, `$HOME`, or `$XDG_CONFIG_HOME`. A missing selected file shows an error instead of falling back. Supported names are `CEREBRAS_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `GROQ_API_KEY`; suffixes such as `CEREBRAS_API_KEY_WORK` provide additional choices. Credentials stay on the Cockpit host and go only to their provider, including in replica mode. Models come from the provider's catalog, with Cerebras Qwen preferred by default.

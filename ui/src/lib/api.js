@@ -538,6 +538,12 @@ export async function fetchAgents() {
   return (await res.json()).agents;
 }
 
+export async function fetchAgentConversations() {
+  const res = await fetch("/api/agents/conversations");
+  if (!res.ok) throw new Error(`agent conversations ${res.status}`);
+  return (await res.json()).conversations;
+}
+
 export async function killAgent(repo, number) {
   const res = await fetch("/api/agents/kill", {
     method: "POST",

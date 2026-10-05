@@ -133,6 +133,7 @@ import {
   launchAutofixAgent,
   launchCustomAgent,
   launchPromptAgent,
+  listAgentConversations,
   listAgentRunsForPr,
   listFixerAgents,
   type AgentRow,
@@ -2747,6 +2748,7 @@ async function handlePutSettings(req: Request, runtime: HttpRuntime): Promise<Re
     safe_merge_approval_enabled: boolean;
     group_drag_enabled: boolean;
     queue_time_controls_enabled: boolean;
+    agent_conversations_enabled: boolean;
     rest_fallback_enabled: boolean;
     quick_generate_enabled: boolean;
     quick_generate_key: string;
@@ -3390,6 +3392,9 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     }
     if (req.method === "GET" && url.pathname === "/api/agents") {
       return json({ agents: listFixerAgents() });
+    }
+    if (req.method === "GET" && url.pathname === "/api/agents/conversations") {
+      return json({ conversations: listAgentConversations() });
     }
     if (req.method === "POST" && url.pathname === "/api/agents/prompt") {
       const body = (await req.json()) as { repo: string; number: number; instruction: string };

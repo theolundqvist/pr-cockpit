@@ -96,12 +96,31 @@
   let view = $state(location.hash === "#/whiteboard" && prefs.whiteboardEnabled ? "whiteboard" : "open");
   let Whiteboard = $state(null);
   let whiteboardLoadError = $state(null);
+  let Agents = $state(null);
+  let agentsLoadError = $state(null);
+  $effect(() => {
+    if (!prefs.agentConversationsEnabled) {
+      if (view === "agents") view = "open";
+      return;
+    }
+    const onHash = () => {
+      if (location.hash === "#/agents") view = "agents";
+      else if (view === "agents") view = "open";
+    };
+    onHash();
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  });
+  $effect(() => {
+    if (!prefs.agentConversationsEnabled || view !== "agents" || Agents) return;
+    import("./Agents.svelte").then((module) => { Agents = module.default; }).catch((error) => { agentsLoadError = String(error); });
+  });
   $effect(() => {
     if (!prefs.whiteboardEnabled) {
       if (view === "whiteboard") view = "open";
       return;
     }
-    if (location.hash === "#/whiteboard" || localStorage.getItem("cockpit:list-view") === "whiteboard") view = "whiteboard";
+    if (location.hash === "#/whiteboard" || ((location.hash === "" || location.hash === "#/") && localStorage.getItem("cockpit:list-view") === "whiteboard")) view = "whiteboard";
     const onHash = () => {
       if (location.hash === "#/whiteboard") view = "whiteboard";
     };
@@ -504,7 +523,8 @@
     view = next;
     if (prefs.whiteboardEnabled) localStorage.setItem("cockpit:list-view", next);
     if (next === "whiteboard") location.hash = "#/whiteboard";
-    else if (location.hash === "#/whiteboard") location.hash = "#/";
+    else if (next === "agents") location.hash = "#/agents";
+    else if (location.hash === "#/whiteboard" || location.hash === "#/agents") location.hash = "#/";
     selected = 0;
     restoreKey = null;
     allPrsSelectedKey = null;
@@ -1254,7 +1274,7 @@
     if (!active) return;
     function onKey(e) {
       if (e.defaultPrevented) return;
-      if (view === "whiteboard") return;
+      if (view === "whiteboard" || view === "agents") return;
       if (contextMenu) {
         if (e.key === "Escape") {
           contextMenu = null;
@@ -1428,7 +1448,7 @@
     </header>
 
 
-    <div class="queue-toolbar" class:with-time-controls={prefs.queueTimeControlsEnabled && view !== "whiteboard"}>
+    <div class="queue-toolbar">
       <div class="view-tabs" role="tablist" aria-label="List view">
         <button class="view-tab" role="tab" title="Pull requests involving you" aria-selected={view === "open"} class:active={view === "open"} onclick={() => showView("open")}>
           Your queue
@@ -1442,11 +1462,15 @@
           Recently merged {#if view === "all"}<Kbd keys="tab" />{/if}
         </button>
         <a class="view-tab" role="tab" aria-selected="false" href={actionsHref}>Actions</a>
+        {#if prefs.agentConversationsEnabled}
+          <button class="view-tab" role="tab" aria-selected={view === "agents"} class:active={view === "agents"} onclick={() => showView("agents")}>Agents</button>
+        {/if}
         {#if prefs.whiteboardEnabled}
           <button class="view-tab" role="tab" aria-selected={view === "whiteboard"} class:active={view === "whiteboard"} onclick={() => showView("whiteboard")}>Whiteboard</button>
         {/if}
       </div>
-      {#if view !== "whiteboard"}
+      {#if view !== "whiteboard" && view !== "agents"}
+      <div class="queue-filters">
       {#if prefs.queueTimeControlsEnabled}
         <div class="time-controls">
           <label class="time-field">
@@ -1485,10 +1509,17 @@
           onchange={selectRepositories}
         />
       </div>
+      </div>
       {/if}
     </div>
 
-    {#if view === "whiteboard" && prefs.whiteboardEnabled}
+    {#if view === "agents" && prefs.agentConversationsEnabled}
+      {#if Agents}
+        <Agents {active} {refreshRevision} />
+      {:else if agentsLoadError}
+        <div role="alert">Agents could not load: {agentsLoadError} <button onclick={() => location.reload()}>Reload</button></div>
+      {:else}<div role="status">Loading agents…</div>{/if}
+    {:else if view === "whiteboard" && prefs.whiteboardEnabled}
       {#if Whiteboard}
         <Whiteboard {prs} groups={groups.map((group) => ({ id: group.id, title: group.title, prs: group.items.filter((item) => item.pr).map((item) => item.pr) }))} {viewerLogin} {active} {refreshRevision} />
       {:else if whiteboardLoadError}
@@ -1983,7 +2014,7 @@
   <div class="copied-flash">Archived — <kbd>z</kbd> to undo</div>
 {:else if bulkAutofixFlash.value}
   <div class="copied-flash">{bulkAutofixFlash.value}</div>
-{:else if view !== "whiteboard"}
+{:else if view !== "whiteboard" && view !== "agents"}
   <KeyBar keys={keyBarKeys} />
 {/if}
 
@@ -2624,19 +2655,16 @@
   }
   .queue-toolbar {
     display: flex;
-    align-items: center;
+    align-items: stretch;
+    flex-direction: column;
     gap: 12px;
     margin-bottom: 16px;
   }
-  .queue-toolbar.with-time-controls {
+  .queue-filters {
+    display: flex;
     flex-wrap: wrap;
-  }
-  .with-time-controls .view-tabs,
-  .with-time-controls .time-controls {
-    flex-shrink: 0;
-  }
-  .queue-toolbar.with-time-controls .repo-filter {
-    margin-left: auto;
+    align-items: center;
+    gap: 10px;
   }
   .repo-filter {
     margin-left: auto;
@@ -2645,7 +2673,7 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    margin-left: auto;
+    flex-wrap: wrap;
   }
   .time-controls + .repo-filter {
     margin-left: 0;

@@ -127,6 +127,15 @@ WHERE repo = $repo AND number = $number AND state = 'running'
 const correctDiedRunStmt = db.prepare("UPDATE agent_runs SET state = 'exited' WHERE repo = $repo AND number = $number AND state = 'died'");
 const listRunsForPrStmt = db.prepare<AgentRunRow, [string, number]>("SELECT * FROM agent_runs WHERE repo = ? AND number = ? ORDER BY started_at DESC");
 const getRunStmt = db.prepare<AgentRunRow, [number]>("SELECT * FROM agent_runs WHERE id = ?");
+const listAllRunsStmt = db.prepare<AgentRunRow, []>("SELECT * FROM agent_runs ORDER BY started_at DESC, id DESC");
+const cachedTitleStmt = db.prepare<{ title: string | null }, { $repo: string; $number: number }>(`
+SELECT COALESCE(
+  (SELECT title FROM prs WHERE repo = $repo AND number = $number),
+  (SELECT title FROM pr_index WHERE repo = $repo AND number = $number),
+  (SELECT json_extract(detail_json, '$.title') FROM pr_detail_cache
+    WHERE repo = $repo AND number = $number AND json_valid(detail_json))
+) AS title
+`);
 
 function startRun(repo: string, number: number, kind: string, agentId: string, workdir: string, logPath: string, brief: string, startedAt: string): void {
   insertRunStmt.run({ $repo: repo, $number: number, $kind: kind, $agent_id: agentId, $started_at: startedAt, $workdir: workdir, $log_path: logPath, $brief: brief });
@@ -1014,6 +1023,47 @@ export function listFixerAgents(): AgentRow[] {
     }
   }
   return rows;
+}
+
+export interface AgentConversation {
+  repo: string;
+  number: number;
+  title: string | null;
+  agent: AgentRow | null;
+  runs: AgentRunRow[];
+}
+
+function conversationActivity(conversation: AgentConversation): string {
+  let latest = conversation.agent?.started_at ?? "";
+  for (const run of conversation.runs) {
+    if (run.started_at > latest) latest = run.started_at;
+    if (run.ended_at && run.ended_at > latest) latest = run.ended_at;
+  }
+  return latest;
+}
+
+export function listAgentConversations(): AgentConversation[] {
+  // first, so its died-row correction reaches the runs read below
+  const agents = listFixerAgents();
+  const byKey = new Map<string, AgentConversation>();
+  const conversation = (repo: string, number: number): AgentConversation => {
+    const key = prKeyOf(repo, number);
+    let entry = byKey.get(key);
+    if (!entry) {
+      entry = { repo, number, title: cachedTitleStmt.get({ $repo: repo, $number: number })?.title ?? null, agent: null, runs: [] };
+      byKey.set(key, entry);
+    }
+    return entry;
+  };
+  for (const agent of agents) conversation(agent.repo, agent.number).agent = agent;
+  for (const run of listAllRunsStmt.all()) conversation(run.repo, run.number).runs.push(run);
+  const ranked = [...byKey.values()].map((entry) => ({ entry, running: entry.agent?.state === "running", activity: conversationActivity(entry) }));
+  ranked.sort((a, b) => {
+    if (a.running !== b.running) return a.running ? -1 : 1;
+    if (a.activity !== b.activity) return a.activity < b.activity ? 1 : -1;
+    return a.entry.repo === b.entry.repo ? b.entry.number - a.entry.number : a.entry.repo < b.entry.repo ? -1 : 1;
+  });
+  return ranked.map(({ entry }) => entry);
 }
 
 export function removeFixerAgent(repo: string, number: number): void {

@@ -22,6 +22,7 @@ export const prefs = $state({
   queueTimeControlsEnabled: false,
   restFallbackEnabled: true,
   quickGenerateEnabled: false,
+  agentConversationsEnabled: false,
   quickGenerateEnvFile: "",
   agents: [
     { id: "fixer", name: "Auto-merge fixer", enabled: true, trigger: "keybind", keybind: "a", model: "opus", prompt_template: "" },
@@ -46,6 +47,7 @@ export function setPrefs(settings) {
   prefs.queueTimeControlsEnabled = settings.queue_time_controls_enabled === true;
   prefs.restFallbackEnabled = settings.rest_fallback_enabled !== false;
   prefs.quickGenerateEnabled = settings.quick_generate_enabled === true;
+  prefs.agentConversationsEnabled = settings.agent_conversations_enabled === true;
   prefs.quickGenerateEnvFile = settings.quick_generate_env_file ?? "";
   whiteboardSession.current?.setEnabled(prefs.whiteboardEnabled);
   prefs.loaded = true;

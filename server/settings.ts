@@ -294,6 +294,7 @@ export interface Settings {
   safe_merge_approval_enabled: boolean;
   group_drag_enabled: boolean;
   queue_time_controls_enabled: boolean;
+  agent_conversations_enabled: boolean;
   rest_fallback_enabled: boolean;
   quick_generate_enabled: boolean;
   quick_generate_key: string;
@@ -344,6 +345,7 @@ export function readSettings(): Settings {
     safe_merge_approval_enabled: safeMergeApprovalEnabled(),
     group_drag_enabled: getSetting("group_drag_enabled") === "true",
     queue_time_controls_enabled: getSetting("queue_time_controls_enabled") === "true",
+    agent_conversations_enabled: getSetting("agent_conversations_enabled") === "true",
     rest_fallback_enabled: restFallbackEnabled(),
     quick_generate_enabled: quickGenerateEnabled(),
     quick_generate_key: getSetting("quick_generate_key") ?? "",
@@ -391,6 +393,7 @@ export function writeSettings(
     safe_merge_approval_enabled: boolean;
     group_drag_enabled: boolean;
     queue_time_controls_enabled: boolean;
+    agent_conversations_enabled: boolean;
     rest_fallback_enabled: boolean;
     quick_generate_enabled: boolean;
     quick_generate_key: string;
@@ -476,6 +479,13 @@ export function writeSettings(
     const enabled = patch.queue_time_controls_enabled === true ? "true" : "false";
     if (getSetting("queue_time_controls_enabled") !== enabled) {
       setSetting("queue_time_controls_enabled", enabled);
+      invalidateSettings();
+    }
+  }
+  if (patch.agent_conversations_enabled !== undefined) {
+    const enabled = patch.agent_conversations_enabled === true ? "true" : "false";
+    if (getSetting("agent_conversations_enabled") !== enabled) {
+      setSetting("agent_conversations_enabled", enabled);
       invalidateSettings();
     }
   }

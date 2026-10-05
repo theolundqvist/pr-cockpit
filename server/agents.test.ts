@@ -212,6 +212,53 @@ test("a one-shot prompt run interrupted by a restart is marked died, never resum
   }
 });
 
+test("agent conversations union live agents and run history, running first then latest activity, from caches only", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-agent-conversations-"));
+  // db.ts opens its database at import, so the listing runs in a child with an isolated data dir
+  const scenario = `
+    const { db } = await import(${JSON.stringify(new URL("./db.ts", import.meta.url).href)});
+    const agents = await import(${JSON.stringify(new URL("./agents.ts", import.meta.url).href)});
+    const agent = db.prepare("INSERT INTO fixer_agents (repo, number, pid, pid_started, state, started_at, workdir, log_path, kind, agent_id) VALUES (?, ?, 0, '', ?, ?, '/w', '/w.log', 'prompt', '')");
+    const run = db.prepare("INSERT INTO agent_runs (repo, number, kind, agent_id, state, started_at, ended_at, workdir, log_path, brief) VALUES (?, ?, 'fixer', '', ?, ?, ?, '/w', '/w.log', 'brief')");
+    // an idle agent with no recorded runs, titled only by the PR detail cache
+    agent.run("fixture/idle", 1, "exited", "2026-01-03T00:00:00.000Z");
+    db.run("INSERT INTO pr_detail_cache (repo, number, head_sha, detail_json, fetched_at) VALUES ('fixture/idle', 1, 'a', ?, '2026-01-03T00:00:00.000Z')", [JSON.stringify({ title: "Detail-only title" })]);
+    // the oldest start, but running now; its unreadable detail cache leaves it untitled
+    agent.run("fixture/live", 2, "running", "2026-01-01T00:00:00.000Z");
+    run.run("fixture/live", 2, "running", "2026-01-01T00:00:00.000Z", null);
+    db.run("INSERT INTO pr_detail_cache (repo, number, head_sha, detail_json, fetched_at) VALUES ('fixture/live', 2, 'b', '{', '2026-01-01T00:00:00.000Z')");
+    // a closed PR whose agent row is gone: history alone lists it, ranked by its latest end
+    run.run("fixture/closed", 3, "exited", "2026-01-01T00:00:00.000Z", "2026-01-01T01:00:00.000Z");
+    run.run("fixture/closed", 3, "merged", "2026-01-02T00:00:00.000Z", "2026-01-05T00:00:00.000Z");
+    db.run("INSERT INTO pr_index (repo, number, title, state, is_draft, author, updated_at) VALUES ('fixture/closed', 3, 'Closed history', 'CLOSED', 0, 'octocat', '2026-01-05T00:00:00.000Z')");
+    console.log(JSON.stringify(agents.listAgentConversations()));
+    process.exit(0);
+  `;
+  try {
+    const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    if (exitCode !== 0) throw new Error(stderr);
+    const conversations = JSON.parse(stdout) as Array<{ repo: string; number: number; title: string | null; agent: { state: string } | null; runs: Array<{ state: string; started_at: string }> }>;
+    expect(conversations.map(({ repo, number, title }) => ({ repo, number, title }))).toEqual([
+      { repo: "fixture/live", number: 2, title: null },
+      { repo: "fixture/closed", number: 3, title: "Closed history" },
+      { repo: "fixture/idle", number: 1, title: "Detail-only title" },
+    ]);
+    expect(conversations[0]!.agent).toMatchObject({ state: "running" });
+    expect(conversations[0]!.runs.map((r) => r.state)).toEqual(["running"]);
+    expect(conversations[1]!.agent).toBeNull();
+    expect(conversations[1]!.runs.map((r) => r.state)).toEqual(["merged", "exited"]);
+    expect(conversations[2]!.agent).toMatchObject({ state: "exited" });
+    expect(conversations[2]!.runs).toEqual([]);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 const FIXTURE_HEAD = "0000000000000000000000000000000000002774";
 
 // db.ts opens its database at import, so one child seeds the screenshot fixture and a second runs live (non-mock)

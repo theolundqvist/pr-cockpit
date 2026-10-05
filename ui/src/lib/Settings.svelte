@@ -44,6 +44,7 @@
   let whiteboardEnabled = $state(false);
   let restFallbackEnabled = $state(true);
   let safeMergeApprovalEnabled = $state(false);
+  let agentConversationsEnabled = $state(false);
   // Approval consent belongs to the source Cockpit, so a save forwards it only when this toggle changed.
   let savedSafeMergeApproval = false;
   let groupDragEnabled = $state(false);
@@ -181,6 +182,7 @@
     keybindOpenApp = s.keybind_open_app;
     keybindOpenPalette = s.keybind_open_palette;
     quickGenerateEnabled = s.quick_generate_enabled === true;
+    agentConversationsEnabled = s.agent_conversations_enabled === true;
     quickGenerateKey = s.quick_generate_key ?? "";
     savedQuickGenerateKey = quickGenerateKey;
     quickGenerateModel = s.quick_generate_model ?? "";
@@ -374,6 +376,7 @@
         test_path_regex: testPathRegex.trim() === BUILTIN_TEST_PATH.source.trim() ? "" : testPathRegex.trim(),
         diff_layout: diffLayout,
         force_merge_repos: forceMergeRepos.filter((repo) => configuredRepos.includes(repo)).join(","),
+        agent_conversations_enabled: agentConversationsEnabled,
         agent_harness: agentHarness,
         agents: agents.map((agent) => ({
           id: agent.id,
@@ -771,6 +774,14 @@
             <option value="omp">omp{harnessAvailable.omp ? "" : " (not installed)"}</option>
             <option value="codex">Codex{harnessAvailable.codex ? "" : " (not installed)"}</option>
           </select>
+        </label>
+
+        <label class="check-field settings-option">
+          <input class="check" type="checkbox" bind:checked={agentConversationsEnabled} />
+          <span class="check-text">
+            <span class="check-label">Agent conversations</span>
+            <span class="hint">Adds an Agents tab to the inbox listing every agent session by PR, with its state and transcripts.</span>
+          </span>
         </label>
 
 

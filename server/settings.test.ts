@@ -175,6 +175,7 @@ test("window and diff layout settings persist independently", async () => {
     const appearance = writeSettings({ font_interface: "alacritty", font_code: "alacritty", code_theme: "catppuccin", general_scale: 125, diff_scale: 150 });
     const replica = writeSettings({ replica_ssh_host: "ssh://root@dev-vm/" });
     const pendingReviews = writeSettings({ pending_reviews_enabled: true });
+    const agentConversations = writeSettings({ agent_conversations_enabled: true });
     let invalidReplicaError = "";
     try {
       writeSettings({ default_repo: "should-not-persist", replica_ssh_host: "root@dev-vm:22" });
@@ -188,7 +189,7 @@ test("window and diff layout settings persist independently", async () => {
     db.query("insert or replace into settings (key, value) values ('font', 'alacritty')").run();
     seedSettings();
     const migrated = readSettings();
-    console.log(JSON.stringify({ initial, positionOnly, both, unified, appearance, replica, pendingReviews, invalidReplicaError, afterInvalidReplica, local, migrated }));
+    console.log(JSON.stringify({ initial, positionOnly, both, unified, appearance, replica, pendingReviews, agentConversations, invalidReplicaError, afterInvalidReplica, local, migrated }));
     db.close();
   `;
 
@@ -218,6 +219,8 @@ test("window and diff layout settings persist independently", async () => {
     expect(result.initial.replica_ssh_host).toBe("build-server");
     expect(result.initial.pending_reviews_enabled).toBe(false);
     expect(result.pendingReviews.pending_reviews_enabled).toBe(true);
+    expect(result.initial.agent_conversations_enabled).toBe(false);
+    expect(result.agentConversations.agent_conversations_enabled).toBe(true);
     expect(result.replica.replica_ssh_host).toBe("root@dev-vm");
     expect(result.invalidReplicaError).toBe("invalid replica SSH host");
     expect(result.afterInvalidReplica.replica_ssh_host).toBe("root@dev-vm");
