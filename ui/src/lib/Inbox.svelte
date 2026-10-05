@@ -7,7 +7,7 @@
 </script>
 
 <script>
-  import { categoryForPr, DRAFT_PREFIX, isDraftPr, orderQueueUnits, planGroupDrop, PR_TYPES, TYPE_TITLES } from "../../../shared/prGrouping.ts";
+  import { categoryForPr, DRAFT_PREFIX, isDraftPr, normalizePrGrouping, orderQueueUnits, planGroupDrop, PR_TYPES, TYPE_TITLES } from "../../../shared/prGrouping.ts";
   import { assignments, assignPr, syncAssignments, onAssignmentStorage } from "./prAssignments.svelte.js";
   import { isSetAside, putAside } from "./setAside.svelte.js";
   import { lastViewed } from "./lastViewed.svelte.js";
@@ -63,6 +63,7 @@
 
   let keybindAgents = $derived(prefs.agents.filter((a) => a.trigger === "keybind" && a.enabled && a.keybind));
   let filterOpen = $state(false);
+  let groupingSaving = $state(false);
   let filterQuery = $state("");
   let filterInput;
   // Opened-date filter and timestamp order stay local to this window and start at All time / Queue order.
@@ -584,6 +585,21 @@
     timeOrder = value;
     selected = 0;
     multiAnchor = null;
+  }
+
+  async function chooseGrouping(mode, select) {
+    groupingSaving = true;
+    try {
+      const settings = await saveSettings({ pr_grouping: { ...prefs.prGrouping, mode } });
+      prefs.prGrouping = normalizePrGrouping(settings.pr_grouping);
+      selected = 0;
+      multiAnchor = null;
+    } catch (error) {
+      select.value = prefs.prGrouping.mode;
+      showFlash(`Couldn't change grouping: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      groupingSaving = false;
+    }
   }
 
   function applyCustomRange(event) {
@@ -1412,7 +1428,7 @@
     </header>
 
 
-    <div class="queue-toolbar">
+    <div class="queue-toolbar" class:with-time-controls={prefs.queueTimeControlsEnabled && view !== "whiteboard"}>
       <div class="view-tabs" role="tablist" aria-label="List view">
         <button class="view-tab" role="tab" title="Pull requests involving you" aria-selected={view === "open"} class:active={view === "open"} onclick={() => showView("open")}>
           Your queue
@@ -1445,6 +1461,17 @@
               {#each TIME_ORDERS as option (option.value)}<option value={option.value}>{option.label}</option>{/each}
             </select>
           </label>
+          {#if view === "open"}
+            <label class="time-field">
+              <span class="time-field-label">Grouping</span>
+              <select class="time-select" value={prefs.prGrouping.mode} disabled={groupingSaving} onchange={(event) => chooseGrouping(event.currentTarget.value, event.currentTarget)}>
+                <option value="status">Status</option>
+                <option value="feature">Feature area</option>
+                <option value="type">PR type</option>
+                <option value="manual">Manual</option>
+              </select>
+            </label>
+          {/if}
         </div>
       {/if}
       <div class="repo-filter">
@@ -1484,9 +1511,11 @@
         </span>
       </form>
     {/if}
-    {#if prefs.prGrouping.mode !== "status" && view === "open"}
+    {#if view === "open" && (prefs.prGrouping.mode === "manual" || (!prefs.queueTimeControlsEnabled && prefs.prGrouping.mode !== "status"))}
       <div class="grouping-toolbar">
-        <a href="#/settings/general">Grouping: {prefs.prGrouping.mode === "manual" ? "Manual" : prefs.prGrouping.mode === "feature" ? "Feature area" : "PR type"}</a>
+        {#if !prefs.queueTimeControlsEnabled}
+          <a href="#/settings/general">Grouping: {prefs.prGrouping.mode === "manual" ? "Manual" : prefs.prGrouping.mode === "feature" ? "Feature area" : "PR type"}</a>
+        {/if}
         {#if prefs.prGrouping.mode === "manual" && ordered[selected] && !isArchived(ordered[selected])}
           {@const target = ordered[selected]}
           {@const root = topUnit(target)}
@@ -2598,6 +2627,16 @@
     align-items: center;
     gap: 12px;
     margin-bottom: 16px;
+  }
+  .queue-toolbar.with-time-controls {
+    flex-wrap: wrap;
+  }
+  .with-time-controls .view-tabs,
+  .with-time-controls .time-controls {
+    flex-shrink: 0;
+  }
+  .queue-toolbar.with-time-controls .repo-filter {
+    margin-left: auto;
   }
   .repo-filter {
     margin-left: auto;
