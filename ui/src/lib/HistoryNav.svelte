@@ -1,8 +1,21 @@
 <script>
   import { history, goBackOrFallback, goForward } from "./history.svelte.js";
+  import { isTypingTarget } from "./dom.js";
 
   let { backFallback = null } = $props();
 
+  $effect(() => {
+    function onKey(e) {
+      if (e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
+      if (isTypingTarget(e.target)) return;
+      if (e.key === "H") goBackOrFallback(backFallback);
+      else if (e.key === "L") goForward();
+      else return;
+      e.preventDefault();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 </script>
 
 <div class="histnav">
