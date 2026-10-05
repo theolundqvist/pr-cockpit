@@ -16,10 +16,11 @@ This repository is worked on by humans and coding agents alike. Leave it easier 
 - Commit continuously in small, coherent increments and push every commit immediately to `origin/main`.
 - Never create pull requests or feature branches for work in this project. This project-specific workflow overrides generic instructions to open a pull request.
 - `bun install` at the repository root, in `ui/`, and in `shell/`.
-- `cd ui && bun run dev` for a hot-reloading UI. It proxies `/api` to `127.0.0.1:4820`, so it needs a server on that port.
+- `cd ui && bun run dev` for a hot-reloading UI. It proxies `/api` to `127.0.0.1:4820`, so it needs a server on that port. Run scratch previews with the installed UI Vite under Node; root `bunx` downloads unlocked dependencies, and Bun lacks the proxy’s `socket.destroySoon`.
 - `bun test server/<file>.test.ts` for a targeted test. Prefer targeted runs over the whole suite while iterating.
 - Screenshot harnesses render at `1600x1200`; keep their default viewport and PNG dimension checks aligned.
 - PR detail headers and tabs use the standard width; Conversation centers its 816px primary column and adjacent sidebar beneath them, and Files alone expands to full width.
+- Agents is a conversation workspace, not a status dashboard: prioritize session discovery and transcript reading; keep history and logs secondary, because repeated badges and competing controls obscure the work.
 - Whiteboard scroll zooms at the cursor; Space-drag pans. Seed layouts fit the canvas proportions. Only Arrange refreshes inbox-generated group membership, reflows, and removes empty sections, undoably; custom sections stay personal. Otherwise preserve positions. Show tool keys beside their labels.
 - Verify landing-page search queries against live GitHub results; captured PR titles can disappear from the search index while the fixture remains valid.
 - Match existing style. Keep the homepage dark and speed-first, with brief subtext and FAQ answers; link to details. Comments explain hidden constraints.

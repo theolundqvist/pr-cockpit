@@ -104,8 +104,9 @@
       return;
     }
     const onHash = () => {
-      if (location.hash === "#/agents") view = "agents";
-      else if (view === "agents") view = "open";
+      const path = location.hash.split("?")[0];
+      if (path === "#/agents") view = "agents";
+      else if (view === "agents" && (path === "#/" || path === "" || path === "#/whiteboard")) view = "open";
     };
     onHash();
     window.addEventListener("hashchange", onHash);
@@ -524,7 +525,7 @@
     if (prefs.whiteboardEnabled) localStorage.setItem("cockpit:list-view", next);
     if (next === "whiteboard") location.hash = "#/whiteboard";
     else if (next === "agents") location.hash = "#/agents";
-    else if (location.hash === "#/whiteboard" || location.hash === "#/agents") location.hash = "#/";
+    else if (location.hash === "#/whiteboard" || location.hash.split("?")[0] === "#/agents") location.hash = "#/";
     selected = 0;
     restoreKey = null;
     allPrsSelectedKey = null;
@@ -1429,10 +1430,10 @@
 
 </script>
 
-<div class="page" class:board-page={view === "whiteboard"}>
+<div class="page" class:board-page={view === "whiteboard"} class:agents-page={view === "agents"}>
   <div class="inbox" onmousemove={trackMouse}>
     <header class="head">
-      <span class="head-title">Review queue</span>
+      <span class="head-title">{view === "agents" ? "Agents" : "Review queue"}</span>
       <span class="head-right">
         <UpdateButton />
         <span
@@ -3551,4 +3552,7 @@
   }
   .page.board-page { padding: 18px 24px 12px; overflow: hidden; }
   .board-page .inbox { max-width: none; height: 100%; padding-bottom: 0; display: flex; flex-direction: column; }
+  .page.agents-page { padding-bottom: 20px; overflow: hidden; }
+  .agents-page .inbox { height: 100%; padding-bottom: 0; display: flex; flex-direction: column; }
+  .agents-page .head, .agents-page .queue-toolbar { flex-shrink: 0; }
 </style>
