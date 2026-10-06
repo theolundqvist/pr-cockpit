@@ -442,12 +442,38 @@ export async function ghToken(): Promise<string> {
 
 let cachedViewerLogin: string | null = null;
 
-export async function getViewerLogin(): Promise<string> {
+const VIEWER_LOGIN_QUERY = `
+query {
+  viewer { login }
+}`;
+
+// REST while core has room; a fresh process with core exhausted would otherwise have no viewer
+// until the core window resets, so GraphQL answers then.
+export async function getViewerLogin(source: GithubUsageSource = "app detail"): Promise<string> {
   if (mockGithub) return mockGithub.viewerLogin;
+  try {
+    return await restViewerLogin();
+  } catch (error) {
+    if (!coreQuotaExhausted(error)) throw error;
+  }
+  const data = await graphql<{ viewer: { login: string } }>(VIEWER_LOGIN_QUERY, {}, source, "viewer login");
+  cachedViewerLogin = data.viewer.login;
+  return cachedViewerLogin;
+}
+
+async function restViewerLogin(): Promise<string> {
   if (cachedViewerLogin) return cachedViewerLogin;
   const viewer = await restJson<{ login: string }>("/user");
   cachedViewerLogin = viewer.login;
   return cachedViewerLogin;
+}
+
+// The core pool's primary budget is spent, so the same read may go to GraphQL. A secondary
+// cooldown is a request-rate signal GitHub applies across its APIs, so it moves nothing.
+function coreQuotaExhausted(error: unknown): boolean {
+  if (!(error instanceof GithubRequestError && error.kind === "quota" && error.resource === "core")) return false;
+  activeQuotaBlock("core"); // drops expired deadlines
+  return !blockedQuotas.get("core")?.secondary;
 }
 
 async function graphql<T>(
@@ -2039,7 +2065,7 @@ type RawPrDetailReview = Pick<
   "author" | "reactionGroups" | "viewerCanMergeAsAdmin" | "reviewDecision" | "reviews" | "comments" | "reviewThreads"
 >;
 type RawPrDetailResidual = RawPrDetailChecks & RawPrDetailReview;
-type RestPrDetailBase = Omit<RawPrDetail, keyof RawPrDetailResidual> & Pick<RawPrDetail, "author">;
+type PrDetailBase = Omit<RawPrDetail, keyof RawPrDetailResidual> & Pick<RawPrDetail, "author">;
 
 type RestUser = { node_id: string; login: string; avatar_url: string; type?: string };
 type RestPullRequest = {
@@ -2072,7 +2098,7 @@ type RestPullRequest = {
 
 type RestPullRequestFile = { filename: string; additions: number; deletions: number };
 
-export function mapRestPrDetailBase(pullRequest: RestPullRequest, files: RestPullRequestFile[]): RestPrDetailBase {
+export function mapRestPrDetailBase(pullRequest: RestPullRequest, files: RestPullRequestFile[]): PrDetailBase {
   return {
     id: pullRequest.node_id,
     title: pullRequest.title,
@@ -2133,12 +2159,87 @@ export function mapRestPrDetailBase(pullRequest: RestPullRequest, files: RestPul
   };
 }
 
-async function fetchRestPrDetailBase(repo: string, number: number): Promise<RestPrDetailBase> {
+async function fetchRestPrDetailBase(repo: string, number: number): Promise<PrDetailBase> {
   const [pullRequest, files] = await Promise.all([
     restJson<RestPullRequest>(`/repos/${repo}/pulls/${number}`),
     restJson<RestPullRequestFile[]>(`/repos/${repo}/pulls/${number}/files?per_page=100`),
   ]);
   return mapRestPrDetailBase(pullRequest, files);
+}
+
+// The fields fetchRestPrDetailBase reads, for when core is exhausted; the viewer rides along
+// because a fresh process cannot read it from REST /user either.
+const DETAIL_METADATA_QUERY = `
+query($owner: String!, $name: String!, $number: Int!) {
+  viewer { login }
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      id
+      title
+      number
+      state
+      mergedAt
+      closedAt
+      isDraft
+      author { __typename login avatarUrl }
+      baseRefName
+      baseRefOid
+      headRefName
+      headRepository { nameWithOwner }
+      headRefOid
+      body
+      additions
+      deletions
+      changedFiles
+      files(first: 100) {
+        totalCount
+        nodes { path additions deletions }
+      }
+      mergeable
+      mergeStateStatus
+      autoMergeRequest { mergeMethod enabledBy { login } }
+      createdAt
+      updatedAt
+      url
+      commitCount: commits { totalCount }
+      labels(first: 100) { nodes { name } }
+      assignees(first: 100) { nodes { login } }
+      reviewRequests(first: 100) {
+        nodes {
+          requestedReviewer {
+            __typename
+            ... on Actor { login avatarUrl }
+            ... on Team { name }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+type PrDetailMetadata = { base: PrDetailBase; viewerLogin: string };
+
+async function fetchPrDetailMetadata(
+  repo: string,
+  owner: string,
+  name: string,
+  number: number,
+  source: GithubUsageSource,
+): Promise<PrDetailMetadata> {
+  try {
+    const [base, viewerLogin] = await Promise.all([fetchRestPrDetailBase(repo, number), restViewerLogin()]);
+    return { base, viewerLogin };
+  } catch (error) {
+    if (!coreQuotaExhausted(error)) throw error;
+  }
+  const data = await graphql<{
+    viewer: { login: string };
+    repository: { pullRequest: PrDetailBase | null } | null;
+  }>(DETAIL_METADATA_QUERY, { owner, name, number }, source, "PR metadata");
+  const base = data.repository?.pullRequest;
+  if (!base) throw new GithubRequestError(`${repo}#${number} was not found`, 404);
+  cachedViewerLogin = data.viewer.login;
+  return { base, viewerLogin: data.viewer.login };
 }
 
 export type PrDetail = PrDetailShape<{ reactions: Reaction[] }> & {
@@ -2510,7 +2611,7 @@ function normalizeReviewDetail(
   review: RawPrDetailReview,
   viewerLogin: string,
   author: Author | null,
-  reviewRequests: RestPrDetailBase["reviewRequests"],
+  reviewRequests: PrDetailBase["reviewRequests"],
 ) {
   const { reactionGroups, reviews, comments, reviewThreads, ...scalars } = review;
   const visibleReviews = reviews.nodes.filter((item) => item.state !== "PENDING");
@@ -2570,20 +2671,19 @@ export async function fetchPrDetail(
   const [owner, name] = repo.split("/");
   if (!owner || !name) throw new GithubRequestError(`Invalid repository: ${repo}`, 404);
   return readWithRestFallback<PrDetail>(source, async () => {
-    // The GraphQL and REST halves run together, so one exhausted quota would waste the other's spend on every retry.
-    await Promise.all([requireQuota("graphql"), requireQuota("core")]);
-    const [checks, review, rest, viewerLogin] = await Promise.all([
+    // Metadata moves to GraphQL when core is exhausted, so only GraphQL has to have room.
+    await requireQuota("graphql");
+    const [checks, review, { base, viewerLogin }] = await Promise.all([
       fetchDetailChecks(owner, name, number, previous, source),
       fetchDetailReview(owner, name, number, source, previous?.reviewThreads?.nodes.length ?? 0),
-      fetchRestPrDetailBase(repo, number),
-      getViewerLogin(),
+      fetchPrDetailMetadata(repo, owner, name, number, source),
     ]);
     if (!checks || !review) throw new GithubRequestError(`${repo}#${number} was not found`, 404);
     return {
-      ...rest,
+      ...base,
       ...checks,
       viewerLogin,
-      ...normalizeReviewDetail(review, viewerLogin, review.author, rest.reviewRequests),
+      ...normalizeReviewDetail(review, viewerLogin, review.author, base.reviewRequests),
     };
   }, () => fetchRestPrDetail(repo, number, previous));
 }
@@ -2676,7 +2776,7 @@ export async function fetchPrDetailPart(
   source: GithubUsageSource,
 ): Promise<PrDetail> {
   if (mockGithub) return mockGithub.detail(repo, number);
-  // Mergeability comes only from the REST half; a scoped refresh would keep UNKNOWN while
+  // Mergeability comes only from the metadata read; a scoped refresh would keep UNKNOWN while
   // advancing fetched_at, postponing the retry for as long as check or review events continue.
   if (current.state === "OPEN" && !current.isDraft &&
     (current.mergeable === "UNKNOWN" || current.mergeStateStatus === "UNKNOWN")) {
@@ -2711,7 +2811,7 @@ async function fetchPrDetailPartGraphql(
 
   const [review, viewerLogin] = await Promise.all([
     fetchDetailReview(owner, name, number, source, current.reviewThreads?.nodes.length ?? 0),
-    getViewerLogin(),
+    getViewerLogin(source),
   ]);
   if (!review) throw new GithubRequestError(`${repo}#${number} was not found`, 404);
   return {

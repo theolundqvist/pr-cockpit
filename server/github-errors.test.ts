@@ -936,46 +936,212 @@ test("a stale positive probe cannot clear a newer primary block", async () => {
   }
 });
 
-test("PR detail spends no GraphQL while its REST half is quota-blocked", async () => {
-  const fakeGhDir = mkdtempSync(join(tmpdir(), "pr-cockpit-detail-core-block-"));
-  const fakeGh = join(fakeGhDir, "gh");
-  writeFileSync(fakeGh, "#!/bin/sh\nprintf 'fixture-token\\n'\n");
-  chmodSync(fakeGh, 0o755);
+// A fresh process with core exhausted and GraphQL to spare: the poll's detail reads and the
+// viewer login must come from GraphQL instead of failing until core resets.
+async function runCoreExhaustionScenario(body: string): Promise<unknown> {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-core-exhaustion-"));
   try {
     const script = `
+      const { mock } = await import("bun:test");
+      mock.module(${JSON.stringify(githubAuthModuleUrl)}, () => ({
+        githubAuthStatus: async () => ({ ok: true, state: "ready", login: "viewer", error: null, requiredScopes: [], missingScopes: [] }),
+        startGithubSetup: async () => ({ ok: true, state: "ready", login: "viewer", error: null, requiredScopes: [], missingScopes: [] }),
+        liveGithubToken: async () => "fixture-token",
+      }));
       const github = await import(${JSON.stringify(githubModuleUrl)});
-      let graphqlCalls = 0;
-      globalThis.fetch = async (input) => {
-        const url = new URL(String(input));
-        if (url.pathname === "/user") return Response.json({}, { status: 403, headers: { "x-ratelimit-resource": "core", "x-ratelimit-remaining": "0" } });
-        if (url.pathname === "/graphql") graphqlCalls++;
-        return Response.json({ message: "API rate limit exceeded" }, { status: 403, headers: {
-          "x-ratelimit-resource": "core",
-          "x-ratelimit-remaining": "0",
-          "x-ratelimit-reset": String((Date.now() + 60_000) / 1000),
-        } });
+      const head = "a".repeat(40);
+      const reset = String(Math.ceil((Date.now() + 3_600_000) / 1000));
+      const exhausted = (resource) => Response.json({ message: "API rate limit exceeded" }, { status: 403, headers: {
+        "x-ratelimit-resource": resource, "x-ratelimit-remaining": "0", "x-ratelimit-reset": reset,
+      } });
+      const ok = (body, resource = "core") => Response.json(body, { headers: { "x-ratelimit-resource": resource, "x-ratelimit-remaining": "4000", "x-ratelimit-reset": reset } });
+      const restUser = (login, type = "User") => ({ node_id: "U_" + login, login, avatar_url: "https://avatars.example/" + login, type });
+      const restPull = {
+        node_id: "PR_7", title: "Fresh title", number: 7, state: "open", merged_at: null, closed_at: null, draft: false,
+        user: restUser("author"), base: { ref: "main", sha: "b".repeat(40) }, head: { ref: "topic", sha: head, repo: { full_name: "contributor/app" } },
+        body: "Fresh body", additions: 5, deletions: 2, changed_files: 2, mergeable: false, mergeable_state: "dirty",
+        auto_merge: { merge_method: "squash", enabled_by: { login: "author" } },
+        created_at: "2026-09-01T09:00:00Z", updated_at: "2026-09-01T11:00:00Z", html_url: "https://github.com/acme/app/pull/7",
+        commits: 3, labels: [{ name: "bug" }], assignees: [{ login: "author" }],
+        requested_reviewers: [restUser("viewer")], requested_teams: [{ name: "platform" }],
       };
-      const capture = async (fn) => { try { await fn(); return null; } catch (error) { return error; } };
-      await capture(() => github.fetchActionWorkflows("acme/app"));
-      const errors = [];
-      for (let attempt = 0; attempt < 3; attempt++) errors.push(await capture(() => github.fetchPrDetail("acme/app", 7, "agent read")));
-      console.log(JSON.stringify({ blocked: errors.map((error) => error?.kind === "quota" && error.resource === "core"), graphqlCalls }));
+      const restFiles = [{ filename: "a.ts", additions: 4, deletions: 2 }, { filename: "b.ts", additions: 1, deletions: 0 }];
+      const graphqlPull = {
+        id: "PR_7", title: "Fresh title", number: 7, state: "OPEN", mergedAt: null, closedAt: null, isDraft: false,
+        author: { __typename: "User", login: "author", avatarUrl: "https://avatars.example/author" },
+        baseRefName: "main", baseRefOid: "b".repeat(40), headRefName: "topic", headRepository: { nameWithOwner: "contributor/app" }, headRefOid: head,
+        body: "Fresh body", additions: 5, deletions: 2, changedFiles: 2,
+        files: { totalCount: 2, nodes: [{ path: "a.ts", additions: 4, deletions: 2 }, { path: "b.ts", additions: 1, deletions: 0 }] },
+        mergeable: "CONFLICTING", mergeStateStatus: "DIRTY", autoMergeRequest: { mergeMethod: "SQUASH", enabledBy: { login: "author" } },
+        createdAt: "2026-09-01T09:00:00Z", updatedAt: "2026-09-01T11:00:00Z", url: "https://github.com/acme/app/pull/7",
+        commitCount: { totalCount: 3 }, labels: { nodes: [{ name: "bug" }] }, assignees: { nodes: [{ login: "author" }] },
+        reviewRequests: { nodes: [
+          { requestedReviewer: { __typename: "User", login: "viewer", avatarUrl: "https://avatars.example/viewer" } },
+          { requestedReviewer: { __typename: "Team", name: "platform" } },
+        ] },
+      };
+      const page = { hasNextPage: false, endCursor: null };
+      const commit = { oid: head, abbreviatedOid: "aaaaaaa", messageHeadline: "Fresh", committedDate: "2026-09-01T11:00:00Z", author: null, parents: { nodes: [] } };
+      const previous = { commitList: { nodes: [{ commit: { oid: head, additions: 5, deletions: 2 } }] }, reviewThreads: { nodes: [] } };
+      const state = { core: "ok", graphql: "ok", pull: null, operations: [], paths: [] };
+      const graphqlOperation = (query) => query.includes("mergeStateStatus") ? "metadata"
+        : query.includes("reviewThreads(first: 100)") ? "review"
+        : query.includes("commitList:") ? "checks"
+        : query.includes("viewer { login }") ? "viewer"
+        : "other";
+      globalThis.fetch = async (input, init) => {
+        const url = new URL(String(input));
+        state.paths.push(url.pathname);
+        if (url.pathname === "/graphql") {
+          const operation = graphqlOperation(JSON.parse(String(init?.body)).query);
+          state.operations.push(operation);
+          if (state.graphql === "exhausted") return exhausted("graphql");
+          const data = operation === "metadata" ? { viewer: { login: "viewer" }, repository: { pullRequest: graphqlPull } }
+            : operation === "viewer" ? { viewer: { login: "viewer" } }
+            : operation === "checks" ? { repository: { pullRequest: { lastCommit: { nodes: [{ commit: { statusCheckRollup: null } }] }, commitList: { nodes: [{ commit }] } } } }
+            : operation === "review" ? { repository: { pullRequest: {
+              reactionGroups: [], viewerCanMergeAsAdmin: false, reviewDecision: "REVIEW_REQUIRED",
+              reviews: { pageInfo: page, nodes: [] }, comments: { pageInfo: page, nodes: [] }, reviewThreads: { pageInfo: page, nodes: [] },
+              author: { __typename: "User", login: "author", avatarUrl: "https://avatars.example/author" },
+            } } }
+            : null;
+          return data ? ok({ data }, "graphql") : Response.json({ message: "unexpected query" }, { status: 400 });
+        }
+        if (state.core === "exhausted") return exhausted("core");
+        if (url.pathname === "/repos/acme/app/pulls/7" && state.pull) return state.pull();
+        if (url.pathname === "/user") return ok({ login: "viewer" });
+        if (url.pathname === "/repos/acme/app/pulls/7") return ok(restPull);
+        if (url.pathname === "/repos/acme/app/pulls/7/files") return ok(restFiles);
+        return Response.json({ message: "Not Found" }, { status: 404, headers: { "x-ratelimit-resource": "core", "x-ratelimit-remaining": "4000" } });
+      };
+      const capture = async (fn) => { try { return { value: await fn() }; } catch (error) { return { error: { kind: error?.kind, resource: error?.resource, status: error?.status } }; } };
+      const graphqlSpend = () => state.operations.filter((operation) => operation === "metadata" || operation === "viewer");
+      const reset_ = () => { state.operations.length = 0; state.paths.length = 0; };
+      ${body}
     `;
-    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
-      env: { ...Bun.env, COCKPIT_GH_BIN: fakeGh, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "" },
+    const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "", COCKPIT_REPLICA_SSH_HOST: "", COCKPIT_PROXY: "" },
       stdout: "pipe",
       stderr: "pipe",
     });
     const [exitCode, stdout, stderr] = await Promise.all([
-      process.exited,
-      new Response(process.stdout).text(),
-      new Response(process.stderr).text(),
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
     ]);
     expect(exitCode, stderr).toBe(0);
-    expect(JSON.parse(stdout)).toEqual({ blocked: [true, true, true], graphqlCalls: 0 });
+    return JSON.parse(stdout);
   } finally {
-    rmSync(fakeGhDir, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true });
   }
+}
+
+test("a fresh process with core exhausted reads the viewer and PR metadata over GraphQL", async () => {
+  const result = await runCoreExhaustionScenario(`
+    state.core = "exhausted";
+    const viewer = await github.getViewerLogin();
+    const viewerSpend = graphqlSpend();
+    reset_();
+    const detail = await github.fetchPrDetail("acme/app", 7, "background poll", previous);
+    console.log(JSON.stringify({
+      viewer,
+      viewerSpend,
+      detailSpend: graphqlSpend(),
+      restPullReads: state.paths.filter((path) => path.startsWith("/repos/")).length,
+      detail: {
+        title: detail.title, body: detail.body, updatedAt: detail.updatedAt, mergeable: detail.mergeable, mergeStateStatus: detail.mergeStateStatus,
+        files: detail.files, labels: detail.labels, assignees: detail.assignees, commitCount: detail.commitCount,
+        headRepository: detail.headRepository, headRefOid: detail.headRefOid, autoMergeRequest: detail.autoMergeRequest,
+        viewerLogin: detail.viewerLogin, viewerReviewRequested: detail.viewerReviewRequested, viewerIsAuthor: detail.viewerIsAuthor,
+        reviewDecision: detail.reviewDecision,
+      },
+    }));
+  `);
+  expect(result).toEqual({
+    viewer: "viewer",
+    viewerSpend: ["viewer"],
+    detailSpend: ["metadata"],
+    restPullReads: 0,
+    detail: {
+      title: "Fresh title",
+      body: "Fresh body",
+      updatedAt: "2026-09-01T11:00:00Z",
+      mergeable: "CONFLICTING",
+      mergeStateStatus: "DIRTY",
+      files: { totalCount: 2, nodes: [{ path: "a.ts", additions: 4, deletions: 2 }, { path: "b.ts", additions: 1, deletions: 0 }] },
+      labels: { nodes: [{ name: "bug" }] },
+      assignees: { nodes: [{ login: "author" }] },
+      commitCount: { totalCount: 3 },
+      headRepository: { nameWithOwner: "contributor/app" },
+      headRefOid: "a".repeat(40),
+      autoMergeRequest: { mergeMethod: "SQUASH", enabledBy: { login: "author" } },
+      viewerLogin: "viewer",
+      viewerReviewRequested: true,
+      viewerIsAuthor: false,
+      reviewDecision: "REVIEW_REQUIRED",
+    },
+  });
+});
+
+test("core exhaustion found mid-read moves PR metadata to GraphQL with the same detail REST gives", async () => {
+  const result = await runCoreExhaustionScenario(`
+    const viaRest = await github.fetchPrDetail("acme/app", 7, "app detail", previous);
+    const restSpend = graphqlSpend();
+    reset_();
+    state.pull = () => exhausted("core");
+    const viaGraphql = await github.fetchPrDetail("acme/app", 7, "app detail", previous);
+    console.log(JSON.stringify({ restSpend, graphqlSpend: graphqlSpend(), viaRest, viaGraphql }));
+  `) as { restSpend: string[]; graphqlSpend: string[]; viaRest: unknown; viaGraphql: unknown };
+  expect(result.restSpend).toEqual([]);
+  expect(result.graphqlSpend).toEqual(["metadata"]);
+  expect(result.viaGraphql).toEqual(result.viaRest);
+});
+
+test("PR metadata stays on REST errors that are not core exhaustion", async () => {
+  const result = await runCoreExhaustionScenario(`
+    const outcomes = {};
+    for (const [name, pull] of Object.entries({
+      server: () => Response.json({ message: "boom" }, { status: 500 }),
+      forbidden: () => Response.json({ message: "Resource not accessible by integration" }, { status: 403, headers: { "x-ratelimit-resource": "core", "x-ratelimit-remaining": "4000" } }),
+      transport: () => { throw new TypeError("socket hang up"); },
+      secondary: () => Response.json({ message: "You have exceeded a secondary rate limit" }, { status: 403, headers: { "x-ratelimit-resource": "core", "retry-after": "120" } }),
+    })) {
+      reset_();
+      state.pull = pull;
+      const outcome = await capture(() => github.fetchPrDetail("acme/app", 7, "app detail", previous));
+      outcomes[name] = { error: outcome.error, graphqlSpend: graphqlSpend() };
+    }
+    console.log(JSON.stringify(outcomes));
+  `);
+  expect(result).toEqual({
+    server: { error: { kind: "http", resource: "core", status: 500 }, graphqlSpend: [] },
+    forbidden: { error: { kind: "http", resource: "core", status: 403 }, graphqlSpend: [] },
+    transport: { error: { kind: "transport", resource: "core", status: 503 }, graphqlSpend: [] },
+    secondary: { error: { kind: "quota", resource: "core", status: 403 }, graphqlSpend: [] },
+  });
+});
+
+test("PR detail and viewer fail without spending once both pools are exhausted", async () => {
+  const result = await runCoreExhaustionScenario(`
+    state.core = "exhausted";
+    state.graphql = "exhausted";
+    const viewer = await capture(() => github.getViewerLogin());
+    const first = await capture(() => github.fetchPrDetail("acme/app", 7, "background poll", previous));
+    reset_();
+    const again = await capture(() => github.fetchPrDetail("acme/app", 7, "background poll", previous));
+    console.log(JSON.stringify({
+      viewer: viewer.error,
+      first: first.error,
+      again: again.error,
+      spentAgain: state.paths.filter((path) => path !== "/user").length,
+    }));
+  `);
+  expect(result).toEqual({
+    viewer: { kind: "quota", resource: "graphql", status: 403 },
+    first: { kind: "quota", resource: "core", status: 403 },
+    again: { kind: "quota", resource: "core", status: 403 },
+    spentAgain: 0,
+  });
 });
 
 test("a stale quota probe cannot change the next account's block", async () => {
