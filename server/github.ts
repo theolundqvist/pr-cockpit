@@ -1747,10 +1747,60 @@ export async function addAssignees(repo: string, number: number, logins: string[
   await restRequest("POST", `/repos/${repo}/issues/${number}/assignees`, { assignees: logins });
 }
 
-export async function fetchRepoLabels(repo: string): Promise<Array<{ name: string; color: string }>> {
+export type RepoLabel = { name: string; color: string };
+
+const REPOSITORY_LABELS_QUERY = `
+query($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    labels(first: 100, after: $cursor) {
+      nodes { name color }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}`;
+
+// The whole catalog, so the picker can offer a label past the first page. REST while core has
+// room; GraphQL when core is exhausted, which would otherwise leave the picker empty.
+export async function fetchRepoLabels(repo: string): Promise<RepoLabel[]> {
   if (mockGithub) return [];
-  const labels = await restJson<Array<{ name: string; color: string }>>(`/repos/${repo}/labels?per_page=100`);
+  const [owner, name, extra] = repo.split("/");
+  if (!owner || !name || extra !== undefined) throw new GithubRequestError(`Invalid repository: ${repo}`, 404);
+  try {
+    return await fetchRepoLabelsRest(repo);
+  } catch (error) {
+    if (!coreQuotaExhausted(error)) throw error;
+  }
+  return fetchRepoLabelsGraphql(repo, owner, name);
+}
+
+async function fetchRepoLabelsRest(repo: string): Promise<RepoLabel[]> {
+  const labels = await fetchRestPages<RepoLabel>(
+    `https://api.github.com/repos/${encodedRepo(repo)}/labels?per_page=100`,
+    "GitHub labels request failed",
+  );
   return labels.map(({ name, color }) => ({ name, color }));
+}
+
+async function fetchRepoLabelsGraphql(repo: string, owner: string, name: string): Promise<RepoLabel[]> {
+  const labels: RepoLabel[] = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | null = null;
+  while (true) {
+    const data: {
+      repository: {
+        labels: { nodes: RepoLabel[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } } | null;
+      } | null;
+    } = await graphql(REPOSITORY_LABELS_QUERY, { owner, name, cursor }, "user action", "repository labels");
+    if (!data.repository) throw new GithubRequestError(`Repository not found: ${repo}`, 404);
+    if (!data.repository.labels) throw new GithubRequestError("GraphQL response missing repository labels", 502);
+    const { nodes, pageInfo } = data.repository.labels;
+    labels.push(...nodes.map(({ name, color }) => ({ name, color })));
+    if (!pageInfo.hasNextPage) return labels;
+    if (!pageInfo.endCursor) throw new GithubRequestError("GraphQL response missing label cursor", 502);
+    if (seenCursors.has(pageInfo.endCursor)) throw new GithubRequestError("GraphQL response repeated label cursor", 502);
+    seenCursors.add(pageInfo.endCursor);
+    cursor = pageInfo.endCursor;
+  }
 }
 
 export async function addLabels(repo: string, number: number, labels: string[]): Promise<void> {

@@ -1144,6 +1144,158 @@ test("PR detail and viewer fail without spending once both pools are exhausted",
   });
 });
 
+// The label picker needs the whole catalog, from GraphQL when core is exhausted.
+async function runRepoLabelsScenario(body: string): Promise<unknown> {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-repo-labels-"));
+  try {
+    const script = `
+      const { mock } = await import("bun:test");
+      mock.module(${JSON.stringify(githubAuthModuleUrl)}, () => ({
+        githubAuthStatus: async () => ({ ok: true, state: "ready", login: "viewer", error: null, requiredScopes: [], missingScopes: [] }),
+        startGithubSetup: async () => ({ ok: true, state: "ready", login: "viewer", error: null, requiredScopes: [], missingScopes: [] }),
+        liveGithubToken: async () => "fixture-token",
+      }));
+      const github = await import(${JSON.stringify(githubModuleUrl)});
+      const reset = String(Math.ceil((Date.now() + 3_600_000) / 1000));
+      const exhausted = (resource) => Response.json({ message: "API rate limit exceeded" }, { status: 403, headers: {
+        "x-ratelimit-resource": resource, "x-ratelimit-remaining": "0", "x-ratelimit-reset": reset,
+      } });
+      const ok = (body, resource = "core", headers = {}) => Response.json(body, { headers: { "x-ratelimit-resource": resource, "x-ratelimit-remaining": "4000", "x-ratelimit-reset": reset, ...headers } });
+      // 105 labels: a full first page and a second page whose last label is the one being looked for.
+      const catalog = Array.from({ length: 104 }, (_, index) => ({ name: "label-" + String(index).padStart(3, "0"), color: "ededed" }));
+      catalog.push({ name: "preview", color: "0e8a16" });
+      const restLabel = (label) => ({ id: 1, node_id: "LA_" + label.name, name: label.name, color: label.color, description: null, default: false });
+      const restPage = (page) => ok(catalog.slice((page - 1) * 100, page * 100).map(restLabel), "core", page === 1
+        ? { link: '<https://api.github.com/repos/acme/app/labels?per_page=100&page=2>; rel="next", <https://api.github.com/repos/acme/app/labels?per_page=100&page=2>; rel="last"' }
+        : {});
+      const graphqlPage = (cursor) => {
+        const start = cursor === null ? 0 : Number(cursor.slice("cursor-".length));
+        const end = start + 100;
+        return ok({ data: { repository: { labels: {
+          nodes: catalog.slice(start, end),
+          pageInfo: end < catalog.length ? { hasNextPage: true, endCursor: "cursor-" + end } : { hasNextPage: false, endCursor: "cursor-" + catalog.length },
+        } } } }, "graphql");
+      };
+      const state = { rest: (page) => restPage(page), graphql: (cursor) => graphqlPage(cursor), restPages: [], graphqlCursors: [] };
+      globalThis.fetch = async (input, init) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/graphql") {
+          const { query, variables } = JSON.parse(String(init?.body));
+          if (!query.includes("labels(first: 100")) return Response.json({ message: "unexpected query" }, { status: 400 });
+          state.graphqlCursors.push(variables.cursor);
+          return state.graphql(variables.cursor);
+        }
+        if (url.pathname === "/repos/acme/app/labels") {
+          const page = Number(url.searchParams.get("page") ?? "1");
+          state.restPages.push(page);
+          return state.rest(page);
+        }
+        if (url.pathname === "/user") return exhausted("core");
+        return Response.json({ message: "Not Found" }, { status: 404 });
+      };
+      const capture = async (fn) => { try { return { value: await fn() }; } catch (error) { return { error: { kind: error?.kind, resource: error?.resource, status: error?.status } }; } };
+      const summary = (labels) => ({ count: labels.length, last: labels.at(-1), unique: new Set(labels.map((label) => label.name)).size });
+      const clear = () => { state.restPages.length = 0; state.graphqlCursors.length = 0; };
+      ${body}
+    `;
+    const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "", COCKPIT_REPLICA_SSH_HOST: "", COCKPIT_PROXY: "" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect(exitCode, stderr).toBe(0);
+    return JSON.parse(stdout);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+}
+
+const fullCatalog = { count: 105, last: { name: "preview", color: "0e8a16" }, unique: 105 };
+
+test("repository labels page through the whole REST catalog while core has room", async () => {
+  const result = await runRepoLabelsScenario(`
+    const labels = await github.fetchRepoLabels("acme/app");
+    console.log(JSON.stringify({ labels: summary(labels), first: labels[0], restPages: state.restPages, graphqlCursors: state.graphqlCursors }));
+  `);
+  expect(result).toEqual({
+    labels: fullCatalog,
+    first: { name: "label-000", color: "ededed" },
+    restPages: [1, 2],
+    graphqlCursors: [],
+  });
+});
+
+test("repository labels page through GraphQL when core is exhausted up front or mid-catalog", async () => {
+  const result = await runRepoLabelsScenario(`
+    state.rest = (page) => page === 1 ? restPage(1) : exhausted("core");
+    const midCatalog = summary(await github.fetchRepoLabels("acme/app"));
+    const midCatalogRead = { restPages: [...state.restPages], graphqlCursors: [...state.graphqlCursors] };
+    clear();
+    const knownBlock = summary(await github.fetchRepoLabels("acme/app"));
+    console.log(JSON.stringify({ midCatalog, midCatalogRead, knownBlock, knownBlockRead: { restPages: state.restPages, graphqlCursors: state.graphqlCursors } }));
+  `);
+  expect(result).toEqual({
+    midCatalog: fullCatalog,
+    midCatalogRead: { restPages: [1, 2], graphqlCursors: [null, "cursor-100"] },
+    knownBlock: fullCatalog,
+    knownBlockRead: { restPages: [], graphqlCursors: [null, "cursor-100"] },
+  });
+});
+
+test("repository labels fail rather than come back empty or partial", async () => {
+  const result = await runRepoLabelsScenario(`
+    const outcomes = {};
+    for (const [name, rest] of Object.entries({
+      forbidden: () => Response.json({ message: "Resource not accessible by integration" }, { status: 403, headers: { "x-ratelimit-resource": "core", "x-ratelimit-remaining": "4000" } }),
+      missing: () => Response.json({ message: "Not Found" }, { status: 404, headers: { "x-ratelimit-resource": "core", "x-ratelimit-remaining": "4000" } }),
+      transport: () => { throw new TypeError("socket hang up"); },
+      secondary: () => Response.json({ message: "You have exceeded a secondary rate limit" }, { status: 403, headers: { "x-ratelimit-resource": "core", "retry-after": "120" } }),
+    })) {
+      clear();
+      state.rest = rest;
+      const outcome = await capture(() => github.fetchRepoLabels("acme/app"));
+      outcomes[name] = { error: outcome.error, graphqlCursors: [...state.graphqlCursors] };
+    }
+    console.log(JSON.stringify(outcomes));
+  `);
+  expect(result).toEqual({
+    forbidden: { error: { kind: "http", resource: "core", status: 403 }, graphqlCursors: [] },
+    missing: { error: { kind: "http", resource: "core", status: 404 }, graphqlCursors: [] },
+    transport: { error: { kind: "transport", resource: "core", status: 503 }, graphqlCursors: [] },
+    secondary: { error: { kind: "quota", resource: "core", status: 403 }, graphqlCursors: [] },
+  });
+});
+
+test("repository labels over GraphQL reject a missing repository, a broken cursor, or an exhausted pool", async () => {
+  const result = await runRepoLabelsScenario(`
+    state.rest = () => exhausted("core");
+    const outcomes = {};
+    for (const [name, graphql] of Object.entries({
+      missingRepository: () => ok({ data: { repository: null } }, "graphql"),
+      missingCursor: () => ok({ data: { repository: { labels: { nodes: catalog.slice(0, 100), pageInfo: { hasNextPage: true, endCursor: null } } } } }, "graphql"),
+      repeatedCursor: () => ok({ data: { repository: { labels: { nodes: catalog.slice(0, 100), pageInfo: { hasNextPage: true, endCursor: "cursor-100" } } } } }, "graphql"),
+      exhausted: () => exhausted("graphql"),
+    })) {
+      clear();
+      state.graphql = graphql;
+      const outcome = await capture(() => github.fetchRepoLabels("acme/app"));
+      outcomes[name] = { error: outcome.error, graphqlCursors: [...state.graphqlCursors] };
+    }
+    console.log(JSON.stringify(outcomes));
+  `);
+  expect(result).toEqual({
+    missingRepository: { error: { kind: "http", resource: null, status: 404 }, graphqlCursors: [null] },
+    missingCursor: { error: { kind: "http", resource: null, status: 502 }, graphqlCursors: [null] },
+    repeatedCursor: { error: { kind: "http", resource: null, status: 502 }, graphqlCursors: [null, "cursor-100"] },
+    exhausted: { error: { kind: "quota", resource: "graphql", status: 403 }, graphqlCursors: [null] },
+  });
+});
+
 test("a stale quota probe cannot change the next account's block", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-quota-probe-auth-switch-"));
   try {
