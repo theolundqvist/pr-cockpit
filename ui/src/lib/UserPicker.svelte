@@ -2,7 +2,8 @@
   import Avatar from "./Avatar.svelte";
   import Kbd from "./Kbd.svelte";
 
-  let { title, users, current, onPick, onClose } = $props();
+  // A loading or error message replaces the list, so Enter can't pick from a catalog that isn't there yet.
+  let { title, users, current, onPick, onClose, loading = null, error = null } = $props();
 
   let query = $state("");
   let index = $state(0);
@@ -29,7 +30,7 @@
       e.preventDefault();
     } else if (e.key === "Enter") {
       const pick = filtered[index];
-      if (pick) onPick(pick.login);
+      if (pick && !loading && !error) onPick(pick.login);
       e.preventDefault();
     } else if (e.key === "Escape") {
       onClose();
@@ -56,7 +57,11 @@
       autocomplete="off"
     />
     <div class="picker-list">
-      {#if filtered.length === 0}
+      {#if error}
+        <div class="picker-empty" role="alert">{error}</div>
+      {:else if loading}
+        <div class="picker-empty" role="status">{loading}</div>
+      {:else if filtered.length === 0}
         <div class="picker-empty">No matches</div>
       {:else}
         {#each filtered as user, i (user.login)}

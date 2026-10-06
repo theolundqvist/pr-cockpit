@@ -194,6 +194,7 @@
     conflictFilesError = null;
     loadedConflictKey = "";
     sinceAnchor = readLastViewed(repo, number);
+    if (untrack(() => pickerMode) === "labels") loadRepoLabels();
     fetchRepoUsers(repo)
       .then((u) => {
         if (activeFetch === token) repoUsers = u;
@@ -1750,14 +1751,31 @@
     return s;
   });
 
+  let repoLabelsState = $state("idle");
+  let repoLabelsRequest = 0;
+
+  // Every load starts from an empty catalog, so a late answer for an earlier request or repo never lands.
+  function loadRepoLabels() {
+    const request = ++repoLabelsRequest;
+    const forRepo = repo;
+    const current = () => request === repoLabelsRequest && repo === forRepo;
+    repoLabels = [];
+    repoLabelsState = "loading";
+    fetchRepoLabels(forRepo).then(
+      (labels) => {
+        if (!current()) return;
+        repoLabels = labels;
+        repoLabelsState = "ready";
+      },
+      () => {
+        if (current()) repoLabelsState = "failed";
+      },
+    );
+  }
+
   function openLabelPicker() {
     pickerMode = "labels";
-    const forRepo = repo;
-    fetchRepoLabels(forRepo)
-      .then((labels) => {
-        if (repo === forRepo) repoLabels = labels;
-      })
-      .catch(() => peopleFlash.show("couldn't load labels"));
+    loadRepoLabels();
   }
 
   async function submitLabel(name) {
@@ -3577,6 +3595,8 @@
         current={pickerMode === "assign" ? assignedLogins : pickerMode === "labels" ? appliedLabels : requestedLogins}
         onPick={pickerMode === "assign" ? submitAssign : pickerMode === "labels" ? submitLabel : submitRequestReviewer}
         onClose={() => (pickerMode = null)}
+        loading={pickerMode === "labels" && repoLabelsState === "loading" ? "Loading labels…" : null}
+        error={pickerMode === "labels" && repoLabelsState === "failed" ? "Couldn't load labels. Reopen to retry." : null}
       />
     {/if}
 
