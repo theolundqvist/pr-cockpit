@@ -3826,8 +3826,14 @@ export async function closePullRequest(repo: string, number: number): Promise<vo
 }
 
 
+export async function fetchPullRequestBody(repo: string, number: number): Promise<string> {
+  if (mockGithub) return mockGithub.pullRequestBody(repo, number);
+  const pr = await restJson<{ body: string | null }>(`/repos/${repo}/pulls/${number}`);
+  return pr.body ?? "";
+}
+
 export async function updatePullRequestBody(repo: string, number: number, body: string): Promise<void> {
-  if (mockGithub) return;
+  if (mockGithub) return mockGithub.updatePullRequestBody(repo, number, body);
   await restRequest("PATCH", `/repos/${repo}/pulls/${number}`, { body });
 }
 

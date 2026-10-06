@@ -108,7 +108,7 @@ import type { GithubUsageSource } from "./githubUsage.ts";
 import type { GithubAuthStatus } from "./githubAuth.ts";
 import { commitsFromMirror, commitStatsFromMirror, conflictFilesFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError, summarizeCommitStats, type MirrorDiffResult, type PullRequestCommit } from "./mirror.ts";
 import { checkState, currentChecks, type CheckState } from "./checkState.ts";
-import { currentBaseRef, discardMutation, enqueueMutation, mutationsForPr, retryMutation, type MutationPayload } from "./mutations.ts";
+import { currentBaseRef, discardMutation, enqueueMutation, isTaskIntent, mutationsForPr, retryMutation, type MutationPayload } from "./mutations.ts";
 import { isMergeMethod, mergeMethodFor, mergeMethodSourceFor, setMergeMethodPreference } from "./mergeMethod.ts";
 import { AGENT_DEFAULTS, pendingReviewsEnabled, quickGenerateEnabled, readSettings, relayConfig, restFallbackEnabled, RELAY_APP_INSTALL_URL, RELAY_APP_SLUG, safeMergeApprovalEnabled, settingsRepos, writeSettings, type AgentSetting, type Settings } from "./settings.ts";
 import { claudeBinPath, codexBinPath, ompBinPath } from "./harness.ts";
@@ -1436,8 +1436,13 @@ export function normalizeAgentMutation(repo: string, number: number, detail: PrD
     case "add-labels":
     case "remove-labels":
       return { kind: input.kind, labels: requiredLabels(input) };
-    case "edit-body":
-      return { kind: "edit-body", body: requiredString(input, "body") };
+    case "edit-body": {
+      const body = requiredString(input, "body");
+      const task = fieldValue(input, "task");
+      if (task === undefined) return { kind: "edit-body", body };
+      if (!isTaskIntent(task)) throw new Error("task must have a key and a checked boolean");
+      return { kind: "edit-body", body, task: { key: task.key, checked: task.checked } };
+    }
     case "edit-title":
       return { kind: "edit-title", title: requiredString(input, "title") };
     default:
@@ -3181,6 +3186,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
         || (req.method === "PUT" && url.pathname === "/api/whiteboard")
         || (req.method === "POST" && url.pathname === "/api/notifications/claim")
         || (req.method === "POST" && url.pathname === "/api/system-issues/retry")
+        || (req.method === "DELETE" && parts.length === 3 && parts[0] === "api" && parts[1] === "mutations")
         || (req.method === "POST" && parts.length === 6 && parts[0] === "api" && parts[1] === "pr" && (parts[5] === "merge-method" || parts[5] === "merge-approval"))
         || (
           req.method === "POST" && parts.length === 7 &&
@@ -3191,6 +3197,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
         const body: unknown = await req.clone().json().catch(() => null);
         const allowedKinds: Record<string, true> = {
           "github-auto-merge": true,
+          "edit-body": true,
           "edit-title": true,
           "pending-inline-comment": true,
           "edit-pending-comment": true,

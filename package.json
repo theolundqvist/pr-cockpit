@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@sentry/bun": "^10.73.0",
+    "marked": "18.0.5",
     "typescript": "5.9.3"
   }
 }

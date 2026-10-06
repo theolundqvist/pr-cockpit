@@ -1,4 +1,5 @@
 import { codeScanningAlertNumber, isCodeScanningThread, validateCodeScanningDismissal } from "../shared/codeScanning.js";
+import { setTaskByKey } from "../shared/taskList.js";
 import {
   deleteMutation,
   deleteSupersededFailedMerges,
@@ -21,6 +22,7 @@ import {
   deletePendingReviewComment,
   discardPendingReview,
   editPendingReviewComment,
+  fetchPullRequestBody,
   getViewerLogin,
   markPullRequestReadyForReview,
   postInlineComment,
@@ -48,6 +50,14 @@ import { isMergeMethod, isMergeMethodSource, mergeAllowedNow, MERGEABLE_NOW_STAT
 import { pendingReviewsEnabled } from "./settings.ts";
 import { invalidateInbox } from "./rendererInvalidation.ts";
 
+export type TaskIntent = { key: string; checked: boolean };
+
+export function isTaskIntent(value: unknown): value is TaskIntent {
+  return !!value && typeof value === "object"
+    && "key" in value && typeof value.key === "string" && value.key.length > 0
+    && "checked" in value && typeof value.checked === "boolean";
+}
+
 export type MutationPayload =
   | { kind: "comment"; body: string; commentNodeId?: string }
   | { kind: "reply-to-thread"; rootCommentId: number; body: string }
@@ -57,7 +67,8 @@ export type MutationPayload =
   | { kind: "update-branch" }
   | { kind: "ready-for-review" }
   | { kind: "close" }
-  | { kind: "edit-body"; body: string }
+  // With `task`, `body` is only the client's preview.
+  | { kind: "edit-body"; body: string; task?: TaskIntent }
   | { kind: "edit-title"; title: string }
   | { kind: "auto-merge"; enable: boolean }
   | { kind: "github-auto-merge"; enable: true; method: MergeMethod }
@@ -189,6 +200,9 @@ function assertMutationPayload(value: unknown): asserts value is MutationPayload
   }
   if (value.kind === "discard-pending-review" && (!("reviewId" in value) || !positiveId(value.reviewId))) {
     throw new Error("discarding a pending review requires a valid review ID");
+  }
+  if (value.kind === "edit-body" && "task" in value && value.task !== undefined && !isTaskIntent(value.task)) {
+    throw new Error("task edits require a task key and checked boolean");
   }
 }
 
@@ -336,9 +350,18 @@ async function executeMutation(row: MutationRow): Promise<boolean> {
     case "close":
       await closePullRequest(row.repo, row.number);
       return true;
-    case "edit-body":
-      await updatePullRequestBody(row.repo, row.number, payload.body);
+    case "edit-body": {
+      if (!payload.task) {
+        await updatePullRequestBody(row.repo, row.number, payload.body);
+        return false;
+      }
+      const current = await fetchPullRequestBody(row.repo, row.number);
+      const body = setTaskByKey(current, payload.task.key, payload.task.checked);
+      if (body === null) throw new Error("Checklist changed on GitHub; discard and reload before ticking again");
+      row.payload_json = JSON.stringify({ ...payload, body });
+      if (body !== current) await updatePullRequestBody(row.repo, row.number, body);
       return false;
+    }
     case "edit-title":
       await updatePullRequestTitle(row.repo, row.number, payload.title);
       return false;
@@ -421,7 +444,10 @@ function mutationReflected(row: Pick<MutationRow, "repo" | "number" | "payload_j
   const snapshot = !tracked ? cached : cached && cached.fetched_at > tracked.fetched_at ? cached : tracked;
   if (!snapshot) return false;
   const detail = JSON.parse(snapshot.detail_json) as PrDetail;
-  if (payload.kind === "edit-body") return sameGithubText(detail.body, payload.body);
+  // A republished description may legitimately differ, so a task edit confirms by that task's state.
+  if (payload.kind === "edit-body") {
+    return payload.task ? setTaskByKey(detail.body, payload.task.key, payload.task.checked) === detail.body : sameGithubText(detail.body, payload.body);
+  }
   if (!payload.commentNodeId) return false;
   return detail.comments.nodes.some((comment) => comment.id === payload.commentNodeId);
 }
@@ -487,14 +513,18 @@ export async function processMutation(row: MutationRow, dependencies = mutationP
     merged = await dependencies.executeMutation(row);
   } catch (err) {
     dependencies.setMutationState(row.id, "failed", String(err));
+    const payload: unknown = JSON.parse(row.payload_json);
+    const taskEdit = row.kind === "edit-body" && !!payload && typeof payload === "object" && "task" in payload;
     if (row.kind === "merge") {
       deleteSupersededFailedMerges(row.repo, row.number, row.id);
       invalidateInbox();
+    }
+    if (row.kind === "merge" || taskEdit) {
       try {
         await dependencies.refreshPr(row.repo, row.number, "mutation recovery", "all", "detail");
       } catch (refreshErr) {
-        // Keep the merge error if refreshing its explanation also fails.
-        console.warn(`refresh after failed merge of ${row.repo}#${row.number} failed: ${refreshErr instanceof Error ? refreshErr.message : String(refreshErr)}`);
+        // Keep the mutation error if refreshing its explanation also fails.
+        console.warn(`refresh after failed ${row.kind} of ${row.repo}#${row.number} failed: ${refreshErr instanceof Error ? refreshErr.message : String(refreshErr)}`);
       }
     }
     return;
