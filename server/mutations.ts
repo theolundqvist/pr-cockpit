@@ -15,6 +15,7 @@ import {
 } from "./db.ts";
 import {
   addAssignees,
+  addLabels,
   addPendingInlineComment,
   closePullRequest,
   deletePendingReviewComment,
@@ -27,6 +28,7 @@ import {
   postReview,
   postReviewCommentReply,
   removeAssignees,
+  removeLabels,
   removeRequestedReviewers,
   requestReviewers,
   setGithubAutoMerge,
@@ -68,7 +70,9 @@ export type MutationPayload =
   | { kind: "assign"; logins: string[] }
   | { kind: "unassign"; logins: string[] }
   | { kind: "request-reviewers"; logins: string[] }
-  | { kind: "unrequest-reviewers"; logins: string[] };
+  | { kind: "unrequest-reviewers"; logins: string[] }
+  | { kind: "add-labels"; labels: string[] }
+  | { kind: "remove-labels"; labels: string[] };
 const MUTATION_REFRESH_RETRY_MS = 30_000;
 const mutationRefreshTimers = new Map<number, Timer>();
 
@@ -108,6 +112,8 @@ const KNOWN_KINDS: ReadonlySet<string> = new Set([
   "unassign",
   "request-reviewers",
   "unrequest-reviewers",
+  "add-labels",
+  "remove-labels",
 ]);
 
 const PENDING_KINDS: Record<string, true> = {
@@ -392,6 +398,12 @@ async function executeMutation(row: MutationRow): Promise<boolean> {
       return false;
     case "unrequest-reviewers":
       await removeRequestedReviewers(row.repo, row.number, payload.logins);
+      return false;
+    case "add-labels":
+      await addLabels(row.repo, row.number, payload.labels);
+      return false;
+    case "remove-labels":
+      await removeLabels(row.repo, row.number, payload.labels);
       return false;
   }
 }

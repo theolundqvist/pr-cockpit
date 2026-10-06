@@ -22,6 +22,7 @@
     promptAgent,
     autofixAgent,
     customAgent,
+    fetchRepoLabels,
     fetchRepoUsers,
     switchLocalBranch,
   } from "./api.js";
@@ -1737,6 +1738,34 @@
     await refreshMutations();
   }
 
+  let repoLabels = $state([]);
+  let labelsByServer = $derived(new Set((pr?.labels.nodes ?? []).map((l) => l.name)));
+  let appliedLabels = $derived.by(() => {
+    const s = new Set(labelsByServer);
+    for (const m of mutations) {
+      if (m.state === "failed") continue;
+      if (m.kind === "add-labels") for (const name of m.payload.labels) s.add(name);
+      else if (m.kind === "remove-labels") for (const name of m.payload.labels) s.delete(name);
+    }
+    return s;
+  });
+
+  function openLabelPicker() {
+    pickerMode = "labels";
+    const forRepo = repo;
+    fetchRepoLabels(forRepo)
+      .then((labels) => {
+        if (repo === forRepo) repoLabels = labels;
+      })
+      .catch(() => peopleFlash.show("couldn't load labels"));
+  }
+
+  async function submitLabel(name) {
+    const kind = appliedLabels.has(name) ? "remove-labels" : "add-labels";
+    await enqueueMutation(repo, number, { kind, labels: [name] });
+    await refreshMutations();
+  }
+
   let timeline = $derived.by(() => {
     if (!pr) return [];
     const events = [];
@@ -2288,6 +2317,8 @@
         pickerMode = "assign";
       } else if (e.key === "q") {
         pickerMode = "review";
+      } else if (e.key === "l") {
+        openLabelPicker();
       } else if (e.key === "o") {
         const url = tab === "actions" ? actionsRunUrl : pr?.url;
         if (url) window.open(url, "_blank", "noopener");
@@ -2369,6 +2400,7 @@
     { key: "⇧E", label: "editor" },
     ...(canReview ? [{ key: "v", label: "review" }] : []),
     { key: "s", label: "assign" },
+    { key: "l", label: "labels" },
     { key: "q", label: "request review" },
     { key: "p", label: "prompt agent" },
     ...agentActionKeys,
@@ -2391,6 +2423,7 @@
     { key: "e", label: "edit inline" },
     { key: "⇧E", label: "editor" },
     { key: "s", label: "assign" },
+    { key: "l", label: "labels" },
     { key: "q", label: "request review" },
     mergeKey,
     ...autoMergeKeys,
@@ -3478,6 +3511,21 @@
           </div>
 
           <div class="side-block">
+            <h3 class="side-title">Labels <span class="side-key"><Kbd keys="l" /></span></h3>
+            {#if appliedLabels.size}
+              {#each [...appliedLabels] as name (name)}
+                {@const color = repoLabels.find((l) => l.login === name)?.color}
+                <div class="reviewer" class:pending-person={!labelsByServer.has(name)}>
+                  <span class="label-swatch" style:background={color ? `#${color}` : null}></span>
+                  <span>{name}</span>
+                </div>
+              {/each}
+            {:else}
+              <div class="side-empty">None</div>
+            {/if}
+          </div>
+
+          <div class="side-block">
             <h3 class="side-title">Checks <span class="dim">{checks.length}</span></h3>
             {#if checks.length}
               {#if checkSummary}
@@ -3524,10 +3572,10 @@
 
     {#if pickerMode}
       <UserPicker
-        title={pickerMode === "assign" ? "Assign" : "Reviewers"}
-        users={repoUsers}
-        current={pickerMode === "assign" ? assignedLogins : requestedLogins}
-        onPick={pickerMode === "assign" ? submitAssign : submitRequestReviewer}
+        title={pickerMode === "assign" ? "Assign" : pickerMode === "labels" ? "Labels" : "Reviewers"}
+        users={pickerMode === "labels" ? repoLabels : repoUsers}
+        current={pickerMode === "assign" ? assignedLogins : pickerMode === "labels" ? appliedLabels : requestedLogins}
+        onPick={pickerMode === "assign" ? submitAssign : pickerMode === "labels" ? submitLabel : submitRequestReviewer}
         onClose={() => (pickerMode = null)}
       />
     {/if}
@@ -4620,6 +4668,14 @@
   }
   .reviewer.pending-person {
     opacity: 0.7;
+  }
+  .label-swatch {
+    width: 10px;
+    height: 10px;
+    margin: 0 3px;
+    border-radius: 50%;
+    flex: none;
+    background: var(--text-faint, #888);
   }
   .reviewer-login {
     min-width: 0;

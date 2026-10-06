@@ -66,7 +66,11 @@
             onmousemove={() => (index = i)}
             onclick={() => onPick(user.login)}
           >
-            <Avatar login={user.login} url={user.avatarUrl} size={18} />
+            {#if user.color !== undefined}
+              <span class="picker-swatch" style="background: #{user.color}"></span>
+            {:else}
+              <Avatar login={user.login} url={user.avatarUrl} size={18} />
+            {/if}
             <span class="picker-login">{user.login}</span>
             {#if current.has(user.login)}<span class="picker-added" aria-label="Added">✓</span>{/if}
             {#if i === index}<Kbd keys="enter" />{/if}
@@ -207,5 +211,12 @@
     background: var(--surface);
     border-color: var(--border);
     box-shadow: var(--shadow-xs);
+  }
+  .picker-swatch {
+    width: 12px;
+    height: 12px;
+    margin: 0 3px;
+    border-radius: 50%;
+    flex: none;
   }
 </style>

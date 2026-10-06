@@ -34,6 +34,7 @@ Mutation commands:
   cockpit-auto-merge   enable or disable Cockpit's autonomous merge
   inline-comment       comment on --path, --line, and --side from --body-file
   assign, unassign     change assignees by login
+  add-labels, remove-labels  change labels by name
   request-reviewers, unrequest-reviewers
 
 Other commands:
@@ -169,7 +170,7 @@ fi
 
 command="read"
 case "${1:-}" in
-  listen|resolve|cache-run|comment|reply|unresolve|dismiss-alert|review|merge|update-branch|ready-for-review|close|edit-body|edit-title|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers)
+  listen|resolve|cache-run|comment|reply|unresolve|dismiss-alert|review|merge|update-branch|ready-for-review|close|edit-body|edit-title|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers|add-labels|remove-labels)
     command="$1"
     shift
     ;;
@@ -177,7 +178,7 @@ esac
 
 mutation_command=0
 case "$command" in
-  comment|reply|unresolve|dismiss-alert|review|merge|update-branch|ready-for-review|close|edit-body|edit-title|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers)
+  comment|reply|unresolve|dismiss-alert|review|merge|update-branch|ready-for-review|close|edit-body|edit-title|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers|add-labels|remove-labels)
     mutation_command=1
     ;;
 esac
@@ -826,6 +827,11 @@ try {
     case "request-reviewers":
     case "unrequest-reviewers":
       payload = { kind: command, logins: users() };
+      break;
+    case "add-labels":
+    case "remove-labels":
+      if (args.length === 0 || args.some((label) => label.length === 0)) fail(`${command} requires one or more label names`);
+      payload = { kind: command, labels: args };
       break;
     default:
       fail(`unsupported mutation command: ${command}`);

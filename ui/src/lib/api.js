@@ -521,6 +521,13 @@ export function fetchRepoUsers(repo) {
   return repoUsersCache.get(repo);
 }
 
+// Picker rows reuse the user picker's `login` key for the label name.
+export async function fetchRepoLabels(repo) {
+  const res = await fetch(`/api/repo-labels?repo=${encodeURIComponent(repo)}`);
+  if (!res.ok) throw new Error(`repo-labels ${res.status}`);
+  return (await res.json()).map((label) => ({ login: label.name, color: label.color }));
+}
+
 export async function switchLocalBranch(repo, headRef) {
   const res = await fetch("/api/switch-branch", {
     method: "POST",

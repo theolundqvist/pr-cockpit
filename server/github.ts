@@ -1721,6 +1721,24 @@ export async function addAssignees(repo: string, number: number, logins: string[
   await restRequest("POST", `/repos/${repo}/issues/${number}/assignees`, { assignees: logins });
 }
 
+export async function fetchRepoLabels(repo: string): Promise<Array<{ name: string; color: string }>> {
+  if (mockGithub) return [];
+  const labels = await restJson<Array<{ name: string; color: string }>>(`/repos/${repo}/labels?per_page=100`);
+  return labels.map(({ name, color }) => ({ name, color }));
+}
+
+export async function addLabels(repo: string, number: number, labels: string[]): Promise<void> {
+  if (mockGithub) return;
+  await restRequest("POST", `/repos/${repo}/issues/${number}/labels`, { labels });
+}
+
+export async function removeLabels(repo: string, number: number, labels: string[]): Promise<void> {
+  if (mockGithub) return;
+  for (const label of labels) {
+    await restRequest("DELETE", `/repos/${repo}/issues/${number}/labels/${encodeURIComponent(label)}`, undefined);
+  }
+}
+
 
 export async function requestReviewers(repo: string, number: number, logins: string[]): Promise<void> {
   if (mockGithub) return;

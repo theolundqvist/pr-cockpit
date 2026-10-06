@@ -91,6 +91,7 @@ import {
   type PrCommentSince,
   type PrDetail,
   type RepositoryOpenPr,
+  fetchRepoLabels,
 } from "./github.ts";
 import {
   proxyReplicaRequest,
@@ -233,6 +234,25 @@ function handleRepoUsers(url: URL): Response {
   if (!/^[^/]+\/[^/]+$/.test(repo)) return json({ error: "invalid repo" }, 400);
   const users = repoUsersCached(repo).map((u) => ({ login: u.login, avatarUrl: u.avatar_url }));
   return json(users);
+}
+
+const repoLabelsCache = new Map<string, { at: number; labels: Promise<Array<{ name: string; color: string }>> }>();
+
+async function handleRepoLabels(url: URL): Promise<Response> {
+  const repo = url.searchParams.get("repo") ?? "";
+  if (!/^[^/]+\/[^/]+$/.test(repo)) return json({ error: "invalid repo" }, 400);
+  let entry = repoLabelsCache.get(repo);
+  if (!entry || Date.now() - entry.at > 60 * 60_000) {
+    entry = { at: Date.now(), labels: fetchRepoLabels(repo) };
+    repoLabelsCache.set(repo, entry);
+  }
+  try {
+    return json(await entry.labels);
+  } catch (err) {
+    repoLabelsCache.delete(repo);
+    console.error(`repo-labels fetch failed for ${repo}:`, err);
+    return json({ error: "couldn't load labels" }, 502);
+  }
 }
 
 // stale once commits landed after the reviewed sha; addressed once stale and that reviewer's threads are all resolved
@@ -1309,6 +1329,14 @@ function requiredLogins(payload: object): string[] {
   return logins;
 }
 
+function requiredLabels(payload: object): string[] {
+  const labels = fieldValue(payload, "labels");
+  if (!Array.isArray(labels) || labels.length === 0 || !labels.every((label): label is string => typeof label === "string" && label.length > 0)) {
+    throw new Error("labels must be a non-empty string array");
+  }
+  return labels;
+}
+
 function reviewThreadByHandle(detail: PrDetail, handle: unknown) {
   if (typeof handle !== "string" || !/^[0-9a-f]{10}$/.test(handle)) throw new Error("valid thread handle required");
   const matches = detail.reviewThreads.nodes.filter((thread) => reviewThreadHandle(thread.id) === handle);
@@ -1405,6 +1433,9 @@ export function normalizeAgentMutation(repo: string, number: number, detail: PrD
     case "request-reviewers":
     case "unrequest-reviewers":
       return { kind: input.kind, logins: requiredLogins(input) };
+    case "add-labels":
+    case "remove-labels":
+      return { kind: input.kind, labels: requiredLabels(input) };
     case "edit-body":
       return { kind: "edit-body", body: requiredString(input, "body") };
     case "edit-title":
@@ -3264,6 +3295,9 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     }
     if (req.method === "GET" && url.pathname === "/api/repo-users") {
       return handleRepoUsers(url);
+    }
+    if (req.method === "GET" && url.pathname === "/api/repo-labels") {
+      return handleRepoLabels(url);
     }
     if (req.method === "POST" && url.pathname === "/api/archive") {
       return handleSetArchived(req);
