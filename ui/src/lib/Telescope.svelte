@@ -8,11 +8,12 @@
   import { fuzzyRankWithPriority } from "./fuzzy.js";
   import { showFlash } from "./flash.svelte.js";
   import { testMatcher } from "./testPath.js";
+  import { excludedPath } from "../../../shared/reviewFiles.js";
   import { prefs } from "./prefs.svelte.js";
   import Kbd from "./Kbd.svelte";
   import { columnWithin, createDefinitionHover, tokenAtPoint, wordAtPoint } from "./wordAtPoint.js";
 
-  let { repo, headSha, headRef, testsHidden = false, changedFiles = [], onOpenChangedFile, onOpenHistory, open = $bindable(false) } = $props();
+  let { repo, headSha, headRef, excludedFilesHidden = false, changedFiles = [], onOpenChangedFile, onOpenHistory, open = $bindable(false) } = $props();
 
   const definitionHover = createDefinitionHover(() => view);
   $effect(() => () => definitionHover.destroy());
@@ -21,6 +22,7 @@
   let query = $state("");
   let matches = $state([]);
   let filePaths = $state([]);
+  let generatedPaths = $state(new Set());
   let filesStatus = $state("loading");
   let searchStatus = $state("ok");
   let selected = $state(0);
@@ -51,19 +53,21 @@
   const MAX_FETCH_RETRIES = 15;
   const MIN_SEARCH_QUERY = 2;
 
-  let hidePattern = $derived(testsHidden ? testMatcher(prefs.testPathRegex) : null);
+  let testPattern = $derived(testMatcher(prefs.testPathRegex));
+  let shownPath = $derived(excludedFilesHidden ? (path) => !excludedPath(path, testPattern, generatedPaths) : null);
 
   let results = $derived.by(() => {
     if (mode === "defs") return defCandidates.map((c) => ({ path: c.path, line: c.line, text: c.text }));
+    if (excludedFilesHidden && filesStatus !== "ok") return [];
     if (mode === "search") {
-      const rows = hidePattern ? matches.filter((m) => !hidePattern.test(m.path)) : matches;
+      const rows = shownPath ? matches.filter((m) => shownPath(m.path)) : matches;
       return rows.map((m) => ({ path: m.path, line: m.line, text: m.text }));
     }
     const q = query.trim();
-    const paths = hidePattern ? filePaths.filter((p) => !hidePattern.test(p)) : filePaths;
+    const paths = shownPath ? filePaths.filter(shownPath) : filePaths;
     const changedPaths = changedFiles
       .map((file) => file.path)
-      .filter((path) => !hidePattern || !hidePattern.test(path));
+      .filter((path) => !shownPath || shownPath(path));
     const priority = new Set(changedPaths);
     const ranked = q
       ? fuzzyRankWithPriority(q, priority, paths)
@@ -86,7 +90,7 @@
   let current = $derived(results[selected] ?? null);
   let preview = $derived(view ? previews.get(view.path) ?? null : null);
 
-  // live hide-tests toggle can shrink the list under the cursor
+  // the live x toggle can shrink the list under the cursor
   $effect(() => {
     if (selected >= results.length) selected = Math.max(0, results.length - 1);
   });
@@ -136,11 +140,13 @@
     };
   });
 
-  // new head sha invalidates every per-sha cache; a close/reopen on the same sha keeps them
-  let cacheSha = headSha;
+  let cacheSource = untrack(() => `${repo}\0${headSha}`);
   $effect(() => {
-    if (headSha === cacheSha) return;
-    cacheSha = headSha;
+    const source = `${repo}\0${headSha}`;
+    if (source === cacheSource) return;
+    cacheSource = source;
+    filesToken = null;
+    generatedPaths = new Set();
     previews = new Map();
     snipTokens = new Map();
     filePaths = [];
@@ -187,11 +193,15 @@
     const token = {};
     filesToken = token;
     if (attempt === 0) filesStatus = "loading";
+    const sourceRepo = repo;
+    const sourceHead = headSha;
+    const sourceRef = headRef;
     try {
-      const res = await repoFiles(repo, headSha, headRef);
-      if (filesToken !== token) return;
+      const res = await repoFiles(sourceRepo, sourceHead, sourceRef);
+      if (filesToken !== token || repo !== sourceRepo || headSha !== sourceHead) return;
       if (res.status === "ok") {
         filePaths = res.paths;
+        generatedPaths = new Set(res.generatedPaths);
         filesStatus = "ok";
       } else if (res.status === "fetching" && attempt < MAX_FETCH_RETRIES) {
         filesStatus = "fetching";
@@ -483,6 +493,7 @@
         {:else if searchStatus === "fetch-failed" || filesStatus === "fetch-failed"}cache fetch failed
         {:else if searchStatus === "error" || filesStatus === "error"}request failed
         {:else if searchStatus === "not-found" || filesStatus === "not-found"}sha not found
+        {:else if excludedFilesHidden && filesStatus === "loading"}loading…
         {:else if results.length}{selected + 1}/{results.length}
         {:else if (mode === "search" ? query.trim() : true)}no matches{/if}
       </div>

@@ -1,6 +1,6 @@
 import { fetchActionCommits, fetchActionGraph, fetchActions, fetchPrDetailSnapshot, fetchPrDiff } from "./api.js";
 import { cachePrActionData, cachedPrActionData, prActionKey } from "./actionPrefetch.js";
-import { cacheDetail, cacheDiff, cachedDiff, diffCacheKey, getDetail } from "./detailCache.js";
+import { cacheDetail, cacheDiff, cachedDiff, diffCacheKey, getDetail, prDiffRange } from "./detailCache.js";
 import { prKeyOf } from "./prKey.js";
 
 // Warms the SWR caches behind each PR tab. One request at a time, in idle time unless a row is
@@ -41,10 +41,26 @@ function tasksFor({ repo, number, headSha, ...size }, diff) {
   ];
   if (!headSha) return tasks;
   if (diff) {
-    const key = diffCacheKey(repo, number, headSha, headSha);
-    tasks.push(task(`diff:${key}`, estimatedDiffBytes(size) <= EAGER_DIFF_BYTES, () => cachedDiff(key) !== null, async () => {
-      const res = await fetchPrDiff(repo, number, { head: headSha }, null, true);
-      if (res.ok) cacheDiff(key, res.bytes);
+    // Warms the exact request the PR page makes, so the base comes from a detail at this head.
+    const cachedAtHead = () => {
+      const detail = getDetail(detailKey);
+      return detail?.headRefOid === headSha ? detail : null;
+    };
+    const loaded = () => {
+      const detail = cachedAtHead();
+      return detail !== null && cachedDiff(diffCacheKey(repo, number, prDiffRange(detail))) !== null;
+    };
+    tasks.push(task(`diff:${detailKey}#${headSha}`, estimatedDiffBytes(size) <= EAGER_DIFF_BYTES, loaded, async () => {
+      let detail = cachedAtHead();
+      if (!detail) {
+        const snapshot = await fetchPrDetailSnapshot(repo, number, { prefetch: true });
+        if (snapshot && !getDetail(detailKey)) cacheDetail(detailKey, snapshot.detail);
+        if (snapshot?.detail.headRefOid !== headSha) return false;
+        detail = snapshot.detail;
+      }
+      const range = prDiffRange(detail);
+      const res = await fetchPrDiff(repo, number, range, null, true);
+      if (res.ok) cacheDiff(diffCacheKey(repo, number, range), res.bytes);
       return res.ok;
     }));
   }

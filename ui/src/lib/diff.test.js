@@ -1,4 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { excludedPath } from "../../../shared/reviewFiles.js";
 import { anchorThreads, buildGapPage, buildGapRows, buildWholeFile, fileDiffFingerprint, fileUsesSplitLayout, hunkOldOffset, indexDiff, parseDiff, revertChange, revertFile, revertHunk, splitDiffRows } from "./diff.js";
 import { createDiffDocument } from "./diffDocument.js";
 
@@ -374,6 +378,98 @@ describe("lazy diff document", () => {
     expect(document.hydrate("foo.ts").hunks[0].rows.map((row) => row.text)).toEqual(["café 😀", "old ü", "new 中"]);
     expect(document.hydrate("bar.ts").hunks[0].rows.map((row) => row.text)).toEqual(["one", "two ✓"]);
   });
+});
+
+test("Git paths index, hydrate and match generated attributes by their native names", () => {
+  const root = mkdtempSync(join(tmpdir(), "pr-cockpit-diff-"));
+  const git = (...args) => {
+    const result = Bun.spawnSync(["git", "-C", root, ...args], { stdout: "pipe", stderr: "pipe" });
+    if (!result.success) throw new Error(result.stderr.toString());
+    return result.stdout.toString();
+  };
+  const write = (files) => {
+    for (const [path, content] of Object.entries(files)) writeFileSync(join(root, path), content);
+  };
+  const blob = (byte) => Uint8Array.from({ length: 4096 }, (_, index) => (index === 2048 ? byte : index % 7));
+  try {
+    git("init", "-q", "-b", "main");
+    git("config", "user.name", "PR Cockpit Test");
+    git("config", "user.email", "pr-cockpit@example.test");
+    mkdirSync(join(root, "gen"));
+    mkdirSync(join(root, "gen/a b"));
+    write({
+      ".gitattributes": "gen/** linguist-generated\n",
+      "gen/old ü.gen": "one\ntwo\nthree\nfour\nfive\n",
+      "gen/tab\tgone.gen": "gone\n",
+      "gen/img é.bin": blob(1),
+      "gen/a b/data.gen": "old\n",
+      "gen/a b/blob.bin": blob(1),
+      'gen/quote"back\\slash.txt': "before\n",
+      "plain café.txt": "naïve\n",
+    });
+    git("add", "-A");
+    git("commit", "-q", "-m", "base");
+    git("mv", "gen/old ü.gen", "gen/new\nü.gen");
+    git("mv", "gen/img é.bin", "gen/img\t中.bin");
+    git("rm", "-q", "gen/tab\tgone.gen");
+    write({
+      "gen/new\nü.gen": "one\ntwo\nthree\nfour\nFIVE\n",
+      "gen/img\t中.bin": blob(2),
+      "gen/bin 中.gen": "\0\x01\x02",
+      "gen/a b/data.gen": "new\n",
+      "gen/a b/blob.bin": blob(2),
+      'gen/quote"back\\slash.txt': "after ✓\n",
+      "plain café.txt": "naïve 😀\n",
+    });
+    git("add", "-A");
+    git("commit", "-q", "-m", "head");
+
+    const status = git("diff", "-z", "--name-status", "HEAD~", "HEAD").split("\0");
+    const numstat = git("diff", "-z", "--numstat", "HEAD~", "HEAD").split("\0");
+    const expected = [];
+    for (let s = 0, n = 0; s < status.length - 1; n++) {
+      const code = status[s++];
+      const previousPath = code[0] === "R" ? status[s++] : null;
+      const [additions, deletions] = numstat[n].split("\t");
+      if (previousPath) n += 2;
+      expected.push({
+        path: status[s++],
+        previousPath,
+        isNew: code === "A",
+        isDeleted: code === "D",
+        isBinary: additions === "-",
+        additions: Number(additions) || 0,
+        deletions: Number(deletions) || 0,
+      });
+    }
+    expect(expected.map((file) => file.previousPath)).toContain("gen/img é.bin");
+    const attributes = git("check-attr", "--cached", "-z", "linguist-generated", "--", ...expected.map((file) => file.path)).split("\0");
+    const generated = [];
+    for (let index = 0; index + 2 < attributes.length; index += 3) if (attributes[index + 2] === "set") generated.push(attributes[index]);
+    expect(generated).toContain("gen/tab\tgone.gen");
+
+    for (const quotePath of ["true", "false"]) {
+      const text = git("-c", `core.quotePath=${quotePath}`, "diff", "HEAD~", "HEAD");
+      const indexed = indexDiff(text);
+      const metadata = (file) => ({
+        path: file.path,
+        previousPath: file.previousPath,
+        isNew: file.isNew,
+        isDeleted: file.isDeleted,
+        isBinary: file.isBinary,
+        additions: file.additions,
+        deletions: file.deletions,
+      });
+      expect(indexed.map(metadata)).toEqual(expected);
+      expect(indexed.filter((file) => excludedPath(file.path, /^$/, new Set(generated))).map((file) => file.path)).toEqual(generated);
+      const bytes = new TextEncoder().encode(text);
+      const document = createDiffDocument(bytes, indexed);
+      expect(indexed.map((file) => metadata(document.hydrate(file.path)))).toEqual(expected);
+      expect(indexed.at(-1).byteEnd).toBe(bytes.length);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("large replacements preserve every row and revert without argument-stack limits", () => {

@@ -5,6 +5,7 @@
     fetchPrDetail,
     fetchPendingReview,
     fetchPrDiff,
+    fetchGeneratedFiles,
     fetchPrDetailSnapshot,
     commitPrFileEdit,
     generateCommitMessage,
@@ -41,13 +42,14 @@
   import { setViewerLogin } from "./viewer.svelte.js";
   import { scrollPage, scrollEdge, holdScrollStart, holdScrollRelease, cancelHoldScroll, scrollAnimating } from "./scroll.js";
   import { testMatcher } from "./testPath.js";
+  import { excludedPath } from "../../../shared/reviewFiles.js";
   import { prefs } from "./prefs.svelte.js";
   import { timedFlag } from "./timedFlag.svelte.js";
   import { showFlash } from "./flash.svelte.js";
   import Chevron from "./Chevron.svelte";
   import { greptileReviewMeta, greptileStatus, KNOWN_BOT_LOGINS } from "./greptileStatus.js";
   import { prKeyOf } from "./prKey.js";
-  import { getDetail, cacheDetail, cacheDiff, cacheDiffIndex, cachedDiff, cachedDiffIndex, diffCacheKey } from "./detailCache.js";
+  import { getDetail, cacheDetail, cacheDiff, cacheDiffIndex, cachedDiff, cachedDiffIndex, cacheGeneratedPaths, cachedGeneratedPaths, diffCacheKey, prDiffRange } from "./detailCache.js";
   import { preloadPr, whenIdle } from "./preload.js";
   import { buildChecks, countChecks, summarizeChecks, sectionizeChecks, ciFixPrompt } from "./checks.js";
   import { mergeGate as evalMergeGate, forceMergeAvailable as evalForceMerge, forceMergeShortcutAction, mergeabilityPending } from "./mergeGate.js";
@@ -92,6 +94,10 @@
   let pr = $state.raw(null);
   let actionsRunUrl = $state(null);
   let files = $state.raw([]);
+  // Attribute-generated paths for the displayed diff's commits; always replaced together with `files`.
+  let generatedPaths = $state.raw(new Set());
+  // The displayed diff's identity once attributes classified it; group folds reconcile once per key.
+  let classifiedDiffKey = $state(null);
   let diffDocument = null;
   onDestroy(() => {
     diffDocument?.dispose();
@@ -158,6 +164,11 @@
       if (activeFetch === token && !pr && !error) showLoading = true;
     }, 250);
     files = [];
+    generatedPaths = new Set();
+    classifiedDiffKey = null;
+    excludedFoldAppliedFor = null;
+    excludedChoice = null;
+    groupFolds = new Set();
     diffDocument?.dispose();
     diffDocument = null;
     dropHeldDiff();
@@ -326,6 +337,32 @@
     });
   }
 
+  function loadGeneratedPaths(key, range, signal, background) {
+    const cached = cachedGeneratedPaths(key);
+    if (cached) return Promise.resolve({ ok: true, paths: cached });
+    return fetchGeneratedFiles(repo, number, range, signal, background).then((res) => {
+      if (!res.ok) return res;
+      const paths = new Set(res.paths);
+      cacheGeneratedPaths(key, paths);
+      return { ok: true, paths };
+    });
+  }
+
+  // Keeps "Preparing diff…" up and retries while a cold mirror builds, until BUILD_CAP_MS passes for this diff.
+  function waitForMirror(key, retryAfterMs) {
+    if (buildingKey !== key) {
+      buildingKey = key;
+      buildingDeadline = Date.now() + BUILD_CAP_MS;
+    }
+    if (Date.now() >= buildingDeadline) {
+      buildingKey = "";
+      return false;
+    }
+    diffState = "building";
+    diffRetryTimer = setTimeout(() => diffNonce++, retryAfterMs);
+    return true;
+  }
+
   async function openDiffDocument({ bytes, key }) {
     const document = await loadDiffDocument(bytes, cachedDiffIndex(key, bytes));
     cacheDiffIndex(key, bytes, document.files);
@@ -339,6 +376,8 @@
     syncViewedFiles(diff.files);
     displayedDiffKey = diff.dkey;
     files = diff.files;
+    generatedPaths = diff.generated;
+    classifiedDiffKey = diff.classifiedKey;
     fileIndex = 0;
     diffState = "ready";
     buildingKey = "";
@@ -368,7 +407,11 @@
     if (background && r) return;
     const rewrittenSince = rangeKey === "since" && anchorRewritten;
     const head = pr.headRefOid;
-    const baseKey = diffCacheKey(repo, number, r?.base ?? head, r?.head ?? head);
+    // Explicit ranges compare two-dot. The PR's own diff, a pending commit's included, stays three-dot
+    // from the detail's captured base, so bytes and generated paths share one pinned identity and a
+    // retargeted base reloads both.
+    const request = r?.base ? { base: r.base, head: r.head, mode: "two-dot" } : prDiffRange(pr, r?.head ?? head);
+    const baseKey = diffCacheKey(repo, number, request);
     const dkey = `${baseKey}#${diffNonce}`;
     if (dkey === loadedDiffKey) {
       if (!background && heldDiff?.dkey === dkey) untrack(showHeldDiff);
@@ -384,11 +427,24 @@
     const controller = new AbortController();
     diffController = controller;
     const isSince = rangeKey === "since" && r;
+    const prRequest = prDiffRange(pr, head);
     Promise.all([
-      loadPrDiff(baseKey, background ? { head } : r, controller.signal, background),
-      isSince ? loadPrDiff(diffCacheKey(repo, number, head, head), null, controller.signal) : Promise.resolve(null),
-    ]).then(async ([res, prRes]) => {
+      loadPrDiff(baseKey, request, controller.signal, background),
+      isSince ? loadPrDiff(diffCacheKey(repo, number, prRequest), prRequest, controller.signal) : Promise.resolve(null),
+      loadGeneratedPaths(baseKey, request, controller.signal, background),
+    ]).then(async ([res, prRes, generated]) => {
       if (diffFetch !== token) return;
+      // A warm-up holds only a fully classified diff; the Files tab retries anything less itself.
+      if (background && !(res.ok && generated.ok)) {
+        missedBackgroundDiff();
+        return;
+      }
+      if (res.ok && !generated.ok) {
+        if (generated.building && waitForMirror(baseKey, generated.retryAfterMs)) return;
+        diffState = "error";
+        diffError = generated.building ? "Git mirror is still loading. Try again shortly." : generated.error;
+        return;
+      }
       if (res.ok) {
         const [document, prDocument] = await Promise.all([
           openDiffDocument(res),
@@ -408,29 +464,27 @@
           parsed = own;
           prDocument.dispose();
         }
-        const diff = { dkey, document, files: parsed, churnBase };
+        const diff = {
+          dkey,
+          document,
+          files: parsed,
+          churnBase,
+          generated: generated.paths,
+          classifiedKey: baseKey,
+        };
         if (tab === "files") showDiff(diff);
         else heldDiff = diff;
-      } else if (background) {
-        missedBackgroundDiff();
       } else if (res.building) {
-        if (buildingKey !== baseKey) {
-          buildingKey = baseKey;
-          buildingDeadline = Date.now() + BUILD_CAP_MS;
-        }
-        if (Date.now() >= buildingDeadline) {
+        if (!waitForMirror(baseKey, res.retryAfterMs)) {
           diffState = "error";
           diffError = "Git mirror is still loading. Try again shortly.";
-          buildingKey = "";
-        } else {
-          diffState = "building";
-          diffRetryTimer = setTimeout(() => diffNonce++, res.retryAfterMs);
         }
       } else if (rewrittenSince && res.status === 404) {
         rangeKey = "all";
         rewriteFallback = true;
       } else {
         files = [];
+        generatedPaths = new Set();
         diffState = "error";
         diffError = res.error;
         buildingKey = "";
@@ -1880,12 +1934,12 @@
   let selectedPath = $derived(files[fileIndex]?.path ?? null);
 
   let testPattern = $derived(testMatcher(prefs.testPathRegex));
-  let testFiles = $derived(files.filter((f) => testPattern.test(f.path)));
-  let nonTestFiles = $derived(files.filter((f) => !testPattern.test(f.path)));
-  let nonTestAdditions = $derived(nonTestFiles.reduce((sum, f) => sum + f.additions, 0));
-  let nonTestDeletions = $derived(nonTestFiles.reduce((sum, f) => sum + f.deletions, 0));
-  let testsHidden = $derived(testFiles.length > 0 && testFiles.every((f) => collapsedFiles.has(f.path)));
-  let treeFiles = $derived(testsHidden ? files.filter((f) => !testPattern.test(f.path)) : files);
+  let excludedFiles = $derived(files.filter((f) => excludedPath(f.path, testPattern, generatedPaths)));
+  let includedFiles = $derived(files.filter((f) => !excludedPath(f.path, testPattern, generatedPaths)));
+  let includedAdditions = $derived(includedFiles.reduce((sum, f) => sum + f.additions, 0));
+  let includedDeletions = $derived(includedFiles.reduce((sum, f) => sum + f.deletions, 0));
+  let excludedFilesHidden = $derived(excludedFiles.length > 0 && excludedFiles.every((f) => collapsedFiles.has(f.path)));
+  let treeFiles = $derived(excludedFilesHidden ? includedFiles : files);
 
   function startTreeResize(e) {
     e.preventDefault();
@@ -1906,22 +1960,31 @@
     target.addEventListener("pointerup", onUp);
   }
 
-  let testDefaultAppliedFor = null;
+  // This PR's x choice; reopening the PR applies the default again.
+  let excludedChoice = null;
+  // Folds the x group placed, kept apart from viewed files so each classified range and a later show
+  // reconcile them without touching what the reviewer marked viewed.
+  let groupFolds = new Set();
+  let excludedFoldAppliedFor = null;
+
+  function applyExcludedFolds(hide) {
+    const next = new Set(collapsedFiles);
+    for (const path of groupFolds) if (!viewedFiles.has(path)) next.delete(path);
+    groupFolds = new Set(hide ? excludedFiles.map((f) => f.path).filter((path) => !viewedFiles.has(path)) : []);
+    for (const path of groupFolds) next.add(path);
+    collapsedFiles = next;
+  }
+
   $effect(() => {
-    const key = `${repo}/${number}`;
-    if (!prefs.loaded || files.length === 0 || testDefaultAppliedFor === key) return;
-    testDefaultAppliedFor = key;
-    if (prefs.hideTestsDefault) {
-      collapsedFiles = new Set([...collapsedFiles, ...testFiles.map((f) => f.path)]);
-    }
+    if (!prefs.loaded || !classifiedDiffKey || excludedFoldAppliedFor === classifiedDiffKey) return;
+    excludedFoldAppliedFor = classifiedDiffKey;
+    untrack(() => applyExcludedFolds(excludedChoice ?? prefs.hideExcludedDefault));
   });
 
-  function toggleTests() {
-    if (testsHidden) {
-      updateViewedFiles(testFiles, false);
-    } else {
-      collapsedFiles = new Set([...collapsedFiles, ...testFiles.map((f) => f.path)]);
-    }
+  function toggleExcludedFiles() {
+    excludedChoice = !excludedFilesHidden;
+    if (!excludedChoice) updateViewedFiles(excludedFiles, false);
+    applyExcludedFolds(excludedChoice);
   }
 
   function viewedFileStorageKey() {
@@ -2168,6 +2231,7 @@
     if (rangeKey !== "all") {
       rangeKey = "all";
       files = [];
+      generatedPaths = new Set();
     }
     const parent = `#/pr/${repo}/${number}/files`;
     const query = symbol ? `?symbol=${encodeURIComponent(symbol)}` : "";
@@ -2306,7 +2370,7 @@
         upPressed = true;
         holdScrollStart(page, -1);
       } else if (tab === "files" && e.key === "x") {
-        toggleTests();
+        toggleExcludedFiles();
       } else if (tab === "files" && e.key === "h") {
         if (files[fileIndex]) openFileHistory(files[fileIndex].path);
       } else if (e.key === "x") {
@@ -2435,7 +2499,7 @@
     { key: "J / K", label: "file" },
     { key: "v", label: "toggle file viewed" },
     { key: "c", label: "changes range" },
-    { key: "x", label: "hide tests" },
+    { key: "x", label: "hide tests/generated" },
     { key: "h", label: "file history" },
     { key: "r", label: "reply" },
     { key: "e", label: "edit inline" },
@@ -2581,7 +2645,7 @@
             <div class="pr-metric">
               <span>Changed</span>
               {#if diffState === "ready"}
-                <strong><b class="add">+{nonTestAdditions}</b> <b class="del">−{nonTestDeletions}</b></strong>
+                <strong><b class="add">+{includedAdditions}</b> <b class="del">−{includedDeletions}</b></strong>
                 <em><b class="add">+{pr.additions}</b> <b class="del">−{pr.deletions}</b></em>
               {:else}
                 <strong><b class="add">+{pr.additions}</b> <b class="del">−{pr.deletions}</b></strong>
@@ -2843,9 +2907,9 @@
                 <button class="toolbar-btn" onclick={() => selectRange("all")}>All changes</button>
               {/if}
             </div>
-            {#if testFiles.length && diffState === "ready"}
-              <button class="toolbar-btn shortcut-action" onclick={toggleTests}>
-                {testsHidden ? "show" : "hide"} {testFiles.length} test file{testFiles.length > 1 ? "s" : ""} <Kbd keys="x" />
+            {#if excludedFiles.length && diffState === "ready"}
+              <button class="toolbar-btn shortcut-action" onclick={toggleExcludedFiles}>
+                {excludedFilesHidden ? "show" : "hide"} {excludedFiles.length} test/generated file{excludedFiles.length > 1 ? "s" : ""} <Kbd keys="x" />
               </button>
             {/if}
           </div>
@@ -3007,7 +3071,7 @@
             {/if}
             {#each shownTimeline as event (event.id)}
               {#if event.kind === "commit"}
-                {@const lines = commitLineCounts[event.oid] ?? (event.additions === null ? null : { additions: event.additions, deletions: event.deletions, skippedTests: false, testsOnly: false })}
+                {@const lines = commitLineCounts[event.oid] ?? (event.additions === null ? null : { additions: event.additions, deletions: event.deletions, skippedExcluded: false, excludedOnly: false })}
                 {@const when = relativeTime(event.at)}
                 <div class="commit-row" class:clickable={event.parentOid}>
                   <button
@@ -3021,8 +3085,8 @@
                     <span class="commit-headline">{event.headline}</span>
                     <span
                       class="commit-lines"
-                      class:tests-only={lines?.testsOnly}
-                      title={lines?.testsOnly ? "Only test files changed" : lines?.skippedTests ? "Lines changed outside test files" : "Lines changed"}
+                      class:excluded-only={lines?.excludedOnly}
+                      title={lines?.excludedOnly ? "Only test or generated files changed" : lines?.skippedExcluded ? "Lines changed outside test and generated files" : "Lines changed"}
                     >
                       {#if lines}
                         <b class="add">+{lines.additions}</b><b class="del">−{lines.deletions}</b>
@@ -3673,7 +3737,7 @@
       <KeyBar keys={tab === "files" ? filesKeys : tab === "agents" || tab === "actions" ? tabKeys : conversationKeys} />
     {/if}
 
-    <Telescope bind:this={telescope} {repo} headSha={pr.headRefOid} headRef={pr.headRefName} {testsHidden} changedFiles={files} onOpenChangedFile={openChangedFile} onOpenHistory={openFileHistory} bind:open={telescopeOpen} />
+    <Telescope bind:this={telescope} {repo} headSha={pr.headRefOid} headRef={pr.headRefName} {excludedFilesHidden} changedFiles={files} onOpenChangedFile={openChangedFile} onOpenHistory={openFileHistory} bind:open={telescopeOpen} />
     <FileHistory
       {repo}
       path={historyPath}
@@ -4478,8 +4542,8 @@
   .commit-lines .del {
     color: var(--fail);
   }
-  .commit-lines.tests-only .add,
-  .commit-lines.tests-only .del {
+  .commit-lines.excluded-only .add,
+  .commit-lines.excluded-only .del {
     color: var(--text-faint);
   }
   .commit-ci {

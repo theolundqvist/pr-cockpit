@@ -125,24 +125,44 @@ describe("commitsFromGitDir", () => {
 });
 
 describe("summarizeCommitStats", () => {
-  test("excludes test files while preserving test-only commits", () => {
+  test("excludes tests and generated files, preserves excluded-only commits and visible binary changes", () => {
     const counts = summarizeCommitStats([
       {
         sha: "mixed",
         files: [
           { path: "src/app.ts", additions: 5, deletions: 2 },
           { path: "src/app.test.ts", additions: 3, deletions: 1 },
+          { path: "catalog.generated.ts", additions: 250, deletions: 40 },
+          { path: "assets/schema.json", additions: 150, deletions: 10 },
         ],
       },
       {
         sha: "tests",
         files: [{ path: "src/__tests__/app.ts", additions: 4, deletions: 0 }],
       },
-    ], /\.test\.ts$|\/__tests__\//);
+      {
+        sha: "generated",
+        files: [{ path: "types.generated.ts", additions: 30, deletions: 4 }],
+      },
+      {
+        sha: "binary",
+        files: [
+          { path: "assets/photo.png", additions: 0, deletions: 0 },
+          { path: "sdk.generated.ts", additions: 250, deletions: 30 },
+        ],
+      },
+    ], /\.test\.ts$|\/__tests__\//, new Map([
+      ["mixed", new Set(["assets/schema.json"])],
+      ["tests", new Set<string>()],
+      ["generated", new Set<string>()],
+      ["binary", new Set<string>()],
+    ]));
 
     expect(counts).toEqual({
-      mixed: { additions: 5, deletions: 2, skippedTests: true, testsOnly: false },
-      tests: { additions: 4, deletions: 0, skippedTests: false, testsOnly: true },
+      mixed: { additions: 5, deletions: 2, skippedExcluded: true, excludedOnly: false },
+      tests: { additions: 4, deletions: 0, skippedExcluded: false, excludedOnly: true },
+      generated: { additions: 30, deletions: 4, skippedExcluded: false, excludedOnly: true },
+      binary: { additions: 0, deletions: 0, skippedExcluded: true, excludedOnly: false },
     });
   });
 });
@@ -189,6 +209,68 @@ describe("commitStatsFromGitDir", () => {
     ]);
     expect(bySha.get(second)).toEqual([{ path: "app.ts", additions: 0, deletions: 2 }]);
     expect(bySha.has(merge)).toBe(false);
+  });
+
+  test("keeps raw paths for non-ASCII, tab, newline, renamed and binary files", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pr-cockpit-commit-stats-paths-"));
+    cleanup.push(root);
+    git(root, "init", "-b", "main");
+    git(root, "config", "user.name", "PR Cockpit Test");
+    git(root, "config", "user.email", "pr-cockpit@example.test");
+    // a user's diff.renames must not change commit totals
+    git(root, "config", "diff.renames", "false");
+    await Bun.write(join(root, "old name.ts"), "one\ntwo\n");
+    await Bun.write(join(root, "lib.ts"), "1\n2\n3\n4\n5\n6\n");
+    git(root, "add", "-A");
+    git(root, "commit", "-m", "base");
+    const base = Bun.spawnSync(["git", "-C", root, "rev-parse", "HEAD"]).stdout.toString().trim();
+
+    const odd = "gen/tab\there\nnext\x1e.ts";
+    mkdirSync(join(root, "gen"));
+    await Bun.write(join(root, ".gitattributes"), "gen/** linguist-generated\n");
+    await Bun.write(join(root, "schéma ü.ts"), "a\nb\nc\n");
+    await Bun.write(join(root, odd), "x\n");
+    await Bun.write(join(root, "logo.png"), new Uint8Array([0, 1, 2, 0, 255]));
+    git(root, "add", "-A");
+    git(root, "commit", "-m", "add odd paths");
+    const added = Bun.spawnSync(["git", "-C", root, "rev-parse", "HEAD"]).stdout.toString().trim();
+
+    const renamedTo = "\x1eout/new\tname\n.generated.ts";
+    mkdirSync(join(root, "\x1eout"));
+    git(root, "mv", "old name.ts", renamedTo);
+    git(root, "commit", "-m", "pure rename");
+    const renamed = Bun.spawnSync(["git", "-C", root, "rev-parse", "HEAD"]).stdout.toString().trim();
+
+    git(root, "mv", "lib.ts", "lib\nü.ts");
+    await Bun.write(join(root, "lib\nü.ts"), "1\n2\n3\n4\n5\n6\n7\n");
+    git(root, "commit", "-am", "rename and edit");
+    const edited = Bun.spawnSync(["git", "-C", root, "rev-parse", "HEAD"]).stdout.toString().trim();
+
+    const result = await commitStatsFromGitDir(join(root, ".git"), base, "main");
+
+    if (result.status !== "ok") throw new Error(`expected ok, got ${result.status}`);
+    expect(result.commits).toEqual([
+      { sha: edited, files: [{ path: "lib\nü.ts", additions: 1, deletions: 0 }] },
+      { sha: renamed, files: [{ path: renamedTo, additions: 0, deletions: 0 }] },
+      {
+        sha: added,
+        files: [
+          { path: ".gitattributes", additions: 1, deletions: 0 },
+          { path: odd, additions: 1, deletions: 0 },
+          { path: "logo.png", additions: 0, deletions: 0 },
+          { path: "schéma ü.ts", additions: 3, deletions: 0 },
+        ],
+      },
+    ]);
+    expect(summarizeCommitStats(result.commits, /\.test\.ts$/, new Map([
+      [edited, new Set<string>()],
+      [renamed, new Set<string>()],
+      [added, new Set([odd])],
+    ]))).toEqual({
+      [edited]: { additions: 1, deletions: 0, skippedExcluded: false, excludedOnly: false },
+      [renamed]: { additions: 0, deletions: 0, skippedExcluded: false, excludedOnly: true },
+      [added]: { additions: 4, deletions: 0, skippedExcluded: true, excludedOnly: false },
+    });
   });
 
   test("reports a missing commit instead of guessing", async () => {

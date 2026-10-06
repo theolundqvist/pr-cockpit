@@ -37,7 +37,7 @@
   let generalScale = $state(100);
   let diffScale = $state(100);
   let hideSidebar = $state(false);
-  let hideTestsDefault = $state(false);
+  let hideExcludedDefault = $state(false);
   let newestCommentsFirst = $state(false);
   let pendingReviewsEnabled = $state(false);
   let descriptionUnreadDots = $state(false);
@@ -162,7 +162,7 @@
     generalScale = s.general_scale;
     diffScale = s.diff_scale;
     hideSidebar = s.hide_sidebar;
-    hideTestsDefault = s.hide_tests_default;
+    hideExcludedDefault = s.hide_tests_default;
     newestCommentsFirst = s.newest_comments_first;
     pendingReviewsEnabled = s.pending_reviews_enabled === true;
     descriptionUnreadDots = s.description_unread_dots === true;
@@ -364,7 +364,7 @@
         general_scale: generalScale,
         diff_scale: diffScale,
         hide_sidebar: hideSidebar,
-        hide_tests_default: hideTestsDefault,
+        hide_tests_default: hideExcludedDefault,
         newest_comments_first: newestCommentsFirst,
         pending_reviews_enabled: pendingReviewsEnabled,
         description_unread_dots: descriptionUnreadDots,
@@ -967,9 +967,9 @@
 
 
         <label class="check-field settings-option">
-          <input class="check" type="checkbox" bind:checked={hideTestsDefault} />
+          <input class="check" type="checkbox" bind:checked={hideExcludedDefault} />
           <span class="check-text">
-            <span class="check-label">Hide test files by default</span>
+            <span class="check-label">Hide tests and generated files by default</span>
           </span>
         </label>
 

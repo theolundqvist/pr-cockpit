@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, setSystemTime, spyOn, test } from "bun:test";
-import { buildFetchHandler as buildLiveFetchHandler, buildPrAgentSummary, checkoutTargetFor, formatPrAgentSummary, mergeabilityNeedsRefresh, normalizeAgentMutation, reviewThreadHandle, snapshotStatus, statsExcludingTests, trackedDetailIsStale } from "./http.ts";
+import { buildFetchHandler as buildLiveFetchHandler, buildPrAgentSummary, checkoutTargetFor, formatPrAgentSummary, mergeabilityNeedsRefresh, normalizeAgentMutation, reviewThreadHandle, snapshotStatus, statsExcludingFiles, trackedDetailIsStale } from "./http.ts";
 import { GithubRequestError, StalePrHeadError, type PrDetail } from "./github.ts";
 import { db, getCachedPrDetail, getPr, getSetting, listRunJobs, markActionsLeaseBootstrapped, markWorkflowRunJobsFetched, recordPrWebhookActivity, renewActionsLease, saveDiff, saveFileContents, saveRunJobLog, setSetting, upsertCachedPrDetail, upsertPr, upsertPrIndex, upsertRunJob, upsertWorkflowRun } from "./db.ts";
 import { testMatcher } from "../ui/src/lib/testPath.js";
@@ -80,41 +80,44 @@ function trackedPrRow({
   } as unknown as Parameters<typeof upsertPr>[0];
 }
 
-describe("statsExcludingTests", () => {
-  test("sums non-test files, drops test files", () => {
+describe("statsExcludingFiles", () => {
+  test("sums review files without double-counting tests or generated files", () => {
     const detail = {
       files: {
-        totalCount: 3,
+        totalCount: 5,
         nodes: [
           { path: "src/foo.ts", additions: 10, deletions: 2 },
           { path: "src/foo.test.ts", additions: 50, deletions: 40 },
           { path: "src/bar.ts", additions: 5, deletions: 1 },
+          { path: "catalog.generated.md", additions: 250, deletions: 30 },
+          { path: "assets/schema.json", additions: 20, deletions: 10 },
         ],
       },
     };
-    expect(statsExcludingTests(pr, detail, testRe)).toEqual({ additions: 15, deletions: 3 });
+    expect(statsExcludingFiles(pr.additions, pr.deletions, detail.files, testRe, new Set(["assets/schema.json", "catalog.generated.md"]))).toEqual({ additions: 15, deletions: 3 });
   });
 
   test("falls back to raw totals when the 100-file cap was hit", () => {
     const detail = { files: { totalCount: 120, nodes: [{ path: "src/foo.ts", additions: 10, deletions: 2 }] } };
-    expect(statsExcludingTests(pr, detail, testRe)).toEqual({ additions: 999, deletions: 999 });
+    expect(statsExcludingFiles(pr.additions, pr.deletions, detail.files, testRe, new Set())).toEqual({ additions: 999, deletions: 999 });
   });
 
   test("falls back to raw totals when detail_json predates the files field", () => {
-    expect(statsExcludingTests(pr, {}, testRe)).toEqual({ additions: 999, deletions: 999 });
+    expect(statsExcludingFiles(pr.additions, pr.deletions, undefined, testRe, new Set())).toEqual({ additions: 999, deletions: 999 });
   });
 
   test("respects a custom test_path_regex", () => {
     const detail = {
       files: {
-        totalCount: 2,
+        totalCount: 3,
         nodes: [
           { path: "src/foo.ts", additions: 10, deletions: 2 },
           { path: "e2e/foo.ts", additions: 50, deletions: 40 },
+          { path: "sdk.generated.ts", additions: 250, deletions: 30 },
         ],
       },
     };
-    expect(statsExcludingTests(pr, detail, testMatcher("^e2e/"))).toEqual({ additions: 10, deletions: 2 });
+    expect(statsExcludingFiles(pr.additions, pr.deletions, detail.files, testMatcher("^e2e/"), new Set())).toEqual({ additions: 10, deletions: 2 });
   });
 });
 
@@ -2021,10 +2024,40 @@ describe("PR diff head overrides", () => {
     }
   });
 
-  test("rejects base-only and malformed head overrides", async () => {
+  test("pins the three-dot diff to a captured base after the PR's base moves", async () => {
+    db.query("DELETE FROM prs WHERE repo = ? AND number = ?").run(repo, number);
+    db.query("DELETE FROM pr_detail_cache WHERE repo = ? AND number = ?").run(repo, number);
+    db.query("DELETE FROM diffs WHERE head_sha = ?").run(diffKey);
+    upsertCachedPrDetail({
+      repo,
+      number,
+      head_sha: requestedHead,
+      detail_json: JSON.stringify({ baseRefName: "main", baseRefOid: "e".repeat(40) }),
+      fetched_at: new Date().toISOString(),
+    });
+    saveDiff(diffKey, patch);
+
+    try {
+      const response = await buildFetchHandler(4820)(
+        new Request(`http://127.0.0.1:4820/api/pr/cockpit-test/head-only-diff/${number}/diff?base=${baseSha}&head=${requestedHead}&mode=three-dot`),
+      );
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe(patch);
+    } finally {
+      db.query("DELETE FROM pr_detail_cache WHERE repo = ? AND number = ?").run(repo, number);
+      db.query("DELETE FROM diffs WHERE head_sha = ?").run(diffKey);
+    }
+  });
+
+  test("rejects base-only, malformed head, and unsupported mode overrides", async () => {
     const fetchHandler = buildFetchHandler(4820);
 
-    for (const query of [`?base=${baseSha}`, "?head=not-a-sha"]) {
+    for (const query of [
+      `?base=${baseSha}`,
+      "?head=not-a-sha",
+      `?base=${baseSha}&head=${requestedHead}&mode=one-dot`,
+      `?head=${requestedHead}&mode=two-dot`,
+    ]) {
       const response = await fetchHandler(
         new Request(`http://127.0.0.1:4820/api/pr/cockpit-test/head-only-diff/${number}/diff${query}`),
       );

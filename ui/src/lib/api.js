@@ -190,24 +190,45 @@ export async function fetchPrDetails(keys) {
   return (await res.json()).details;
 }
 
+function diffRangeQuery(range, prefetch) {
+  const params = new URLSearchParams();
+  if (range?.base) params.set("base", range.base);
+  if (range?.head) params.set("head", range.head);
+  if (range?.mode) params.set("mode", range.mode);
+  if (prefetch) params.set("prefetch", "1");
+  return params.size ? `?${params}` : "";
+}
+
+function mirrorFailure(res, body, fallback) {
+  const error = body?.error || `${fallback} (${res.status})`;
+  if (res.status === 503 && body?.building === true) {
+    return { ok: false, building: true, error, retryAfterMs: (Number(res.headers.get("retry-after")) || 5) * 1000 };
+  }
+  return { ok: false, building: false, status: res.status, error };
+}
+
 export async function fetchPrDiff(repo, number, range = null, signal = null, prefetch = false) {
   try {
-    const params = new URLSearchParams();
-    if (range?.base) params.set("base", range.base);
-    if (range?.head) params.set("head", range.head);
-    if (prefetch) params.set("prefetch", "1");
-    const qs = params.size ? `?${params}` : "";
-    const res = await fetch(`/api/pr/${repo}/${number}/diff${qs}`, requestInit(signal, prefetch));
+    const res = await fetch(`/api/pr/${repo}/${number}/diff${diffRangeQuery(range, prefetch)}`, requestInit(signal, prefetch));
     if (prefetch && res.status === 204) return { ok: false, building: false, status: 204, error: "not available locally" };
     if (res.ok) return { ok: true, bytes: await res.arrayBuffer() };
-    const body = await res.json().catch(() => null);
-    const error = body?.error || `Diff request failed (${res.status})`;
-    if (res.status === 503 && body?.building === true) {
-      return { ok: false, building: true, error, retryAfterMs: (Number(res.headers.get("retry-after")) || 5) * 1000 };
-    }
-    return { ok: false, building: false, status: res.status, error };
+    return mirrorFailure(res, await res.json().catch(() => null), "Diff request failed");
   } catch (error) {
     return { ok: false, building: false, error: error instanceof Error ? error.message : "Diff request failed" };
+  }
+}
+
+// Paths the committed `linguist-generated` attributes mark generated for the same range and mode as
+// the diff, pinned to its commits; answers a cold mirror the way the diff does.
+export async function fetchGeneratedFiles(repo, number, range = null, signal = null, prefetch = false) {
+  try {
+    const res = await fetch(`/api/pr/${repo}/${number}/generated-files${diffRangeQuery(range, prefetch)}`, requestInit(signal, prefetch));
+    if (prefetch && res.status === 204) return { ok: false, building: false, status: 204, error: "not available locally" };
+    const body = await res.json().catch(() => null);
+    if (res.ok && body?.status === "ok" && Array.isArray(body.paths)) return { ok: true, paths: body.paths };
+    return mirrorFailure(res, body, "Generated files request failed");
+  } catch (error) {
+    return { ok: false, building: false, error: error instanceof Error ? error.message : "Generated files request failed" };
   }
 }
 

@@ -9,7 +9,7 @@ export const prefs = $state({
   loaded: false,
   prGrouping: normalizePrGrouping(null),
   hideSidebar: false,
-  hideTestsDefault: false,
+  hideExcludedDefault: false,
   newestCommentsFirst: false,
   testPathRegex: "",
   diffLayout: "split",
@@ -33,7 +33,7 @@ export const prefs = $state({
 export function setPrefs(settings) {
   prefs.prGrouping = normalizePrGrouping(settings.pr_grouping);
   prefs.hideSidebar = settings.hide_sidebar === true;
-  prefs.hideTestsDefault = settings.hide_tests_default;
+  prefs.hideExcludedDefault = settings.hide_tests_default;
   prefs.newestCommentsFirst = settings.newest_comments_first === true;
   prefs.testPathRegex = settings.test_path_regex;
   prefs.diffLayout = settings.diff_layout === "unified" ? "unified" : "split";

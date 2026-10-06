@@ -45,7 +45,7 @@ Press <kbd>⌥⌘K</kbd> on macOS or <kbd>Super+Alt+K</kbd> on Linux X11 to sear
 
 ### Read the change, then follow the details
 
-Diffs, threads, checks, and file history live in the same review workspace. The PR check summary uses the latest workflow run and job attempt; earlier runs remain in Actions history. Press <kbd>x</kbd> to fold test files when you want to see the implementation first; press it again to bring the tests back.
+Diffs, threads, checks, and file history live in the same review workspace. The PR check summary uses the latest workflow run and job attempt; earlier runs remain in Actions history. Press <kbd>x</kbd> to fold tests and generated files when you want to see the implementation first; press it again to bring them back. Generated files include `.generated.` names and committed `.gitattributes` rules marked `linguist-generated`; nested rules and overrides follow the reviewed revision. The same group can be hidden by default in Settings.
 
 ![Folding five regression-test diffs in graphql/graphql-js#4692 to isolate the one-line implementation change](docs/screenshots/landing-hide-tests.gif)
 
@@ -76,7 +76,7 @@ Desktop notifications are off by default. In **Settings → Notifications**, cho
 | <kbd>c</kbd> / <kbd>r</kbd> | Comment / reply |
 | <kbd>p</kbd> | Open in the configured agent |
 | <kbd>e</kbd> | Edit the open file |
-| <kbd>x</kbd> | Hide / show test files |
+| <kbd>x</kbd> | Hide / show tests and generated files |
 | <kbd>h</kbd> | File history |
 | <kbd>m</kbd> | Merge |
 | <kbd>⌘</kbd><kbd>z</kbd> / <kbd>Ctrl</kbd><kbd>z</kbd> | Undo a group-move rename or Set Aside action |

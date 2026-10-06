@@ -20,9 +20,17 @@ export function cachedHeadSha(key) {
   return details.get(key)?.headRefOid ?? null;
 }
 
-// A PR diff at one head never changes, so cached bytes and their file index need no revalidation.
-export function diffCacheKey(repo, number, base, head) {
-  return `${repo}#${number}#${base}#${head}`;
+// The PR's own diff is three-dot from the base its detail captured; explicit ranges are two-dot. A
+// detail cached before base capture keeps the server-resolved head-only request until a current one
+// arrives, rather than inventing a base.
+export function prDiffRange(detail, head = detail.headRefOid) {
+  return detail.baseRefOid ? { base: detail.baseRefOid, head, mode: "three-dot" } : { head };
+}
+
+// A diff between pinned commits never changes, so cached bytes, their file index, and their generated
+// paths need no revalidation. The key carries the same base, head, and mode the request sends.
+export function diffCacheKey(repo, number, { base = "", head, mode = "head-only" }) {
+  return `${repo}#${number}#${mode}#${base}#${head}`;
 }
 
 export function cachedDiff(key) {
@@ -54,6 +62,25 @@ export function cacheDiff(key, bytes) {
     diffIndexes.delete(oldest);
     diffBytes -= evicted.byteLength;
   }
+}
+
+// Generated paths for one diff identity are commit-pinned like the diff, but cached apart from its
+// bytes so evicting or reusing a raw patch never drops or invents their classification.
+const GENERATED_CACHE_MAX = 50;
+const generated = new Map();
+
+export function cachedGeneratedPaths(key) {
+  const paths = generated.get(key);
+  if (!paths) return null;
+  generated.delete(key);
+  generated.set(key, paths);
+  return paths;
+}
+
+export function cacheGeneratedPaths(key, paths) {
+  generated.delete(key);
+  generated.set(key, paths);
+  if (generated.size > GENERATED_CACHE_MAX) generated.delete(generated.keys().next().value);
 }
 
 // last response per remounting view, painted on mount while the view refetches

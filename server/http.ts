@@ -107,6 +107,7 @@ import { runtimeSupervisor } from "./supervisor.ts";
 import type { GithubUsageSource } from "./githubUsage.ts";
 import type { GithubAuthStatus } from "./githubAuth.ts";
 import { commitsFromMirror, commitStatsFromMirror, conflictFilesFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError, summarizeCommitStats, type MirrorDiffResult, type PullRequestCommit } from "./mirror.ts";
+import { cachedGeneratedPathsFromMirror, generatedFilesFromMirror, generatedPathsForCommitsFromMirror } from "./generatedFiles.ts";
 import { checkState, currentChecks, type CheckState } from "./checkState.ts";
 import { currentBaseRef, discardMutation, enqueueMutation, mutationsForPr, retryMutation, type MutationPayload } from "./mutations.ts";
 import { isMergeMethod, mergeMethodFor, mergeMethodSourceFor, setMergeMethodPreference } from "./mergeMethod.ts";
@@ -124,6 +125,7 @@ import {
   systemIssues,
 } from "./systemIssues.ts";
 import { testMatcher } from "../ui/src/lib/testPath.js";
+import { excludedPath } from "../shared/reviewFiles.js";
 import { handleImage, handleMockImage } from "./imageproxy.ts";
 import {
   agentLogTail,
@@ -298,19 +300,63 @@ function stubPrRowFromIndex(entry: PrIndexRow): PrRow {
 }
 
 // falls back to raw totals when detail_json predates the files field or the 100-file cap was hit
-export function statsExcludingTests(pr: PrRow, detail: any, testRe: RegExp): { additions: number; deletions: number } {
-  const files = detail.files;
-  if (!Array.isArray(files?.nodes) || files.totalCount > files.nodes.length) {
-    return { additions: pr.additions, deletions: pr.deletions };
+export function statsExcludingFiles(additions: number, deletions: number, files: PrDetail["files"] | undefined, testRe: RegExp, generatedPaths: ReadonlySet<string>): { additions: number; deletions: number } {
+  if (!files || !Array.isArray(files.nodes) || files.totalCount > files.nodes.length) {
+    return { additions, deletions };
   }
-  let additions = 0;
-  let deletions = 0;
-  for (const f of files.nodes as Array<{ path: string; additions: number; deletions: number }>) {
-    if (testRe.test(f.path)) continue;
+  additions = 0;
+  deletions = 0;
+  for (const f of files.nodes) {
+    if (excludedPath(f.path, testRe, generatedPaths)) continue;
     additions += f.additions;
     deletions += f.deletions;
   }
   return { additions, deletions };
+}
+
+type GeneratedFilesContext = { repo: string; number: number; base: string; head: string; additions: number; deletions: number; files: PrDetail["files"]; testPattern: RegExp };
+const generatedFileQueue = new Map<string, GeneratedFilesContext>();
+const generatedFileStats = new Map<string, { base: string; head: string; testSource: string; additions: number; deletions: number }>();
+const noGeneratedPaths = new Set<string>();
+let generatedFileWorkerRunning = false;
+
+async function warmGeneratedFiles(): Promise<void> {
+  generatedFileWorkerRunning = true;
+  try {
+    while (generatedFileQueue.size) {
+      const [key, context] = generatedFileQueue.entries().next().value!;
+      try {
+        let paths: readonly string[];
+        if (replicaEnabled()) {
+          const url = new URL(`/api/pr/${context.repo}/${context.number}/generated-files`, "http://localhost");
+          url.searchParams.set("base", context.base);
+          url.searchParams.set("head", context.head);
+          url.searchParams.set("mode", "three-dot");
+          const response = (await proxyReplicaRequest(new Request(url.href), url))!;
+          if (!response.ok) throw new Error(`Generated file source returned HTTP ${response.status}`);
+          const data: unknown = await response.json();
+          if (!data || typeof data !== "object" || !("status" in data) || data.status !== "ok"
+            || !("paths" in data) || !Array.isArray(data.paths) || !data.paths.every((path: unknown) => typeof path === "string")) {
+            throw new Error("Generated file source returned invalid metadata");
+          }
+          paths = data.paths;
+        } else {
+          const result = await generatedFilesFromMirror(context.repo, context.base, context.head, "three-dot");
+          if (result.status !== "ok") continue;
+          paths = result.paths;
+        }
+        const stats = statsExcludingFiles(context.additions, context.deletions, context.files, context.testPattern, new Set(paths));
+        generatedFileStats.set(key, { base: context.base, head: context.head, testSource: context.testPattern.source, ...stats });
+        invalidateInbox();
+      } catch (error) {
+        console.error(`generated file rules failed for ${key}:`, error);
+      } finally {
+        if (generatedFileQueue.get(key) === context) generatedFileQueue.delete(key);
+      }
+    }
+  } finally {
+    generatedFileWorkerRunning = false;
+  }
 }
 
 // Rows show at most three description thumbnails and count the rest.
@@ -377,7 +423,24 @@ async function handleInbox(url: URL): Promise<Response> {
     const perReviewer = hasReviewShape ? currentReviewerScores(detail) : {};
     const reviewScore = aggregateReviewScore(perReviewer, pr.greptile_confidence);
     const reviewScoreStale = aggregateReviewStale(perReviewer, reviewScore);
-    const stats = statsExcludingTests(pr, detail, testRe);
+    const key = prKey(pr);
+    const base = detail.baseRefOid;
+    let cachedStats = generatedFileStats.get(key);
+    if (!cachedStats || cachedStats.base !== base || cachedStats.head !== pr.head_sha || cachedStats.testSource !== testRe.source) cachedStats = undefined;
+    let stats = cachedStats ?? statsExcludingFiles(pr.additions, pr.deletions, detail.files, testRe, noGeneratedPaths);
+    if (!cachedStats && !isMockGithub && typeof base === "string" && FULL_SHA_RE.test(base) && FULL_SHA_RE.test(pr.head_sha)
+      && Array.isArray(detail.files?.nodes) && detail.files.totalCount === detail.files.nodes.length) {
+      const generatedPaths = cachedGeneratedPathsFromMirror(pr.repo, base, pr.head_sha, "three-dot");
+      if (generatedPaths !== null) {
+        stats = statsExcludingFiles(pr.additions, pr.deletions, detail.files, testRe, generatedPaths);
+        generatedFileStats.set(key, { base, head: pr.head_sha, testSource: testRe.source, ...stats });
+      } else {
+        const pending = generatedFileQueue.get(key);
+        if (!pending || pending.base !== base || pending.head !== pr.head_sha || pending.testPattern.source !== testRe.source) {
+          generatedFileQueue.set(key, { repo: pr.repo, number: pr.number, base, head: pr.head_sha, additions: pr.additions, deletions: pr.deletions, files: detail.files, testPattern: testRe });
+        }
+      }
+    }
     return {
       repo: pr.repo,
       number: pr.number,
@@ -424,6 +487,7 @@ async function handleInbox(url: URL): Promise<Response> {
       ...mediaFields(pr.body_media ? JSON.parse(pr.body_media) as string[] : undefined),
     };
   });
+  if (!generatedFileWorkerRunning && generatedFileQueue.size) void warmGeneratedFiles();
 
   const viewerLogin = replicaEnabled() ? replicaViewerLogin() : await getViewerLogin().catch(() => null);
   return json({ prs: rows, lastPollAt: isMockGithub ? MOCK_FIXTURE_CLOCK : lastPollAt, viewerLogin });
@@ -1556,7 +1620,7 @@ async function handlePrConflicts(owner: string, repo: string, number: string): P
 
 // Per-commit counts for the timeline. Aggregate mirror file lists here so large histories never
 // cross into the renderer; when the mirror has nothing to say, the client uses GraphQL totals.
-async function handlePrCommitStats(owner: string, repo: string, number: string, url: URL): Promise<Response> {
+async function handlePrCommitStats(owner: string, repo: string, number: string, url: URL, signal: AbortSignal): Promise<Response> {
   if (!validPrReference(owner, repo, number)) return json({ error: "invalid PR reference" }, 400);
   const repoName = `${owner}/${repo}`;
   const num = Number(number);
@@ -1582,7 +1646,9 @@ async function handlePrCommitStats(owner: string, repo: string, number: string, 
     }
   }
   if (result.status !== "ok") return json({ commits: {} });
-  return json({ commits: summarizeCommitStats(result.commits, testPattern) });
+  const generated = await generatedPathsForCommitsFromMirror(repoName, result.commits, signal);
+  if (generated.status !== "ok") return json({ commits: {} });
+  return json({ commits: summarizeCommitStats(result.commits, testPattern, generated.generatedByCommit) });
 }
 
 function notPreloaded(): Response {
@@ -1646,29 +1712,45 @@ async function mirrorDiffResponse(
   return new Response(unavailable, { status: 502 });
 }
 
+type DiffRangeParams =
+  | { mode: "two-dot"; base: string; head: string }
+  | { mode: "three-dot"; base: string | null; head: string | null };
+
+// An explicit base compares two-dot unless `mode=three-dot` asks for the PR's own diff from a base the
+// client captured; without a base the server resolves the PR's current base, always three-dot.
+function diffRangeParams(url: URL): DiffRangeParams | string {
+  const base = url.searchParams.get("base");
+  const head = url.searchParams.get("head");
+  const mode = url.searchParams.get("mode");
+  if (mode !== null && mode !== "two-dot" && mode !== "three-dot") return "mode must be two-dot or three-dot";
+  if (base !== null) {
+    if (!base || !head || !FULL_SHA_RE.test(base) || !FULL_SHA_RE.test(head)) return "base and head must be 40-char commit shas";
+    return mode === "three-dot" ? { mode, base, head } : { mode: "two-dot", base, head };
+  }
+  if (mode === "two-dot") return "two-dot mode requires base";
+  if (head !== null && !FULL_SHA_RE.test(head)) return "head must be a 40-char commit sha";
+  return { mode: "three-dot", base: null, head };
+}
+
 async function handlePrDiff(owner: string, repo: string, number: string, url: URL): Promise<Response> {
   if (!validPrReference(owner, repo, number)) return json({ error: "invalid PR reference" }, 400);
   const repoName = `${owner}/${repo}`;
   const num = Number(number);
-  const base = url.searchParams.get("base");
-  const head = url.searchParams.get("head");
+  const params = diffRangeParams(url);
+  if (typeof params === "string") return new Response(params, { status: 400 });
   const prefetch = url.searchParams.get("prefetch") === "1";
 
-  if (base !== null) {
-    if (!base || !head || !FULL_SHA_RE.test(base) || !FULL_SHA_RE.test(head)) {
-      return new Response("base and head must be 40-char commit shas", { status: 400 });
-    }
+  if (params.mode === "two-dot") {
+    const { base, head } = params;
     if (isMockGithub) return new Response("range diffs unavailable in mock mode", { status: 404 });
     // mirror is the only backend that can serve true two-dot; GitHub's compare API is three-dot
     return mirrorDiffResponse(repoName, `${base}..${head}`, base, head, "two-dot", prefetch, "mirror unavailable for this range");
   }
-  if (head !== null && !FULL_SHA_RE.test(head)) {
-    return new Response("head must be a 40-char commit sha", { status: 400 });
-  }
+  const { base, head } = params;
 
   const ctx = resolvePrContext(repoName, num);
   if (head !== null && !ctx) return prefetch ? notPreloaded() : json({ error: "PR is not cached yet" }, 404);
-  const baseCommit = ctx ? ctx.baseSha ?? `refs/heads/${ctx.baseRef}` : null;
+  const baseCommit = base ?? (ctx ? ctx.baseSha ?? `refs/heads/${ctx.baseRef}` : null);
   const diffHead = head ?? ctx?.headSha ?? null;
   const diffKey = baseCommit && diffHead ? `${baseCommit}...${diffHead}` : null;
   if (ctx && baseCommit && diffHead && !isMockGithub) {
@@ -1684,6 +1766,31 @@ async function handlePrDiff(owner: string, repo: string, number: string, url: UR
     return diffResponse(patch);
   } catch (error) {
     return githubErrorResponse(error, "GitHub diff fetch failed");
+  }
+}
+
+async function handlePrGeneratedFiles(owner: string, repo: string, number: string, url: URL): Promise<Response> {
+  if (!validPrReference(owner, repo, number)) return json({ error: "invalid PR reference" }, 400);
+  const repoName = `${owner}/${repo}`;
+  const num = Number(number);
+  const params = diffRangeParams(url);
+  if (typeof params === "string") return json({ error: params }, 400);
+  if (isMockGithub) return json({ status: "ok", paths: [] });
+  const ctx = resolvePrContext(repoName, num);
+  if (!ctx) return json({ error: "PR is not cached yet" }, 404);
+  const baseCommit = params.base ?? ctx.baseSha ?? `refs/heads/${ctx.baseRef}`;
+  const diffHead = params.head ?? ctx.headSha;
+  try {
+    let result = await generatedFilesFromMirror(repoName, baseCommit, diffHead, params.mode);
+    if (result.status !== "ok" && url.searchParams.get("prefetch") === "1") return notPreloaded();
+    if (result.status !== "ok") {
+      await fetchMirror(repoName, INCREMENTAL_FETCH_TIMEOUT_MS);
+      result = await generatedFilesFromMirror(repoName, baseCommit, diffHead, params.mode);
+    }
+    if (result.status !== "ok") return json({ error: "Generated file rules are still loading", building: true }, 503, { "retry-after": "5" });
+    return json(result);
+  } catch (error) {
+    return mirrorErrorResponse(repoName, error);
   }
 }
 
@@ -2544,9 +2651,11 @@ async function handleRepoFiles(url: URL): Promise<Response> {
   const sha = url.searchParams.get("sha") ?? "";
   const headRef = url.searchParams.get("headRef") ?? "";
   if (!REPO_RE.test(repo) || !FULL_SHA_RE.test(sha) || !REF_RE.test(headRef)) return json({ error: "invalid repo/sha/headRef" }, 400);
-  return withSearchCtx(repo, headRef, sha, (ctx) => {
+  return withSearchCtx(repo, headRef, sha, async (ctx) => {
     if (ctx.status !== "ok") return json({ status: ctx.status });
-    return json({ status: "ok", paths: lsTree(ctx.checkout, repo, sha) });
+    const generated = await generatedFilesFromMirror(repo, sha, sha, "two-dot");
+    if (generated.status !== "ok") return json({ status: generated.status });
+    return json({ status: "ok", paths: lsTree(ctx.checkout, repo, sha), generatedPaths: generated.paths });
   });
 }
 
@@ -3555,7 +3664,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       parts[1] === "pr" &&
       parts[5] === "commit-stats"
     ) {
-      return handlePrCommitStats(parts[2]!, parts[3]!, parts[4]!, url);
+      return handlePrCommitStats(parts[2]!, parts[3]!, parts[4]!, url, req.signal);
     }
     if (
       req.method === "GET" &&
@@ -3574,6 +3683,15 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       parts[5] === "diff"
     ) {
       return handlePrDiff(parts[2]!, parts[3]!, parts[4]!, url);
+    }
+    if (
+      req.method === "GET" &&
+      parts.length === 6 &&
+      parts[0] === "api" &&
+      parts[1] === "pr" &&
+      parts[5] === "generated-files"
+    ) {
+      return handlePrGeneratedFiles(parts[2]!, parts[3]!, parts[4]!, url);
     }
     if (
       req.method === "GET" &&

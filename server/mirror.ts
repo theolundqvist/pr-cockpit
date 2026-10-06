@@ -2,6 +2,7 @@ import type { Stats } from "node:fs";
 import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { lstat, readdir, rm, stat } from "node:fs/promises";
 import { ghToken } from "./github.ts";
+import { excludedPath } from "../shared/reviewFiles.js";
 
 const dataDir = Bun.env.COCKPIT_DATA_DIR ?? "data";
 const mirrorsRoot = `${dataDir}/mirrors`;
@@ -619,26 +620,29 @@ export type MirrorCommitStatsResult =
 export type CommitLineCount = {
   additions: number;
   deletions: number;
-  skippedTests: boolean;
-  testsOnly: boolean;
+  skippedExcluded: boolean;
+  excludedOnly: boolean;
 };
 
 export function summarizeCommitStats(
   commits: Array<{ sha: string; files: CommitFileStat[] }>,
   testPattern: RegExp,
+  generatedByCommit: ReadonlyMap<string, ReadonlySet<string>>,
 ): Record<string, CommitLineCount> {
   const counts: Record<string, CommitLineCount> = {};
   for (const commit of commits) {
-    const totals = { additions: 0, deletions: 0, skippedTests: false, testsOnly: false };
-    const tests = { additions: 0, deletions: 0 };
+    const totals = { additions: 0, deletions: 0, skippedExcluded: false, excludedOnly: false };
+    const excluded = { additions: 0, deletions: 0 };
+    let includedFile = false;
     for (const file of commit.files) {
-      const bucket = testPattern.test(file.path) ? tests : totals;
+      const bucket = excludedPath(file.path, testPattern, generatedByCommit.get(commit.sha)!) ? excluded : totals;
       bucket.additions += file.additions;
       bucket.deletions += file.deletions;
-      if (bucket === tests) totals.skippedTests = true;
+      if (bucket === excluded) totals.skippedExcluded = true;
+      else includedFile = true;
     }
-    counts[commit.sha] = totals.additions === 0 && totals.deletions === 0 && totals.skippedTests
-      ? { additions: tests.additions, deletions: tests.deletions, skippedTests: false, testsOnly: true }
+    counts[commit.sha] = !includedFile && totals.skippedExcluded
+      ? { additions: excluded.additions, deletions: excluded.deletions, skippedExcluded: false, excludedOnly: true }
       : totals;
   }
   return counts;
@@ -769,34 +773,45 @@ export async function commitStatsFromGitDir(
   head: string,
 ): Promise<Exclude<MirrorCommitStatsResult, { status: "no-mirror" }>> {
   if (!(await commitExists(gitDir, base)) || !(await commitExists(gitDir, head))) return { status: "missing-commit" };
-  // one walk yields every commit's per-file counts; \x1e delimits records so headline text can never look like a row
+  // one walk yields every commit's per-file counts; -z ends each header and row with NUL, so paths stay
+  // unquoted and may hold tabs or newlines. Headers are \x1e<sha>; the first row after one gains a leading
+  // newline; rows are `added TAB deleted TAB path`, "-" counting a binary file, except that a rename's
+  // path is empty and its old and new paths follow as the next two fields. --find-renames pins Git's
+  // default detection so a user's diff.renames cannot turn renames into a delete plus an add.
   const result = await git([
     "--git-dir",
     gitDir,
     "log",
-    "--no-renames",
+    "-z",
+    "--find-renames",
     "--numstat",
     "--format=%x1e%H",
     `${base}..${head}`,
   ]);
   if (!result.ok) return { status: "stats-failed" };
   const commits: Array<{ sha: string; files: CommitFileStat[] }> = [];
-  for (const record of result.stdout.split("\x1e")) {
-    const lines = record.split("\n").filter((line) => line !== "");
-    const sha = lines.shift();
-    if (sha === undefined) continue;
-    const files: CommitFileStat[] = [];
-    for (const line of lines) {
-      const [added, removed, ...rest] = line.split("\t");
-      const path = rest.join("\t");
-      if (path === "") continue;
-      // binary files report "-" for both counts
-      files.push({ path, additions: Number(added) || 0, deletions: Number(removed) || 0 });
+  const fields = result.stdout.split("\0");
+  let files: CommitFileStat[] | null = null;
+  for (let index = 0; index < fields.length; index++) {
+    const field = fields[index]!;
+    if (field.startsWith("\x1e")) {
+      files = [];
+      commits.push({ sha: field.slice(1), files });
+      continue;
     }
-    // merges carry no numstat rows; omitting them lets the client fall back to GitHub's own totals
-    if (files.length > 0) commits.push({ sha, files });
+    if (field === "") continue;
+    const row = /^\n?(\d+|-)\t(\d+|-)\t/.exec(field);
+    if (row === null || files === null) return { status: "stats-failed" };
+    let path = field.slice(row[0].length);
+    if (path === "") {
+      path = fields[index + 2] ?? "";
+      index += 2;
+      if (path === "") return { status: "stats-failed" };
+    }
+    files.push({ path, additions: Number(row[1]) || 0, deletions: Number(row[2]) || 0 });
   }
-  return { status: "ok", commits };
+  // merges carry no numstat rows; omitting them lets the client fall back to GitHub's own totals
+  return { status: "ok", commits: commits.filter((commit) => commit.files.length > 0) };
 }
 
 export async function commitStatsFromMirror(

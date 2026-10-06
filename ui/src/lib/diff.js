@@ -1,4 +1,7 @@
 const HUNK_HEADER = /^(@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@)(.*)$/;
+const pathEncoder = new TextEncoder();
+const pathDecoder = new TextDecoder("utf-8", { ignoreBOM: true });
+const ESCAPED_BYTES = { 97: 7, 98: 8, 102: 12, 110: 10, 114: 13, 116: 9, 118: 11 };
 
 export function parseDiff(text) {
   const lines = text.split("\n");
@@ -26,8 +29,7 @@ export function parseDiff(text) {
 
   for (const line of lines) {
     if (line.startsWith("diff --git ")) {
-      const match = line.match(/^diff --git a\/(.+) b\/(.+)$/);
-      pushFile(match ? match[2] : line.slice("diff --git ".length));
+      pushFile(headerPath(line));
       continue;
     }
     if (!file) continue;
@@ -74,8 +76,8 @@ export function parseDiff(text) {
     } else if (line.startsWith("new file mode")) file.isNew = true;
     else if (line.startsWith("deleted file mode")) file.isDeleted = true;
     else if (line.startsWith("Binary files")) file.isBinary = true;
-    else if (line.startsWith("rename from ")) file.previousPath = line.slice("rename from ".length);
-    else if (line.startsWith("rename to ")) file.path = line.slice("rename to ".length);
+    else if (line.startsWith("rename from ")) file.previousPath = gitPath(line, "rename from ".length);
+    else if (line.startsWith("rename to ")) file.path = gitPath(line, "rename to ".length);
   }
   for (const file of files) {
     file.isUnchangedRename = file.previousPath !== null && file.similarity === 100 && file.hunks.length === 0;
@@ -83,6 +85,52 @@ export function parseDiff(text) {
   }
   return files;
 }
+
+function headerPath(line) {
+  const quotedNew = line.endsWith('"') ? line.lastIndexOf(' "b/') : -1;
+  if (quotedNew !== -1) return unquotePath(line, quotedNew + 4);
+  const quotedOld = line[11] === '"' ? line.lastIndexOf('" b/') : -1;
+  if (quotedOld !== -1) return line.slice(quotedOld + 4);
+  const match = line.match(/^diff --git a\/(.+) b\/(.+)$/);
+  if (!match) return line.slice("diff --git ".length);
+  if (match[1] === match[2]) return match[2];
+  const oldStart = "diff --git a/".length;
+  const nameLength = (line.length - oldStart - 3) / 2;
+  const newStart = oldStart + nameLength + 3;
+  if (Number.isInteger(nameLength) && line.startsWith(" b/", newStart - 3)) {
+    let same = true;
+    for (let index = 0; index < nameLength; index++) {
+      if (line[oldStart + index] !== line[newStart + index]) {
+        same = false;
+        break;
+      }
+    }
+    if (same) return line.slice(newStart);
+  }
+  return match[2];
+}
+
+function gitPath(line, start) {
+  return line[start] === '"' ? unquotePath(line, start + 1) : line.slice(start);
+}
+
+function unquotePath(line, start) {
+  const bytes = pathEncoder.encode(line.slice(start, -1));
+  let length = 0;
+  for (let index = 0; index < bytes.length; index++) {
+    let byte = bytes[index];
+    if (byte === 92) {
+      byte = bytes[++index];
+      if (byte >= 48 && byte <= 55) {
+        byte = ((byte - 48) << 6) | ((bytes[index + 1] - 48) << 3) | (bytes[index + 2] - 48);
+        index += 2;
+      } else byte = ESCAPED_BYTES[byte] ?? byte;
+    }
+    bytes[length++] = byte;
+  }
+  return pathDecoder.decode(bytes.subarray(0, length));
+}
+
 function compactNewLines(rows) {
   const ranges = [];
   for (const row of rows) {
