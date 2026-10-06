@@ -30,6 +30,7 @@
   import { anchorThreads, fileDiffFingerprint } from "./diff.js";
   import { loadDiffDocument } from "./diffDocument.js";
   import { imageFallback, renderMarkdown } from "./markdown.js";
+  import { setTaskByKey, taskMarkers } from "../../../shared/taskList.js";
   import { presentMutationError } from "./mutationError.js";
   import { isCodeScanningThread } from "../../../shared/codeScanning.js";
   import { loadPrIndex, prSummary } from "./prIndex.svelte.js";
@@ -946,6 +947,46 @@
     editingBody = false;
     await enqueueMutation(repo, number, { kind: "edit-body", body });
     await refreshMutations();
+  }
+
+  // `body` in a task edit is only the optimistic preview; the server applies the task to GitHub's copy.
+  let descriptionEl = $state(null);
+  let taskSaving = $state(false);
+  let descriptionHtml = $derived(renderMarkdown(displayBody));
+  let tasksEnabled = $derived(!editingBody && !editBodyMutation && !taskSaving);
+
+  $effect(() => {
+    void descriptionHtml;
+    if (!descriptionEl) return;
+    for (const input of descriptionEl.querySelectorAll("input[data-task]")) input.disabled = !tasksEnabled;
+  });
+
+  async function toggleTask(e) {
+    const input = e.target;
+    if (!input.matches?.("input[data-task]")) return;
+    const checked = input.checked;
+    const marker = tasksEnabled && pr.body === displayBody ? taskMarkers(pr.body)[Number(input.dataset.task)] : null;
+    const body = marker?.checked === !checked ? setTaskByKey(pr.body, marker.key, checked) : null;
+    if (body === null) {
+      input.checked = !checked;
+      showFlash("This checkbox no longer matches the description; reload the PR and try again.");
+      return;
+    }
+    taskSaving = true;
+    try {
+      await enqueueMutation(repo, number, { kind: "edit-body", body, task: { key: marker.key, checked } });
+    } catch (error) {
+      input.checked = !checked;
+      const failure = presentMutationError("save checkbox", error);
+      showFlash(`${failure.title}: ${failure.message}`);
+      taskSaving = false;
+      return;
+    }
+    try {
+      await refreshMutations();
+    } finally {
+      taskSaving = false;
+    }
   }
 
   function onBodyEditKey(e) {
@@ -3036,7 +3077,7 @@
                 {#if !editBodyMutation}
                   <button class="link body-edit shortcut-action" onclick={startEditBody}>Edit <Kbd keys={["shift", "e"]} /></button>
                 {/if}
-                <div class="md" use:imageFallback use:mermaidDiagrams={theme.name + "" + displayBody}>{@html renderMarkdown(displayBody)}</div>
+                <div class="md" bind:this={descriptionEl} onchange={toggleTask} use:imageFallback use:mermaidDiagrams={theme.name + "" + displayBody}>{@html descriptionHtml}</div>
                 {#if editBodyMutation}
                   <div class="body-mut">
                     <MutationBadge state={editBodyMutation.state} onRetry={() => handleRetry(editBodyMutation.id)} onDiscard={() => handleDiscard(editBodyMutation.id)} />
@@ -4363,6 +4404,9 @@
   }
   .body-card {
     position: relative;
+  }
+  .body-card :global(input[data-task]:not(:disabled)) {
+    cursor: pointer;
   }
   .body-mut {
     display: flex;

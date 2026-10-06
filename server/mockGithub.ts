@@ -730,6 +730,24 @@ export const mockGithub = isMockGithub ? {
     fixtureDb.prepare("UPDATE prs SET title = ?, detail_json = ? WHERE repo = ? AND number = ?").run(title, JSON.stringify(detail), repo, number);
     fixtureDb.prepare("UPDATE pr_index SET title = ? WHERE repo = ? AND number = ?").run(title, repo, number);
   },
+  pullRequestBody: (repo: string, number: number): string => {
+    const row = fixtureDb?.query<{ detail_json: string }, [string, number]>("SELECT detail_json FROM prs WHERE repo = ? AND number = ?").get(repo, number);
+    if (!row) throw new Error(`no mock fixture for ${repo}#${number}`);
+    return (JSON.parse(row.detail_json) as PrDetail).body;
+  },
+  updatePullRequestBody: (repo: string, number: number, body: string): void => {
+    const row = fixtureDb?.query<{ detail_json: string }, [string, number]>("SELECT detail_json FROM prs WHERE repo = ? AND number = ?").get(repo, number);
+    const detail = details[`${repo}#${number}`];
+    if (!row || !detail) throw new Error(`no mock fixture for ${repo}#${number}`);
+    detail.body = body;
+    fixtureDb!.prepare("UPDATE prs SET detail_json = ?, body_media = ?, body_digest = ? WHERE repo = ? AND number = ?").run(
+      JSON.stringify({ ...JSON.parse(row.detail_json), body }),
+      JSON.stringify(extractGithubMedia(body, { videos: true })),
+      descriptionDigest(body),
+      repo,
+      number,
+    );
+  },
   conflictFiles: (_repo: string, number: number): string[] => !capturedRepo && number === 103
     ? ["ui/navigation.ts", "ui/src/lib/router/state.ts", "server/navigation.ts"]
     : [],

@@ -8,6 +8,36 @@ import { HIGHLIGHT_PENDING, codeHl, highlightFencedCode } from "./codeHighlight.
 
 marked.setOptions({ gfm: true, breaks: true });
 
+// The nonce keeps raw HTML inputs from claiming a task index.
+const TASK_NONCE = crypto.randomUUID();
+const TASK_ATTR_RE = new RegExp(`^${TASK_NONCE}:(\\d+)$`);
+let taskCount = 0;
+marked.use({
+  hooks: {
+    preprocess(source) {
+      taskCount = 0;
+      return source;
+    },
+  },
+  renderer: {
+    checkbox({ checked }) {
+      return `<input ${checked ? 'checked="" ' : ""}disabled="" type="checkbox" data-task="${TASK_NONCE}:${taskCount++}"> `;
+    },
+  },
+});
+
+function indexTasks(doc) {
+  for (const node of doc.querySelectorAll("input, [data-task]")) {
+    const index = node.tagName === "INPUT" ? node.getAttribute("data-task")?.match(TASK_ATTR_RE)?.[1] : undefined;
+    if (index !== undefined) {
+      node.setAttribute("data-task", index);
+      continue;
+    }
+    node.removeAttribute("data-task");
+    if (node.tagName === "INPUT") node.setAttribute("disabled", "");
+  }
+}
+
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {
   if (node.tagName === "A" && /^https?:/i.test(node.getAttribute("href") ?? "")) {
     node.setAttribute("target", "_blank");
@@ -267,6 +297,7 @@ export function renderMarkdown(source) {
   const clean = DOMPurify.sanitize(marked.parse(source));
   const doc = new DOMParser().parseFromString(clean, "text/html");
   styleAlerts(doc);
+  indexTasks(doc);
   proxyImages(doc);
   embedVideos(doc);
   embedGifs(doc);

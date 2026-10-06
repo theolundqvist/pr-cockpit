@@ -363,3 +363,111 @@ test("a failed merge refreshes the PR detail while keeping the merge failure", a
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test("a description checkbox applies to the current GitHub description, not the rendered copy", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-task-intent-"));
+  const url = (path: string) => JSON.stringify(new URL(path, import.meta.url).href);
+  const report = (cache: string, rows: string[]) => [
+    "Checkboxes record approval by each PR's author.",
+    "",
+    "```md",
+    "- [ ] **[FIX]** #101 (@author-one) fenced example",
+    "```",
+    "",
+    ...rows,
+    "",
+    `<!-- risk-cache:${cache} -->`,
+    "",
+  ].join("\n");
+  // Rendered when the author ticks #101; the report regenerates before the queued write runs.
+  const rendered = report("v1 [ ] ünïcødé", ["### Low risk", "- [ ] **[FIX]** #101 (@author-one), *Old reason*", "- [ ] **[FEAT]** #102 (@author-two)", "- [ ] #41-not-a-pr"]);
+  const regenerated = report("v2 [ ] 🚀", ["### Medium risk", "- [ ] **[FEAT]** #103 (@author-three)", "- [ ] **[FEAT]** #101 (@author-one), *New reason*", "- [x] **[FEAT]** #102 (@author-two)", "- [ ] #41-not-a-pr"]);
+  const scenario = `
+    const db = await import(${url("./db.ts")});
+    const { seedMockDatabase } = await import(${url("./mockGithub.ts")});
+    const { finalizeMutation, processMutation } = await import(${url("./mutations.ts")});
+    const { setTaskByKey, taskMarkers } = await import(${url("../shared/taskList.js")});
+    const repo = "fixture/cockpit";
+    seedMockDatabase(db.db, ${JSON.stringify(dataDir)});
+    const setBody = (number, body) => {
+      const detail = JSON.parse(db.getPr(repo, number).detail_json);
+      db.db.query("UPDATE prs SET detail_json = ? WHERE repo = ? AND number = ?").run(JSON.stringify({ ...detail, body }), repo, number);
+    };
+    const body = (number) => JSON.parse(db.getPr(repo, number).detail_json).body;
+    const tick = async (number, rendered, regenerated, index) => {
+      setBody(number, rendered);
+      const { key } = taskMarkers(rendered)[index];
+      const payload = { kind: "edit-body", body: setTaskByKey(rendered, key, true), task: { key, checked: true } };
+      const id = db.insertMutation({ repo, number, kind: "edit-body", payload_json: JSON.stringify(payload), created_at: new Date().toISOString() });
+      setBody(number, regenerated);
+      await processMutation(db.listMutationsForPr(repo, number).find((row) => row.id === id));
+      return { key, body: body(number), mutations: db.listMutationsForPr(repo, number).map(({ state, error }) => ({ state, error })) };
+    };
+    // GitHub accepted a tick, then the assessment republished with a new cache before the refresh.
+    const republished = async (number, published) => {
+      const key = "pr:101";
+      const payload = { kind: "edit-body", body: setTaskByKey(rendered, key, true), task: { key, checked: true } };
+      const id = db.insertMutation({ repo, number, kind: "edit-body", payload_json: JSON.stringify(payload), created_at: new Date().toISOString() });
+      const row = db.listMutationsForPr(repo, number).find((candidate) => candidate.id === id);
+      db.setMutationRefreshing(id, row.payload_json);
+      setBody(number, published);
+      await finalizeMutation(row, false, {
+        refreshPr: async () => {},
+        pollOnce: async () => {},
+        deleteMutation: db.deleteMutation,
+        setMutationState: db.setMutationState,
+        scheduleRecovery: () => {},
+      });
+      return db.listMutationsForPr(repo, number).map(({ state, error }) => ({ state, error }));
+    };
+    const rendered = ${JSON.stringify(rendered)};
+    const regenerated = ${JSON.stringify(regenerated)};
+    const ticked = regenerated.replace("- [ ] **[FEAT]** #101", "- [x] **[FEAT]** #101").replace("v2", "v3");
+    console.log(JSON.stringify({
+      applied: await tick(101, rendered, regenerated, 0),
+      generic: await tick(102, rendered, regenerated, 2),
+      missing: await tick(103, rendered, regenerated.replace("**[FEAT]** #101", "**[FEAT]** #104"), 0),
+      republishedTicked: await republished(104, ticked),
+      republishedUnticked: await republished(105, regenerated),
+    }));
+  `;
+
+  try {
+    const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_MOCK: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(stderr);
+    const result = JSON.parse(stdout.trim().split("\n").at(-1)!);
+    // Only #101's marker changes; the new cache, reason, heading and #102's approval survive.
+    expect(result.applied).toEqual({
+      key: "pr:101",
+      body: regenerated.replace("- [ ] **[FEAT]** #101", "- [x] **[FEAT]** #101"),
+      mutations: [],
+    });
+    expect(result.generic).toEqual({
+      key: "text:#41-not-a-pr",
+      body: regenerated.replace("- [ ] #41-not-a-pr", "- [x] #41-not-a-pr"),
+      mutations: [],
+    });
+    expect(result.missing).toEqual({
+      key: "pr:101",
+      body: regenerated.replace("**[FEAT]** #101", "**[FEAT]** #104"),
+      mutations: [{ state: "failed", error: "Error: Checklist changed on GitHub; discard and reload before ticking again" }],
+    });
+    // A later publication that keeps the tick confirms it; one that lost it keeps the edit unconfirmed.
+    expect(result.republishedTicked).toEqual([]);
+    expect(result.republishedUnticked).toEqual([{
+      state: "refreshing",
+      error: "GitHub accepted edit-body, but cache refresh failed: refreshed cache does not contain the accepted change",
+    }]);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
