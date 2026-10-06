@@ -394,8 +394,11 @@
         {@const quotaPercent = Math.max(0, Math.min(100, (graphql.remaining / Math.max(1, graphql.limit)) * 100))}
         <div
           class="quota-status {quotaTone}"
-          title={`GitHub GraphQL: ${graphql.remaining.toLocaleString()} of ${graphql.limit.toLocaleString()} remaining. Resets ${new Date(graphql.resetAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.`}
-          aria-label={`GitHub GraphQL quota: ${graphql.remaining} of ${graphql.limit} remaining`}
+          title={[["GraphQL", graphql], ["REST", quota.resources.rest], ["Search", quota.resources.search]]
+            .filter(([, pool]) => pool)
+            .map(([label, pool]) => `GitHub ${label}: ${pool.remaining.toLocaleString()} of ${pool.limit.toLocaleString()} remaining, resets ${new Date(pool.resetAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.`)
+            .join("\n")}
+          aria-label={impact.pools.length ? `GitHub quota limited: ${impact.pools.map((pool) => pool.label).join(", ")}` : `GitHub GraphQL quota: ${graphql.remaining} of ${graphql.limit} remaining`}
           role="status"
         >
           <span class="quota-dot" aria-hidden="true"></span>

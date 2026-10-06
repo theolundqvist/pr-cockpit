@@ -195,7 +195,7 @@ test("quota readings are shared by concurrent callers and reusable for pacing un
         rateLimitCalls++;
         await Bun.sleep(10);
         const window = { limit: 5000, used: 100, remaining: 4900, reset };
-        return Response.json({ resources: { core: window, graphql: window } });
+        return Response.json({ resources: { core: window, graphql: window, search: { limit: 30, used: 0, remaining: 30, reset } } });
       };
       const before = github.recentGithubQuota(5 * 60_000);
       await Promise.all([github.fetchGithubQuota(), github.fetchGithubQuota(), github.fetchGithubQuota()]);
@@ -346,16 +346,14 @@ test("quota boundaries isolate search, GraphQL, and core while transport and mut
       };
       const capture = async (fn) => { try { await fn(); return null; } catch (error) { return error; } };
 
+      const graphqlFirst = await capture(() => github.fetchRepositoryOpenPrs("acme/app"));
+      const graphqlBlocked = await capture(() => github.fetchRepositoryOpenPrs("acme/app"));
+      // A refused search moves to GraphQL; with GraphQL blocked too, search's own block shows.
       const searchFirst = await capture(() => github.searchRecentPrs("acme/app"));
       const searchBlocked = await capture(() => github.searchRecentPrs("acme/app"));
       await github.fetchActionWorkflows("acme/app");
       now += 1000;
       await github.searchRecentPrs("acme/app");
-
-      const graphqlFirst = await capture(() => github.fetchRepositoryOpenPrs("acme/app"));
-      const graphqlBlocked = await capture(() => github.fetchRepositoryOpenPrs("acme/app"));
-      await github.searchRecentPrs("acme/app");
-      now += 1000;
       await github.fetchRepositoryOpenPrs("acme/app");
 
       coreLimited = true;
@@ -393,7 +391,7 @@ test("quota boundaries isolate search, GraphQL, and core while transport and mut
     ]);
     expect(exitCode, stderr).toBe(0);
     const result = JSON.parse(stdout);
-    expect(result.calls).toEqual({ search: 4, graphql: 2, core: 3, gateway: 1, mutation: 1, transport: 1 });
+    expect(result.calls).toEqual({ search: 3, graphql: 2, core: 3, gateway: 1, mutation: 1, transport: 1 });
     expect(result.searchFirst).toMatchObject({ status: 403, kind: "quota", resource: "search" });
     expect(result.searchBlocked).toMatchObject({ status: 403, kind: "quota", resource: "search" });
     expect(result.graphqlFirst).toMatchObject({ status: 403, kind: "quota", resource: "graphql" });
@@ -447,6 +445,7 @@ test("quota state follows auth changes and ignores late responses from the previ
           }
           return Response.json({ items: [] }, { headers: { "x-ratelimit-resource": "search", "x-ratelimit-remaining": "10" } });
         }
+        if (url.pathname === "/graphql") return Response.json({ data: { search: { nodes: [] } } });
         coreCalls++;
         if (authorization === "bearer old-token" && !oldCoreLimited) {
           oldCoreLimited = true;
@@ -481,7 +480,7 @@ test("quota state follows auth changes and ignores late responses from the previ
         searchCalls,
         oldLimited: { kind: oldLimited.kind, status: oldLimited.status },
         oldBlocked: { kind: oldBlocked.kind, status: oldBlocked.status },
-        lateOld: { kind: lateOldError.kind, status: lateOldError.status },
+        lateOld: lateOldError && { kind: lateOldError.kind, status: lateOldError.status },
       }));
     `;
     const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
@@ -500,7 +499,8 @@ test("quota state follows auth changes and ignores late responses from the previ
       searchCalls: 2,
       oldLimited: { kind: "quota", status: 403 },
       oldBlocked: { kind: "quota", status: 403 },
-      lateOld: { kind: "quota", status: 403 },
+      // The late refusal moves that search to GraphQL and records no block for the new token.
+      lateOld: null,
     });
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
@@ -1167,6 +1167,7 @@ test("quota stays readable while core is exhausted but not during a secondary co
           return Response.json({ resources: {
             core: { limit: 5000, used: 0, remaining: 5000, reset: coreReset + 1_200 },
             graphql: { limit: 5000, used: 120, remaining: 4880, reset: coreReset },
+            search: { limit: 30, used: 0, remaining: 30, reset: coreReset },
           } });
         }
         // The charged revalidation probe is refused exactly like the workflow read.
@@ -1241,6 +1242,134 @@ test("quota stays readable while core is exhausted but not during a secondary co
   }
 });
 
+test("searches run on whichever pool has room and background searches leave the screen its share", async () => {
+  const fakeGhDir = mkdtempSync(join(tmpdir(), "pr-cockpit-search-pools-"));
+  const fakeGh = join(fakeGhDir, "gh");
+  writeFileSync(fakeGh, "#!/bin/sh\nprintf 'fixture-token\\n'\n");
+  chmodSync(fakeGh, 0o755);
+  try {
+    const script = `
+      let now = 2_000_000_000_000;
+      Date.now = () => now;
+      const github = await import(${JSON.stringify(githubModuleUrl)});
+      const searchReset = (now + 60_000) / 1000;
+      let searchRemaining = 11;
+      let graphqlLimited = false;
+      const paths = [];
+      globalThis.fetch = async (input) => {
+        const url = new URL(String(input));
+        paths.push(url.pathname);
+        if (url.pathname === "/rate_limit") {
+          // /rate_limit shows every pool full: core 4,999 left while search is spent.
+          const reset = (now + 3_600_000) / 1000;
+          return Response.json({ resources: {
+            core: { limit: 5000, used: 1, remaining: 4999, reset },
+            graphql: { limit: 5000, used: 0, remaining: 5000, reset },
+            search: { limit: 30, used: 0, remaining: 30, reset: searchReset },
+          } });
+        }
+        if (url.pathname === "/search/issues") {
+          const headers = {
+            "x-ratelimit-resource": "search",
+            "x-ratelimit-limit": "30",
+            "x-ratelimit-reset": String(searchReset),
+          };
+          if (searchRemaining === 0) {
+            return Response.json({ message: "API rate limit exceeded for user ID 1." }, { status: 403, headers: {
+              ...headers, "x-ratelimit-used": "30", "x-ratelimit-remaining": "0",
+            } });
+          }
+          searchRemaining--;
+          return Response.json({ items: [{
+            number: 7, title: "From REST", state: "open", draft: false, created_at: "2033-01-01T00:00:00Z",
+            updated_at: "2033-01-01T00:00:00Z", closed_at: null, user: { login: "fixture" },
+            repository_url: "https://api.github.com/repos/acme/app", pull_request: { merged_at: null },
+          }] }, { headers: { ...headers, "x-ratelimit-used": String(30 - searchRemaining), "x-ratelimit-remaining": String(searchRemaining) } });
+        }
+        if (url.pathname === "/graphql") {
+          if (graphqlLimited) {
+            return Response.json({ errors: [{ type: "RATE_LIMIT", message: "quota exhausted" }] }, { headers: {
+              "x-ratelimit-resource": "graphql", "x-ratelimit-remaining": "0", "x-ratelimit-reset": String((now + 600_000) / 1000),
+            } });
+          }
+          return Response.json({ data: { search: { nodes: [{
+            number: 8, title: "From GraphQL", state: "MERGED", isDraft: false, createdAt: "2033-01-01T00:00:00Z",
+            updatedAt: "2033-01-02T00:00:00Z", closedAt: "2033-01-02T00:00:00Z", mergedAt: "2033-01-02T00:00:00Z",
+            author: { login: "fixture" }, repository: { nameWithOwner: "acme/app" },
+          }] } } });
+        }
+        throw new Error("unexpected request " + url.pathname);
+      };
+      const capture = async (fn) => { try { return await fn(); } catch (error) { return { error: { kind: error.kind, resource: error.resource } }; } };
+      const titles = (result) => result.error ?? result.map((hit) => hit.title + ":" + hit.state);
+
+      // A parallel sweep is admitted one search at a time: the second sees the first's
+      // reading at the reserve and moves to GraphQL instead of spending the screen's share.
+      const sweep = await Promise.all([github.searchRecentPrs("acme/app"), github.searchRecentPrs("acme/app")]);
+      const sweepPaths = paths.splice(0);
+      const reserved = await github.fetchGithubQuota();
+      paths.length = 0;
+
+      // Someone searching on screen may spend the reserve; once search is refused, GraphQL serves.
+      let interactive = 0;
+      while (searchRemaining > 0) {
+        await github.searchPrs(["acme/app"], "fix");
+        interactive++;
+      }
+      const refused = titles(await github.searchPrs(["acme/app"], "fix"));
+      const afterRefusalPaths = paths.slice(-2);
+      const exhausted = await github.fetchGithubQuota();
+
+      // With both pools gone a background search fails as search without another request.
+      graphqlLimited = true;
+      const bothLimited = titles(await capture(() => github.searchRecentPrs("acme/app")));
+      const beforeLocal = paths.length;
+      const refusedLocally = titles(await capture(() => github.searchRecentPrs("acme/app")));
+      const localRequests = paths.length - beforeLocal;
+
+      // The search window turns over within a minute and REST search serves again.
+      now += 61_000;
+      searchRemaining = 30;
+      const recovered = titles(await github.searchRecentPrs("acme/app"));
+      console.log(JSON.stringify({
+        sweep: sweep.map(titles), sweepPaths,
+        reserved: { search: reserved.search.remaining, rest: reserved.rest.remaining },
+        interactive, refused, afterRefusalPaths,
+        exhausted: { search: exhausted.search.remaining, blockedUntil: exhausted.search.blockedUntil, rest: exhausted.rest.remaining },
+        bothLimited, refusedLocally, localRequests, recovered,
+      }));
+    `;
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: fakeGhDir, COCKPIT_GH_BIN: fakeGh, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      process.exited,
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+    ]);
+    expect(exitCode, stderr).toBe(0);
+    const searchResetAt = new Date(2_000_000_000_000 + 60_000).toISOString();
+    expect(JSON.parse(stdout)).toEqual({
+      sweep: [["From REST:OPEN"], ["From GraphQL:MERGED"]],
+      sweepPaths: ["/search/issues", "/graphql"],
+      // The charged search reading wins over /rate_limit's full window.
+      reserved: { search: 10, rest: 4999 },
+      interactive: 10,
+      refused: ["From GraphQL:MERGED"],
+      afterRefusalPaths: ["/search/issues", "/graphql"],
+      exhausted: { search: 0, blockedUntil: searchResetAt, rest: 4999 },
+      bothLimited: { kind: "quota", resource: "graphql" },
+      refusedLocally: { kind: "quota", resource: "search" },
+      localRequests: 0,
+      recovered: ["From REST:OPEN"],
+    });
+  } finally {
+    rmSync(fakeGhDir, { recursive: true, force: true });
+  }
+});
+
 test("a merge is gated by its token's charged core budget, not /rate_limit or another budget", async () => {
   const fakeGhDir = mkdtempSync(join(tmpdir(), "pr-cockpit-merge-core-budget-"));
   const fakeGh = join(fakeGhDir, "gh");
@@ -1270,7 +1399,7 @@ test("a merge is gated by its token's charged core budget, not /rate_limit or an
         // GitHub's /rate_limit reports a fresh core window while charged requests are refused.
         if (url.pathname === "/rate_limit") {
           const window = { limit: 5000, used: 0, remaining: 5000, reset: reset + 600 };
-          return Response.json({ resources: { core: window, graphql: window } });
+          return Response.json({ resources: { core: window, graphql: window, search: { ...window, limit: 30, remaining: 30 } } });
         }
         if (url.pathname === "/user") {
           probes.push(authorization);

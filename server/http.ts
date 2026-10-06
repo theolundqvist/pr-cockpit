@@ -622,6 +622,7 @@ async function handleGithubUsage(runtime: HttpRuntime): Promise<Response> {
     return json({
       quota: resources.graphql,
       rest: resources.rest,
+      search: resources.search,
       usage: githubGraphqlUsage(resources.graphql.used, resources.graphql.limit, resources.graphql.resetAt),
     });
   } catch (err) {
@@ -1182,7 +1183,7 @@ export function formatPrAgentSummary(summary: PrAgentSummary, options: AgentSumm
   }
 
   lines.push("", summary.quota
-    ? `Quota: REST ${summary.quota.rest.remaining}/${summary.quota.rest.limit} left · GraphQL ${summary.quota.graphql.remaining}/${summary.quota.graphql.limit} left`
+    ? `Quota: REST ${summary.quota.rest.remaining}/${summary.quota.rest.limit} left · GraphQL ${summary.quota.graphql.remaining}/${summary.quota.graphql.limit} left${summary.quota.search ? ` · Search ${summary.quota.search.remaining}/${summary.quota.search.limit} left` : ""}`
     : "Quota: unavailable");
   return `${lines.join("\n")}\n`;
 }

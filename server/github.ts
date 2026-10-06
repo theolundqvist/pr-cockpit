@@ -96,7 +96,7 @@ function quotaGeneration(token: string): number {
     lastQuotaProbeAt.clear();
     cachedQuota = null;
     graphqlReading = null;
-    coreReading = null;
+    restReadings.clear();
   }
   return activeQuotaGeneration;
 }
@@ -198,7 +198,7 @@ function accountQuota(
     } else if (remaining !== null && remaining > 0) {
       updatePrimaryQuota(resource, remaining, null);
     }
-    if (resource === "core") recordCoreReading(response);
+    if (resource === "core" || resource === "search") recordRestReading(resource, response);
   }
   if ((response.status === 403 || response.status === 429) && response.headers.has("retry-after")) {
     const secondary = retryAfterDeadline(response);
@@ -263,7 +263,7 @@ async function revalidateQuota(
         updateSecondaryQuota(resource, secondary);
       }
       if (responseQuotaResource(response, resource) !== resource) return;
-      recordCoreReading(response);
+      recordRestReading("core", response);
       const remaining = rateLimitHeader(response, "x-ratelimit-remaining");
       const current = blockedQuotas.get(resource);
       // A response that settled while the probe was in flight may have recorded a newer block.
@@ -552,6 +552,7 @@ const GRAPHQL_WINDOW_MS = 60 * 60_000;
 // Background work may spend a pool only while it stays ahead of an even pace to the reset,
 // so the screen keeps a share of what is left, and never below the reserve, in either pool.
 export function backgroundQuotaAvailable(quota: GithubQuotaResource, now = Date.now()): boolean {
+  if (quota.blockedUntil && Date.parse(quota.blockedUntil) > now) return false;
   if (quota.remaining >= quota.limit) return true;
   const resetIn = Math.max(0, Date.parse(quota.resetAt) - now);
   const pacedReserve = Math.ceil(quota.limit * Math.min(resetIn, GRAPHQL_WINDOW_MS) / GRAPHQL_WINDOW_MS);
@@ -823,11 +824,15 @@ export interface GithubQuotaResource {
   used: number;
   remaining: number;
   resetAt: string;
+  // An active exhaustion block or secondary cooldown: the pool refuses requests until then
+  // whatever its remaining count says.
+  blockedUntil?: string | null;
 }
 
 export interface GithubQuota {
   rest: GithubQuotaResource;
   graphql: GithubQuotaResource;
+  search: GithubQuotaResource;
   fetchedAt: string;
 }
 
@@ -858,11 +863,17 @@ function updateCachedGraphqlQuota(
   };
 }
 
-// From charged core responses' X-RateLimit headers, for the same reason as graphqlReading: see
-// CORE_QUOTA_PROBE_PATH for how far /rate_limit's core entry drifted from the charged window.
-let coreReading: GithubQuotaResource | null = null;
+// From charged core and search responses' X-RateLimit headers, for the same reason as
+// graphqlReading: see CORE_QUOTA_PROBE_PATH for how far /rate_limit's core entry drifted.
+type RestQuotaResourceName = "core" | "search";
+const restReadings = new Map<RestQuotaResourceName, GithubQuotaResource>();
 
-function recordCoreReading(response: Response): void {
+function liveRestReading(resource: RestQuotaResourceName, now = Date.now()): GithubQuotaResource | null {
+  const reading = restReadings.get(resource);
+  return reading && Date.parse(reading.resetAt) > now ? reading : null;
+}
+
+function recordRestReading(resource: RestQuotaResourceName, response: Response): void {
   const limit = rateLimitHeader(response, "x-ratelimit-limit");
   const used = rateLimitHeader(response, "x-ratelimit-used");
   const remaining = rateLimitHeader(response, "x-ratelimit-remaining");
@@ -870,24 +881,44 @@ function recordCoreReading(response: Response): void {
   if (limit === null || used === null || remaining === null || reset === null) return;
   const resetAt = new Date(reset * 1_000).toISOString();
   // Concurrent responses settle out of order; an earlier one must not undo a later spend.
-  if (coreReading?.resetAt === resetAt && coreReading.used > used) return;
-  coreReading = { limit, used, remaining, resetAt };
-  if (cachedQuota) cachedQuota = { ...cachedQuota, rest: coreReading };
+  const previous = restReadings.get(resource);
+  if (previous?.resetAt === resetAt && previous.used > used) return;
+  const reading = { limit, used, remaining, resetAt };
+  restReadings.set(resource, reading);
+  if (cachedQuota) cachedQuota = { ...cachedQuota, [resource === "core" ? "rest" : "search"]: reading };
 }
+
+// Every pool as it stands now: search's window is a minute, so a reading past its reset has
+// refilled, and an active block or cooldown refuses requests whatever the count says.
+function currentQuota(quota: GithubQuota, now = Date.now()): GithubQuota {
+  const search = liveRestReading("search", now)
+    ?? (Date.parse(quota.search.resetAt) > now ? quota.search : { ...quota.search, used: 0, remaining: quota.search.limit });
+  const pool = (resource: GithubQuotaResourceName, reading: GithubQuotaResource): GithubQuotaResource => ({
+    ...reading,
+    blockedUntil: activeQuotaBlock(resource)?.resetAt ?? null,
+  });
+  return { ...quota, rest: pool("core", quota.rest), graphql: pool("graphql", quota.graphql), search: pool("search", search) };
+}
+
 export async function fetchGithubQuota(): Promise<GithubQuota> {
   if (mockGithub) {
     // Half a window left, so the fixture's spend is well ahead of pace and background work runs.
     const resetAt = new Date(Date.now() + 30 * 60_000).toISOString();
-    return { rest: { limit: 5_000, used: 10, remaining: 4_990, resetAt }, graphql: { limit: 5_000, used: 20, remaining: 4_980, resetAt }, fetchedAt: new Date().toISOString() };
+    return {
+      rest: { limit: 5_000, used: 10, remaining: 4_990, resetAt },
+      graphql: { limit: 5_000, used: 20, remaining: 4_980, resetAt },
+      search: { limit: 30, used: 0, remaining: 30, resetAt: new Date(Date.now() + 60_000).toISOString() },
+      fetchedAt: new Date().toISOString(),
+    };
   }
   const token = await ghToken();
   const generation = quotaGeneration(token);
-  if (cachedQuota && Date.now() - Date.parse(cachedQuota.fetchedAt) < QUOTA_TTL_MS) return cachedQuota;
-  if (quotaFetchInFlight?.generation === generation) return quotaFetchInFlight.promise;
+  if (cachedQuota && Date.now() - Date.parse(cachedQuota.fetchedAt) < QUOTA_TTL_MS) return currentQuota(cachedQuota);
+  if (quotaFetchInFlight?.generation === generation) return currentQuota(await quotaFetchInFlight.promise);
   const entry = { generation, promise: fetchRateLimit(token, generation) };
   quotaFetchInFlight = entry;
   try {
-    return await entry.promise;
+    return currentQuota(await entry.promise);
   } finally {
     if (quotaFetchInFlight === entry) quotaFetchInFlight = null;
   }
@@ -902,22 +933,23 @@ export function recentGithubQuota(maxAgeMs: number, now = Date.now()): GithubQuo
   if (mockGithub || !cachedQuota) return null;
   if (now - Date.parse(cachedQuota.fetchedAt) > maxAgeMs) return null;
   if (Date.parse(cachedQuota.graphql.resetAt) <= now || Date.parse(cachedQuota.rest.resetAt) <= now) return null;
-  return cachedQuota;
+  return currentQuota(cachedQuota, now);
 }
 
 async function fetchRateLimit(token: string, generation: number): Promise<GithubQuota> {
   const res = await githubApiResponse("GET", "/rate_limit", { authentication: { token, generation } });
   if (!res.ok) throw await githubResponseError("GitHub quota request failed", res);
   const body = (await res.json()) as {
-    resources: Record<"core" | "graphql", { limit: number; used: number; remaining: number; reset: number }>;
+    resources: Record<"core" | "graphql" | "search", { limit: number; used: number; remaining: number; reset: number }>;
   };
-  const resource = (name: "core" | "graphql"): GithubQuotaResource => {
+  const resource = (name: "core" | "graphql" | "search"): GithubQuotaResource => {
     const value = body.resources[name];
     return { limit: value.limit, used: value.used, remaining: value.remaining, resetAt: new Date(value.reset * 1_000).toISOString() };
   };
   const quota = {
-    rest: coreReading && Date.parse(coreReading.resetAt) > Date.now() ? coreReading : resource("core"),
+    rest: liveRestReading("core") ?? resource("core"),
     graphql: liveGraphqlReading() ?? resource("graphql"),
+    search: liveRestReading("search") ?? resource("search"),
     fetchedAt: new Date().toISOString(),
   };
   if (responseHasActiveQuota(res)) cachedQuota = quota;
@@ -993,7 +1025,7 @@ export type KnownSearchHit = (repo: string, number: number, updatedAt: string) =
 // REST search finds the PRs; each one's head and CI come from its own conditional reads, which
 // cost quota whenever CI moved, so a PR the caller already knows skips them.
 async function searchOpenPrsRest(searchQuery: string, known: KnownSearchHit): Promise<SearchHit[]> {
-  const items = await restSearchPrs(searchQuery, 100);
+  const items = await searchPullRequests(searchQuery, 100, "background poll");
   if (items.length === 100) console.warn(`search hit the 100-result cap, PRs may be missing: ${searchQuery}`);
   const limit = createConcurrencyLimit(REST_FANOUT);
   return Promise.all(items.map((item) => limit(async () => {
@@ -1159,7 +1191,7 @@ export async function searchPrs(repos: string[], q: string): Promise<PaletteHit[
   if (mockGithub) return mockGithub.searchPrs(repos, q);
   const repoFilter = repos.map((repo) => `repo:${repo}`).join(" ");
   const searchQuery = `is:pr ${repoFilter} in:title ${q}`;
-  const items = await restSearchPrs(searchQuery, 15);
+  const items = await searchPullRequests(searchQuery, 15, "search");
   return items.map((item) => ({
     repo: restSearchRepo(item),
     number: item.number,
@@ -1198,6 +1230,98 @@ async function restSearchPrs(query: string, perPage: number): Promise<RestPrSear
     `/search/issues?q=${encodeURIComponent(query)}&per_page=${perPage}`,
   );
   return result.items;
+}
+
+// GitHub's REST search window is 30 requests a minute per user and shared with every other
+// tool on the token; background searches leave this many for someone searching on screen.
+const SEARCH_BACKGROUND_RESERVE = 10;
+// One background search at a time, so each one is admitted on the reading the previous one left;
+// a parallel index sweep otherwise spends the whole window before the first answer arrives.
+const backgroundSearchLimit = createConcurrencyLimit(1);
+
+function searchPoolAvailable(source: GithubUsageSource): boolean {
+  if (activeQuotaBlock("search")) return false;
+  if (!BACKGROUND_SOURCES.has(source)) return true;
+  const reading = liveRestReading("search");
+  return reading === null || reading.remaining > SEARCH_BACKGROUND_RESERVE;
+}
+
+function graphqlPoolAvailable(source: GithubUsageSource): boolean {
+  if (activeQuotaBlock("graphql")) return false;
+  if (!BACKGROUND_SOURCES.has(source)) return true;
+  const reading = liveGraphqlReading();
+  return reading === null || backgroundQuotaAvailable(reading);
+}
+
+const PR_SEARCH_QUERY = `
+query($searchQuery: String!, $first: Int!) {
+  search(query: $searchQuery, type: ISSUE, first: $first) {
+    nodes {
+      ... on PullRequest {
+        number title state isDraft createdAt updatedAt closedAt mergedAt
+        author { login }
+        repository { nameWithOwner }
+      }
+    }
+  }
+}`;
+
+type GraphqlPrSearchNode = {
+  number?: number;
+  title: string;
+  state: "OPEN" | "CLOSED" | "MERGED";
+  isDraft: boolean;
+  createdAt: string;
+  updatedAt: string;
+  closedAt: string | null;
+  mergedAt: string | null;
+  author: { login: string } | null;
+  repository: { nameWithOwner: string };
+};
+
+// The same search over the GraphQL pool, shaped like REST search items for the shared callers.
+async function graphqlSearchPrs(query: string, perPage: number, source: GithubUsageSource): Promise<RestPrSearchItem[]> {
+  const data = await graphql<{ search: { nodes: GraphqlPrSearchNode[] } }>(
+    PR_SEARCH_QUERY,
+    { searchQuery: query, first: perPage },
+    source,
+    "PR search",
+  );
+  return data.search.nodes.flatMap((node) => node.number === undefined ? [] : [{
+    number: node.number,
+    title: node.title,
+    state: node.state === "OPEN" ? "open" as const : "closed" as const,
+    draft: node.isDraft,
+    created_at: node.createdAt,
+    updated_at: node.updatedAt,
+    closed_at: node.closedAt,
+    user: node.author,
+    repository_url: `https://api.github.com/repos/${node.repository.nameWithOwner}`,
+    pull_request: { merged_at: node.mergedAt },
+  }]);
+}
+
+// REST search while its window has room for this caller, otherwise the GraphQL pool, otherwise
+// a quota error naming search so background work waits for the minute to turn over.
+async function searchOnAvailablePool(query: string, perPage: number, source: GithubUsageSource): Promise<RestPrSearchItem[]> {
+  if (!searchPoolAvailable(source)) {
+    if (graphqlPoolAvailable(source)) return graphqlSearchPrs(query, perPage, source);
+    assertQuotaAvailable("search");
+    const resetAt = liveRestReading("search")?.resetAt ?? null;
+    throw new GithubRequestError(`GitHub search quota is held for interactive searches until ${resetAt}`, 429, [], "quota", "search", resetAt);
+  }
+  try {
+    return await restSearchPrs(query, perPage);
+  } catch (error) {
+    const searchExhausted = error instanceof GithubRequestError && error.kind === "quota" && error.resource === "search";
+    if (!searchExhausted || !graphqlPoolAvailable(source)) throw error;
+    return graphqlSearchPrs(query, perPage, source);
+  }
+}
+
+function searchPullRequests(query: string, perPage: number, source: GithubUsageSource): Promise<RestPrSearchItem[]> {
+  if (!BACKGROUND_SOURCES.has(source)) return searchOnAvailablePool(query, perPage, source);
+  return backgroundSearchLimit(() => searchOnAvailablePool(query, perPage, source));
 }
 
 function restSearchRepo(item: RestPrSearchItem): string {
@@ -1316,7 +1440,7 @@ export async function searchRecentPrs(repo: string): Promise<PrIndexEntry[]> {
   if (!repositoryAvailable(repo)) return [];
   const searchQuery = `repo:${repo} is:pr sort:updated-desc`;
   try {
-    const items = await restSearchPrs(searchQuery, 100);
+    const items = await searchPullRequests(searchQuery, 100, "index sync");
     clearRepositoryUnavailable(repo);
     return items.map((item) => ({
       repo: restSearchRepo(item),
@@ -1366,7 +1490,7 @@ export async function searchClosedPrs(repos: string[], updatedSince: string | nu
     const updatedFilter = updatedSince === null ? "" : ` updated:>=${updatedSince.replace(/\.\d{3}Z$/, "Z")}`;
     const searchQuery = `is:pr is:closed involves:@me archived:false repo:${repo}${updatedFilter} sort:updated-desc`;
     try {
-      const repoItems = await restSearchPrs(searchQuery, CLOSED_SEARCH_PAGE);
+      const repoItems = await searchPullRequests(searchQuery, CLOSED_SEARCH_PAGE, "index sync");
       if (updatedSince !== null && repoItems.length === CLOSED_SEARCH_PAGE) {
         console.warn(`search hit the ${CLOSED_SEARCH_PAGE}-result cap, PRs may be missing: ${searchQuery}`);
       }
@@ -1500,7 +1624,7 @@ async function fetchReviewItemsRest(): Promise<ReviewsPollResult> {
     ["assigned", "is:pr is:open assignee:@me archived:false"],
     ["mentioned", `is:pr is:open mentions:@me archived:false updated:>=${reviewSearchSince()}`],
   ];
-  const results = await Promise.all(buckets.map(([, query]) => restSearchPrs(query, 50)));
+  const results = await Promise.all(buckets.map(([, query]) => searchPullRequests(query, 50, "review inbox")));
   const found = new Map<string, { repo: string; number: number; bucket: ReviewItem["bucket"] }>();
   buckets.forEach(([bucket], index) => {
     for (const item of results[index] ?? []) {

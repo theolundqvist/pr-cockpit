@@ -763,6 +763,7 @@ describe("agent PR summary", () => {
     }, {
       rest: { limit: 5_000, used: 1, remaining: 4_999, resetAt },
       graphql: { limit: 5_000, used: 5_000, remaining: 0, resetAt },
+      search: { limit: 30, used: 0, remaining: 30, resetAt },
       fetchedAt,
     });
     const original = getSetting("rest_fallback_enabled");
@@ -1163,6 +1164,7 @@ describe("agent PR summary", () => {
       fetchGithubQuota: async () => ({
         rest: { limit: 5_000, used: 0, remaining: 5_000, resetAt: fetchedAt },
         graphql: { limit: 5_000, used: 0, remaining: 5_000, resetAt: fetchedAt },
+        search: { limit: 30, used: 0, remaining: 30, resetAt: fetchedAt },
         fetchedAt,
       }),
       fetchPrCommentsSince: async () => [],
@@ -1225,6 +1227,7 @@ describe("agent PR summary", () => {
       fetchGithubQuota: async () => ({
         rest: { limit: 5_000, used: 0, remaining: 5_000, resetAt: fetchedAt },
         graphql: { limit: 5_000, used: 0, remaining: 5_000, resetAt: fetchedAt },
+        search: { limit: 30, used: 0, remaining: 30, resetAt: fetchedAt },
         fetchedAt,
       }),
       revalidateTrackedPr: () => {},

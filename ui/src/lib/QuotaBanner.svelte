@@ -1,6 +1,6 @@
 <script>
   import { quota } from "./quota.svelte.js";
-  import { quotaImpact, quotaOutLabel } from "./quotaImpact.js";
+  import { quotaImpact, quotaLimitedLabel, quotaOutLabel } from "./quotaImpact.js";
   import { prefs } from "./prefs.svelte.js";
 
   let now = $state(Date.now());
@@ -10,7 +10,7 @@
     return () => clearInterval(timer);
   });
 
-  let impact = $derived(quotaImpact(quota.resources, { restFallback: prefs.restFallbackEnabled }));
+  let impact = $derived(quotaImpact(quota.resources, { restFallback: prefs.restFallbackEnabled, now }));
 
   function clock(iso) {
     return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -28,7 +28,7 @@
     <span class="qb-icon" aria-hidden="true">!</span>
     <div class="qb-copy">
       <strong class="qb-title">
-        {impact.level === "out" ? quotaOutLabel(impact) : "GitHub GraphQL quota nearly exhausted"}
+        {impact.level === "out" ? quotaOutLabel(impact) : quotaLimitedLabel(impact)}
       </strong>
       <ul class="qb-list">
         {#each impact.pools as pool (pool.api)}

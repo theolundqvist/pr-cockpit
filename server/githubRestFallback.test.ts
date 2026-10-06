@@ -272,6 +272,7 @@ test("GraphQL's own quota reading, not /rate_limit's, moves background reads to 
           return Response.json({ resources: {
             core: { limit: 5000, used: 100, remaining: 4900, reset },
             graphql: { limit: 5000, used: 18, remaining: 4982, reset: reset + 900 },
+            search: { limit: 30, used: 0, remaining: 30, reset },
           } });
         }
         const core = { "x-ratelimit-resource": "core", "x-ratelimit-remaining": "4900", "x-ratelimit-reset": String(reset) };

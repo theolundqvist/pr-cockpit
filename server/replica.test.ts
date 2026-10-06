@@ -101,6 +101,7 @@ test("a local server imports inbox state and proxies GitHub-backed APIs through 
       fetchedAt: expect.any(String),
       rest: { ...sourceQuota.rest, resetAt: expect.any(String) },
       graphql: { ...sourceQuota.graphql, resetAt: expect.any(String) },
+      search: { ...sourceQuota.search, resetAt: expect.any(String) },
     });
     const allPrsPath = "/api/all-prs?repo=fixture%2Fcockpit";
     const sourceAllPrs = await fetch(`http://127.0.0.1:${sourcePort}${allPrsPath}`);

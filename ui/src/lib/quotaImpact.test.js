@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { GRAPHQL_BACKGROUND_RESERVE, quotaImpact, quotaOutLabel } from "./quotaImpact.js";
+import { GRAPHQL_BACKGROUND_RESERVE, quotaImpact, quotaLimitedLabel, quotaOutLabel } from "./quotaImpact.js";
 
 const EARLY = "2026-08-21T14:00:00.000Z";
 const LATE = "2026-08-21T14:40:00.000Z";
@@ -72,5 +72,29 @@ describe("quotaImpact", () => {
     expect(quotaImpact(empty).mergeBlocked).toBe(true);
     const bothEmpty = quotaImpact({ ...empty, rest: { limit: 5000, remaining: 0, resetAt: LATE } }, { restFallback: true });
     expect(bothEmpty.mergeBlocked).toBe(true);
+  });
+
+  test("an empty search window is limited while GraphQL can search, and out once GraphQL cannot", () => {
+    const now = Date.parse(EARLY) - 60_000;
+    const searchSpent = quota({ search: { limit: 30, remaining: 0, resetAt: EARLY } });
+    const limited = quotaImpact(searchSpent, { now });
+    expect(limited.level).toBe("reserved");
+    expect(limited.mergeBlocked).toBe(false);
+    expect(quotaLimitedLabel(limited)).toBe("GitHub Search quota limited");
+    const bothGone = quotaImpact({ ...searchSpent, graphql: { limit: 5000, remaining: 0, resetAt: LATE } }, { now, restFallback: true });
+    expect(bothGone.pools.map((p) => [p.api, p.level])).toEqual([["graphql", "out"], ["search", "out"]]);
+    expect(bothGone.mergeBlocked).toBe(false);
+  });
+
+  test("a cooldown makes a pool unavailable whatever its count and restores when the cooldown ends", () => {
+    const now = Date.parse(EARLY) - 60_000;
+    const cooldownEnds = new Date(now + 30_000).toISOString();
+    const cooling = quota({ rest: { limit: 5000, remaining: 4999, resetAt: LATE, blockedUntil: cooldownEnds } });
+    const impact = quotaImpact(cooling, { now });
+    expect(impact.level).toBe("out");
+    expect(impact.mergeBlocked).toBe(true);
+    expect(impact.restoresAt).toBe(cooldownEnds);
+    expect(quotaOutLabel(impact)).toBe("GitHub REST rate limited");
+    expect(quotaImpact(cooling, { now: now + 30_000 }).level).toBe("ok");
   });
 });

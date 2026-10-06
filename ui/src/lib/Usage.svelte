@@ -87,19 +87,23 @@
         </div>
       </div>
 
-      {#if data.rest}
-        {@const rest = data.rest}
-        <div class="rest-quota" class:exhausted={rest.remaining === 0}>
-          <span>GitHub REST core</span>
-          <strong>
-            {#if rest.remaining === 0}
-              Exhausted until {resetTime(rest.resetAt)}
-            {:else}
-              {number.format(rest.remaining)} of {number.format(rest.limit)} remaining · resets {resetTime(rest.resetAt)}
-            {/if}
-          </strong>
-        </div>
-      {/if}
+      {#each [["GitHub REST core", data.rest], ["GitHub REST search", data.search]] as [label, pool] (label)}
+        {#if pool}
+          {@const cooling = !!pool.blockedUntil && Date.parse(pool.blockedUntil) > Date.now()}
+          <div class="rest-quota" class:exhausted={pool.remaining === 0 || cooling}>
+            <span>{label}</span>
+            <strong>
+              {#if pool.remaining === 0}
+                Exhausted until {resetTime(pool.blockedUntil ?? pool.resetAt)}
+              {:else if cooling}
+                Rate limited until {resetTime(pool.blockedUntil)}
+              {:else}
+                {number.format(pool.remaining)} of {number.format(pool.limit)} remaining · resets {resetTime(pool.resetAt)}
+              {/if}
+            </strong>
+          </div>
+        {/if}
+      {/each}
     </section>
 
     <section class="history-card" aria-labelledby="usage-history-title">
