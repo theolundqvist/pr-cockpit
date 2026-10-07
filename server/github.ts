@@ -2086,7 +2086,7 @@ type PrDetailShape<Rx> = {
       };
     }>;
   };
-  labels: { nodes: Array<{ name: string }> };
+  labels: { nodes: Array<{ name: string; color?: string }> };
   assignees: { nodes: Array<{ login: string }> };
   reviewRequests: {
     nodes: Array<{ requestedReviewer: { __typename: string; login?: string; avatarUrl?: string; name?: string } | null }>;
@@ -2140,7 +2140,7 @@ type RestPullRequest = {
   updated_at: string;
   html_url: string;
   commits: number;
-  labels: Array<{ name: string }>;
+  labels: Array<{ name: string; color?: string }>;
   assignees: Array<Pick<RestUser, "login">>;
   requested_reviewers: RestUser[];
   requested_teams: Array<{ name: string }>;
@@ -2187,7 +2187,7 @@ export function mapRestPrDetailBase(pullRequest: RestPullRequest, files: RestPul
     updatedAt: pullRequest.updated_at,
     url: pullRequest.html_url,
     commitCount: { totalCount: pullRequest.commits },
-    labels: { nodes: pullRequest.labels.map(({ name }) => ({ name })) },
+    labels: { nodes: pullRequest.labels.map(({ name, color }) => ({ name, color })) },
     assignees: { nodes: pullRequest.assignees.map(({ login }) => ({ login })) },
     reviewRequests: {
       nodes: [
@@ -2252,7 +2252,7 @@ query($owner: String!, $name: String!, $number: Int!) {
       updatedAt
       url
       commitCount: commits { totalCount }
-      labels(first: 100) { nodes { name } }
+      labels(first: 100) { nodes { name color } }
       assignees(first: 100) { nodes { login } }
       reviewRequests(first: 100) {
         nodes {

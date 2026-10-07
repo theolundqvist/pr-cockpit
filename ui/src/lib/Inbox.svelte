@@ -1680,6 +1680,18 @@
             <span class="num">#{pr.number}</span>
             <span class="sep">·</span>
             <span>{repoTail(pr.repo)}</span>
+            {#if prefs.inboxLabels !== "off" && pr.labels?.length}
+              <span class="sep">·</span>
+              <span class="labels" class:dots={prefs.inboxLabels === "dot"}>
+                {#each pr.labels as label (label.name)}
+                  {#if prefs.inboxLabels === "dot"}
+                    <span class="label-dot" style:--label-color={label.color ? `#${label.color}` : null} title={label.name} role="img" aria-label={label.name}></span>
+                  {:else}
+                    <span class="label-name" style:--label-color={label.color ? `#${label.color}` : null}>{label.name}</span>
+                  {/if}
+                {/each}
+              </span>
+            {/if}
             <span class="sep">·</span>
             <span class="branch">{pr.baseRef} <span class="arrow">←</span> {pr.headRef}</span>
             {#if pr.localBranch === pr.headRef}
@@ -2500,6 +2512,34 @@
   }
   .row-meta .arrow {
     color: var(--text-faint);
+  }
+  .row-meta .labels {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    overflow: hidden;
+    --label-color: var(--text-faint);
+  }
+  .row-meta .labels.dots {
+    gap: 3px;
+    flex-shrink: 0;
+  }
+  .row-meta .label-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--label-color);
+    flex-shrink: 0;
+  }
+  .row-meta .label-name {
+    padding: 0 6px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--label-color) 55%, transparent);
+    background: color-mix(in srgb, var(--label-color) 22%, transparent);
+    color: var(--text-dim);
+    line-height: 14px;
+    flex-shrink: 0;
   }
   .row-meta .add {
     color: var(--ready);

@@ -41,6 +41,7 @@
   let newestCommentsFirst = $state(false);
   let pendingReviewsEnabled = $state(false);
   let descriptionUnreadDots = $state(false);
+  let inboxLabels = $state("off");
   let whiteboardEnabled = $state(false);
   let restFallbackEnabled = $state(true);
   let safeMergeApprovalEnabled = $state(false);
@@ -166,6 +167,7 @@
     newestCommentsFirst = s.newest_comments_first;
     pendingReviewsEnabled = s.pending_reviews_enabled === true;
     descriptionUnreadDots = s.description_unread_dots === true;
+    inboxLabels = s.inbox_labels ?? "off";
     whiteboardEnabled = s.whiteboard_enabled === true;
     safeMergeApprovalEnabled = s.safe_merge_approval_enabled === true;
     savedSafeMergeApproval = safeMergeApprovalEnabled;
@@ -368,6 +370,7 @@
         newest_comments_first: newestCommentsFirst,
         pending_reviews_enabled: pendingReviewsEnabled,
         description_unread_dots: descriptionUnreadDots,
+        inbox_labels: inboxLabels,
         whiteboard_enabled: whiteboardEnabled,
         ...(safeMergeApprovalEnabled !== savedSafeMergeApproval ? { safe_merge_approval_enabled: safeMergeApprovalEnabled } : {}),
         group_drag_enabled: groupDragEnabled,
@@ -566,6 +569,15 @@
               <span class="check-label">Mark changed descriptions</span>
               <span class="hint">A blue dot beside a PR whose description changed since you last read it.</span>
             </span>
+          </label>
+
+          <label class="field field-wide">
+            <span class="label">PR labels in lists</span>
+            <select class="input narrow" bind:value={inboxLabels}>
+              <option value="off">Hidden</option>
+              <option value="dot">Colored dot</option>
+              <option value="name">Full name</option>
+            </select>
           </label>
 
           <label class="check-field settings-option field-wide">

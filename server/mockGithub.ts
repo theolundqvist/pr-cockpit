@@ -110,7 +110,7 @@ function baseDetail(number: number, overrides: Partial<PrDetail> = {}): PrDetail
         { commit: { oid: head, abbreviatedOid: head.slice(0, 7), messageHeadline: "Finish the fixture", committedDate: at(60), additions: 37, deletions: 52, author: { name: "Theodor", user: author(VIEWER) }, parents: { nodes: [{ oid: sha(number, 1) }] } } },
       ],
     },
-    labels: { nodes: [{ name: "agentic" }, { name: "ui" }] },
+    labels: { nodes: [{ name: "agentic", color: "7057ff" }, { name: "ui", color: "0e8a16" }] },
     assignees: { nodes: [{ login: VIEWER }] },
     reviewRequests: { nodes: [] },
     reviews: {

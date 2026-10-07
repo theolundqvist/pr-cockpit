@@ -484,6 +484,9 @@ async function handleInbox(url: URL): Promise<Response> {
       mergeFailed: pr.state === "OPEN" && failedMergeKeys.has(prKey(pr)),
       approvedForSafeMerge: detail.state === "OPEN" && mergeApprovals.has(prKey(pr)),
       descriptionDigest: pr.body_digest ?? null,
+      labels: Array.isArray(detail.labels?.nodes)
+        ? detail.labels.nodes.map((label: { name: string; color?: string }) => ({ name: label.name, color: label.color ?? null }))
+        : [],
       ...mediaFields(pr.body_media ? JSON.parse(pr.body_media) as string[] : undefined),
     };
   });
@@ -2890,6 +2893,7 @@ async function handlePutSettings(req: Request, runtime: HttpRuntime): Promise<Re
     notifications: NotificationSettings;
     pending_reviews_enabled: boolean;
     description_unread_dots: boolean;
+    inbox_labels: string;
     whiteboard_enabled: boolean;
     safe_merge_approval_enabled: boolean;
     group_drag_enabled: boolean;

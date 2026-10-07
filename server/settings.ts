@@ -19,6 +19,7 @@ export type ThemePreference = "system" | "dark" | "light";
 export type FontPreference = "default" | "alacritty";
 export type CodeTheme = "github" | "catppuccin";
 export type DiffLayout = "unified" | "split";
+export type InboxLabels = "off" | "dot" | "name";
 
 export interface AgentSetting {
   id: string;
@@ -116,6 +117,10 @@ export function normalizeCodeTheme(value: unknown): CodeTheme {
 
 export function normalizeDiffLayout(value: unknown): DiffLayout {
   return value === "unified" || value === "split" ? value : "split";
+}
+
+export function normalizeInboxLabels(value: unknown): InboxLabels {
+  return value === "dot" || value === "name" ? value : "off";
 }
 
 export function normalizeReplicaSshHost(value: unknown): string {
@@ -290,6 +295,7 @@ export interface Settings {
   cockpit_webhooks: boolean;
   pending_reviews_enabled: boolean;
   description_unread_dots: boolean;
+  inbox_labels: InboxLabels;
   whiteboard_enabled: boolean;
   safe_merge_approval_enabled: boolean;
   group_drag_enabled: boolean;
@@ -341,6 +347,7 @@ export function readSettings(): Settings {
     cockpit_webhooks: getSetting("cockpit_webhooks") === "true",
     pending_reviews_enabled: pendingReviewsEnabled(),
     description_unread_dots: getSetting("description_unread_dots") === "true",
+    inbox_labels: normalizeInboxLabels(getSetting("inbox_labels")),
     whiteboard_enabled: getSetting("whiteboard_enabled") === "true",
     safe_merge_approval_enabled: safeMergeApprovalEnabled(),
     group_drag_enabled: getSetting("group_drag_enabled") === "true",
@@ -389,6 +396,7 @@ export function writeSettings(
     cockpit_webhooks: boolean;
     pending_reviews_enabled: boolean;
     description_unread_dots: boolean;
+    inbox_labels: string;
     whiteboard_enabled: boolean;
     safe_merge_approval_enabled: boolean;
     group_drag_enabled: boolean;
@@ -451,6 +459,7 @@ export function writeSettings(
   if (patch.cockpit_webhooks !== undefined) setSetting("cockpit_webhooks", patch.cockpit_webhooks ? "true" : "false");
   if (patch.pending_reviews_enabled !== undefined) setSetting("pending_reviews_enabled", patch.pending_reviews_enabled ? "true" : "false");
   if (patch.description_unread_dots !== undefined) setSetting("description_unread_dots", patch.description_unread_dots ? "true" : "false");
+  if (patch.inbox_labels !== undefined) setSetting("inbox_labels", normalizeInboxLabels(patch.inbox_labels));
   if (patch.whiteboard_enabled !== undefined) {
     const enabled = patch.whiteboard_enabled === true ? "true" : "false";
     if (getSetting("whiteboard_enabled") !== enabled) {

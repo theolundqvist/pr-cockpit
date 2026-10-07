@@ -16,6 +16,7 @@ export const prefs = $state({
   notificationsEnabled: false,
   pendingReviewsEnabled: false,
   descriptionUnreadDots: false,
+  inboxLabels: "off",
   whiteboardEnabled: false,
   safeMergeApprovalEnabled: false,
   groupDragEnabled: false,
@@ -41,6 +42,7 @@ export function setPrefs(settings) {
   prefs.notificationsEnabled = settings.notifications?.enabled === true;
   prefs.pendingReviewsEnabled = settings.pending_reviews_enabled === true;
   prefs.descriptionUnreadDots = settings.description_unread_dots === true;
+  prefs.inboxLabels = settings.inbox_labels === "dot" || settings.inbox_labels === "name" ? settings.inbox_labels : "off";
   prefs.whiteboardEnabled = settings.whiteboard_enabled === true;
   prefs.safeMergeApprovalEnabled = settings.safe_merge_approval_enabled === true;
   prefs.groupDragEnabled = settings.group_drag_enabled === true;

@@ -8,6 +8,7 @@ import {
   mergeAgents,
   normalizeCodeTheme,
   normalizeDiffLayout,
+  normalizeInboxLabels,
   normalizeFontPreference,
   normalizeScale,
   normalizeThemePreference,
@@ -156,6 +157,15 @@ describe("normalizeDiffLayout", () => {
   test("defaults invalid values to side by side", () => {
     expect(normalizeDiffLayout(undefined)).toBe("split");
     expect(normalizeDiffLayout("stacked")).toBe("split");
+  });
+});
+
+describe("normalizeInboxLabels", () => {
+  test("keeps dot and name, hides labels otherwise", () => {
+    expect(normalizeInboxLabels("dot")).toBe("dot");
+    expect(normalizeInboxLabels("name")).toBe("name");
+    expect(normalizeInboxLabels(null)).toBe("off");
+    expect(normalizeInboxLabels("pill")).toBe("off");
   });
 });
 
