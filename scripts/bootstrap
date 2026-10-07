@@ -209,6 +209,12 @@ else
   fi
 fi
 
+# Conflict lookup runs `git merge-tree --write-tree`, which first shipped in Git 2.38.
+git_version="$(git --version 2>/dev/null || true)"
+if ! [[ "$git_version" =~ ^git\ version\ ([0-9]+)\.([0-9]+) ]] \
+  || (( BASH_REMATCH[1] < 2 || (BASH_REMATCH[1] == 2 && BASH_REMATCH[2] < 38) )); then
+  die "Git 2.38 or newer is required (found ${git_version:-no git version}) — install a current Git from https://git-scm.com/downloads, then rerun this command"
+fi
 
 status "Prerequisites available"
 stage "2/3" "Prepare checkout"

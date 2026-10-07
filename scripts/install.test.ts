@@ -48,6 +48,8 @@ if [[ "\${COCKPIT_TEST_FAIL_BUN_INSTALL:-0}" == "1" && "\${1:-}" == "install" ]]
 exit 0`],
     ["uname", `printf '${platform}\\n'`],
     ["gh", "exit 0"],
+    ["git", `if [[ "\${1:-}" == "--version" ]]; then printf 'git version %s\\n' "\${COCKPIT_TEST_GIT_VERSION:-2.39.5}"; exit 0; fi
+exec /usr/bin/git "$@"`],
     // the readiness probe needs the server agent to own the listening port
     ["lsof", `printf '${listenerPid}\\n'`],
     ["curl", `printf '%s\\n' "$*" >> ${JSON.stringify(curlCalls)}
@@ -81,7 +83,7 @@ exit 0`,
 
 async function install(
   loadedRoot: string | null,
-  options: { platform?: "Darwin" | "Linux"; proxy?: string; healthRoot?: string; listenerPid?: string; healthFailure?: "once" | "always"; tailscalePort?: string; failInstall?: boolean; hangReporter?: boolean; startupRecovery?: boolean } = {},
+  options: { platform?: "Darwin" | "Linux"; proxy?: string; healthRoot?: string; listenerPid?: string; healthFailure?: "once" | "always"; tailscalePort?: string; failInstall?: boolean; hangReporter?: boolean; startupRecovery?: boolean; gitVersion?: string } = {},
 ) {
   const home = mkdtempSync(join(tmpdir(), "cockpit-install-"));
   try {
@@ -100,6 +102,7 @@ async function install(
         ...(options.startupRecovery ? { COCKPIT_STARTUP_RECOVERY: "1" } : {}),
         ...(options.failInstall ? { COCKPIT_TEST_FAIL_BUN_INSTALL: "1" } : {}),
         ...(options.hangReporter ? { COCKPIT_TEST_HANG_SENTRY_REPORTER: "1" } : {}),
+        ...(options.gitVersion ? { COCKPIT_TEST_GIT_VERSION: options.gitVersion } : {}),
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -140,6 +143,16 @@ test("Linux install delegates before any macOS registration or checkout build", 
   expect(result.exitCode).toBe(0);
   expect(result.calls).toBe("");
   expect(result.serverPlist).toBe("");
+});
+
+test("Git older than 2.38 stops installation before any platform work", async () => {
+  for (const platform of ["Darwin", "Linux"] as const) {
+    const result = await install(null, { platform, gitVersion: "2.34.1" });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("Git 2.38 or newer is required (found git version 2.34.1)");
+    expect(result.calls).toBe("");
+    expect(result.serverPlist).toBe("");
+  }
 });
 
 test("new config is a commented inert example", async () => {

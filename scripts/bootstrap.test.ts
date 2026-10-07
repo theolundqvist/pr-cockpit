@@ -29,13 +29,15 @@ function executable(path: string, body: string) {
   chmodSync(path, 0o755);
 }
 
-function stubbedPath(dir: string, platform: "Darwin" | "Linux" = "Darwin", ghExit = 0) {
+function stubbedPath(dir: string, platform: "Darwin" | "Linux" = "Darwin", ghExit = 0, gitVersion = "2.39.5") {
   const bin = join(dir, "bin");
   mkdirSync(bin, { recursive: true });
   executable(join(bin, "uname"), `if [[ "\${1:-}" == "-m" ]]; then printf "x86_64\\n"; else printf "${platform}\\n"; fi`);
   executable(
     join(bin, "git"),
-    `if [[ "\${1:-}" == "-C" && "\${3:-}" == "rev-parse" ]]; then
+    `if [[ "\${1:-}" == "--version" ]]; then
+  printf "git version ${gitVersion}\\n"
+elif [[ "\${1:-}" == "-C" && "\${3:-}" == "rev-parse" ]]; then
   cd "$2" && pwd -P
 elif [[ "\${1:-}" == "-C" && "\${3:-}" == "remote" ]]; then
   printf "https://github.com/theolundqvist/pr-cockpit.git\\n"
@@ -128,6 +130,24 @@ test("Linux bootstrap accepts an installed but unauthenticated gh binary", async
     expect(result.error).toBe("");
     expect(result.exitCode).toBe(0);
     expect(result.output).toContain("[3/3] Install PR Cockpit");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("bootstrap names the Git 2.38 prerequisite before preparing a checkout", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cockpit-bootstrap-old-git-"));
+  const home = join(root, "home");
+  try {
+    const result = await runBootstrap({
+      home,
+      target: join(root, "checkout"),
+      path: stubbedPath(root, "Linux", 0, "2.34.1"),
+      dryRun: true,
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.error).toContain("Git 2.38 or newer is required (found git version 2.34.1)");
+    expect(result.output).not.toContain("Prepare checkout");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

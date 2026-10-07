@@ -662,6 +662,17 @@ export type MirrorConflictResult =
   | { status: "missing-commit" }
   | { status: "merge-failed"; error: string };
 
+// merge-tree --write-tree arrived in Git 2.38; older Git rejects it with a bare usage
+// message, so name the missing prerequisite instead of echoing that usage text.
+async function mergeTreeFailure(stderr: string): Promise<string> {
+  const version = (await git(["version"])).stdout.trim();
+  const match = /^git version (\d+)\.(\d+)/.exec(version);
+  if (match && (Number(match[1]) < 2 || (Number(match[1]) === 2 && Number(match[2]) < 38))) {
+    return `Conflict lookup requires Git 2.38 or newer for merge-tree --write-tree; the server has ${version}`;
+  }
+  return stderr.trim() || "git merge-tree failed";
+}
+
 export async function conflictFilesFromGitDir(
   gitDir: string,
   base: string,
@@ -682,9 +693,7 @@ export async function conflictFilesFromGitDir(
     head,
   ]);
   if (result.exitCode === 0) return { status: "clean", files: [] };
-  if (result.exitCode !== 1) {
-    return { status: "merge-failed", error: result.stderr.trim() || "git merge-tree failed" };
-  }
+  if (result.exitCode !== 1) return { status: "merge-failed", error: await mergeTreeFailure(result.stderr) };
   const files = [...new Set(result.stdout.split("\0").slice(1).filter((path) => path !== ""))];
   return { status: "conflicts", files };
 }

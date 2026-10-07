@@ -1652,6 +1652,7 @@ async function handlePrConflicts(owner: string, repo: string, number: string): P
   if (result.status === "clean") return json({ error: "No conflicts found against the latest base branch" }, 409);
   if (result.status === "merge-failed") {
     console.error(`conflict merge-tree failed for ${repoName}#${num}: ${result.error}`);
+    return json({ error: `Couldn't determine conflicting files: ${result.error}` }, 503);
   }
   return json({ error: "Couldn't determine conflicting files" }, 503);
 }

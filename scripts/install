@@ -3,6 +3,14 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
+# Conflict lookup runs `git merge-tree --write-tree`, which first shipped in Git 2.38.
+git_version="$(git --version 2>/dev/null || true)"
+if ! [[ "$git_version" =~ ^git\ version\ ([0-9]+)\.([0-9]+) ]] \
+  || (( BASH_REMATCH[1] < 2 || (BASH_REMATCH[1] == 2 && BASH_REMATCH[2] < 38) )); then
+  echo "pr-cockpit: Git 2.38 or newer is required (found ${git_version:-no git version}) — install a current Git from https://git-scm.com/downloads" >&2
+  exit 1
+fi
+
 platform="$(uname -s)"
 if [[ "$platform" == "Linux" ]]; then
   exec "$root/scripts/install-linux" "$@"

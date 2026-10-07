@@ -39,6 +39,75 @@ describe("conflictFilesFromGitDir", () => {
     expect(result).toEqual({ status: "conflicts", files: ["navigation.ts"] });
     expect(after).toBe(before);
   });
+
+  test("keeps unusual conflicted paths byte-exact and omits cleanly merged files", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pr-cockpit-conflict-paths-"));
+    cleanup.push(root);
+    const conflicted = ["line\nbreak.ts", "space name.ts", "ünïcode.ts", "removed.ts"];
+    git(root, "init", "-b", "main");
+    git(root, "config", "user.name", "PR Cockpit Test");
+    git(root, "config", "user.email", "pr-cockpit@example.test");
+    for (const path of [...conflicted, "clean.ts"]) await Bun.write(join(root, path), "base\n");
+    git(root, "add", "-A");
+    git(root, "commit", "-m", "base");
+    git(root, "switch", "-c", "topic");
+    for (const path of [...conflicted, "clean.ts"]) await Bun.write(join(root, path), "topic\n");
+    git(root, "commit", "-am", "topic edits");
+    git(root, "switch", "main");
+    for (const path of conflicted.slice(0, 3)) await Bun.write(join(root, path), "main\n");
+    git(root, "rm", "-q", "removed.ts");
+    git(root, "commit", "-am", "main edits");
+
+    const result = await conflictFilesFromGitDir(join(root, ".git"), "main", "topic");
+
+    if (result.status !== "conflicts") throw new Error(`expected conflicts, got ${result.status}`);
+    expect([...result.files].sort()).toEqual([...conflicted].sort());
+  });
+
+  test("names the Git prerequisite when merge-tree lacks --write-tree", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-conflict-git-"));
+    cleanup.push(dataDir);
+    const binDir = join(dataDir, "bin");
+    mkdirSync(binDir);
+    writeFileSync(join(binDir, "git"), `#!/bin/sh
+if [ "$1" = "version" ]; then echo "git version $FAKE_GIT_VERSION"; exit 0; fi
+echo "$FAKE_GIT_STDERR" >&2
+exit 129
+`);
+    chmodSync(join(binDir, "git"), 0o700);
+    const moduleUrl = pathToFileURL(join(import.meta.dir, "mirror.ts")).href;
+    // Load only after the subprocess has bound its isolated data directory and fake git.
+    const scenario = `
+      const { conflictFilesFromGitDir } = await import(${JSON.stringify(moduleUrl)});
+      process.stdout.write(JSON.stringify(await conflictFilesFromGitDir("unused.git", "main", "topic")));
+    `;
+    // Each Git version runs in its own process: spawned commands inherit the environment the process started with.
+    const lookup = (version: string, stderr: string) => {
+      const result = Bun.spawnSync([process.execPath, "-e", scenario], {
+        env: {
+          ...process.env,
+          COCKPIT_DATA_DIR: dataDir,
+          COCKPIT_MOCK: "1",
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+          FAKE_GIT_VERSION: version,
+          FAKE_GIT_STDERR: stderr,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+      return JSON.parse(result.stdout.toString());
+    };
+
+    const obsolete = lookup("2.34.1", "usage: git merge-tree <base-tree> <branch1> <branch2>");
+    expect(obsolete.status).toBe("merge-failed");
+    expect(obsolete.error).toContain("Git 2.38");
+    expect(obsolete.error).toContain("git version 2.34.1");
+    expect(lookup("2.55.0", "fatal: unrecognized merge-tree failure")).toEqual({
+      status: "merge-failed",
+      error: "fatal: unrecognized merge-tree failure",
+    });
+  });
 });
 
 describe("diffFromGitDir", () => {
