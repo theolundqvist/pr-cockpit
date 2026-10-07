@@ -38,6 +38,8 @@ test("a local server imports inbox state and proxies GitHub-backed APIs through 
   mkdirSync(bin);
   writeFileSync(join(bin, "ssh"), "#!/usr/bin/env bash\nwhile kill -0 \"$PPID\" 2>/dev/null; do sleep 0.1; done\n");
   chmodSync(join(bin, "ssh"), 0o755);
+  writeFileSync(join(bin, "gh"), "#!/usr/bin/env bash\nexit 1\n");
+  chmodSync(join(bin, "gh"), 0o755);
 
   const source = Bun.spawn([Bun.which("bun") ?? "bun", "server/main.ts"], {
     cwd: join(import.meta.dir, ".."),
@@ -74,6 +76,8 @@ test("a local server imports inbox state and proxies GitHub-backed APIs through 
       env: {
         ...Bun.env,
         PATH: `${bin}:${Bun.env.PATH}`,
+        GH_TOKEN: "",
+        GITHUB_TOKEN: "",
         COCKPIT_PORT: String(replicaPort),
         COCKPIT_DATA_DIR: join(root, "replica"),
         COCKPIT_MOCK: "",
@@ -110,11 +114,22 @@ test("a local server imports inbox state and proxies GitHub-backed APIs through 
     expect(replicaAllPrs.status).toBe(200);
     expect(await replicaAllPrs.json()).toEqual(await sourceAllPrs.json());
     source.kill();
+    await source.exited;
     const offlineInbox = await fetch(`http://127.0.0.1:${replicaPort}/api/inbox`).then((response) => response.json());
     expect(offlineInbox).toEqual(replicaInbox);
     const offlineAllPrs = await fetch(`http://127.0.0.1:${replicaPort}${allPrsPath}`);
     expect(offlineAllPrs.status).toBe(503);
     expect((await offlineAllPrs.json()).prs).toBeUndefined();
+    expect((await fetch(`http://127.0.0.1:${replicaPort}/api/pr-index`)).status).toBe(200);
+    const cachedPr = replicaInbox.prs[0]!;
+    for (const path of [
+      `/api/pr-index?keys=${encodeURIComponent(`${cachedPr.repo}#${cachedPr.number}`)}`,
+      "/api/search-prs?q=missing-title",
+    ]) {
+      const response = await fetch(`http://127.0.0.1:${replicaPort}${path}`);
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: "PR Cockpit source fixture-source is unavailable" });
+    }
   } finally {
     replica?.kill();
     source.kill();

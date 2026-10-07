@@ -21,9 +21,7 @@ const LOCAL_API_PATHS = new Set([
   "/api/inbox",
   "/api/closed",
   "/api/pr-details",
-  "/api/pr-index",
   "/api/repo-users",
-  "/api/search-prs",
   "/api/settings",
   "/api/notifications/claim",
   "/api/version",
@@ -321,6 +319,7 @@ export function replicaSnapshotResponse(request: Request): Response {
 
 export function isLocalReplicaRequest(request: Request, url: URL): boolean {
   if (LOCAL_API_PATHS.has(url.pathname) || PR_MEDIA_PATH_RE.test(url.pathname)) return true;
+  if (url.pathname === "/api/pr-index" && !url.searchParams.has("keys")) return true;
   if (url.pathname.startsWith("/api/tmux/")) return true;
   if (url.pathname === "/api/switch-branch") return true;
   return request.method === "OPTIONS";
