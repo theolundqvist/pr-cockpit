@@ -1,5 +1,5 @@
 <script>
-  import { fetchGithubUsage, saveSettings } from "./api.js";
+  import { fetchGithubUsage, saveRestRecording } from "./api.js";
   import { cachedView, cacheView } from "./detailCache.js";
 
   let data = $state(cachedView("usage"));
@@ -52,7 +52,7 @@
     restSaving = true;
     restSaveError = null;
     try {
-      await saveSettings({ rest_usage_enabled: enabled });
+      await saveRestRecording(enabled);
     } catch (failure) {
       input.checked = !enabled;
       restSaveError = failure.message;

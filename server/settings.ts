@@ -329,7 +329,6 @@ export interface Settings {
   hidden_review_paths: HiddenReviewPaths;
   agent_conversations_enabled: boolean;
   rest_fallback_enabled: boolean;
-  rest_usage_enabled: boolean;
   quick_generate_enabled: boolean;
   quick_generate_key: string;
   quick_generate_model: string;
@@ -384,7 +383,6 @@ export function readSettings(): Settings {
     hidden_review_paths: readHiddenReviewPaths(),
     agent_conversations_enabled: getSetting("agent_conversations_enabled") === "true",
     rest_fallback_enabled: restFallbackEnabled(),
-    rest_usage_enabled: restUsageEnabled(),
     quick_generate_enabled: quickGenerateEnabled(),
     quick_generate_key: getSetting("quick_generate_key") ?? "",
     quick_generate_model: getSetting("quick_generate_model") ?? "",

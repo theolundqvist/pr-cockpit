@@ -664,3 +664,12 @@ export async function fetchGithubUsage() {
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `github usage ${res.status}`);
   return await res.json();
 }
+
+export async function saveRestRecording(enabled) {
+  const res = await fetch("/api/github-usage/recording", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `REST recording ${res.status}`);
+}

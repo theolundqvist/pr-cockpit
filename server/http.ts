@@ -735,6 +735,15 @@ async function handleGithubUsage(runtime: HttpRuntime): Promise<Response> {
   }
 }
 
+async function handleRestRecording(req: Request): Promise<Response> {
+  const body: unknown = await req.json().catch(() => null);
+  if (!body || typeof body !== "object" || !("enabled" in body) || typeof body.enabled !== "boolean") {
+    return json({ error: "enabled must be a boolean" }, 400);
+  }
+  writeSettings({ rest_usage_enabled: body.enabled });
+  return json({ enabled: restUsageEnabled() });
+}
+
 
 const DETAIL_REVALIDATING_HEADER = "x-cockpit-revalidating";
 
@@ -2967,7 +2976,6 @@ async function handlePutSettings(req: Request, runtime: HttpRuntime): Promise<Re
     hidden_review_paths: Settings["hidden_review_paths"];
     agent_conversations_enabled: boolean;
     rest_fallback_enabled: boolean;
-    rest_usage_enabled: boolean;
     quick_generate_enabled: boolean;
     quick_generate_key: string;
     quick_generate_model: string;
@@ -2978,6 +2986,9 @@ async function handlePutSettings(req: Request, runtime: HttpRuntime): Promise<Re
     body = (await req.json()) as typeof body;
   } catch {
     return json({ error: "invalid JSON body" }, 400);
+  }
+  if (body && typeof body === "object" && "rest_usage_enabled" in body) {
+    return json({ error: "Reload Cockpit to change REST recording." }, 400);
   }
   const previousSettings = readSettings();
   const previousReplica = previousSettings.replica_ssh_host;
@@ -3431,6 +3442,9 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     }
     if (req.method === "GET" && url.pathname === "/api/github-usage") {
       return handleGithubUsage(runtime);
+    }
+    if (req.method === "PUT" && url.pathname === "/api/github-usage/recording") {
+      return handleRestRecording(req);
     }
     if (req.method === "GET" && url.pathname === "/api/actions/runs") {
       return handleRepoActions(url);
