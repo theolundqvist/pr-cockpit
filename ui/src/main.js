@@ -11,9 +11,14 @@ import { warmHighlightWorker } from "./lib/offThreadHighlight.js";
 initNativePalette();
 initTheme();
 initPrefs();
-initHistory();
-initQuota();
-mount(App, { target: document.getElementById("app") });
-// Start the highlighting worker once the first screen has painted, so the first conversation
-// code block and Files view colour at once instead of waiting for grammars to load.
-setTimeout(() => requestIdleCallback(() => warmHighlightWorker(theme.shiki), { timeout: 1000 }), 1000);
+// The embedded PR overview runs none of the app's chrome, shortcuts or background reads.
+if (location.hash.startsWith("#/embed")) {
+  import("./lib/Embed.svelte").then(({ default: Embed }) => mount(Embed, { target: document.getElementById("app") }));
+} else {
+  initHistory();
+  initQuota();
+  mount(App, { target: document.getElementById("app") });
+  // Start the highlighting worker once the first screen has painted, so the first conversation
+  // code block and Files view colour at once instead of waiting for grammars to load.
+  setTimeout(() => requestIdleCallback(() => warmHighlightWorker(theme.shiki), { timeout: 1000 }), 1000);
+}

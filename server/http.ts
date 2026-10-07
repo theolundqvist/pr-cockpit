@@ -55,7 +55,7 @@ import {
 } from "./db.ts";
 import { localCheckoutBranchFor, localCheckoutPathFor, setLocalCheckoutBranch, worktreePathFor, worktreeWindowIdFor } from "./worktreeScan.ts";
 import { prKey } from "./prKey.ts";
-import { isTransportFailure, lastPollAt, pollOnce, refreshPr, trackedRepos } from "./poller.ts";
+import { isTransportFailure, lastPollAt, pollOnce, prRowFromDetail, refreshPr, trackedRepos } from "./poller.ts";
 import {
   commitPrFileEdit,
   compactReviewHunks,
@@ -394,22 +394,7 @@ function handleClosed(url: URL): Response {
   return json({ prs });
 }
 
-async function handleInbox(url: URL): Promise<Response> {
-  const wantArchived = url.searchParams.get("archived") === "1";
-  const archivedKeys = listArchivedKeys();
-  let prs = listPrs().filter((pr) => archivedKeys.has(prKey(pr)) === wantArchived);
-  const q = url.searchParams.get("q");
-  if (q) {
-    const parsed = parseQuery(q);
-    prs = prs.filter((pr) => matchesQuery(pr, parsed, wantArchived));
-    if (wantsHistoricalPrs(parsed)) {
-      const liveKeys = new Set(prs.map(prKey));
-      const historical = listPrIndex()
-        .map(stubPrRowFromIndex)
-        .filter((pr) => !liveKeys.has(prKey(pr)) && matchesQuery(pr, parsed, false));
-      prs = [...prs, ...historical];
-    }
-  }
+function inboxRows(prs: PrRow[]) {
   const ranks = getRanks();
   const mergeApprovals = safeMergeApprovalEnabled() ? listSafeMergeApprovalKeys() : new Set<string>();
   const failedMergeKeys = replicaEnabled() ? replicaFailedMergeKeys() : listFailedMergeKeys();
@@ -491,7 +476,26 @@ async function handleInbox(url: URL): Promise<Response> {
     };
   });
   if (!generatedFileWorkerRunning && generatedFileQueue.size) void warmGeneratedFiles();
+  return rows;
+}
 
+async function handleInbox(url: URL): Promise<Response> {
+  const wantArchived = url.searchParams.get("archived") === "1";
+  const archivedKeys = listArchivedKeys();
+  let prs = listPrs().filter((pr) => archivedKeys.has(prKey(pr)) === wantArchived);
+  const q = url.searchParams.get("q");
+  if (q) {
+    const parsed = parseQuery(q);
+    prs = prs.filter((pr) => matchesQuery(pr, parsed, wantArchived));
+    if (wantsHistoricalPrs(parsed)) {
+      const liveKeys = new Set(prs.map(prKey));
+      const historical = listPrIndex()
+        .map(stubPrRowFromIndex)
+        .filter((pr) => !liveKeys.has(prKey(pr)) && matchesQuery(pr, parsed, false));
+      prs = [...prs, ...historical];
+    }
+  }
+  const rows = inboxRows(prs);
   const viewerLogin = replicaEnabled() ? replicaViewerLogin() : await getViewerLogin().catch(() => null);
   return json({ prs: rows, lastPollAt: isMockGithub ? MOCK_FIXTURE_CLOCK : lastPollAt, viewerLogin });
 }
@@ -967,18 +971,43 @@ async function handlePrDetail(
 const BULK_DETAIL_KEY_CAP = 100;
 const BULK_DETAIL_KEY_RE = /^([^/]+\/[^/]+)#(\d+)$/;
 
-function handlePrDetails(url: URL): Response {
+function bulkDetailKeys(url: URL): { key: string; repo: string; number: number }[] {
   const keys = (url.searchParams.get("keys") ?? "").split(",").filter(Boolean).slice(0, BULK_DETAIL_KEY_CAP);
-  const details: Record<string, unknown> = {};
-  for (const key of keys) {
+  return keys.flatMap((key) => {
     const match = BULK_DETAIL_KEY_RE.exec(key);
-    if (!match) continue;
-    const repoName = match[1]!;
-    const num = Number(match[2]);
-    const snapshot = cachedPrSnapshot(repoName, num);
-    if (snapshot) details[key] = withBaseBranchPr(repoName, num, JSON.parse(snapshot.row.detail_json));
+    return match ? [{ key, repo: match[1]!, number: Number(match[2]) }] : [];
+  });
+}
+
+function handlePrDetails(url: URL): Response {
+  const details: Record<string, unknown> = {};
+  for (const { key, repo, number } of bulkDetailKeys(url)) {
+    const snapshot = cachedPrSnapshot(repo, number);
+    if (snapshot) details[key] = withBaseBranchPr(repo, number, JSON.parse(snapshot.row.detail_json));
   }
   return json({ details });
+}
+
+// Inbox rows for any stored PR: tracked PRs exactly as the inbox lists them, PRs opened by link from their cached detail.
+async function handlePrRows(url: URL): Promise<Response> {
+  const prs: PrRow[] = [];
+  for (const { key, repo, number } of bulkDetailKeys(url)) {
+    const tracked = getPr(repo, number);
+    if (tracked) {
+      prs.push(tracked);
+      continue;
+    }
+    const cached = getCachedPrDetail(repo, number);
+    if (!cached) continue;
+    try {
+      prs.push(prRowFromDetail(repo, number, JSON.parse(cached.detail_json), cached.fetched_at));
+    } catch (err) {
+      console.error(`cached detail for ${key} has no inbox row:`, err);
+    }
+  }
+  const rows = Object.fromEntries(inboxRows(prs).map((row) => [prKey(row), row]));
+  const viewerLogin = replicaEnabled() ? replicaViewerLogin() : await getViewerLogin().catch(() => null);
+  return json({ rows, viewerLogin });
 }
 
 type PrSummaryCheck = { name: string; state: CheckState; required: boolean; url: string | null; logBytes: number | null };
@@ -3432,7 +3461,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       return handlePrIndex(url, runtime);
     }
     if (req.method === "GET" && url.pathname === "/api/pr-details") {
-      return handlePrDetails(url);
+      return url.searchParams.get("rows") === "1" ? handlePrRows(url) : handlePrDetails(url);
     }
     if (
       req.method === "GET" &&

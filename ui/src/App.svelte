@@ -20,6 +20,7 @@
   import { fetchSettings, fetchSystemIssues, retrySystemIssue } from "./lib/api.js";
   import { showFlash } from "./lib/flash.svelte.js";
   import { burstGate } from "./lib/burstGate.js";
+  import { connectEvents } from "./lib/events.js";
   import { prefs, setPrefs, whiteboardSession } from "./lib/prefs.svelte.js";
   import { NOTIFICATION_DRAIN_EVENT, canDeliverNotifications, drainNotifications } from "./lib/desktopNotifications.js";
   import { notificationDelivery } from "./lib/notificationDelivery.svelte.js";
@@ -191,9 +192,6 @@
   });
 
   $effect(() => {
-    let socket = null;
-    let reconnectTimer = null;
-    let stopped = false;
     let burstPrKey = null;
     const routePrKey = () => (route.name === "detail" ? `${route.repo}#${route.number}` : null);
     const inboxRefresh = burstGate(() => {
@@ -213,52 +211,30 @@
       drainPending();
     }
 
-    function connect() {
-      if (socket || stopped) return;
-
-      const url = new URL("/api/events", location.href);
-      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-      socket = new WebSocket(url);
-      socket.addEventListener("open", refreshRoute);
-      socket.addEventListener("message", (message) => {
-        let invalidation;
-        try {
-          invalidation = JSON.parse(message.data);
-        } catch {
-          return;
-        }
-        if (invalidation.type === "poll-complete") {
-          pollCompletedAt = invalidation.lastPollAt;
-        } else if (invalidation.type === "notifications") {
-          drainPending();
-        } else if (invalidation.type === "notification-settings" || invalidation.type === "settings") {
-          fetchSettings().then(setPrefs).catch(() => {});
-          // The shell's global shortcuts follow settings; older shells lack this hook.
-          if (invalidation.type === "settings") window.cockpitShell?.refreshSettings?.();
-        } else if (invalidation.type === "inbox" && route.name === "inbox") {
-          inboxRefresh.trigger();
-        } else if (
-          invalidation.type === "pr" &&
-          route.name === "detail" &&
-          invalidation.repo === route.repo &&
-          invalidation.number === route.number
-        ) {
-          refreshDetailRoute();
-        }
-      });
-      socket.addEventListener("close", () => {
-        socket = null;
-        if (!stopped) reconnectTimer = setTimeout(connect, 1000);
-      });
-    }
-
-    connect();
+    const disconnect = connectEvents(refreshRoute, (invalidation) => {
+      if (invalidation.type === "poll-complete") {
+        pollCompletedAt = invalidation.lastPollAt;
+      } else if (invalidation.type === "notifications") {
+        drainPending();
+      } else if (invalidation.type === "notification-settings" || invalidation.type === "settings") {
+        fetchSettings().then(setPrefs).catch(() => {});
+        // The shell's global shortcuts follow settings; older shells lack this hook.
+        if (invalidation.type === "settings") window.cockpitShell?.refreshSettings?.();
+      } else if (invalidation.type === "inbox" && route.name === "inbox") {
+        inboxRefresh.trigger();
+      } else if (
+        invalidation.type === "pr" &&
+        route.name === "detail" &&
+        invalidation.repo === route.repo &&
+        invalidation.number === route.number
+      ) {
+        refreshDetailRoute();
+      }
+    });
     return () => {
-      stopped = true;
       inboxRefresh.cancel();
       detailRefresh.cancel();
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      socket?.close();
+      disconnect();
     };
   });
   // GitHub PR links in rendered markdown navigate in-app; modifier clicks keep the real href

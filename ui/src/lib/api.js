@@ -190,6 +190,13 @@ export async function fetchPrDetails(keys) {
   return (await res.json()).details;
 }
 
+// Inbox rows for stored PRs only; keys the server holds nothing for are absent.
+export async function fetchPrRows(keys) {
+  const res = await fetch(`/api/pr-details?rows=1&keys=${encodeURIComponent(keys.join(","))}`);
+  if (!res.ok) throw new Error(`pr-rows ${res.status}`);
+  return res.json();
+}
+
 function diffRangeQuery(range, prefetch) {
   const params = new URLSearchParams();
   if (range?.base) params.set("base", range.base);

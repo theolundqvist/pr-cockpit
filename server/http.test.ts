@@ -2168,6 +2168,63 @@ describe("PR creation time", () => {
   });
 });
 
+describe("PR rows", () => {
+  test("serves inbox rows for tracked PRs and for PRs only opened by link", async () => {
+    const repo = "cockpit-test/pr-rows";
+    const fetchedAt = new Date().toISOString();
+    upsertPr(trackedPrRow({ repo, number: 1, fetchedAt }));
+    const linked = {
+      ...JSON.parse(trackedPrRow({ repo, number: 2, fetchedAt }).detail_json),
+      title: "linked",
+      isDraft: true,
+      author: { login: "hubot" },
+      additions: 5,
+      deletions: 2,
+      changedFiles: 1,
+      commitCount: { totalCount: 1 },
+      viewerIsAuthor: false,
+      viewerReviewRequested: false,
+      viewerReviewState: null,
+      reviewDecision: "REVIEW_REQUIRED",
+      lastCommit: { nodes: [{ commit: { statusCheckRollup: { state: "FAILURE", contexts: { nodes: [] } } } }] },
+      reviewThreads: { nodes: [{ isResolved: false, isOutdated: false, comments: { nodes: [] } }] },
+      labels: { nodes: [{ name: "bug", color: "d73a4a" }] },
+    };
+    upsertCachedPrDetail({ repo, number: 2, head_sha: linked.headRefOid, detail_json: JSON.stringify(linked), fetched_at: fetchedAt });
+    const handler = buildFetchHandler(4820);
+    const get = async (path: string) => await (await handler(new Request(`http://127.0.0.1:4820${path}`))).json() as {
+      rows: Record<string, unknown>;
+      prs: Array<{ repo: string; number: number }>;
+      details: Record<string, unknown>;
+    };
+
+    try {
+      const keys = encodeURIComponent([`${repo}#1`, `${repo}#2`, `${repo}#3`, "not-a-key"].join(","));
+      const body = await get(`/api/pr-details?rows=1&keys=${keys}`);
+      expect(Object.keys(body.rows)).toEqual([`${repo}#1`, `${repo}#2`]);
+      expect(body).toHaveProperty("viewerLogin");
+      const inbox = await get("/api/inbox");
+      expect(body.rows[`${repo}#1`]).toEqual(inbox.prs.find((row) => row.repo === repo && row.number === 1));
+      expect(body.rows[`${repo}#2`]).toMatchObject({
+        title: "linked",
+        isDraft: true,
+        author: "hubot",
+        ciStatus: "FAILURE",
+        reviewDecision: "REVIEW_REQUIRED",
+        unresolvedCount: 1,
+        additions: 5,
+        deletions: 2,
+        labels: [{ name: "bug", color: "d73a4a" }],
+        media: [],
+      });
+      expect((await get(`/api/pr-details?keys=${keys}`)).details).not.toHaveProperty(`${repo}#3`);
+    } finally {
+      db.query("DELETE FROM prs WHERE repo = ?").run(repo);
+      db.query("DELETE FROM pr_detail_cache WHERE repo = ?").run(repo);
+    }
+  });
+});
+
 describe("PR description media", () => {
   test("lists every stored description attachment in order, beyond the three a row carries", async () => {
     const repo = "cockpit-test/description-media";

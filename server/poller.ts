@@ -132,22 +132,7 @@ function prefetchDetailImages(detail: PrDetail): void {
   prefetchImages(urls).catch((err) => console.error(`image prefetch failed for ${detail.url}:`, err));
 }
 
-async function refreshPrNow(
-  repo: string,
-  number: number,
-  source: GithubUsageSource = "app detail",
-  scope: PrDetailScope = "all",
-): Promise<{ followUp: Promise<void> } | void> {
-  const previous = getPr(repo, number);
-  const snapshotCutoffAt = new Date().toISOString();
-  const current = previous ? JSON.parse(previous.detail_json) as PrDetail : null;
-  const detail = scope === "all" || current === null
-    ? await fetchPrDetail(repo, number, source, current)
-    : await fetchPrDetailPart(repo, number, current, scope, source);
-  if (!previous || previous.head_sha !== detail.headRefOid) {
-    fetchMirror(repo).catch((err) => console.error(`mirror fetch failed for ${repo}:`, err));
-    onPrActivity(repo, number, previous !== null);
-  }
+export function prRowFromDetail(repo: string, number: number, detail: PrDetail, fetchedAt: string): PrRow {
   const ciStatus = checkRollupStatus(detail);
   const unresolvedCount = countUnresolved(detail);
   const rank = needsMeRank({
@@ -158,7 +143,7 @@ async function refreshPrNow(
     isDraft: detail.isDraft,
   });
 
-  const next: PrRow = {
+  return {
     repo,
     number,
     state: detail.isDraft ? "draft" : detail.state,
@@ -188,8 +173,27 @@ async function refreshPrNow(
     greptile_reviewed_sha: greptileReviewedSha(detail),
     greptile_unresolved_count: greptileUnresolvedCount(detail),
     detail_json: JSON.stringify(detail),
-    fetched_at: snapshotCutoffAt,
+    fetched_at: fetchedAt,
   };
+}
+
+async function refreshPrNow(
+  repo: string,
+  number: number,
+  source: GithubUsageSource = "app detail",
+  scope: PrDetailScope = "all",
+): Promise<{ followUp: Promise<void> } | void> {
+  const previous = getPr(repo, number);
+  const snapshotCutoffAt = new Date().toISOString();
+  const current = previous ? JSON.parse(previous.detail_json) as PrDetail : null;
+  const detail = scope === "all" || current === null
+    ? await fetchPrDetail(repo, number, source, current)
+    : await fetchPrDetailPart(repo, number, current, scope, source);
+  if (!previous || previous.head_sha !== detail.headRefOid) {
+    fetchMirror(repo).catch((err) => console.error(`mirror fetch failed for ${repo}:`, err));
+    onPrActivity(repo, number, previous !== null);
+  }
+  const next = prRowFromDetail(repo, number, detail, snapshotCutoffAt);
   upsertPr(next);
   observePrNotifications(previous, next);
 
