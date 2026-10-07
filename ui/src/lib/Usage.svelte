@@ -459,15 +459,15 @@
     margin: 18px 0 14px;
     overflow: hidden;
     border-radius: 999px;
-    background: var(--surface-3);
+    background: var(--surface);
   }
   .quota-track span {
     position: absolute;
     inset: 0 auto 0 0;
     border-radius: inherit;
   }
-  .quota-predicted { background: color-mix(in srgb, var(--accent) 28%, transparent); }
-  .quota-used { background: var(--accent); }
+  .quota-predicted { background: color-mix(in srgb, var(--link) 28%, transparent); }
+  .quota-used { background: var(--link); }
   .usage-stats {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -542,7 +542,7 @@
     gap: 2px;
     height: 128px;
     margin-top: 20px;
-    border-bottom: 1px solid var(--border-strong);
+    border-bottom: 1px solid var(--border);
     background: repeating-linear-gradient(to top, transparent 0, transparent 31px, var(--border) 32px);
   }
   .history-hour {
@@ -557,12 +557,12 @@
     min-height: 1px;
     border-radius: 1px 1px 0 0;
   }
-  .history-observed { background: var(--accent); }
+  .history-observed { background: var(--link); }
   .history-predicted,
-  .history-total { background: color-mix(in srgb, var(--accent) 28%, transparent); }
+  .history-total { background: color-mix(in srgb, var(--link) 28%, transparent); }
   .history-missing {
     height: 1px;
-    background: var(--border-strong);
+    background: var(--border);
   }
   .history-axis {
     display: flex;
@@ -579,9 +579,9 @@
     height: 9px;
     border-radius: 1px;
   }
-  .observed-key { background: var(--accent); }
+  .observed-key { background: var(--link); }
   .predicted-key,
-  .total-key { background: color-mix(in srgb, var(--accent) 28%, transparent); }
+  .total-key { background: color-mix(in srgb, var(--link) 28%, transparent); }
   .breakdowns {
     display: grid;
     grid-template-columns: minmax(0, 1.35fr) minmax(240px, 1fr);
@@ -617,13 +617,13 @@
     height: 4px;
     overflow: hidden;
     border-radius: 999px;
-    background: var(--surface-3);
+    background: var(--surface);
   }
   .usage-row-track i {
     position: absolute;
     inset: 0 auto 0 0;
     border-radius: inherit;
-    background: color-mix(in srgb, var(--accent) 75%, var(--text-faint));
+    background: color-mix(in srgb, var(--link) 75%, var(--text-faint));
   }
   .usage-operation {
     display: flex;
