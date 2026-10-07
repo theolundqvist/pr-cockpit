@@ -50,6 +50,9 @@
   let savedSafeMergeApproval = false;
   let groupDragEnabled = $state(false);
   let queueTimeControlsEnabled = $state(false);
+  let reviewFileMenuEnabled = $state(false);
+  let hiddenReviewPaths = $state({});
+  let savedHiddenReviewPaths = "{}";
   let testPathRegex = $state("");
   let diffLayout = $state("split");
   let forceMergeRepos = $state([]);
@@ -173,6 +176,9 @@
     savedSafeMergeApproval = safeMergeApprovalEnabled;
     groupDragEnabled = s.group_drag_enabled === true;
     queueTimeControlsEnabled = s.queue_time_controls_enabled === true;
+    reviewFileMenuEnabled = s.review_file_menu_enabled === true;
+    hiddenReviewPaths = s.hidden_review_paths ?? {};
+    savedHiddenReviewPaths = JSON.stringify(hiddenReviewPaths);
     restFallbackEnabled = s.rest_fallback_enabled !== false;
     diffLayout = s.diff_layout;
     forceMergeRepos = s.force_merge_repos.split(",").map((r) => r.trim()).filter(Boolean);
@@ -375,6 +381,9 @@
         ...(safeMergeApprovalEnabled !== savedSafeMergeApproval ? { safe_merge_approval_enabled: safeMergeApprovalEnabled } : {}),
         group_drag_enabled: groupDragEnabled,
         queue_time_controls_enabled: queueTimeControlsEnabled,
+        review_file_menu_enabled: reviewFileMenuEnabled,
+        // Sent only when edited here, so saving other settings never undoes a file hidden from a PR meanwhile.
+        ...(JSON.stringify(hiddenReviewPaths) !== savedHiddenReviewPaths ? { hidden_review_paths: hiddenReviewPaths } : {}),
         rest_fallback_enabled: restFallbackEnabled,
         test_path_regex: testPathRegex.trim() === BUILTIN_TEST_PATH.source.trim() ? "" : testPathRegex.trim(),
         diff_layout: diffLayout,
@@ -991,6 +1000,36 @@
             <span class="check-label">Show newest comments first</span>
           </span>
         </label>
+
+        <label class="check-field settings-option">
+          <input class="check" type="checkbox" bind:checked={reviewFileMenuEnabled} />
+          <span class="check-text">
+            <span class="check-label">File tree actions</span>
+            <span class="hint">Right-click a file or folder to mark it generated in the PR's .gitattributes, or to hide it in Cockpit alongside tests.</span>
+          </span>
+        </label>
+        {#if Object.keys(hiddenReviewPaths).length}
+          <div class="field field-wide">
+            <span class="label">Hidden in Cockpit</span>
+            {#each Object.entries(hiddenReviewPaths) as [hiddenRepo, patterns] (hiddenRepo)}
+              {#each patterns as pattern (pattern)}
+                <div class="group-editor-row">
+                  <span class="hidden-path mono"><span class="coverage-repo">{hiddenRepo}</span> {pattern}</span>
+                  <button
+                    class="btn"
+                    type="button"
+                    aria-label={`Stop hiding ${pattern} in ${hiddenRepo}`}
+                    onclick={() => {
+                      const { [hiddenRepo]: _, ...others } = hiddenReviewPaths;
+                      const remaining = patterns.filter((candidate) => candidate !== pattern);
+                      hiddenReviewPaths = remaining.length ? { ...others, [hiddenRepo]: remaining } : others;
+                    }}
+                  >Show</button>
+                </div>
+              {/each}
+            {/each}
+          </div>
+        {/if}
         <details class="disclosure">
           <summary>Test file detection</summary>
           <div class="disclosure-body">
@@ -1219,6 +1258,7 @@
   .coverage-list { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
   .coverage-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12px; }
   .coverage-repo { overflow-wrap: anywhere; color: var(--text-dim); }
+  .hidden-path { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
   .coverage-live { color: var(--ready); }
   .coverage-polling { color: var(--text-dim); }
   .actions {

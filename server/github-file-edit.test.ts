@@ -1,4 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { generatedAttributeLine } from "./github.ts";
 
 const githubModuleUrl = new URL("./github.ts", import.meta.url).href;
 const repo = "base-owner/base-repo";
@@ -25,10 +29,13 @@ type FileEditScenario = {
   target: FileTarget;
   currentContent?: string;
   refRace?: boolean;
+  // Marks this pattern generated instead of editing `path`; `attributes` is the head's .gitattributes.
+  pattern?: string;
+  attributes?: string;
 };
 
 type FileEditResult = {
-  result?: { commitOid: string };
+  result?: { commitOid: string | null };
   error?: { name: string; message: string };
   calls: RestCall[];
 };
@@ -37,7 +44,7 @@ const editableTarget: FileTarget = { type: "blob", mode: "100644" };
 
 async function runFileEditScenario(scenario: FileEditScenario): Promise<FileEditResult> {
   const script = `
-    const { commitPrFileEdit } = await import(${JSON.stringify(githubModuleUrl)});
+    const { commitPrFileEdit, markPrPathGenerated } = await import(${JSON.stringify(githubModuleUrl)});
     const scenario = ${JSON.stringify(scenario)};
     const calls = [];
     globalThis.fetch = async (input, init = {}) => {
@@ -62,8 +69,14 @@ async function runFileEditScenario(scenario: FileEditScenario): Promise<FileEdit
       }
       if (method === "GET" && pathname.endsWith("/git/trees/root-tree")) {
         return Response.json({
-          tree: [{ path: "src", type: "tree", mode: "040000", sha: "src-tree" }],
+          tree: [
+            { path: "src", type: "tree", mode: "040000", sha: "src-tree" },
+            ...(scenario.attributes === undefined ? [] : [{ path: ".gitattributes", type: "blob", mode: "100644", sha: "attributes-blob" }]),
+          ],
         });
+      }
+      if (method === "GET" && pathname.endsWith("/git/blobs/attributes-blob")) {
+        return Response.json({ content: Buffer.from(scenario.attributes).toString("base64"), encoding: "base64" });
       }
       if (method === "GET" && pathname.endsWith("/git/trees/src-tree")) {
         return Response.json({
@@ -99,14 +112,16 @@ async function runFileEditScenario(scenario: FileEditScenario): Promise<FileEdit
       throw new Error("Unexpected request: " + method + " " + url);
     };
     try {
-      const result = await commitPrFileEdit({
-        repo: ${JSON.stringify(repo)},
-        number: ${number},
-        path: ${JSON.stringify(path)},
-        expectedHeadOid: scenario.expectedHeadOid,
-        content: scenario.content,
-        message: ${JSON.stringify(message)},
-      });
+      const result = scenario.pattern
+        ? await markPrPathGenerated(${JSON.stringify(repo)}, ${number}, scenario.pattern)
+        : await commitPrFileEdit({
+          repo: ${JSON.stringify(repo)},
+          number: ${number},
+          path: ${JSON.stringify(path)},
+          expectedHeadOid: scenario.expectedHeadOid,
+          content: scenario.content,
+          message: ${JSON.stringify(message)},
+        });
       console.log(JSON.stringify({ result, calls }));
     } catch (error) {
       console.log(JSON.stringify({
@@ -273,5 +288,68 @@ describe("commitPrFileEdit", () => {
       message: "PR file is no longer editable",
     });
     expect(result.calls).toHaveLength(5);
+  });
+});
+
+describe("markPrPathGenerated", () => {
+  const headOid = "a".repeat(40);
+  const mark = (pattern: string, attributes?: string) =>
+    runFileEditScenario({ expectedHeadOid: headOid, headOid, target: editableTarget, content: "", pattern, attributes });
+  const written = (result: FileEditResult) =>
+    Buffer.from(String(result.calls.find((call) => call.url.endsWith("/git/blobs") && call.method === "POST")?.body?.content), "base64").toString();
+
+  test("creates .gitattributes on the current head when the PR has none", async () => {
+    const result = await mark("ui/generated/**");
+
+    expect(result.result).toEqual({ commitOid });
+    expect(written(result)).toBe("ui/generated/** linguist-generated=true\n");
+    expect(result.calls.find((call) => call.url.endsWith("/git/trees") && call.method === "POST")?.body).toEqual({
+      base_tree: "root-tree",
+      tree: [{ path: ".gitattributes", mode: "100644", type: "blob", sha: "new-blob" }],
+    });
+    expect(result.calls.find((call) => call.url.endsWith("/git/commits") && call.method === "POST")?.body).toMatchObject({
+      message: "chore: mark ui/generated/** as generated",
+      parents: [headOid],
+    });
+  });
+
+  test("appends to existing attributes, adding a missing final newline", async () => {
+    const result = await mark("bun.lock", "*.png binary");
+
+    expect(written(result)).toBe("*.png binary\nbun.lock linguist-generated=true\n");
+  });
+
+  test("makes no commit when the rule is already present", async () => {
+    const result = await mark("bun.lock", "*.png binary\r\nbun.lock linguist-generated=true\r\n");
+
+    expect(result.result).toEqual({ commitOid: null });
+    expect(result.calls.every((call) => call.method === "GET")).toBe(true);
+  });
+});
+
+describe("generatedAttributeLine", () => {
+  test("marks exactly the chosen file or folder, however its name reads to Git", async () => {
+    const paths = [
+      "src/[id].ts", "src/i.ts", "src/d.ts",
+      "docs/a b.md", "docs/a",
+      "#notes.md", "!bang.md",
+      "lib/*star.ts", "lib/xstar.ts",
+      "gen api/out.ts", "gen api/deep/out.ts", "gen/out.ts",
+      "q\"uote.md",
+    ];
+    const patterns = ["src/[id].ts", "docs/a b.md", "#notes.md", "!bang.md", "lib/*star.ts", "gen api/**", "q\"uote.md"];
+    const dir = mkdtempSync(join(tmpdir(), "cockpit-attributes-"));
+    try {
+      await Bun.$`git init -q ${dir}`;
+      writeFileSync(join(dir, ".gitattributes"), patterns.map((pattern) => `${generatedAttributeLine(pattern)}\n`).join(""));
+      const output = await Bun.$`git -C ${dir} check-attr -z --stdin linguist-generated < ${Buffer.from(paths.join("\0"))}`.arrayBuffer();
+      const fields = Buffer.from(output).toString().split("\0");
+      const generated: string[] = [];
+      for (let index = 0; index + 2 < fields.length; index += 3) if (fields[index + 2] === "true") generated.push(fields[index]!);
+
+      expect(generated).toEqual(["src/[id].ts", "docs/a b.md", "#notes.md", "!bang.md", "lib/*star.ts", "gen api/out.ts", "gen api/deep/out.ts", "q\"uote.md"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

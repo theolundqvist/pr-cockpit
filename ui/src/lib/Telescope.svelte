@@ -53,7 +53,7 @@
   const MAX_FETCH_RETRIES = 15;
   const MIN_SEARCH_QUERY = 2;
 
-  let testPattern = $derived(testMatcher(prefs.testPathRegex));
+  let testPattern = $derived(testMatcher(prefs.testPathRegex, prefs.hiddenReviewPaths[repo]));
   let shownPath = $derived(excludedFilesHidden ? (path) => !excludedPath(path, testPattern, generatedPaths) : null);
 
   let results = $derived.by(() => {

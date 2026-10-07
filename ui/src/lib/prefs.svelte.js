@@ -21,6 +21,8 @@ export const prefs = $state({
   safeMergeApprovalEnabled: false,
   groupDragEnabled: false,
   queueTimeControlsEnabled: false,
+  reviewFileMenuEnabled: false,
+  hiddenReviewPaths: {},
   restFallbackEnabled: true,
   quickGenerateEnabled: false,
   agentConversationsEnabled: false,
@@ -47,6 +49,8 @@ export function setPrefs(settings) {
   prefs.safeMergeApprovalEnabled = settings.safe_merge_approval_enabled === true;
   prefs.groupDragEnabled = settings.group_drag_enabled === true;
   prefs.queueTimeControlsEnabled = settings.queue_time_controls_enabled === true;
+  prefs.reviewFileMenuEnabled = settings.review_file_menu_enabled === true;
+  prefs.hiddenReviewPaths = settings.hidden_review_paths ?? {};
   prefs.restFallbackEnabled = settings.rest_fallback_enabled !== false;
   prefs.quickGenerateEnabled = settings.quick_generate_enabled === true;
   prefs.agentConversationsEnabled = settings.agent_conversations_enabled === true;

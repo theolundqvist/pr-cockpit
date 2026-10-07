@@ -296,6 +296,23 @@ export async function commitPrFileEdit(repo, number, path, expectedHeadOid, cont
   return body;
 }
 
+export async function markPathGenerated(repo, number, pattern) {
+  const res = await fetch("/api/pr-generated", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ repo, number, pattern }),
+  });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    const error = new Error(body?.error || `pr-generated ${res.status}`);
+    error.code = body?.code;
+    error.auth = body?.auth;
+    error.status = res.status;
+    throw error;
+  }
+  return body;
+}
+
 export async function generateCommitMessage(repo, number, path, hunk) {
   const res = await fetch("/api/commit-message", {
     method: "POST",

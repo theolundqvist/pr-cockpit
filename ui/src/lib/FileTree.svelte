@@ -2,7 +2,7 @@
   import { tick } from "svelte";
   import Chevron from "./Chevron.svelte";
 
-  let { files, selectedPath, hoveredPath = null, onSelect } = $props();
+  let { files, selectedPath, hoveredPath = null, onSelect, onContextMenu = null } = $props();
 
   const INDENT = 16;
   let lastSelectedPath = null;
@@ -182,7 +182,12 @@
   {#each rows.slice(windowStart, windowEnd) as row (row.key)}
     {@const value = row.value}
     {#if row.kind === "dir"}
-      <button class="row dir" style="padding-left: {row.depth * INDENT + 8}px" onclick={() => toggleDir(value.path)}>
+      <button
+        class="row dir"
+        style="padding-left: {row.depth * INDENT + 8}px"
+        onclick={() => toggleDir(value.path)}
+        oncontextmenu={onContextMenu && ((event) => onContextMenu(event, `${value.path}/**`))}
+      >
         {@render rails(row.depth)}
         <Chevron direction={collapsedDirs.has(value.path) ? "right" : "down"} size={12} />
         <svg class="folder-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M1.5 4.5V3a1 1 0 0 1 1-1h3l1.5 2h6.5a1 1 0 0 1 1 1v7.5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z" /></svg>
@@ -196,6 +201,7 @@
         class:hovered={value.path === hoveredPath}
         style="padding-left: {row.depth * INDENT + 8}px"
         onclick={() => onSelect(value.path)}
+        oncontextmenu={onContextMenu && ((event) => onContextMenu(event, value.path))}
       >
         {@render rails(row.depth)}
         {#if value.isRenamed}

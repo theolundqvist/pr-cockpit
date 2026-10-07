@@ -6,6 +6,7 @@ import { notificationSettingsChanged, storedNotificationSettings } from "./notif
 import { defaultNotificationSettings, parseNotificationSettings, type NotificationSettings } from "../shared/notificationRules.ts";
 import desktopShortcuts from "../shared/desktopShortcuts.json";
 import { invalidateInbox, invalidatePr, invalidateSettings } from "./rendererInvalidation.ts";
+import { isReviewPathPattern } from "../shared/reviewFiles.js";
 
 const POLL_INTERVAL_FLOOR_S = 60;
 const DEFAULT_POLL_INTERVAL_S = 180;
@@ -270,6 +271,24 @@ function readPrGrouping(): PrGrouping {
   catch { return normalizePrGrouping(null); }
 }
 
+export type HiddenReviewPaths = Record<string, string[]>;
+
+function normalizeHiddenReviewPaths(value: unknown): HiddenReviewPaths {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const hidden: HiddenReviewPaths = {};
+  for (const [repo, patterns] of Object.entries(value)) {
+    if (!/^[^/\s]+\/[^/\s]+$/.test(repo) || !Array.isArray(patterns)) continue;
+    const valid = [...new Set(patterns.filter(isReviewPathPattern))].sort();
+    if (valid.length) hidden[repo] = valid;
+  }
+  return hidden;
+}
+
+function readHiddenReviewPaths(): HiddenReviewPaths {
+  try { return normalizeHiddenReviewPaths(JSON.parse(getSetting("hidden_review_paths") ?? "null")); }
+  catch { return {}; }
+}
+
 export interface Settings {
   desktop_platform: string;
   repos: string;
@@ -306,6 +325,8 @@ export interface Settings {
   safe_merge_approval_enabled: boolean;
   group_drag_enabled: boolean;
   queue_time_controls_enabled: boolean;
+  review_file_menu_enabled: boolean;
+  hidden_review_paths: HiddenReviewPaths;
   agent_conversations_enabled: boolean;
   rest_fallback_enabled: boolean;
   rest_usage_enabled: boolean;
@@ -359,6 +380,8 @@ export function readSettings(): Settings {
     safe_merge_approval_enabled: safeMergeApprovalEnabled(),
     group_drag_enabled: getSetting("group_drag_enabled") === "true",
     queue_time_controls_enabled: getSetting("queue_time_controls_enabled") === "true",
+    review_file_menu_enabled: getSetting("review_file_menu_enabled") === "true",
+    hidden_review_paths: readHiddenReviewPaths(),
     agent_conversations_enabled: getSetting("agent_conversations_enabled") === "true",
     rest_fallback_enabled: restFallbackEnabled(),
     rest_usage_enabled: restUsageEnabled(),
@@ -409,6 +432,8 @@ export function writeSettings(
     safe_merge_approval_enabled: boolean;
     group_drag_enabled: boolean;
     queue_time_controls_enabled: boolean;
+    review_file_menu_enabled: boolean;
+    hidden_review_paths: HiddenReviewPaths;
     agent_conversations_enabled: boolean;
     rest_fallback_enabled: boolean;
     rest_usage_enabled: boolean;
@@ -498,6 +523,21 @@ export function writeSettings(
     if (getSetting("queue_time_controls_enabled") !== enabled) {
       setSetting("queue_time_controls_enabled", enabled);
       invalidateSettings();
+    }
+  }
+  if (patch.review_file_menu_enabled !== undefined) {
+    const enabled = patch.review_file_menu_enabled === true ? "true" : "false";
+    if (getSetting("review_file_menu_enabled") !== enabled) {
+      setSetting("review_file_menu_enabled", enabled);
+      invalidateSettings();
+    }
+  }
+  if (patch.hidden_review_paths !== undefined) {
+    const hidden = JSON.stringify(normalizeHiddenReviewPaths(patch.hidden_review_paths));
+    if (JSON.stringify(readHiddenReviewPaths()) !== hidden) {
+      setSetting("hidden_review_paths", hidden);
+      invalidateSettings();
+      invalidateInbox();
     }
   }
   if (patch.agent_conversations_enabled !== undefined) {

@@ -3444,53 +3444,67 @@ function isRefUpdateRace(error: unknown): boolean {
     && /(?:fast.?forward|reference update|expected|stale)/i.test(error.message);
 }
 
-export async function commitPrFileEdit(input: PrFileEdit): Promise<{ commitOid: string }> {
+type PrFileWrite = {
+  repo: string;
+  number: number;
+  path: string;
+  // null commits on whatever the head is now.
+  expectedHeadOid: string | null;
+  message: string;
+  // Receives the file at the head, or null where it does not exist; returning null skips the commit.
+  edit: (current: string | null) => string | null;
+};
+
+async function writePrFile(input: PrFileWrite): Promise<string | null> {
   const [owner, name] = input.repo.split("/");
   if (!owner || !name) throw new GithubRequestError(`Invalid repository: ${input.repo}`, 404);
-  const expectedHeadOid = input.expectedHeadOid.toLowerCase();
   const baseRepo = encodedRepo(input.repo);
   const pullRequest = await githubRestJson<RestPull>("GET", `/repos/${baseRepo}/pulls/${input.number}`);
   if (pullRequest.state !== "open") throw new StalePrHeadError("PR is no longer open");
   if (!pullRequest.head?.ref || !pullRequest.head.repo?.full_name) {
     throw new StalePrHeadError("PR head is unavailable");
   }
-  if (pullRequest.head.sha.toLowerCase() !== expectedHeadOid) throw new StalePrHeadError();
+  const headOid = input.expectedHeadOid?.toLowerCase() ?? pullRequest.head.sha.toLowerCase();
+  if (pullRequest.head.sha.toLowerCase() !== headOid) throw new StalePrHeadError();
 
   const headRepo = encodedRepo(pullRequest.head.repo.full_name);
   const commit = await githubRestJson<{ tree: { sha: string } }>(
     "GET",
-    `/repos/${headRepo}/git/commits/${expectedHeadOid}`,
+    `/repos/${headRepo}/git/commits/${headOid}`,
   );
   const segments = input.path.split("/");
-  let treeSha = commit.tree.sha;
-  for (let index = 0; index < segments.length; index += 1) {
-    const tree = await githubRestJson<{ tree: RestTreeEntry[] }>(
+  let blobSha: string | null = commit.tree.sha;
+  for (let index = 0; index < segments.length && blobSha !== null; index += 1) {
+    const tree: { tree: RestTreeEntry[] } = await githubRestJson<{ tree: RestTreeEntry[] }>(
       "GET",
-      `/repos/${headRepo}/git/trees/${encodeURIComponent(treeSha)}`,
+      `/repos/${headRepo}/git/trees/${encodeURIComponent(blobSha)}`,
     );
     const entry = tree.tree.find((candidate) => candidate.path === segments[index]);
     const isFile = index === segments.length - 1;
-    if (!entry || (isFile ? entry.type !== "blob" || entry.mode !== "100644" : entry.type !== "tree")) {
+    if (entry && (isFile ? entry.type !== "blob" || entry.mode !== "100644" : entry.type !== "tree")) {
       throw new StalePrHeadError("PR file is no longer editable");
     }
-    treeSha = entry.sha;
+    blobSha = entry?.sha ?? null;
   }
-  const currentBlob = await githubRestJson<{ content: string; encoding: string }>(
-    "GET",
-    `/repos/${headRepo}/git/blobs/${encodeURIComponent(treeSha)}`,
-  );
-  if (currentBlob.encoding !== "base64") throw new StalePrHeadError("PR file is no longer editable");
-  try {
-    if (strictUtf8Decoder.decode(Buffer.from(currentBlob.content, "base64")).includes("\0")) {
+  let current: string | null = null;
+  if (blobSha !== null) {
+    const currentBlob = await githubRestJson<{ content: string; encoding: string }>(
+      "GET",
+      `/repos/${headRepo}/git/blobs/${encodeURIComponent(blobSha)}`,
+    );
+    if (currentBlob.encoding !== "base64") throw new StalePrHeadError("PR file is no longer editable");
+    try {
+      current = strictUtf8Decoder.decode(Buffer.from(currentBlob.content, "base64"));
+    } catch {
       throw new StalePrHeadError("PR file is no longer editable");
     }
-  } catch (error) {
-    if (error instanceof StalePrHeadError) throw error;
-    throw new StalePrHeadError("PR file is no longer editable");
+    if (current.includes("\0")) throw new StalePrHeadError("PR file is no longer editable");
   }
+  const content = input.edit(current);
+  if (content === null) return null;
 
   const blob = await githubRestJson<{ sha: string }>("POST", `/repos/${headRepo}/git/blobs`, {
-    content: Buffer.from(input.content).toString("base64"),
+    content: Buffer.from(content).toString("base64"),
     encoding: "base64",
   });
   const nextTree = await githubRestJson<{ sha: string }>("POST", `/repos/${headRepo}/git/trees`, {
@@ -3500,7 +3514,7 @@ export async function commitPrFileEdit(input: PrFileEdit): Promise<{ commitOid: 
   const nextCommit = await githubRestJson<{ sha: string }>("POST", `/repos/${headRepo}/git/commits`, {
     message: input.message,
     tree: nextTree.sha,
-    parents: [expectedHeadOid],
+    parents: [headOid],
   });
   const encodedRef = pullRequest.head.ref.split("/").map(encodeURIComponent).join("/");
   try {
@@ -3512,7 +3526,47 @@ export async function commitPrFileEdit(input: PrFileEdit): Promise<{ commitOid: 
     if (isRefUpdateRace(error)) throw new StalePrHeadError();
     throw error;
   }
-  return { commitOid: nextCommit.sha };
+  return nextCommit.sha;
+}
+
+export async function commitPrFileEdit(input: PrFileEdit): Promise<{ commitOid: string }> {
+  const commitOid = await writePrFile({
+    ...input,
+    edit: (current) => {
+      if (current === null) throw new StalePrHeadError("PR file is no longer editable");
+      return input.content;
+    },
+  });
+  return { commitOid: commitOid! };
+}
+
+/** A changed file's path, or a folder as `dir/**`, as the PR tree's .gitattributes pattern. */
+export function generatedAttributeLine(pattern: string): string {
+  const folder = pattern.endsWith("/**");
+  const path = folder ? pattern.slice(0, -3) : pattern;
+  // Glob characters match literally and a leading ! or # keeps its meaning as a name.
+  const literal = `${path.replace(/[*?[\\]/g, "\\$&").replace(/^[!#]/, "\\$&")}${folder ? "/**" : ""}`;
+  // Whitespace ends an unquoted pattern, so such paths use Git's C-style quoting.
+  const quoted = /[\s"]/.test(literal) ? `"${literal.replace(/[\\"]/g, "\\$&").replace(/\t/g, "\\t")}"` : literal;
+  return `${quoted} linguist-generated=true`;
+}
+
+/** Commits a root .gitattributes rule marking `pattern` generated onto the PR head; null when it is already there. */
+export async function markPrPathGenerated(repo: string, number: number, pattern: string): Promise<{ commitOid: string | null }> {
+  const line = generatedAttributeLine(pattern);
+  const commitOid = await writePrFile({
+    repo,
+    number,
+    path: ".gitattributes",
+    expectedHeadOid: null,
+    message: `chore: mark ${pattern} as generated`,
+    edit: (current) => {
+      if (current === null) return `${line}\n`;
+      if (current.split(/\r?\n/).some((existing) => existing.trim() === line)) return null;
+      return `${current}${current === "" || current.endsWith("\n") ? "" : "\n"}${line}\n`;
+    },
+  });
+  return { commitOid };
 }
 
 export class RestRequestError extends GithubRequestError {

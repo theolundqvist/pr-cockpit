@@ -8,6 +8,8 @@
     fetchGeneratedFiles,
     fetchPrDetailSnapshot,
     commitPrFileEdit,
+    markPathGenerated,
+    saveSettings,
     generateCommitMessage,
     fetchConflictFiles,
     fetchPrCommitStats,
@@ -44,7 +46,7 @@
   import { scrollPage, scrollEdge, holdScrollStart, holdScrollRelease, cancelHoldScroll, scrollAnimating } from "./scroll.js";
   import { testMatcher } from "./testPath.js";
   import { excludedPath } from "../../../shared/reviewFiles.js";
-  import { prefs } from "./prefs.svelte.js";
+  import { prefs, setPrefs } from "./prefs.svelte.js";
   import { timedFlag } from "./timedFlag.svelte.js";
   import { showFlash } from "./flash.svelte.js";
   import Chevron from "./Chevron.svelte";
@@ -97,6 +99,10 @@
   let files = $state.raw([]);
   // Attribute-generated paths for the displayed diff's commits; always replaced together with `files`.
   let generatedPaths = $state.raw(new Set());
+  // Patterns this visit committed as generated, hidden until the new head's attributes classify them.
+  let markedGenerated = $state([]);
+  let fileMenu = $state.raw(null);
+  let fileMenuNode = $state();
   // The displayed diff's identity once attributes classified it; group folds reconcile once per key.
   let classifiedDiffKey = $state(null);
   let diffDocument = null;
@@ -180,6 +186,8 @@
     error = null;
     mutations = [];
     unsentTasks = [];
+    markedGenerated = [];
+    fileMenu = null;
     pendingReview = null;
     pendingReviewState = "idle";
     pendingReviewError = null;
@@ -647,14 +655,11 @@
     applyAsyncPrDetail(detail, pending);
   }
 
-  async function commitFileEdit(path, expectedHeadOid, content, message) {
-    if (!pr) throw new Error("PR is unavailable.");
-    const token = activeFetch;
-    const result = await commitPrFileEdit(repo, number, path, expectedHeadOid, content, message.trim());
-    if (token !== activeFetch || !pr) return result;
-    const pending = { before: expectedHeadOid, committed: result.commitOid };
+  // Shows a commit Cockpit just pushed to the PR head without waiting for the next poll.
+  function adoptHeadCommit(token, expectedHeadOid, commitOid) {
+    const pending = { before: expectedHeadOid, committed: commitOid };
     pendingCommit = pending;
-    pr = { ...pr, headRefOid: result.commitOid };
+    pr = { ...pr, headRefOid: commitOid };
     diffNonce++;
     fetchPrDetail(repo, number, { fresh: true }).then(
       (detail) => {
@@ -665,7 +670,78 @@
         if (token === activeFetch && pending === pendingCommit) showFlash("File committed, but the PR refresh failed.");
       },
     );
+  }
+
+  async function commitFileEdit(path, expectedHeadOid, content, message) {
+    if (!pr) throw new Error("PR is unavailable.");
+    const token = activeFetch;
+    const result = await commitPrFileEdit(repo, number, path, expectedHeadOid, content, message.trim());
+    if (token !== activeFetch || !pr) return result;
+    adoptHeadCommit(token, expectedHeadOid, result.commitOid);
     return result;
+  }
+
+  $effect(() => {
+    if (!fileMenu) return;
+    const dismiss = () => (fileMenu = null);
+    const outside = (event) => { if (!fileMenuNode?.contains(event.target)) dismiss(); };
+    const escape = (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      dismiss();
+    };
+    window.addEventListener("pointerdown", outside, true);
+    window.addEventListener("keydown", escape, true);
+    window.addEventListener("scroll", dismiss, true);
+    window.addEventListener("resize", dismiss);
+    return () => {
+      window.removeEventListener("pointerdown", outside, true);
+      window.removeEventListener("keydown", escape, true);
+      window.removeEventListener("scroll", dismiss, true);
+      window.removeEventListener("resize", dismiss);
+    };
+  });
+
+  async function openFileMenu(event, pattern) {
+    event.preventDefault();
+    const menu = { pattern, x: 0, y: 0 };
+    fileMenu = menu;
+    await tick();
+    if (!fileMenuNode || fileMenu !== menu) return;
+    const rect = fileMenuNode.getBoundingClientRect();
+    const scale = Number.parseFloat(getComputedStyle(fileMenuNode.closest("#app")).zoom) || 1;
+    const x = Math.max(8, Math.min(event.clientX, window.innerWidth - rect.width - 8));
+    const y = Math.max(8, Math.min(event.clientY, window.innerHeight - rect.height - 8));
+    fileMenu = { pattern, x: (x - rect.left) / scale, y: (y - rect.top) / scale };
+    fileMenuNode.querySelector("button")?.focus();
+  }
+
+  async function markGenerated(pattern) {
+    fileMenu = null;
+    const token = activeFetch;
+    const expectedHeadOid = pr.headRefOid;
+    markedGenerated = [...markedGenerated, pattern];
+    try {
+      const result = await markPathGenerated(repo, number, pattern);
+      if (token !== activeFetch || !pr) return;
+      if (result.commitOid) adoptHeadCommit(token, expectedHeadOid, result.commitOid);
+      showFlash(result.commitOid ? `Marked ${pattern} as generated in .gitattributes.` : `${pattern} is already marked as generated.`);
+    } catch (err) {
+      if (token !== activeFetch) return;
+      markedGenerated = markedGenerated.filter((candidate) => candidate !== pattern);
+      showFlash(err instanceof Error ? err.message : "Couldn't update .gitattributes.");
+    }
+  }
+
+  async function hideInCockpit(pattern) {
+    fileMenu = null;
+    const patterns = [...hiddenHere, pattern];
+    try {
+      setPrefs(await saveSettings({ hidden_review_paths: { ...prefs.hiddenReviewPaths, [repo]: patterns } }));
+    } catch (err) {
+      showFlash(err instanceof Error ? err.message : "Couldn't save the hidden path.");
+    }
   }
 
   function refreshDetail({ fresh = false } = {}) {
@@ -1989,7 +2065,8 @@
   let hoveredDiffPath = $state(null);
   let selectedPath = $derived(files[fileIndex]?.path ?? null);
 
-  let testPattern = $derived(testMatcher(prefs.testPathRegex));
+  let hiddenHere = $derived(prefs.hiddenReviewPaths[repo] ?? []);
+  let testPattern = $derived(testMatcher(prefs.testPathRegex, [...hiddenHere, ...markedGenerated]));
   let excludedFiles = $derived(files.filter((f) => excludedPath(f.path, testPattern, generatedPaths)));
   let includedFiles = $derived(files.filter((f) => !excludedPath(f.path, testPattern, generatedPaths)));
   let includedAdditions = $derived(includedFiles.reduce((sum, f) => sum + f.additions, 0));
@@ -2974,7 +3051,7 @@
               <span>Changed files</span>
               {#if pr.changedFiles > 0}<span class="fcount">{diffState === "ready" ? treeFiles.length : pr.changedFiles}</span>{/if}
             </div>
-            <FileTree files={treeFiles} {selectedPath} hoveredPath={hoveredDiffPath} onSelect={selectFileByPath} />
+            <FileTree files={treeFiles} {selectedPath} hoveredPath={hoveredDiffPath} onSelect={selectFileByPath} onContextMenu={prefs.reviewFileMenuEnabled ? openFileMenu : null} />
           </aside>
           <div class="tree-resizer" role="separator" aria-orientation="vertical" onpointerdown={startTreeResize}></div>
           <div class="diff-pane">
@@ -3843,6 +3920,21 @@
     </div>
   {/if}
 </div>
+{#if fileMenu}
+  {@const folder = fileMenu.pattern.endsWith("/**")}
+  <div
+    class="file-context-menu"
+    bind:this={fileMenuNode}
+    role="menu"
+    tabindex="-1"
+    aria-label={`Actions for ${fileMenu.pattern}`}
+    style="left:{fileMenu.x}px;top:{fileMenu.y}px"
+    oncontextmenu={(event) => event.preventDefault()}
+  >
+    <button role="menuitem" disabled={!fileEditable || markedGenerated.includes(fileMenu.pattern)} onclick={() => markGenerated(fileMenu.pattern)}>{folder ? "Mark folder as generated" : "Mark as generated"}</button>
+    <button role="menuitem" disabled={hiddenHere.includes(fileMenu.pattern)} onclick={() => hideInCockpit(fileMenu.pattern)}>{folder ? "Hide folder in Cockpit" : "Hide in Cockpit"}</button>
+  </div>
+{/if}
 
 <style>
   .page {
@@ -6841,5 +6933,36 @@
     .detail-frame.files-tab .diff-pane :global(.file-head) {
       border-radius: 0;
     }
+  }
+
+  .file-context-menu {
+    position: fixed;
+    z-index: 100;
+    min-width: 174px;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel-raised);
+    box-shadow: var(--shadow-sm);
+  }
+  .file-context-menu button {
+    display: block;
+    width: 100%;
+    padding: 7px 9px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text);
+    font: 12px var(--sans);
+    text-align: left;
+    cursor: pointer;
+  }
+  .file-context-menu button:hover:not(:disabled), .file-context-menu button:focus-visible {
+    outline: none;
+    background: var(--hunk-hover);
+  }
+  .file-context-menu button:disabled {
+    color: var(--text-dim);
+    cursor: default;
   }
 </style>

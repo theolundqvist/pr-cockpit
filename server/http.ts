@@ -59,6 +59,7 @@ import { prKey } from "./prKey.ts";
 import { isTransportFailure, lastPollAt, pollOnce, prRowFromDetail, refreshPr, trackedRepos } from "./poller.ts";
 import {
   commitPrFileEdit,
+  markPrPathGenerated,
   compactReviewHunks,
   fetchDiff,
   fetchFileContents,
@@ -126,7 +127,7 @@ import {
   systemIssues,
 } from "./systemIssues.ts";
 import { testMatcher } from "../ui/src/lib/testPath.js";
-import { excludedPath } from "../shared/reviewFiles.js";
+import { excludedPath, isReviewPathPattern } from "../shared/reviewFiles.js";
 import { handleImage, handleMockImage } from "./imageproxy.ts";
 import {
   agentLogTail,
@@ -400,9 +401,15 @@ function inboxRows(prs: PrRow[]) {
   const mergeApprovals = safeMergeApprovalEnabled() ? listSafeMergeApprovalKeys() : new Set<string>();
   const failedMergeKeys = replicaEnabled() ? replicaFailedMergeKeys() : listFailedMergeKeys();
   const agentByPr = new Map<string, AgentRow>(listFixerAgents().map((a) => [prKey(a), a]));
-  const testRe = testMatcher(readSettings().test_path_regex);
+  const settings = readSettings();
+  const testMatchers = new Map<string, RegExp>();
 
   const rows = prs.map((pr) => {
+    let testRe = testMatchers.get(pr.repo);
+    if (!testRe) {
+      testRe = testMatcher(settings.test_path_regex, settings.hidden_review_paths[pr.repo]);
+      testMatchers.set(pr.repo, testRe);
+    }
     const greptileStatus = greptileScoreStatus(pr);
     const detail = JSON.parse(pr.detail_json);
     const hasReviewShape = Array.isArray(detail.reviews?.nodes) && Array.isArray(detail.comments?.nodes) && Array.isArray(detail.reviewRequests?.nodes);
@@ -533,6 +540,7 @@ type HttpDependencies = {
   fetchPendingReview: typeof fetchPendingReview;
   lookupPrIndexes: typeof lookupPrIndexes;
   commitPrFileEdit: typeof commitPrFileEdit;
+  markPrPathGenerated: typeof markPrPathGenerated;
   githubAuthStatus: typeof githubAuthStatus;
   startGithubSetup: typeof startGithubSetup;
   generateCommitMessage: typeof generateCommitMessage;
@@ -566,6 +574,7 @@ const defaultHttpDependencies: HttpDependencies = {
   fetchPendingReview,
   lookupPrIndexes,
   commitPrFileEdit,
+  markPrPathGenerated,
   githubAuthStatus,
   startGithubSetup,
   generateCommitMessage,
@@ -2573,6 +2582,28 @@ async function handlePrFileEdit(req: Request, runtime: HttpRuntime): Promise<Res
   }
 }
 
+async function handleMarkGenerated(req: Request, runtime: HttpRuntime): Promise<Response> {
+  const body: unknown = await req.json().catch(() => null);
+  if (!body || typeof body !== "object" || Array.isArray(body)) return json({ error: "invalid generated-file request" }, 400);
+  const { repo, number, pattern } = body as Record<string, unknown>;
+  if (typeof repo !== "string" || !CANONICAL_REPO_RE.test(repo)
+    || typeof number !== "number" || !Number.isSafeInteger(number) || number <= 0
+    || !isReviewPathPattern(pattern)) {
+    return json({ error: "invalid generated-file request" }, 400);
+  }
+  try {
+    const { commitOid } = await runtime.markPrPathGenerated(repo, number, pattern);
+    if (commitOid) void runtime.refreshPr(repo, number, "file edit").catch((error) => console.error(`PR detail refresh failed after marking ${pattern} generated in ${repo}#${number}:`, error));
+    return json({ ok: true, commitOid });
+  } catch (error) {
+    if (error instanceof StalePrHeadError) return json({ error: error.message, code: "stale-head" }, 409);
+    const auth = await runtime.githubAuthStatus(["repo"]);
+    if (!auth.ok) return githubSetupResponse(auth, 403);
+    console.error(`marking ${pattern} generated failed for ${repo}#${number}:`, error);
+    return json({ error: "GitHub commit failed" }, 502);
+  }
+}
+
 async function handleCommitMessage(req: Request, runtime: HttpRuntime): Promise<Response> {
   let body: unknown;
   try {
@@ -2932,6 +2963,8 @@ async function handlePutSettings(req: Request, runtime: HttpRuntime): Promise<Re
     safe_merge_approval_enabled: boolean;
     group_drag_enabled: boolean;
     queue_time_controls_enabled: boolean;
+    review_file_menu_enabled: boolean;
+    hidden_review_paths: Settings["hidden_review_paths"];
     agent_conversations_enabled: boolean;
     rest_fallback_enabled: boolean;
     rest_usage_enabled: boolean;
@@ -3483,6 +3516,9 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     }
     if (req.method === "POST" && url.pathname === "/api/pr-file-edit") {
       return handlePrFileEdit(req, runtime);
+    }
+    if (req.method === "POST" && url.pathname === "/api/pr-generated") {
+      return handleMarkGenerated(req, runtime);
     }
     if (req.method === "POST" && url.pathname === "/api/commit-message") {
       return handleCommitMessage(req, runtime);
