@@ -1,5 +1,6 @@
 import { getCachedPrDetail, getPr, getSetting, openPrNumbersForBranch, recordPrWebhookActivity, setSetting } from "./db.ts";
 import { ghToken, type PrDetail, type PrDetailScope } from "./github.ts";
+import { withGithubUsageSource } from "./githubUsage.ts";
 import { backgroundPollAllowed, pollOnce, refreshPr, trackedRepos } from "./poller.ts";
 import { createPollRequester, prDetailScopeForEvent, refreshPrFromEvent } from "./eventRefresh.ts";
 import { relayConfig } from "./settings.ts";
@@ -168,7 +169,7 @@ async function processMarker(marker: RelayMarker, deps: RelayPollDependencies = 
   if (marker.run || marker.job) {
     // Log downloads for a watched PR would otherwise hold every later marker, including the
     // check and review events that refresh what the user is looking at.
-    await ingest(marker.repo, { run: marker.run, job: marker.job }, undefined, "background");
+    await withGithubUsageSource("relay", () => ingest(marker.repo, { run: marker.run, job: marker.job }, undefined, "background"));
   } else if (marker.number === null) {
     // Only relays that forward the pushed ref allow targeting; tag and other ref pushes move no PR branch.
     if (marker.event !== "push" || typeof marker.ref !== "string") {

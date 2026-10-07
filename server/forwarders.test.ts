@@ -6,6 +6,7 @@ import { join } from "node:path";
 const forwardersUrl = new URL("./forwarders.ts", import.meta.url).href;
 const dbUrl = new URL("./db.ts", import.meta.url).href;
 const settingsUrl = new URL("./settings.ts", import.meta.url).href;
+const usageUrl = new URL("./githubUsage.ts", import.meta.url).href;
 
 test("forwarders distinguish local shutdown, rate limits, and an existing owner's hook", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-forwarders-"));
@@ -73,17 +74,27 @@ test("forwarders distinguish local shutdown, rate limits, and an existing owner'
 
       // Import after installing module and process fakes to exercise the public lifecycle deterministically.
       const { forwarderStatuses, reconcileForwarders, startForwarders } = await import(${JSON.stringify(forwardersUrl)});
+      const usage = await import(${JSON.stringify(usageUrl)});
       startForwarders(4821);
+      // A running forwarder may create hooks through GitHub's API at any time, unseen by the ledger.
+      const whileForwarding = usage.githubRestCoverage().eligible;
       repos = [];
       reconcileForwarders();
       await flush();
-      const local = { errors: [...errors], timers: timers.length, killed: processes[0].killed };
+      const local = { errors: [...errors], timers: timers.length, killed: processes[0].killed, whileForwarding, afterStop: usage.githubRestCoverage().eligible };
 
       repos = ["acme/rate-limited"];
       reconcileForwarders();
+      usage.githubRestCoverage();
       await processes[1].finish("error creating webhook: HTTP 403: API rate limit exceeded\\nAuthorization: bearer ghp_12345678901234567890");
       await flush();
-      const rateLimited = { errors: [...errors], timer: timers[0]?.delay, status: forwarderStatuses() };
+      const rateLimited = {
+        errors: [...errors],
+        timer: timers[0]?.delay,
+        status: forwarderStatuses(),
+        coverage: usage.activeGithubRestCoverage(),
+        afterExit: usage.githubRestCoverage().eligible,
+      };
       timers.shift().fn();
 
       repos = ["acme/rate-limited", "acme/owned"];
@@ -108,11 +119,15 @@ test("forwarders distinguish local shutdown, rate limits, and an existing owner'
     if (exitCode !== 0) throw new Error(stderr);
     expect(stderr).toBe("");
     const result = JSON.parse(stdout);
-    expect(result.local).toEqual({ errors: [], timers: 0, killed: true });
+    expect(result.local).toEqual({ errors: [], timers: 0, killed: true, whileForwarding: false, afterStop: true });
     expect(result.rateLimited.timer).toBe(5_000);
     expect(result.rateLimited.errors.join("\n")).toContain("HTTP 403: API rate limit exceeded");
     expect(result.rateLimited.errors.join("\n")).not.toContain("ghp_12345678901234567890");
     expect(result.rateLimited.status).toEqual([{ repo: "acme/rate-limited", pid: null, alive: false }]);
+    // gh's failed hook creation was a REST request outside the ledger, so the coverage span ends,
+    // and once no gh command runs a new span is eligible again.
+    expect(result.rateLimited.coverage).toBeNull();
+    expect(result.rateLimited.afterExit).toBe(true);
     expect(result.existingOwner.errors).toEqual(result.rateLimited.errors);
     expect(result.existingOwner.timers).toBe(0);
     expect(result.existingOwner.processCount).toBe(4);

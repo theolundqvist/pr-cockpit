@@ -1,4 +1,4 @@
-import type { GithubUsageSource } from "./githubUsage.ts";
+import { withGithubUsageSource, type GithubUsageSource } from "./githubUsage.ts";
 import type { PrDetailScope } from "./github.ts";
 
 import { prKeyOf } from "./prKey.ts";
@@ -93,7 +93,8 @@ export function createPrRefreshScheduler(refresh: PrRefreshPhases): ScheduledPrR
         state.trailingSource = null;
         state.trailingScope = null;
         try {
-          const phases = await refresh(repo, number, nextSource, nextScope);
+          // Its REST reads and Actions follow-up count against the source this pass refreshes for.
+          const phases = await withGithubUsageSource(nextSource, () => refresh(repo, number, nextSource, nextScope));
           if (phases) followUps.push(phases.followUp);
         } catch (error) {
           failed = true;

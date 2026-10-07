@@ -8,12 +8,23 @@ import {
   type GithubAuthStatus,
 } from "./githubAuth.ts";
 import {
+  activeGithubRestCoverage,
+  beginGithubRestRequest,
+  currentGithubUsageSource,
+  endGithubRestCoverage,
+  finishGithubRestRequest,
+  githubRestCharged,
+  githubRestCoverage,
   instrumentGithubGraphql,
+  normalizeGithubRestEndpoint,
   RATE_LIMIT_ALIAS,
   recordGithubGraphqlUsage,
+  recordGithubRestUsage,
+  withGithubUsageSource,
+  type GithubRestCoverage,
   type GithubUsageSource,
 } from "./githubUsage.ts";
-import { readSettings, restFallbackEnabled } from "./settings.ts";
+import { readSettings, restFallbackEnabled, restUsageEnabled } from "./settings.ts";
 import { createConcurrencyLimit } from "./concurrency.ts";
 import { GRAPHQL_BACKGROUND_RESERVE } from "../ui/src/lib/quotaImpact.js";
 import type { PrCheck } from "./checkState.ts";
@@ -97,6 +108,9 @@ function quotaGeneration(token: string): number {
     cachedQuota = null;
     graphqlReading = null;
     restReadings.clear();
+    // The ledger must not subtract this credential's requests from another's count. Tokens of one
+    // user share a budget, but nothing here says the new one belongs to the same account.
+    endGithubRestCoverage();
   }
   return activeQuotaGeneration;
 }
@@ -250,13 +264,26 @@ async function revalidateQuota(
     try {
       // A charged request with the token the refused request would use, so its headers are that
       // token's own core budget (see CORE_QUOTA_PROBE_PATH). A refused probe is not charged.
-      const response = await fetch(`https://api.github.com${CORE_QUOTA_PROBE_PATH}`, {
-        signal: AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS),
-        headers: {
-          Authorization: `bearer ${token}`,
-          Accept: "application/vnd.github+json",
-        },
-      });
+      const sentAt = new Date().toISOString();
+      const coverage = restCoverageAtDispatch("core", generation);
+      let response: Response;
+      let requestStarted = false;
+      try {
+        const pending = fetch(`https://api.github.com${CORE_QUOTA_PROBE_PATH}`, {
+          signal: AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS),
+          headers: {
+            Authorization: `bearer ${token}`,
+            Accept: "application/vnd.github+json",
+          },
+        });
+        requestStarted = true;
+        response = await pending;
+      } catch (error) {
+        if (requestStarted) recordRestAttempt("GET", CORE_QUOTA_PROBE_PATH, "core", null, sentAt, coverage);
+        else finishGithubRestRequest(coverage);
+        throw error;
+      }
+      recordRestAttempt("GET", CORE_QUOTA_PROBE_PATH, "core", response, sentAt, coverage);
       if (generation !== activeQuotaGeneration) return;
       const secondary = retryAfterDeadline(response);
       if ((response.status === 403 || response.status === 429) && secondary) {
@@ -318,6 +345,41 @@ async function requireQuota(
   return { token, generation };
 }
 
+function restCoverageAtDispatch(resource: GithubQuotaResourceName, generation: number): GithubRestCoverage | null {
+  if (resource === "graphql") return null;
+  beginGithubRestRequest();
+  if (generation !== activeQuotaGeneration || !restUsageEnabled()) return null;
+  return githubRestCoverage();
+}
+
+function recordRestAttempt(
+  method: string,
+  path: string,
+  resource: GithubQuotaResourceName,
+  response: Response | null,
+  sentAt: string,
+  coverage: GithubRestCoverage | null,
+): void {
+  if (resource === "graphql") return;
+  finishGithubRestRequest(coverage);
+  if (coverage === null || activeGithubRestCoverage() !== coverage) return;
+  const endpoint = normalizeGithubRestEndpoint(path);
+  const reset = response === null ? null : rateLimitHeader(response, "x-ratelimit-reset");
+  recordGithubRestUsage({
+    occurredAt: sentAt,
+    source: currentGithubUsageSource(),
+    method,
+    endpoint,
+    resource: response?.headers.get("x-ratelimit-resource") ?? resource,
+    status: response?.status ?? null,
+    used: response === null ? null : rateLimitHeader(response, "x-ratelimit-used"),
+    remaining: response === null ? null : rateLimitHeader(response, "x-ratelimit-remaining"),
+    resetAt: reset === null ? null : new Date(reset * 1_000).toISOString(),
+    charged: response?.redirected ? null : githubRestCharged(method, endpoint, response?.status ?? null),
+    coverageEpoch: coverage.epoch,
+  });
+}
+
 async function githubApiResponse(
   method: string,
   path: string,
@@ -336,8 +398,11 @@ async function githubApiResponse(
   const rateLimitRead = method === "GET" && path === "/rate_limit";
   const { token, generation } = await requireQuota(resource, options.authentication, !rateLimitRead);
   let response: Response;
+  const sentAt = new Date().toISOString();
+  const coverage = restCoverageAtDispatch(resource, generation);
+  let requestStarted = false;
   try {
-    response = await fetch(`https://api.github.com${path}`, {
+    const pending = fetch(`https://api.github.com${path}`, {
       method,
       headers: {
         Authorization: `bearer ${token}`,
@@ -349,7 +414,11 @@ async function githubApiResponse(
       redirect: options.redirect,
       signal: AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS),
     });
+    requestStarted = true;
+    response = await pending;
   } catch (error) {
+    if (requestStarted) recordRestAttempt(method, path, resource, null, sentAt, coverage);
+    else if (resource !== "graphql") finishGithubRestRequest(coverage);
     throw new GithubRequestError(
       `GitHub ${resource} transport unavailable: ${error instanceof Error ? error.message : String(error)}`,
       503,
@@ -360,6 +429,7 @@ async function githubApiResponse(
       error,
     );
   }
+  recordRestAttempt(method, path, resource, response, sentAt, coverage);
   responseQuotaResources.set(response, resource);
   responseQuotaGenerations.set(response, generation);
   if (rateLimitRead) primaryExemptResponses.add(response);
@@ -614,14 +684,17 @@ async function readWithRestFallback<T>(
   graphqlRead: () => Promise<T>,
   restRead: () => Promise<T>,
 ): Promise<T> {
-  if (graphqlReadOnRest(source)) return restRead();
-  try {
-    return await graphqlRead();
-  } catch (error) {
-    const graphqlExhausted = error instanceof GithubRequestError && error.kind === "quota" && error.resource === "graphql";
-    if (!graphqlExhausted || mockGithub || !restFallbackEnabled()) throw error;
-    return restRead();
-  }
+  // REST reads, including metadata a GraphQL read takes over REST, are attributed to the same source.
+  return withGithubUsageSource(source, async () => {
+    if (graphqlReadOnRest(source)) return restRead();
+    try {
+      return await graphqlRead();
+    } catch (error) {
+      const graphqlExhausted = error instanceof GithubRequestError && error.kind === "quota" && error.resource === "graphql";
+      if (!graphqlExhausted || mockGithub || !restFallbackEnabled()) throw error;
+      return restRead();
+    }
+  });
 }
 
 // Fan-out per PR for REST reads; most answers are 304s from the ETag cache and cost nothing.
@@ -1337,7 +1410,7 @@ async function searchOnAvailablePool(query: string, perPage: number, source: Git
     throw new GithubRequestError(`GitHub search quota is held for interactive searches until ${resetAt}`, 429, [], "quota", "search", resetAt);
   }
   try {
-    return await restSearchPrs(query, perPage);
+    return await withGithubUsageSource(source, () => restSearchPrs(query, perPage));
   } catch (error) {
     const searchExhausted = error instanceof GithubRequestError && error.kind === "quota" && error.resource === "search";
     if (!searchExhausted || !graphqlPoolAvailable(source)) throw error;
@@ -1766,7 +1839,8 @@ export async function fetchRepoLabels(repo: string): Promise<RepoLabel[]> {
   const [owner, name, extra] = repo.split("/");
   if (!owner || !name || extra !== undefined) throw new GithubRequestError(`Invalid repository: ${repo}`, 404);
   try {
-    return await fetchRepoLabelsRest(repo);
+    // The GraphQL half of this read is attributed to "user action"; the REST half matches it.
+    return await withGithubUsageSource("user action", () => fetchRepoLabelsRest(repo));
   } catch (error) {
     if (!coreQuotaExhausted(error)) throw error;
   }

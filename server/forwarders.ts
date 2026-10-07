@@ -1,5 +1,6 @@
 import type { Subprocess } from "bun";
 import { listWebhookRegistrations } from "./db.ts";
+import { beginUnmeteredGithubCliOperation } from "./githubUsage.ts";
 import { cockpitWebhooksEnabled, settingsRepos } from "./settings.ts";
 
 const WEBHOOK_EVENTS =
@@ -32,10 +33,19 @@ function failureDetail(stderr: string): string {
 function spawnForwarder(repo: string, port: number): void {
   const f = forwarders.get(repo);
   if (!f) return;
-  const proc = Bun.spawn(
-    ["gh", "webhook", "forward", "--repo", repo, "--events", WEBHOOK_EVENTS, "--url", `http://127.0.0.1:${port}/hook`],
-    { stdout: "inherit", stderr: "pipe" },
-  );
+  // gh creates or activates the repository hook through GitHub's REST API on every (re)connect, which
+  // the REST ledger never sees, so the forwarder counts as unmetered for as long as it runs.
+  const endCliOperation = beginUnmeteredGithubCliOperation();
+  let proc;
+  try {
+    proc = Bun.spawn(
+      ["gh", "webhook", "forward", "--repo", repo, "--events", WEBHOOK_EVENTS, "--url", `http://127.0.0.1:${port}/hook`],
+      { stdout: "inherit", stderr: "pipe" },
+    );
+  } catch (error) {
+    endCliOperation();
+    throw error;
+  }
   f.proc = proc;
   f.coveredSince = null;
   let errHead = "";
@@ -56,6 +66,7 @@ function spawnForwarder(repo: string, port: number): void {
   const startedAt = Date.now();
   log(`forwarder up: ${repo} (pid ${proc.pid})`);
   proc.exited.then(async (code) => {
+    endCliOperation();
     await stderrDrained.catch(() => {});
     if (f.proc === proc) f.coveredSince = null;
     if (f.stopped) return;

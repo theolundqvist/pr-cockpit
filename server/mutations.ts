@@ -44,6 +44,7 @@ import {
   updatePullRequestBranch,
   type PrDetail,
 } from "./github.ts";
+import { withGithubUsageSource } from "./githubUsage.ts";
 import { pollOnce, refreshPr } from "./poller.ts";
 import { killFixerAgent, launchFixerAgent } from "./agents.ts";
 import { refreshRepoUsers } from "./repoUsers.ts";
@@ -545,7 +546,8 @@ const mutationProcessorDependencies: MutationProcessorDependencies = {
 export async function processMutation(row: MutationRow, dependencies = mutationProcessorDependencies): Promise<void> {
   let merged: boolean;
   try {
-    merged = await dependencies.executeMutation(row);
+    // Queued writes are labeled "user action" like their GraphQL mutations; refreshes inside name their own source.
+    merged = await withGithubUsageSource("user action", () => dependencies.executeMutation(row));
   } catch (err) {
     dependencies.setMutationState(row.id, "failed", String(err));
     const payload: unknown = JSON.parse(row.payload_json);

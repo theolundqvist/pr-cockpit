@@ -1,5 +1,6 @@
 import { normalizePrGrouping, type PrGrouping } from "../shared/prGrouping.ts";
 import { clearSafeMergeApprovals, getSetting, setSetting } from "./db.ts";
+import { endGithubRestCoverage } from "./githubUsage.ts";
 import { detectHarness, normalizeHarness, type Harness } from "./harness.ts";
 import { notificationSettingsChanged, storedNotificationSettings } from "./notifications.ts";
 import { defaultNotificationSettings, parseNotificationSettings, type NotificationSettings } from "../shared/notificationRules.ts";
@@ -237,6 +238,11 @@ export function restFallbackEnabled(): boolean {
   return getSetting("rest_fallback_enabled") !== "false";
 }
 
+// Off unless enabled for this installation: every outbound REST request then writes a ledger row.
+export function restUsageEnabled(): boolean {
+  return getSetting("rest_usage_enabled") === "true";
+}
+
 export function safeMergeApprovalEnabled(): boolean {
   return getSetting("safe_merge_approval_enabled") === "true";
 }
@@ -302,6 +308,7 @@ export interface Settings {
   queue_time_controls_enabled: boolean;
   agent_conversations_enabled: boolean;
   rest_fallback_enabled: boolean;
+  rest_usage_enabled: boolean;
   quick_generate_enabled: boolean;
   quick_generate_key: string;
   quick_generate_model: string;
@@ -354,6 +361,7 @@ export function readSettings(): Settings {
     queue_time_controls_enabled: getSetting("queue_time_controls_enabled") === "true",
     agent_conversations_enabled: getSetting("agent_conversations_enabled") === "true",
     rest_fallback_enabled: restFallbackEnabled(),
+    rest_usage_enabled: restUsageEnabled(),
     quick_generate_enabled: quickGenerateEnabled(),
     quick_generate_key: getSetting("quick_generate_key") ?? "",
     quick_generate_model: getSetting("quick_generate_model") ?? "",
@@ -403,6 +411,7 @@ export function writeSettings(
     queue_time_controls_enabled: boolean;
     agent_conversations_enabled: boolean;
     rest_fallback_enabled: boolean;
+    rest_usage_enabled: boolean;
     quick_generate_enabled: boolean;
     quick_generate_key: string;
     quick_generate_model: string;
@@ -502,6 +511,16 @@ export function writeSettings(
     const enabled = patch.rest_fallback_enabled === true;
     if (restFallbackEnabled() !== enabled) {
       setSetting("rest_fallback_enabled", enabled ? "true" : "false");
+      invalidateSettings();
+    }
+  }
+  if (patch.rest_usage_enabled !== undefined) {
+    const enabled = patch.rest_usage_enabled === true;
+    if (restUsageEnabled() !== enabled) {
+      setSetting("rest_usage_enabled", enabled ? "true" : "false");
+      // Either way the coverage span ends: requests made while recording was off were never
+      // recorded, and one sent before the switch must not count in the span after it.
+      endGithubRestCoverage();
       invalidateSettings();
     }
   }

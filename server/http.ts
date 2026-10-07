@@ -10,6 +10,7 @@ import {
   getDiff,
   getFileContents,
   githubGraphqlUsage,
+  githubRestUsage,
   listRunJobsForPrBranch,
   getBodyMedia,
   getPr,
@@ -104,14 +105,14 @@ import {
 } from "./replica.ts";
 import { tailscaleServeStatus } from "./tailscaleServe.ts";
 import { runtimeSupervisor } from "./supervisor.ts";
-import type { GithubUsageSource } from "./githubUsage.ts";
+import { withGithubUsageSource, type GithubUsageSource } from "./githubUsage.ts";
 import type { GithubAuthStatus } from "./githubAuth.ts";
 import { commitsFromMirror, commitStatsFromMirror, conflictFilesFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError, summarizeCommitStats, type MirrorDiffResult, type PullRequestCommit } from "./mirror.ts";
 import { cachedGeneratedPathsFromMirror, generatedFilesFromMirror, generatedPathsForCommitsFromMirror } from "./generatedFiles.ts";
 import { checkState, currentChecks, type CheckState } from "./checkState.ts";
 import { currentBaseRef, discardMutation, enqueueMutation, isTaskIntent, mutationsForPr, retryMutation, type MutationPayload } from "./mutations.ts";
 import { isMergeMethod, mergeMethodFor, mergeMethodSourceFor, setMergeMethodPreference } from "./mergeMethod.ts";
-import { AGENT_DEFAULTS, pendingReviewsEnabled, quickGenerateEnabled, readSettings, relayConfig, restFallbackEnabled, RELAY_APP_INSTALL_URL, RELAY_APP_SLUG, safeMergeApprovalEnabled, settingsRepos, writeSettings, type AgentSetting, type Settings } from "./settings.ts";
+import { AGENT_DEFAULTS, pendingReviewsEnabled, quickGenerateEnabled, readSettings, relayConfig, restFallbackEnabled, restUsageEnabled, RELAY_APP_INSTALL_URL, RELAY_APP_SLUG, safeMergeApprovalEnabled, settingsRepos, writeSettings, type AgentSetting, type Settings } from "./settings.ts";
 import { claudeBinPath, codexBinPath, ompBinPath } from "./harness.ts";
 import { CommitMessageError, generateCommitMessage } from "./commitMessage.ts";
 import { QuickGenerateError, quickGenerate, quickGenerateConfig, quickGenerateModels } from "./quickGenerate.ts";
@@ -715,6 +716,8 @@ async function handleGithubUsage(runtime: HttpRuntime): Promise<Response> {
       rest: resources.rest,
       search: resources.search,
       usage: githubGraphqlUsage(resources.graphql.used, resources.graphql.limit, resources.graphql.resetAt),
+      // null while REST usage recording is off for this installation.
+      restUsage: restUsageEnabled() ? githubRestUsage(resources.rest.used, resources.rest.resetAt) : null,
     });
   } catch (err) {
     if (isTransportFailure(err)) console.warn(`GitHub usage fetch failed: ${(err as Error).message}`);
@@ -2931,6 +2934,7 @@ async function handlePutSettings(req: Request, runtime: HttpRuntime): Promise<Re
     queue_time_controls_enabled: boolean;
     agent_conversations_enabled: boolean;
     rest_fallback_enabled: boolean;
+    rest_usage_enabled: boolean;
     quick_generate_enabled: boolean;
     quick_generate_key: string;
     quick_generate_model: string;
@@ -3864,9 +3868,19 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
 
     return new Response("not found", { status: 404 });
   }
+  // REST helpers take no source, so requests made for a PR screen or an agent are labeled here: an
+  // agent's GET reads, its other requests act on the PR (mutations, thread resolution, leases).
+  // Everything else names its own source deeper down or stays unattributed.
+  const httpUsageSource = (method: string, pathname: string): GithubUsageSource | null => {
+    if (pathname.startsWith("/api/agent/")) return method === "GET" ? "agent read" : "user action";
+    if (pathname.startsWith("/api/pr/")) return "app detail";
+    if (pathname === "/api/pr-file-edit") return "file edit";
+    return null;
+  };
   return async function fetchHandler(req: Request): Promise<Response> {
     try {
-      return await route(req);
+      const source = httpUsageSource(req.method, new URL(req.url).pathname);
+      return await (source === null ? route(req) : withGithubUsageSource(source, () => route(req)));
     } catch (error) {
       if (!(error instanceof GithubRequestError)) throw error;
       console.error("GitHub request failed:", error);

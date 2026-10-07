@@ -1,3 +1,5 @@
+import { beginUnmeteredGithubCliOperation } from "./githubUsage.ts";
+
 const DEFAULT_SCOPES = ["repo", "workflow"] as const;
 const ALLOWED_SCOPES: Record<string, true> = { repo: true, workflow: true };
 const GITHUB_DEVICE_URL = "https://github.com/login/device";
@@ -79,7 +81,10 @@ function accountFromStatus(raw: string): GhAccount | null {
 }
 
 async function inspectGithubAuth(requiredScopes: string[]): Promise<GithubAuthStatus> {
+  // gh checks the token against GitHub's REST API, a request the REST ledger never sees.
+  const endCliOperation = beginUnmeteredGithubCliOperation();
   const statusResult = await runGh(["auth", "status", "--hostname", "github.com", "--json", "hosts"]);
+  endCliOperation();
   if (!statusResult) return missingStatus("missing-cli", requiredScopes, requiredScopes, null);
 
   const account = accountFromStatus(statusResult.stdout);
@@ -149,6 +154,8 @@ async function authorizeGithub(initial: GithubAuthStatus): Promise<void> {
     ? ["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web", "--skip-ssh-key", "--scopes", requiredScopes.join(",")]
     : ["auth", "refresh", "--hostname", "github.com", "--scopes", initial.missingScopes.join(",")];
 
+  // Signing in or refreshing scopes reads the account through GitHub's REST API outside the ledger.
+  const endCliOperation = beginUnmeteredGithubCliOperation();
   let proc;
   try {
     proc = Bun.spawn([ghExecutable(), ...args], {
@@ -158,9 +165,11 @@ async function authorizeGithub(initial: GithubAuthStatus): Promise<void> {
       stderr: "pipe",
     });
   } catch {
+    endCliOperation();
     authorization = { state: "error", requiredScopes, error: "GitHub CLI could not start." };
     return;
   }
+  void proc.exited.then(endCliOperation, endCliOperation);
 
   let output = "";
   let continued = false;

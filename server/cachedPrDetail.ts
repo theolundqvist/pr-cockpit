@@ -1,6 +1,6 @@
 import { getCachedPrDetail, upsertCachedPrDetail } from "./db.ts";
 import { fetchPrDetail, fetchPrDetailPart, type PrDetail, type PrDetailScope } from "./github.ts";
-import type { GithubUsageSource } from "./githubUsage.ts";
+import { withGithubUsageSource, type GithubUsageSource } from "./githubUsage.ts";
 import { invalidatePr } from "./rendererInvalidation.ts";
 import { cacheGithubActionsForCommit } from "./runLogs.ts";
 
@@ -15,7 +15,7 @@ const defaultDeps: CachedPrDetailDeps = { fetchPrDetail, fetchPrDetailPart, cach
 // Refreshes the detail snapshot of a PR outside the tracked inbox (one the user opened from
 // All PRs or a link). Like a tracked refresh, the snapshot is published before the Actions
 // catalog lands and the renderer is told again once it has.
-export async function refreshCachedPrDetail(
+export function refreshCachedPrDetail(
   repo: string,
   number: number,
   source: GithubUsageSource,
@@ -23,22 +23,25 @@ export async function refreshCachedPrDetail(
   deps: Partial<CachedPrDetailDeps> = {},
 ): Promise<void> {
   const { fetchPrDetail, fetchPrDetailPart, cacheGithubActionsForCommit } = { ...defaultDeps, ...deps };
-  const snapshotCutoffAt = new Date().toISOString();
-  const cached = getCachedPrDetail(repo, number);
-  const current = cached ? JSON.parse(cached.detail_json) as PrDetail : null;
-  const detail = scope === "all" || current === null
-    ? await fetchPrDetail(repo, number, source, current)
-    : await fetchPrDetailPart(repo, number, current, scope, source);
-  upsertCachedPrDetail({
-    repo,
-    number,
-    head_sha: detail.headRefOid,
-    detail_json: JSON.stringify(detail),
-    fetched_at: snapshotCutoffAt,
+  // The Actions catalog below reads REST for the same source as the detail.
+  return withGithubUsageSource(source, async () => {
+    const snapshotCutoffAt = new Date().toISOString();
+    const cached = getCachedPrDetail(repo, number);
+    const current = cached ? JSON.parse(cached.detail_json) as PrDetail : null;
+    const detail = scope === "all" || current === null
+      ? await fetchPrDetail(repo, number, source, current)
+      : await fetchPrDetailPart(repo, number, current, scope, source);
+    upsertCachedPrDetail({
+      repo,
+      number,
+      head_sha: detail.headRefOid,
+      detail_json: JSON.stringify(detail),
+      fetched_at: snapshotCutoffAt,
+    });
+    invalidatePr(repo, number);
+    if (scope === "review") return;
+    await cacheGithubActionsForCommit(repo, number, detail.headRefOid, undefined, true)
+      .catch((error) => console.error(`Actions coverage refresh failed for ${repo}#${number}:`, error));
+    invalidatePr(repo, number);
   });
-  invalidatePr(repo, number);
-  if (scope === "review") return;
-  await cacheGithubActionsForCommit(repo, number, detail.headRefOid, undefined, true)
-    .catch((error) => console.error(`Actions coverage refresh failed for ${repo}#${number}:`, error));
-  invalidatePr(repo, number);
 }

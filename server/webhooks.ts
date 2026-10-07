@@ -13,6 +13,7 @@ import {
   type PrRow,
 } from "./db.ts";
 import { fetchGithubQuota, fetchReviewItems, type ReviewItem } from "./github.ts";
+import { withGithubUsageSource } from "./githubUsage.ts";
 import { checkState, type PrCheck } from "./checkState.ts";
 import { checkName, liveCheckNames } from "../ui/src/lib/checks.js";
 import { eligibleWebhookRepos, forwarderStatuses, reconcileForwarders, wantedRepos } from "./forwarders.ts";
@@ -137,7 +138,7 @@ async function handleHook(
 
   const actions = compactActionsPayload(event, body);
   if (actions) {
-    await ingestActionsState(repo, actions);
+    await withGithubUsageSource("webhook", () => ingestActionsState(repo, actions));
     return new Response("ok");
   }
 

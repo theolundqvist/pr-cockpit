@@ -1,7 +1,14 @@
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { hostname } from "node:os";
-import { setGithubGraphqlUsageRecorder, type GithubGraphqlUsageEvent } from "./githubUsage.ts";
+import {
+  activeGithubRestCoverage,
+  githubRestRequestsInFlight,
+  setGithubGraphqlUsageRecorder,
+  setGithubRestUsageRecorder,
+  type GithubGraphqlUsageEvent,
+  type GithubRestUsageEvent,
+} from "./githubUsage.ts";
 import type { PrIndexEntry } from "./github.ts";
 import { SCHEMA_EPOCH } from "./schemaEpoch.ts";
 import { prKey } from "./prKey.ts";
@@ -115,6 +122,25 @@ CREATE TABLE IF NOT EXISTS github_graphql_usage (
 
 CREATE INDEX IF NOT EXISTS github_graphql_usage_window_idx
 ON github_graphql_usage (reset_at, source, operation);
+
+CREATE TABLE IF NOT EXISTS github_rest_usage (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  occurred_at TEXT NOT NULL,
+  machine TEXT NOT NULL,
+  source TEXT NOT NULL,
+  method TEXT NOT NULL,
+  endpoint TEXT NOT NULL,
+  resource TEXT NOT NULL,
+  status INTEGER,
+  used INTEGER,
+  remaining INTEGER,
+  reset_at TEXT,
+  charged INTEGER,
+  coverage_epoch TEXT
+);
+
+CREATE INDEX IF NOT EXISTS github_rest_usage_window_idx
+ON github_rest_usage (resource, reset_at);
 
 CREATE TABLE IF NOT EXISTS pr_index (
   repo TEXT NOT NULL,
@@ -1914,6 +1940,188 @@ export function githubGraphqlUsage(globalUsed: number, globalLimit: number, rese
     })),
     history: githubUsageHistory(globalUsed, resetAt),
     predictedUsed: predictGithubHourlyUsage(globalUsed, globalLimit, windowStartedAt, nowMs),
+  };
+}
+
+const insertGithubRestUsageStmt = db.prepare(`
+INSERT INTO github_rest_usage (
+  occurred_at, machine, source, method, endpoint, resource, status, used, remaining, reset_at, charged, coverage_epoch
+) VALUES (
+  $occurred_at, $machine, $source, $method, $endpoint, $resource, $status, $used, $remaining, $reset_at, $charged, $coverage_epoch
+)`);
+const pruneGithubRestUsageStmt = db.prepare(
+  "DELETE FROM github_rest_usage WHERE julianday(occurred_at) < julianday('now', '-7 days')",
+);
+let lastGithubRestUsagePruneAt = 0;
+
+setGithubRestUsageRecorder((event: GithubRestUsageEvent) => {
+  const now = Date.now();
+  if (now - lastGithubRestUsagePruneAt >= 60 * 60_000) {
+    pruneGithubRestUsageStmt.run();
+    lastGithubRestUsagePruneAt = now;
+  }
+  insertGithubRestUsageStmt.run({
+    $occurred_at: event.occurredAt,
+    $machine: hostname(),
+    $source: event.source,
+    $method: event.method,
+    $endpoint: event.endpoint,
+    $resource: event.resource,
+    $status: event.status,
+    $used: event.used,
+    $remaining: event.remaining,
+    $reset_at: event.resetAt ? new Date(event.resetAt).toISOString() : null,
+    $charged: event.charged === null ? null : event.charged ? 1 : 0,
+    $coverage_epoch: event.coverageEpoch,
+  });
+});
+
+interface GithubRestUsageCounts {
+  requests: number;
+  chargedRequests: number;
+  notModifiedRequests: number;
+  unknownChargeRequests: number;
+}
+
+export interface GithubRestUsageSummary extends Omit<GithubRestUsageCounts, "requests"> {
+  machine: string;
+  recordedSince: string | null;
+  windowStartedAt: string;
+  windowComplete: boolean;
+  // The running recording span without its epoch; null until a request opens one.
+  coverage: { startedAt: string; eligible: boolean } | null;
+  localRequests: number;
+  otherRequests: number | null;
+  sources: Array<{ source: string } & GithubRestUsageCounts>;
+  endpoints: Array<{ method: string; endpoint: string } & GithubRestUsageCounts>;
+  history: Array<{
+    resetAt: string;
+    used: number | null;
+    localRequests: number;
+    chargedRequests: number;
+    unknownChargeRequests: number;
+  }>;
+}
+
+interface GithubRestUsageRow {
+  requests: number;
+  charged_requests: number;
+  not_modified_requests: number;
+  unknown_charge_requests: number;
+}
+
+const REST_USAGE_COUNTS_SQL = `COUNT(*) AS requests,
+  COALESCE(SUM(charged = 1), 0) AS charged_requests,
+  COALESCE(SUM(status = 304), 0) AS not_modified_requests,
+  COALESCE(SUM(charged IS NULL), 0) AS unknown_charge_requests`;
+
+// Core requests of the windows ending in (?1, ?2]: windows last an hour, so a response belongs to
+// the one its reset falls in, and a request that got no rate-limit headers to the hour it was made in.
+const REST_CORE_WINDOWS_SQL = `resource = 'core' AND (
+  (reset_at > ?1 AND reset_at <= ?2)
+  OR (reset_at IS NULL AND occurred_at >= ?1 AND occurred_at < ?2)
+)`;
+
+const HOUR_MS = 60 * 60_000;
+
+function githubRestUsageCounts(row: GithubRestUsageRow): GithubRestUsageCounts {
+  return {
+    requests: row.requests,
+    chargedRequests: row.charged_requests,
+    notModifiedRequests: row.not_modified_requests,
+    unknownChargeRequests: row.unknown_charge_requests,
+  };
+}
+
+function githubRestUsageHistory(globalUsed: number, resetMs: number): GithubRestUsageSummary["history"] {
+  const rows = db.query<GithubRestUsageRow & { reset_at: string | null; occurred_at: string; used: number | null }, [string, string]>(`
+    SELECT reset_at,
+      MIN(occurred_at) AS occurred_at,
+      MAX(CASE WHEN endpoint != '/rate_limit' THEN used END) AS used,
+      ${REST_USAGE_COUNTS_SQL}
+    FROM github_rest_usage
+    WHERE ${REST_CORE_WINDOWS_SQL}
+    GROUP BY reset_at, CASE WHEN reset_at IS NULL THEN occurred_at END
+  `).all(new Date(resetMs - 72 * HOUR_MS).toISOString(), new Date(resetMs).toISOString());
+  const history = Array.from({ length: 72 }, (_, index) => ({
+    resetAt: new Date(resetMs - (71 - index) * HOUR_MS).toISOString(),
+    used: null as number | null,
+    localRequests: 0,
+    chargedRequests: 0,
+    unknownChargeRequests: 0,
+  }));
+  for (const row of rows) {
+    // Hours before the current reset: a bucket holds resets in the hour up to its own and requests made in that hour.
+    const offset = row.reset_at === null
+      ? Math.ceil((resetMs - Date.parse(row.occurred_at)) / HOUR_MS) - 1
+      : Math.floor((resetMs - Date.parse(row.reset_at)) / HOUR_MS);
+    const point = history[71 - offset];
+    if (!point) continue;
+    if (row.used !== null) point.used = Math.max(point.used ?? 0, row.used);
+    point.localRequests += row.requests;
+    point.chargedRequests += row.charged_requests;
+    point.unknownChargeRequests += row.unknown_charge_requests;
+  }
+  history[71]!.used = globalUsed;
+  return history;
+}
+
+export function githubRestUsage(globalUsed: number, resetAt: string): GithubRestUsageSummary {
+  const resetMs = Date.parse(resetAt);
+  const windowStartedAt = new Date(resetMs - HOUR_MS).toISOString();
+  const coverage = activeGithubRestCoverage();
+  const window: [string, string, string | null] = [
+    windowStartedAt, new Date(resetMs).toISOString(), coverage?.epoch ?? null,
+  ];
+  const currentWindow = `resource = 'core' AND coverage_epoch = ?3 AND (
+    reset_at = ?2 OR (reset_at IS NULL AND occurred_at >= ?1 AND occurred_at < ?2)
+  )`;
+  const totals = db.query<GithubRestUsageRow & { recorded_since: string | null }, typeof window>(`
+    SELECT MIN(occurred_at) AS recorded_since, ${REST_USAGE_COUNTS_SQL}
+    FROM github_rest_usage
+    WHERE ${currentWindow}
+  `).get(...window)!;
+  const sources = db.query<GithubRestUsageRow & { source: string }, typeof window>(`
+    SELECT source, ${REST_USAGE_COUNTS_SQL}
+    FROM github_rest_usage
+    WHERE ${currentWindow}
+    GROUP BY source
+    ORDER BY charged_requests DESC, requests DESC, source
+  `).all(...window);
+  const endpoints = db.query<GithubRestUsageRow & { method: string; endpoint: string }, typeof window>(`
+    SELECT method, endpoint, ${REST_USAGE_COUNTS_SQL}
+    FROM github_rest_usage
+    WHERE ${currentWindow}
+    GROUP BY method, endpoint
+    ORDER BY charged_requests DESC, requests DESC, endpoint, method
+  `).all(...window);
+  // A span opened while a GitHub CLI command could spend this budget unseen never attributes the rest.
+  const windowComplete = coverage !== null && coverage.eligible && Date.parse(coverage.startedAt) <= resetMs - HOUR_MS;
+  const reading = windowComplete && githubRestRequestsInFlight() === 0 ? db.query<{ used: number | null; ambiguous_windows: number; headerless_charges: number }, typeof window>(`
+    SELECT MAX(CASE WHEN charged = 1 AND reset_at = ?2 THEN used END) AS used,
+      COALESCE(SUM(reset_at IS NOT NULL AND reset_at != ?2), 0) AS ambiguous_windows,
+      COALESCE(SUM(charged = 1 AND (used IS NULL OR reset_at IS NULL)), 0) AS headerless_charges
+    FROM github_rest_usage
+    WHERE resource = 'core' AND coverage_epoch = ?3 AND (
+      reset_at = ?2 OR (occurred_at >= ?1 AND occurred_at < ?2)
+    )
+  `).get(...window)! : null;
+  const { requests, ...counts } = githubRestUsageCounts(totals);
+  return {
+    machine: hostname(),
+    recordedSince: totals.recorded_since,
+    windowStartedAt,
+    windowComplete,
+    coverage: coverage && { startedAt: coverage.startedAt, eligible: coverage.eligible },
+    localRequests: requests,
+    ...counts,
+    otherRequests: reading && counts.unknownChargeRequests === 0 && reading.headerless_charges === 0
+      && reading.ambiguous_windows === 0 && reading.used !== null && reading.used >= counts.chargedRequests
+      ? reading.used - counts.chargedRequests
+      : null,
+    sources: sources.map((row) => ({ source: row.source, ...githubRestUsageCounts(row) })),
+    endpoints: endpoints.map((row) => ({ method: row.method, endpoint: row.endpoint, ...githubRestUsageCounts(row) })),
+    history: githubRestUsageHistory(globalUsed, resetMs),
   };
 }
 

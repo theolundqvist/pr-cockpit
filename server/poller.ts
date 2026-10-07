@@ -1,5 +1,5 @@
 import { backgroundQuotaAvailable, fetchGithubQuota, fetchPrDetail, isBackgroundSource, recentGithubQuota, fetchPrDetailPart, GithubRequestError, lookupPr, searchClosedPrs, searchOpenPrs, searchRecentPrs, type GithubQuota, type PrDetail, type PrDetailScope } from "./github.ts";
-import type { GithubUsageSource } from "./githubUsage.ts";
+import { withGithubUsageSource, type GithubUsageSource } from "./githubUsage.ts";
 import {
   deleteWebhookRegistrationsForPr,
   evictReposNotIn,
@@ -441,7 +441,8 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
       });
       return trailingPoll;
     }
-    inFlightPoll = pollOnceInner().finally(() => {
+    // Whoever asked for it, a poll is Cockpit's own schedule.
+    inFlightPoll = withGithubUsageSource("background poll", pollOnceInner).finally(() => {
       inFlightPoll = null;
     });
     return inFlightPoll;
