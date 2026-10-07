@@ -472,6 +472,13 @@ db.exec(`
   WHERE kind = 'merge' AND json_extract(payload_json, '$.baseRef') IS NULL;
 `);
 
+// Checkbox ticks moved from a single `task` to a `tasks` list so queued ticks can share one write.
+db.exec(`
+  UPDATE mutations
+  SET payload_json = json_set(json_remove(payload_json, '$.task'), '$.tasks', json_array(json(json_extract(payload_json, '$.task'))))
+  WHERE kind = 'edit-body' AND json_type(payload_json, '$.task') = 'object';
+`);
+
 // merge methods learned from GitHub or explicitly selected by the user, keyed per repo:base
 db.exec(`
   CREATE TABLE IF NOT EXISTS merge_methods (
@@ -1391,6 +1398,12 @@ const nextPendingMutationStmt = db.prepare<MutationRow, []>(
 
 export function nextPendingMutation(): MutationRow | null {
   return nextPendingMutationStmt.get() ?? null;
+}
+
+const getMutationStmt = db.prepare<MutationRow, [number]>("SELECT * FROM mutations WHERE id = ?");
+
+export function getMutation(id: number): MutationRow | null {
+  return getMutationStmt.get(id) ?? null;
 }
 
 const listRefreshingMutationsStmt = db.prepare<MutationRow, []>(

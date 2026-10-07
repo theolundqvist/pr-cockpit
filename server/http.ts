@@ -1534,10 +1534,11 @@ export function normalizeAgentMutation(repo: string, number: number, detail: PrD
       return { kind: input.kind, labels: requiredLabels(input) };
     case "edit-body": {
       const body = requiredString(input, "body");
-      const task = fieldValue(input, "task");
-      if (task === undefined) return { kind: "edit-body", body };
-      if (!isTaskIntent(task)) throw new Error("task must have a key and a checked boolean");
-      return { kind: "edit-body", body, task: { key: task.key, checked: task.checked } };
+      if (fieldValue(input, "task") !== undefined) throw new Error("send checkbox ticks as tasks: [{ key, checked }]");
+      const tasks = fieldValue(input, "tasks");
+      if (tasks === undefined) return { kind: "edit-body", body };
+      if (!Array.isArray(tasks) || tasks.length === 0 || !tasks.every(isTaskIntent)) throw new Error("tasks must list keys with checked booleans");
+      return { kind: "edit-body", body, tasks: tasks.map((task) => ({ key: task.key, checked: task.checked })) };
     }
     case "edit-title":
       return { kind: "edit-title", title: requiredString(input, "title") };

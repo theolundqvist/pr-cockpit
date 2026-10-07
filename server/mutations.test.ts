@@ -397,7 +397,7 @@ test("a description checkbox applies to the current GitHub description, not the 
     const tick = async (number, rendered, regenerated, index) => {
       setBody(number, rendered);
       const { key } = taskMarkers(rendered)[index];
-      const payload = { kind: "edit-body", body: setTaskByKey(rendered, key, true), task: { key, checked: true } };
+      const payload = { kind: "edit-body", body: setTaskByKey(rendered, key, true), tasks: [{ key, checked: true }] };
       const id = db.insertMutation({ repo, number, kind: "edit-body", payload_json: JSON.stringify(payload), created_at: new Date().toISOString() });
       setBody(number, regenerated);
       await processMutation(db.listMutationsForPr(repo, number).find((row) => row.id === id));
@@ -406,7 +406,7 @@ test("a description checkbox applies to the current GitHub description, not the 
     // GitHub accepted a tick, then the assessment republished with a new cache before the refresh.
     const republished = async (number, published) => {
       const key = "pr:101";
-      const payload = { kind: "edit-body", body: setTaskByKey(rendered, key, true), task: { key, checked: true } };
+      const payload = { kind: "edit-body", body: setTaskByKey(rendered, key, true), tasks: [{ key, checked: true }] };
       const id = db.insertMutation({ repo, number, kind: "edit-body", payload_json: JSON.stringify(payload), created_at: new Date().toISOString() });
       const row = db.listMutationsForPr(repo, number).find((candidate) => candidate.id === id);
       db.setMutationRefreshing(id, row.payload_json);
@@ -467,6 +467,66 @@ test("a description checkbox applies to the current GitHub description, not the 
       state: "refreshing",
       error: "GitHub accepted edit-body, but cache refresh failed: refreshed cache does not contain the accepted change",
     }]);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("checkbox ticks queued during a write share one description update, and later ticks win", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-task-batch-"));
+  const url = (path: string) => JSON.stringify(new URL(path, import.meta.url).href);
+  const scenario = `
+    const db = await import(${url("./db.ts")});
+    const { mockGithub, seedMockDatabase } = await import(${url("./mockGithub.ts")});
+    const { finalizeMutation, processMutation } = await import(${url("./mutations.ts")});
+    const repo = "fixture/cockpit";
+    seedMockDatabase(db.db, ${JSON.stringify(dataDir)});
+    const checklist = ["Release checklist", "", ...[1, 2, 3, 4, 5].map((step) => "- [ ] Step " + step + " verified")].join("\\n");
+    await mockGithub.updatePullRequestBody(repo, 101, checklist);
+    const writes = [];
+    const write = mockGithub.updatePullRequestBody;
+    mockGithub.updatePullRequestBody = (...args) => { writes.push(args[2]); return write(...args); };
+    const tick = (step, checked) => db.insertMutation({
+      repo, number: 101, kind: "edit-body", created_at: new Date().toISOString(),
+      payload_json: JSON.stringify({ kind: "edit-body", body: "preview", tasks: [{ key: "text:Step " + step + " verified", checked }] }),
+    });
+    const state = () => mockGithub.pullRequestBody(repo, 101).split("\\n").filter((line) => line.startsWith("- [")).map((line) => line[3]).join("");
+    const rows = () => db.listMutationsForPr(repo, 101).map(({ id, state }) => ({ id, state }));
+
+    // Four rapid clicks: the first starts writing while the rest queue, including a reversal of the first.
+    const first = tick(1, true);
+    tick(2, true);
+    tick(1, false);
+    tick(3, true);
+    await processMutation(db.getMutation(first));
+    const batched = { writes: writes.length, state: state(), rows: rows() };
+
+    // A tick GitHub accepted but the cache has not confirmed yet is folded into the next write's confirmation.
+    const accepted = tick(4, true);
+    await write(repo, 101, mockGithub.pullRequestBody(repo, 101).replace("- [ ] Step 4", "- [x] Step 4"));
+    const acceptedRow = db.getMutation(accepted);
+    db.setMutationRefreshing(accepted, acceptedRow.payload_json);
+    const reversal = tick(4, false);
+    await processMutation(db.getMutation(reversal));
+    await finalizeMutation(acceptedRow, false);
+    console.log(JSON.stringify({ batched, superseded: { writes: writes.length, state: state(), rows: rows() } }));
+  `;
+
+  try {
+    const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_MOCK: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(stderr);
+    const result = JSON.parse(stdout.trim().split("\n").at(-1)!);
+    expect(result.batched).toEqual({ writes: 1, state: " xx  ", rows: [] });
+    expect(result.superseded).toEqual({ writes: 2, state: " xx  ", rows: [] });
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }

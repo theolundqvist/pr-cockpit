@@ -179,6 +179,7 @@
     diffWarm = false;
     error = null;
     mutations = [];
+    unsentTasks = [];
     pendingReview = null;
     pendingReviewState = "idle";
     pendingReviewError = null;
@@ -929,8 +930,16 @@
 
   let editingBody = $state(false);
   let bodyDraft = $state("");
-  let editBodyMutation = $derived(mutations.find((m) => m.kind === "edit-body"));
-  let displayBody = $derived(editBodyMutation ? editBodyMutation.payload.body : pr?.body);
+  let editBodyMutations = $derived(mutations.filter((m) => m.kind === "edit-body"));
+  let editBodyMutation = $derived(editBodyMutations.find((m) => m.state === "failed") ?? editBodyMutations[0]);
+  let bodyRewrite = $derived(editBodyMutations.find((m) => !m.payload.tasks));
+  // Ticks clicked but not yet acknowledged by the server.
+  let unsentTasks = $state([]);
+  let displayBody = $derived(
+    bodyRewrite
+      ? bodyRewrite.payload.body
+      : [...editBodyMutations.flatMap((m) => m.payload.tasks), ...unsentTasks].reduce((body, task) => (body && setTaskByKey(body, task.key, task.checked)) ?? body, pr?.body),
+  );
 
   function startEditBody() {
     bodyDraft = pr.body;
@@ -949,11 +958,11 @@
     await refreshMutations();
   }
 
-  // `body` in a task edit is only the optimistic preview; the server applies the task to GitHub's copy.
+  // Ticks only carry intents; the server applies every queued tick to GitHub's current copy in one write.
   let descriptionEl = $state(null);
-  let taskSaving = $state(false);
   let descriptionHtml = $derived(renderMarkdown(displayBody));
-  let tasksEnabled = $derived(!editingBody && !editBodyMutation && !taskSaving);
+  let tasksEnabled = $derived(!editingBody && !bodyRewrite);
+  let taskSends = Promise.resolve();
 
   $effect(() => {
     void descriptionHtml;
@@ -961,31 +970,37 @@
     for (const input of descriptionEl.querySelectorAll("input[data-task]")) input.disabled = !tasksEnabled;
   });
 
-  async function toggleTask(e) {
+  function toggleTask(e) {
     const input = e.target;
     if (!input.matches?.("input[data-task]")) return;
     const checked = input.checked;
-    const marker = tasksEnabled && pr.body === displayBody ? taskMarkers(pr.body)[Number(input.dataset.task)] : null;
-    const body = marker?.checked === !checked ? setTaskByKey(pr.body, marker.key, checked) : null;
-    if (body === null) {
+    const marker = tasksEnabled ? taskMarkers(displayBody)[Number(input.dataset.task)] : null;
+    if (marker?.checked !== !checked || setTaskByKey(displayBody, marker.key, checked) === null) {
       input.checked = !checked;
       showFlash("This checkbox no longer matches the description; reload the PR and try again.");
       return;
     }
-    taskSaving = true;
+    const task = { key: marker.key, checked };
+    unsentTasks = [...unsentTasks, task];
+    // Sent one at a time so the server queues ticks in click order.
+    taskSends = taskSends.finally(() => sendTask(repo, number, task, input));
+  }
+
+  async function sendTask(taskRepo, taskNumber, task, input) {
+    const sent = () => (unsentTasks = unsentTasks.filter((unsent) => unsent !== task));
     try {
-      await enqueueMutation(repo, number, { kind: "edit-body", body, task: { key: marker.key, checked } });
+      await enqueueMutation(taskRepo, taskNumber, { kind: "edit-body", body: displayBody, tasks: [task] });
     } catch (error) {
-      input.checked = !checked;
+      sent();
+      input.checked = !task.checked;
       const failure = presentMutationError("save checkbox", error);
       showFlash(`${failure.title}: ${failure.message}`);
-      taskSaving = false;
       return;
     }
     try {
       await refreshMutations();
     } finally {
-      taskSaving = false;
+      sent();
     }
   }
 

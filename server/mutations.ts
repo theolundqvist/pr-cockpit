@@ -4,6 +4,7 @@ import {
   deleteMutation,
   deleteSupersededFailedMerges,
   getCachedPrDetail,
+  getMutation,
   getPr,
   insertMutation,
   listMutationsForPr,
@@ -67,8 +68,8 @@ export type MutationPayload =
   | { kind: "update-branch" }
   | { kind: "ready-for-review" }
   | { kind: "close" }
-  // With `task`, `body` is only the client's preview.
-  | { kind: "edit-body"; body: string; task?: TaskIntent }
+  // With `tasks`, `body` is only the client's preview.
+  | { kind: "edit-body"; body: string; tasks?: TaskIntent[] }
   | { kind: "edit-title"; title: string }
   | { kind: "auto-merge"; enable: boolean }
   | { kind: "github-auto-merge"; enable: true; method: MergeMethod }
@@ -201,8 +202,11 @@ function assertMutationPayload(value: unknown): asserts value is MutationPayload
   if (value.kind === "discard-pending-review" && (!("reviewId" in value) || !positiveId(value.reviewId))) {
     throw new Error("discarding a pending review requires a valid review ID");
   }
-  if (value.kind === "edit-body" && "task" in value && value.task !== undefined && !isTaskIntent(value.task)) {
-    throw new Error("task edits require a task key and checked boolean");
+  // A window still running the previous build sends `task`; without this it would publish its stale preview.
+  if (value.kind === "edit-body" && "task" in value) throw new Error("Cockpit was updated; reload the window before ticking checkboxes");
+  if (value.kind === "edit-body" && "tasks" in value && value.tasks !== undefined
+    && !(Array.isArray(value.tasks) && value.tasks.length > 0 && value.tasks.every(isTaskIntent))) {
+    throw new Error("task edits require task keys and checked booleans");
   }
 }
 
@@ -351,15 +355,39 @@ async function executeMutation(row: MutationRow): Promise<boolean> {
       await closePullRequest(row.repo, row.number);
       return true;
     case "edit-body": {
-      if (!payload.task) {
+      if (!payload.tasks) {
         await updatePullRequestBody(row.repo, row.number, payload.body);
         return false;
       }
       const current = await fetchPullRequestBody(row.repo, row.number);
-      const body = setTaskByKey(current, payload.task.key, payload.task.checked);
-      if (body === null) throw new Error("Checklist changed on GitHub; discard and reload before ticking again");
-      row.payload_json = JSON.stringify({ ...payload, body });
+      // Ticks queued behind this one join its write; accepted ticks still awaiting the cache join its confirmation.
+      const queued: Array<{ id: number; state: string; tasks: TaskIntent[] }> = [];
+      for (const other of listMutationsForPr(row.repo, row.number)) {
+        if (other.id === row.id || other.kind !== "edit-body" || (other.state !== "pending" && other.state !== "refreshing")) continue;
+        const otherPayload: unknown = JSON.parse(other.payload_json);
+        assertMutationPayload(otherPayload);
+        if (otherPayload.kind !== "edit-body") continue;
+        // A whole-description edit queued later must still land after every tick before it.
+        if (!otherPayload.tasks) {
+          if (other.state === "pending") break;
+          continue;
+        }
+        queued.push({ id: other.id, state: other.state, tasks: otherPayload.tasks });
+      }
+      const writes = [...payload.tasks, ...queued.filter((other) => other.state === "pending").flatMap((other) => other.tasks)];
+      let body = current;
+      for (const task of writes) {
+        const next = setTaskByKey(body, task.key, task.checked);
+        if (next === null) throw new Error("Checklist changed on GitHub; discard and reload before ticking again");
+        body = next;
+      }
       if (body !== current) await updatePullRequestBody(row.repo, row.number, body);
+      const confirmed = [...queued.filter((other) => other.state === "refreshing").flatMap((other) => other.tasks), ...writes];
+      row.payload_json = JSON.stringify({ ...payload, body, tasks: [...new Map(confirmed.map((task) => [task.key, task])).values()] });
+      for (const other of queued) {
+        cancelMutationRefresh(other.id);
+        deleteMutation(other.id);
+      }
       return false;
     }
     case "edit-title":
@@ -444,9 +472,11 @@ function mutationReflected(row: Pick<MutationRow, "repo" | "number" | "payload_j
   const snapshot = !tracked ? cached : cached && cached.fetched_at > tracked.fetched_at ? cached : tracked;
   if (!snapshot) return false;
   const detail = JSON.parse(snapshot.detail_json) as PrDetail;
-  // A republished description may legitimately differ, so a task edit confirms by that task's state.
+  // A republished description may legitimately differ, so a task edit confirms by its tasks' states.
   if (payload.kind === "edit-body") {
-    return payload.task ? setTaskByKey(detail.body, payload.task.key, payload.task.checked) === detail.body : sameGithubText(detail.body, payload.body);
+    return payload.tasks
+      ? payload.tasks.every((task) => setTaskByKey(detail.body, task.key, task.checked) === detail.body)
+      : sameGithubText(detail.body, payload.body);
   }
   if (!payload.commentNodeId) return false;
   return detail.comments.nodes.some((comment) => comment.id === payload.commentNodeId);
@@ -472,8 +502,13 @@ export async function finalizeMutation(
   merged: boolean,
   dependencies = mutationCompletionDependencies,
 ): Promise<void> {
+  // A later checkbox write absorbed this row and owns its confirmation.
+  if (!getMutation(row.id)) {
+    cancelMutationRefresh(row.id);
+    return;
+  }
   try {
-    await dependencies.refreshPr(row.repo, row.number, "mutation recovery");
+    await dependencies.refreshPr(row.repo, row.number, "mutation recovery", "all", "detail");
     if (merged) await dependencies.pollOnce();
     if (!mutationReflected(row)) throw new Error("refreshed cache does not contain the accepted change");
   } catch (err) {
@@ -514,7 +549,7 @@ export async function processMutation(row: MutationRow, dependencies = mutationP
   } catch (err) {
     dependencies.setMutationState(row.id, "failed", String(err));
     const payload: unknown = JSON.parse(row.payload_json);
-    const taskEdit = row.kind === "edit-body" && !!payload && typeof payload === "object" && "task" in payload;
+    const taskEdit = row.kind === "edit-body" && !!payload && typeof payload === "object" && "tasks" in payload;
     if (row.kind === "merge") {
       deleteSupersededFailedMerges(row.repo, row.number, row.id);
       invalidateInbox();
