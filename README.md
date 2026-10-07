@@ -41,6 +41,8 @@ Enable **Date filters and sorting** in **Settings → Workspace** for **Opened**
 
 Press <kbd>⌥⌘K</kbd> on macOS or <kbd>Super+Alt+K</kbd> on Linux X11 to search from another app. Move the pointer or use the arrow keys to select a result; Enter opens that highlighted result in Cockpit, with the cached PR ready to read. Typing a number such as `51` or `#51` lists that exact PR first, then PRs whose numbers contain it, open before closed and highest first, so `51` also finds `#10051`.
 
+The search panel uses its own connection pool, so pending main-window requests cannot queue ahead of its page load. Shell updates take effect after relaunching the desktop app.
+
 ![Searching for a public rust-lang/rust pull request from the desktop and opening it in PR Cockpit](docs/screenshots/landing-search.gif)
 
 ### Read the change, then follow the details

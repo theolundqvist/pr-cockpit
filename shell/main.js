@@ -252,7 +252,9 @@ if (!app.requestSingleInstanceLock()) {
   // Zoom is one persisted preference, so every cockpit window shows the same scale.
   function applyZoom(level) {
     zoomLevel = Math.max(ZOOM_LEVEL_MIN, Math.min(ZOOM_LEVEL_MAX, level));
-    for (const window of cockpitWindows()) window.webContents.zoomLevel = zoomLevel;
+    for (const window of [...cockpitWindows(), paletteWin, quickGenerateWin]) {
+      if (window && !window.isDestroyed()) window.webContents.zoomLevel = zoomLevel;
+    }
     saveZoomLevel(zoomLevel);
   }
 
@@ -855,7 +857,8 @@ if (!app.requestSingleInstanceLock()) {
         transparent: true,
         hasShadow: false,
         backgroundColor: "#00000000",
-        webPreferences: { sandbox: true, preload: path.join(__dirname, "preload.js") },
+        // Keep panel loads off the main window's potentially saturated HTTP connection pool.
+        webPreferences: { sandbox: true, partition: `cockpit-${name}`, preload: path.join(__dirname, "preload.js") },
       });
       let ready = false;
       let retryTimer = null;
@@ -896,6 +899,7 @@ if (!app.requestSingleInstanceLock()) {
       load();
       panelWin.webContents.on("did-finish-load", () => {
         loading = false;
+        panelWin.webContents.zoomLevel = zoomLevel;
         if (loadFailed) {
           loadFailed = false; // Chromium fires did-finish-load for its own error page after did-fail-load
           return;
