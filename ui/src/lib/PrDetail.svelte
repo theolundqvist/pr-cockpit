@@ -2120,6 +2120,17 @@
     applyExcludedFolds(excludedChoice);
   }
 
+  async function toggleDiffLayout() {
+    const previous = prefs.diffLayout;
+    prefs.diffLayout = previous === "split" ? "unified" : "split";
+    try {
+      await saveSettings({ diff_layout: prefs.diffLayout });
+    } catch (err) {
+      prefs.diffLayout = previous;
+      showFlash(err instanceof Error ? err.message : "Couldn't save the diff layout.");
+    }
+  }
+
   function viewedFileStorageKey() {
     return `${VIEWED_FILES_KEY_PREFIX}${repo}#${number}${rangeKey === "all" ? "" : `:${rangeKey}`}`;
   }
@@ -3040,11 +3051,14 @@
                 <button class="toolbar-btn" onclick={() => selectRange("all")}>All changes</button>
               {/if}
             </div>
-            {#if excludedFiles.length && diffState === "ready"}
-              <button class="toolbar-btn shortcut-action" onclick={toggleExcludedFiles}>
-                {excludedFilesHidden ? "show" : "hide"} {excludedFiles.length} test/generated file{excludedFiles.length > 1 ? "s" : ""} <Kbd keys="x" />
-              </button>
-            {/if}
+            <div class="toolbar-left">
+              {#if excludedFiles.length && diffState === "ready"}
+                <button class="toolbar-btn shortcut-action" onclick={toggleExcludedFiles}>
+                  {excludedFilesHidden ? "show" : "hide"} {excludedFiles.length} test/generated file{excludedFiles.length > 1 ? "s" : ""} <Kbd keys="x" />
+                </button>
+              {/if}
+              <button class="toolbar-btn" onclick={toggleDiffLayout}>{prefs.diffLayout === "split" ? "unified" : "side by side"}</button>
+            </div>
           </div>
           <aside class="tree-pane">
             <div class="file-nav-head">
