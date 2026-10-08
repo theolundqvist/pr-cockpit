@@ -17,7 +17,7 @@ function showDefinitionHighlight(owner, container, token) {
   highlightOwner?.container?.classList.remove("definition-link-hover");
   const range = document.createRange();
   range.setStart(token.node, token.start);
-  range.setEnd(token.node, token.start + token.word.length);
+  range.setEnd(token.endNode, token.end);
   CSS.highlights.set(DEFINITION_HIGHLIGHT, new Highlight(range));
   container.classList.add("definition-link-hover");
   owner.container = container;
@@ -25,7 +25,15 @@ function showDefinitionHighlight(owner, container, token) {
   return true;
 }
 
-// Identifier under the pointer, plus enough context to compute its column.
+// Nearest ancestor that lays out as a block: syntax and word-diff spans inside it are one run of text.
+function textBlock(node) {
+  let element = node.parentElement;
+  while (element?.parentElement && getComputedStyle(element).display.startsWith("inline")) element = element.parentElement;
+  return element;
+}
+
+// Identifier under the pointer, plus enough context to compute its column. Syntax highlighting and
+// word-diff marks split one identifier across text nodes, so the word extends through adjacent nodes.
 export function tokenAtPoint(x, y) {
   let node;
   let offset;
@@ -40,14 +48,43 @@ export function tokenAtPoint(x, y) {
     offset = pos.offset;
   }
   if (node?.nodeType !== Node.TEXT_NODE) return null;
-  const text = node.textContent;
-  if (!WORD_CHAR.test(text[offset] ?? "") && !WORD_CHAR.test(text[offset - 1] ?? "")) return null;
+  const block = textBlock(node);
+  if (!block) return null;
+  // Text nodes of this block in order; nodes nested in another block (a gutter cell) break words.
+  const nodes = [];
+  const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+  for (let current = walker.nextNode(); current; current = walker.nextNode()) {
+    // Empty nodes (framework anchors) separate nothing.
+    if (current.textContent || current === node) nodes.push(textBlock(current) === block ? current : null);
+  }
+  const index = nodes.indexOf(node);
+  if (index < 0) return null;
+  const charAt = (at, position) => nodes[at]?.textContent[position] ?? "";
+  let startIndex = index;
   let start = offset;
+  for (;;) {
+    if (start > 0 && WORD_CHAR.test(charAt(startIndex, start - 1))) start -= 1;
+    else if (start === 0 && nodes[startIndex - 1] && WORD_CHAR.test(charAt(startIndex - 1, nodes[startIndex - 1].textContent.length - 1))) {
+      startIndex -= 1;
+      start = nodes[startIndex].textContent.length;
+    } else break;
+  }
+  let endIndex = index;
   let end = offset;
-  while (start > 0 && WORD_CHAR.test(text[start - 1])) start -= 1;
-  while (end < text.length && WORD_CHAR.test(text[end])) end += 1;
-  const word = text.slice(start, end);
-  return IDENT.test(word) ? { word, node, start } : null;
+  for (;;) {
+    const length = nodes[endIndex].textContent.length;
+    if (end < length && WORD_CHAR.test(charAt(endIndex, end))) end += 1;
+    else if (end === length && nodes[endIndex + 1] && WORD_CHAR.test(charAt(endIndex + 1, 0))) {
+      endIndex += 1;
+      end = 0;
+    } else break;
+  }
+  let word = "";
+  for (let at = startIndex; at <= endIndex; at += 1) {
+    const text = nodes[at].textContent;
+    word += text.slice(at === startIndex ? start : 0, at === endIndex ? end : text.length);
+  }
+  return IDENT.test(word) ? { word, node: nodes[startIndex], start, endNode: nodes[endIndex], end } : null;
 }
 
 export function wordAtPoint(x, y) {
