@@ -18,6 +18,7 @@
   import { defaultNotificationSettings } from "../../../shared/notificationRules.ts";
   import { SETTINGS_SECTION_KEY, SETTINGS_SECTIONS, normalizeSettingsSection, settingsSectionHref } from "./settingsSections.js";
   import { desktopShortcutDefaults, shortcutsClash } from "./shortcutPlatform.js";
+  import { RESERVED_PR_KEYS } from "./prKeys.js";
   import { tailscaleAccess } from "./tailscaleAccess.js";
   let { onRunSetup, section = "general" } = $props();
 
@@ -59,7 +60,6 @@
   let agentHarness = $state("claude");
   let harnessAvailable = $state({ claude: true, omp: true, codex: true });
   let agents = $state([]);
-  let quickActions = $state([]);
   let keybindOpenApp = $state("");
   let keybindOpenPalette = $state("");
   let quickGenerateEnabled = $state(false);
@@ -114,27 +114,23 @@
   let shortcutDefaults = $derived(desktopShortcutDefaults(desktopPlatform));
   let keybindClash = $derived(shortcutsClash(keybindOpenApp, keybindOpenPalette, shortcutDefaults));
 
-  // single-char keys the PR-detail and inbox handlers already own
-  const RESERVED_KEYS = new Set([..."123456789", ..."gGdJKjkxcvremMusqopT", ..."esz", "A", "C", "/"]);
   const isCustom = (a) => a.id.startsWith("custom-");
 
-  let shortcutIssues = $derived.by(() => {
+  let agentKeybindIssues = $derived.by(() => {
     const issues = new Map();
     const bound = new Map();
-    const bindings = [
-      ...agents.filter((a) => a.trigger === "keybind").map((a) => ({ id: a.id, key: a.keybind ?? "", name: a.name || a.id })),
-      ...quickActions.map((a) => ({ id: a.id, key: a.keybind ?? "", name: a.label || a.value || "a quick action" })),
-    ];
-    for (const { id, key, name } of bindings) {
-      if (!key) continue;
-      if (RESERVED_KEYS.has(key)) issues.set(id, `"${key}" is a built-in app key — pick another`);
-      else if (bound.has(key)) issues.set(id, `"${key}" is already bound to ${bound.get(key)}`);
-      else bound.set(key, name);
+    for (const a of agents) {
+      if (a.trigger !== "keybind") continue;
+      const k = a.keybind ?? "";
+      if (!k) continue;
+      if (RESERVED_PR_KEYS.has(k)) issues.set(a.id, `"${k}" is a built-in app key — pick another`);
+      else if (bound.has(k)) issues.set(a.id, `"${k}" is already bound to ${bound.get(k)}`);
+      else bound.set(k, a.name || a.id);
     }
     return issues;
   });
   let groupIssues = $derived(grouping.mode === "manual" && grouping.groups.some((group, index) => !group.name.trim() || grouping.groups.some((other, otherIndex) => otherIndex < index && other.name.trim().toLowerCase() === group.name.trim().toLowerCase())));
-  let saveBlocked = $derived(keybindClash || shortcutIssues.size > 0 || notificationIssues.size > 0 || groupIssues);
+  let saveBlocked = $derived(keybindClash || agentKeybindIssues.size > 0 || notificationIssues.size > 0 || groupIssues);
 
   function addAgent() {
     agents = [...agents, { id: `custom-${crypto.randomUUID().slice(0, 8)}`, name: "", enabled: true, trigger: "keybind", keybind: "", model: "opus", prompt_template: "", prompt_default: "", promptText: "" }];
@@ -142,10 +138,6 @@
 
   function removeAgent(id) {
     agents = agents.filter((a) => a.id !== id);
-  }
-
-  function addQuickAction() {
-    quickActions = [...quickActions, { id: `qa-${crypto.randomUUID().slice(0, 8)}`, label: "", kind: "comment", value: "", keybind: "" }];
   }
 
   let agentDefaults = $state([]);
@@ -190,7 +182,6 @@
     diffLayout = s.diff_layout;
     forceMergeRepos = s.force_merge_repos.split(",").map((r) => r.trim()).filter(Boolean);
     agents = s.agents.map((a) => ({ ...a, promptText: a.prompt_template || a.prompt_default }));
-    quickActions = (s.quick_actions ?? []).map((a) => ({ ...a, keybind: a.keybind ?? "" }));
     agentDefaults = s.agent_defaults;
     agentHarness = s.agent_harness;
     harnessAvailable = s.harness_available;
@@ -407,9 +398,6 @@
           model: agent.model,
           prompt_template: agent.promptText.trim() === agent.prompt_default.trim() ? "" : agent.promptText.trim(),
         })),
-        quick_actions: quickActions
-          .filter((action) => action.value.trim())
-          .map((action) => ({ id: action.id, label: action.label.trim(), kind: action.kind, value: action.value.trim(), keybind: action.keybind || null })),
         keybind_open_app: keybindOpenApp,
         keybind_open_palette: keybindOpenPalette,
         quick_generate_enabled: quickGenerateEnabled,
@@ -841,7 +829,7 @@
                 <option value="activity">Automatically</option>
               </select>
               {#if agent.trigger === "keybind"}
-                <input class="input mono keybind-input" maxlength="1" bind:value={agent.keybind} aria-label={`Shortcut for ${agent.name || "agent"}`} aria-invalid={shortcutIssues.has(agent.id)} spellcheck="false" autocomplete="off" />
+                <input class="input mono keybind-input" maxlength="1" bind:value={agent.keybind} aria-label={`Shortcut for ${agent.name || "agent"}`} aria-invalid={agentKeybindIssues.has(agent.id)} spellcheck="false" autocomplete="off" />
               {/if}
               <label class="trigger-kind" for={`model-${agent.id}`}>{agentHarness === "codex" ? "Effort" : "Model"}</label>
               <select id={`model-${agent.id}`} class="input narrow" bind:value={agent.model}>
@@ -852,8 +840,8 @@
                 <span class="hint trigger-hint">On new commits to your PRs.</span>
               {/if}
             </div>
-            {#if shortcutIssues.has(agent.id)}
-              <span class="hint invalid-hint keybind-issue" role="alert">{shortcutIssues.get(agent.id)}</span>
+            {#if agentKeybindIssues.has(agent.id)}
+              <span class="hint invalid-hint keybind-issue" role="alert">{agentKeybindIssues.get(agent.id)}</span>
             {/if}
 
             <details class="disclosure agent-disclosure">
@@ -964,27 +952,6 @@
               {#if !prefs.quickGenerateEnabled}<span class="hint">Save to turn it on.</span>{/if}
             </div>
           {/if}
-        </div>
-
-        <div class="field quick-actions-settings">
-          <span class="label">Quick actions</span>
-          <span class="hint">Sidebar buttons that post a fixed comment, such as <code>@preview</code>, or add a label.</span>
-          {#each quickActions as action (action.id)}
-            <div class="quick-action-row">
-              <input class="input quick-action-label" bind:value={action.label} aria-label="Quick action name" placeholder="Name" spellcheck="false" autocomplete="off" />
-              <select class="input quick-action-kind" bind:value={action.kind} aria-label="Quick action type">
-                <option value="comment">Comment</option>
-                <option value="label">Add label</option>
-              </select>
-              <input class="input mono quick-action-value" bind:value={action.value} aria-label={action.kind === "label" ? "Label to add" : "Comment to post"} placeholder={action.kind === "label" ? "Label" : "Comment"} spellcheck="false" autocomplete="off" />
-              <input class="input mono keybind-input" maxlength="1" bind:value={action.keybind} aria-label={`Shortcut for ${action.label || "quick action"}`} aria-invalid={shortcutIssues.has(action.id)} placeholder="key" spellcheck="false" autocomplete="off" />
-              <button class="reset-link" type="button" onclick={() => (quickActions = quickActions.filter((a) => a.id !== action.id))}>Remove</button>
-            </div>
-            {#if shortcutIssues.has(action.id)}
-              <span class="hint invalid-hint keybind-issue" role="alert">{shortcutIssues.get(action.id)}</span>
-            {/if}
-          {/each}
-          <div><button class="btn" type="button" onclick={addQuickAction}>Add quick action</button></div>
         </div>
 
         <details class="disclosure merge-disclosure">
@@ -1107,7 +1074,7 @@
         <div class="save-copy" aria-live="polite">
           {#if keybindClash}
             <span class="invalid-hint">Fix conflicts in <a href={settingsSectionHref("keybinds")}>Keyboard shortcuts</a>.</span>
-          {:else if shortcutIssues.size}
+          {:else if agentKeybindIssues.size}
             <span class="invalid-hint">Fix shortcuts in <a href={settingsSectionHref("automerge")}>Agents &amp; merging</a>.</span>
           {:else if notificationIssues.size}
             <span class="invalid-hint">Fix rules in <a href={settingsSectionHref("notifications")}>Notifications</a>.</span>
@@ -1280,12 +1247,6 @@
   .quick-generate-settings .hint :global(.kbd) { vertical-align: middle; }
   .quick-generate-open { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding-bottom: 6px; }
   .quick-generate-open .hint { margin-bottom: 0; }
-  .quick-actions-settings { margin-top: 24px; }
-  .quick-action-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-  .quick-action-label { width: 160px; }
-  .quick-action-kind { width: 130px; }
-  .quick-action-value { flex: 1 1 auto; min-width: 0; }
-  .quick-action-row .keybind-input { width: 44px; text-align: center; }
   .repo-toggles { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
   .repo-toggles .check-label { overflow-wrap: anywhere; }
   .private-access { padding-inline: 14px; background: var(--surface); border-radius: var(--radius-md); }

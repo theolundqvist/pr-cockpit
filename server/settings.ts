@@ -94,47 +94,6 @@ export function agentModel(id: string): AgentModel {
   return agentSettings().find((a) => a.id === id)?.model ?? "opus";
 }
 
-// A quick action is one sidebar button on an open PR: it posts a fixed comment (e.g. "@preview" for a
-// preview-deploy bot) or adds a label (created on GitHub if the repository lacks it).
-export type QuickActionKind = "comment" | "label";
-
-export interface QuickAction {
-  id: string;
-  label: string;
-  kind: QuickActionKind;
-  value: string;
-  keybind: string | null;
-}
-
-const REVIEW_QUICK_ACTION: QuickAction = { id: "qa-review", label: "Review", kind: "comment", value: "@review", keybind: "R" };
-
-export const QUICK_ACTION_DEFAULTS: QuickAction[] = [
-  { id: "qa-preview", label: "Preview", kind: "comment", value: "@preview", keybind: "P" },
-  REVIEW_QUICK_ACTION,
-  { id: "qa-order", label: "Order", kind: "label", value: "order", keybind: "O" },
-];
-
-export function normalizeQuickActions(value: unknown): QuickAction[] {
-  if (!Array.isArray(value)) return [];
-  const seen = new Set<string>();
-  return value.flatMap((o): QuickAction[] => {
-    if (!o || typeof o !== "object") return [];
-    const { id, label, kind, keybind } = o;
-    // `comment` held the text before actions gained kinds.
-    const raw = "value" in o ? o.value : "comment" in o ? o.comment : undefined;
-    if (typeof id !== "string" || !id || seen.has(id) || typeof raw !== "string" || !raw.trim()) return [];
-    seen.add(id);
-    const text = raw.trim();
-    const name = typeof label === "string" ? label.trim() : "";
-    return [{ id, label: name || text, kind: kind === "label" ? "label" : "comment", value: text, keybind: sanitizeKeybind(keybind) }];
-  });
-}
-
-function readQuickActions(): QuickAction[] {
-  try { return normalizeQuickActions(JSON.parse(getSetting("quick_actions") ?? "[]")); }
-  catch { return []; }
-}
-
 const parseRepos = (raw: string): string[] => raw.split(",").map((r) => r.trim()).filter(Boolean);
 
 const clampInterval = (raw: number): number =>
@@ -196,19 +155,6 @@ export function seedSettings(): void {
   if (getSetting("diff_layout") === null) setSetting("diff_layout", "split");
   if (getSetting("force_merge_repos") === null) setSetting("force_merge_repos", "");
   if (getSetting("pending_reviews_enabled") === null) setSetting("pending_reviews_enabled", "false");
-  if (getSetting("quick_actions") === null) {
-    setSetting("quick_actions", JSON.stringify(QUICK_ACTION_DEFAULTS));
-    setSetting("quick_actions_review_added", "true");
-  } else if (getSetting("quick_actions_review_added") !== "true") {
-    // Lists stored before Review existed get it once, after Preview, unless its key or comment is already taken.
-    const actions = readQuickActions();
-    if (!actions.some((a) => a.id === REVIEW_QUICK_ACTION.id || a.keybind === REVIEW_QUICK_ACTION.keybind || a.value === REVIEW_QUICK_ACTION.value)) {
-      const at = actions.findIndex((a) => a.id === "qa-preview") + 1 || actions.length;
-      actions.splice(at, 0, REVIEW_QUICK_ACTION);
-      setSetting("quick_actions", JSON.stringify(actions));
-    }
-    setSetting("quick_actions_review_added", "true");
-  }
   if (getSetting("review_bots") === null) setSetting("review_bots", envReviewBots);
   // migrate legacy per-agent keys and remove the retired rescorer without rewriting the remaining entries
   const storedAgents = getSetting("agents");
@@ -366,7 +312,6 @@ export interface Settings {
   diff_layout: DiffLayout;
   force_merge_repos: string;
   agents: AgentSetting[];
-  quick_actions: QuickAction[];
   review_bots: string;
   keybind_open_app: string;
   keybind_open_palette: string;
@@ -422,7 +367,6 @@ export function readSettings(): Settings {
     force_merge_repos: getSetting("force_merge_repos") ?? "",
     review_bots: getSetting("review_bots") ?? envReviewBots,
     agents: agentSettings(),
-    quick_actions: readQuickActions(),
     keybind_open_app: getSetting("keybind_open_app") ?? "",
     keybind_open_palette: getSetting("keybind_open_palette") ?? "",
     saved_views: getSetting("saved_views") ?? "[]",
@@ -473,7 +417,6 @@ export function writeSettings(
     diff_layout: string;
     force_merge_repos: string;
     agents: AgentSetting[];
-    quick_actions: QuickAction[];
     review_bots: string;
     keybind_open_app: string;
     keybind_open_palette: string;
@@ -540,7 +483,6 @@ export function writeSettings(
   if (patch.diff_layout !== undefined) setSetting("diff_layout", normalizeDiffLayout(patch.diff_layout));
   if (patch.force_merge_repos !== undefined) setSetting("force_merge_repos", patch.force_merge_repos);
   if (patch.agents !== undefined) setSetting("agents", JSON.stringify(mergeAgents(patch.agents)));
-  if (patch.quick_actions !== undefined) setSetting("quick_actions", JSON.stringify(normalizeQuickActions(patch.quick_actions)));
   if (patch.review_bots !== undefined) setSetting("review_bots", patch.review_bots);
   if (patch.keybind_open_app !== undefined) setSetting("keybind_open_app", patch.keybind_open_app);
   if (patch.keybind_open_palette !== undefined) setSetting("keybind_open_palette", patch.keybind_open_palette);

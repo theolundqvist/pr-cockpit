@@ -10,28 +10,9 @@ import {
   normalizeDiffLayout,
   normalizeInboxLabels,
   normalizeFontPreference,
-  normalizeQuickActions,
   normalizeScale,
   normalizeThemePreference,
 } from "./settings.ts";
-
-describe("normalizeQuickActions", () => {
-  test("keeps actions with text, labels them, and drops invalid keybinds and duplicates", () => {
-    expect(normalizeQuickActions([
-      { id: "qa-1", label: " Preview ", kind: "comment", value: " @preview ", keybind: "P" },
-      { id: "qa-2", label: "", kind: "label", value: "order", keybind: "too long" },
-      { id: "qa-1", label: "Dup", value: "@dup", keybind: "D" },
-      { id: "qa-3", label: "Empty", value: "  ", keybind: "E" },
-      { id: "qa-4", label: "Old", comment: "@deploy", keybind: null },
-      null,
-    ])).toEqual([
-      { id: "qa-1", label: "Preview", kind: "comment", value: "@preview", keybind: "P" },
-      { id: "qa-2", label: "order", kind: "label", value: "order", keybind: null },
-      { id: "qa-4", label: "Old", kind: "comment", value: "@deploy", keybind: null },
-    ]);
-    expect(normalizeQuickActions("garbage")).toEqual([]);
-  });
-});
 
 describe("mergeAgents", () => {
   test("non-array input yields the defaults", () => {
