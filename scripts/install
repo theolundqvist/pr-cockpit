@@ -92,9 +92,15 @@ if [[ "$missing" -eq 1 ]]; then
   exit 1
 fi
 
-bun="$(command -v bun)"
+runtime_dir="$HOME/Library/Application Support/PR Cockpit"
+user_bun_dir="$HOME/.local/bin"
+while IFS= read -r candidate; do
+  if [[ "$candidate" != "$runtime_dir/"* ]]; then
+    user_bun_dir="$(dirname "$candidate")"
+    break
+  fi
+done < <(type -ap bun)
 gh_bin="$(command -v gh)"
-launch_path="$HOME/.local/bin:$(dirname "$bun"):$(dirname "$gh_bin"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 if [[ "$platform" != "Darwin" ]]; then
   echo "pr-cockpit: unsupported platform: $platform"
@@ -102,7 +108,54 @@ if [[ "$platform" != "Darwin" ]]; then
 fi
 stage_count=6
 
+bun_version="1.4.3"
+bun_dir="$runtime_dir/bun"
+bun="$bun_dir/bun"
+provision_bun() {
+  local asset archive_sha binary_sha staging
+  # Intel Macs need no baseline branch: bun-darwin-x64-baseline ships the same binary as bun-darwin-x64.
+  if [[ "$(uname -m)" == "arm64" || "$(sysctl -n sysctl.proc_translated 2>/dev/null)" == "1" ]]; then
+    asset="bun-darwin-aarch64"
+    archive_sha="80afd4c069b46a6fa8f3ec520bebc750a7843e4a8d5b9583d29ad436c00a3403"
+    binary_sha="28c7dd0a06916aba284d570ef44a2d70e9c538eaf2ba58dfe0910525563b3f79"
+  else
+    asset="bun-darwin-x64"
+    archive_sha="62660e6438eb872278877acca77e1152d5d031324df368d4a81b428211489d2d"
+    binary_sha="c2a945a9d33f9088b32ac3550d1d1fd485a7fc10d71c66f91ef0d33b41cefa7c"
+  fi
+  if [[ -L "$runtime_dir" || -L "$bun_dir" || -L "$bun" ]] \
+    || { [[ -e "$bun_dir" ]] && [[ ! -d "$bun_dir" || ! -O "$bun_dir" ]]; } \
+    || { [[ -e "$bun" ]] && [[ ! -f "$bun" || ! -O "$bun" ]]; }; then
+    echo "pr-cockpit: refusing a symlinked or foreign private Bun path: $bun" >&2
+    return 1
+  fi
+  if [[ -f "$bun" && -x "$bun" ]] && printf '%s  %s\n' "$binary_sha" "$bun" | shasum -a 256 -c - >/dev/null 2>&1; then
+    return 0
+  fi
+  mkdir -p "$runtime_dir"
+  staging="$(mktemp -d "$runtime_dir/.bun-download.XXXXXX")"
+  if ! curl --proto '=https' --tlsv1.2 -fsSL --connect-timeout 10 --max-time 300 --retry 3 --retry-delay 2 --retry-all-errors \
+    -o "$staging/$asset.zip" "https://github.com/oven-sh/bun/releases/download/bun-v$bun_version/$asset.zip"; then
+    echo "pr-cockpit: couldn't download Bun $bun_version" >&2
+  elif ! printf '%s  %s\n' "$archive_sha" "$staging/$asset.zip" | shasum -a 256 -c - >/dev/null 2>&1; then
+    echo "pr-cockpit: refusing a Bun $bun_version archive whose SHA-256 does not match the official release" >&2
+  elif ! unzip -p "$staging/$asset.zip" "$asset/bun" > "$staging/bun" || ! printf '%s  %s\n' "$binary_sha" "$staging/bun" | shasum -a 256 -c - >/dev/null 2>&1; then
+    echo "pr-cockpit: the verified Bun $bun_version archive did not contain the pinned binary" >&2
+  elif ! chmod 0755 "$staging/bun" || ! mkdir -p "$bun_dir" || ! mv -f "$staging/bun" "$bun"; then
+    echo "pr-cockpit: couldn't install Bun $bun_version at $bun" >&2
+  else
+    rm -rf "$staging"
+    return 0
+  fi
+  rm -rf "$staging"
+  return 1
+}
+
 stage "1/$stage_count" "Install dependencies"
+install_substep="Bun runtime"
+provision_bun || exit 1
+install_substep=""
+launch_path="$(dirname "$bun"):$HOME/.local/bin:$user_bun_dir:$(dirname "$gh_bin"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 quiet_in "root dependency install" "$root" "$bun" install
 quiet_in "UI dependency install" "$root/ui" "$bun" install
 if [[ "$platform" == "Darwin" ]]; then
@@ -119,14 +172,14 @@ quiet_in "release check" "$root" "$bun" scripts/check-release.ts
 quiet_in "worktree runtime check" "$root" "$bun" scripts/check-worktree-runtime.ts
 
 stage "3/$stage_count" "Build UI"
-quiet_in "UI build" "$root/ui" "$bun" run build
+quiet_in "UI build" "$root/ui" "$bun" --bun run build
 
 
 stage "4/6" "Install desktop app"
 COCKPIT_GH_BIN="$gh_bin" "$root/scripts/make-app.sh"
 
 stage "5/6" "Install CLI and runtime"
-cli_dir="$(dirname "$bun")"
+cli_dir="$user_bun_dir"
 if [[ ! -w "$cli_dir" ]]; then
   cli_dir="$HOME/.local/bin"
   mkdir -p "$cli_dir"
@@ -142,9 +195,9 @@ fi
 # macOS blocks LaunchAgents from executing scripts in protected folders such as
 # ~/Documents. Keep a tiny launcher outside the checkout; it points back to the
 # source root and invokes Bun/Electron directly, both of which launch correctly.
-runtime_dir="$HOME/Library/Application Support/PR Cockpit"
 runtime_launcher="$runtime_dir/launch"
 mkdir -p "$runtime_dir"
+cp "$root/scripts/private-bun.sh" "$runtime_dir/private-bun.sh"
 cp "$root/scripts/cockpit" "$runtime_launcher"
 chmod +x "$runtime_launcher"
 

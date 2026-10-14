@@ -164,6 +164,15 @@ if [[ "$platform" == "Darwin" && "${COCKPIT_SKIP_RECONCILE:-0}" != "1" && "$serv
   fi
 fi
 
+# Resolve after reconciliation, which may install the private runtime.
+# shellcheck source=scripts/private-bun.sh
+source "$launcher_dir/private-bun.sh"
+managed_bun="$(private_bun)"
+if [[ -n "$managed_bun" ]]; then
+  bun="$managed_bun"
+  export PATH="${bun%/*}:$PATH"
+fi
+
 pr_arg="$(echo "$pr_arg" | xargs)"
 target_url="$url"
 if [[ -n "$pr_arg" ]]; then
@@ -291,7 +300,7 @@ fi
 
 if [[ "$needs_build" -eq 1 ]]; then
   echo "pr-cockpit: building UI..."
-  if (cd "$root/ui" && "$bun" run build); then
+  if (cd "$root/ui" && "$bun" --bun run build); then
     mkdir -p "$data_dir"
     snapshot_tmp="$snapshot_dir.tmp.$$"
     rm -rf "$snapshot_tmp"

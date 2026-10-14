@@ -30,6 +30,53 @@ test("status identifies the process supervising the local port", async () => {
   }
 });
 
+test("an installed app's private Bun is required ahead of the caller's, which serves only uninstalled checkouts", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pr-cockpit-private-bun-"));
+  const dataHome = join(home, "data");
+  const callerBin = join(home, "caller-bin");
+  const used = join(home, "used");
+  const fakeBun = (dir: string, label: string) => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "bun"), `#!/usr/bin/env bash\necho ${label} >> ${JSON.stringify(used)}\nexec ${JSON.stringify(process.execPath)} "$@"\n`);
+    chmodSync(join(dir, "bun"), 0o755);
+  };
+  const server = Bun.serve({ port: 0, fetch: () => Response.json({ root: "/srv/pr-cockpit", supervisor: "systemd-system", pid: 421 }) });
+  const status = async () => {
+    const child = Bun.spawn([join(import.meta.dir, "pr-cockpit"), "status"], {
+      env: { ...Bun.env, HOME: home, XDG_DATA_HOME: dataHome, COCKPIT_PORT: String(server.port), PATH: `${callerBin}:${Bun.env.PATH}` },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    return [await child.exited, await new Response(child.stderr).text()];
+  };
+  const managed = process.platform === "darwin" ? join(home, "Library/Application Support/PR Cockpit") : join(dataHome, "pr-cockpit-tools");
+  try {
+    fakeBun(callerBin, "caller");
+    expect(await status()).toEqual([0, ""]);
+    fakeBun(process.platform === "darwin" ? join(managed, "bun") : join(managed, "bin"), "linked");
+    expect(await status()).toEqual([0, ""]);
+    if (process.platform !== "darwin") {
+      // the exact pin wins over a tool link left on an older release, and needs no link for root-run services
+      const pin = /^bun_version="([^"]+)"$/m.exec(readFileSync(join(import.meta.dir, "install-linux-tools"), "utf8"))?.[1];
+      fakeBun(join(managed, `versions/bun-${pin}`), "pinned");
+      expect(await status()).toEqual([0, ""]);
+      rmSync(join(managed, "bin"), { recursive: true });
+      expect(await status()).toEqual([0, ""]);
+      rmSync(join(managed, "versions"), { recursive: true });
+    } else {
+      rmSync(join(managed, "bun/bun"));
+    }
+    const [exitCode, stderr] = await status();
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("the installed app's private Bun is missing at");
+    const expected = process.platform === "darwin" ? ["caller", "linked"] : ["caller", "linked", "pinned", "pinned"];
+    expect(readFileSync(used, "utf8")).toBe(`${expected.join("\n")}\n`);
+  } finally {
+    server.stop(true);
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 
 test("listen ignores volatile metadata and transient failures, then exits on a cached PR update", async () => {
   let version = 1;
@@ -897,6 +944,7 @@ test("update delegates to the running server and waits for the new revision", as
     },
   });
   copyFileSync(join(import.meta.dir, "pr-cockpit"), join(scripts, "pr-cockpit"));
+  copyFileSync(join(import.meta.dir, "private-bun.sh"), join(scripts, "private-bun.sh"));
   chmodSync(join(scripts, "pr-cockpit"), 0o755);
   symlinkSync(join(scripts, "pr-cockpit"), command);
 
@@ -1160,6 +1208,7 @@ test("an installed CLI symlink starts the repository launcher with a configured 
   mkdirSync(scripts, { recursive: true });
   mkdirSync(bin);
   copyFileSync(join(import.meta.dir, "pr-cockpit"), join(scripts, "pr-cockpit"));
+  copyFileSync(join(import.meta.dir, "private-bun.sh"), join(scripts, "private-bun.sh"));
   writeFileSync(join(scripts, "cockpit"), `#!/usr/bin/env bash\ntouch ${JSON.stringify(ready)}\n`);
   writeFileSync(join(bin, "curl"), `#!/usr/bin/env bash
 if [[ "$*" == *"/healthz"* ]]; then

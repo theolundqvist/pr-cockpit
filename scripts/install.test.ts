@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MAX_INSTALL_FAILURE_DETAIL_BYTES, reportInstallFailure } from "./installFailure.ts";
@@ -15,6 +15,7 @@ function fakeInstall(
   healthRoot?: string,
   listenerPid = "4242",
   healthFailure?: "once" | "always",
+  bunArchive?: "mismatch",
 ) {
   const root = join(home, "checkout");
   const bin = join(home, "bin");
@@ -26,12 +27,22 @@ function fakeInstall(
   writeFileSync(reportCalls, "");
   const reportDetails = join(home, "sentry-report-details");
   writeFileSync(reportDetails, "");
+  const toolCalls = join(home, "tool-calls");
+  writeFileSync(toolCalls, "");
+  // the fake archive yields a private Bun that reports the downloaded release and delegates to the fake bun
+  const privateVersion = join(home, "private-bun-version");
+  const privateBun = join(home, "private-bun");
+  writeFileSync(privateBun, `#!/usr/bin/env bash
+if [[ "\${1:-}" == "--version" ]]; then cat ${JSON.stringify(privateVersion)}; exit 0; fi
+printf 'private %s\\n' "\${1:-}" >> ${JSON.stringify(toolCalls)}
+exec ${JSON.stringify(join(bin, "bun"))} "$@"
+`);
   mkdirSync(join(root, "scripts"), { recursive: true });
   mkdirSync(join(root, "ui"), { recursive: true });
   mkdirSync(join(root, "shell"), { recursive: true });
   mkdirSync(bin, { recursive: true });
   copyFileSync(join(import.meta.dir, "install"), join(root, "scripts/install"));
-  for (const name of ["cockpit", "ensure-electron-dist.sh", "install-linux", "make-app.sh", "pr-cockpit"]) {
+  for (const name of ["cockpit", "ensure-electron-dist.sh", "install-linux", "make-app.sh", "pr-cockpit", "private-bun.sh"]) {
     writeFileSync(join(root, "scripts", name), "#!/usr/bin/env bash\nexit 0\n");
     chmodSync(join(root, "scripts", name), 0o755);
   }
@@ -46,13 +57,16 @@ function fakeInstall(
     ["bun", `if [[ "\${1:-}" == */scripts/installFailure.ts ]]; then printf '%s\\n' "$*" >> ${JSON.stringify(reportCalls)}; [[ -z "\${6:-}" || ! -f "$6" ]] || cat "$6" >> ${JSON.stringify(reportDetails)}; [[ "\${COCKPIT_TEST_HANG_SENTRY_REPORTER:-0}" != "1" ]] || sleep 60; exit 0; fi
 if [[ "\${COCKPIT_TEST_FAIL_BUN_INSTALL:-0}" == "1" && "\${1:-}" == "install" ]]; then printf 'dependency resolver failed for %s token=ghp_installsecret\\n' "$HOME" >&2; exit 7; fi
 exit 0`],
-    ["uname", `printf '${platform}\\n'`],
+    ["uname", `if [[ "\${1:-}" == "-m" ]]; then printf 'arm64\\n'; else printf '${platform}\\n'; fi`],
+    ["shasum", bunArchive === "mismatch" ? "exit 1" : `while read -r _ file; do ! grep -q changed "$file" || exit 1; done`],
+    ["unzip", `[[ "$1" == "-p" ]] || exit 2; url="$(cat "$2")"; version="\${url##*/bun-v}"; printf '%s\\n' "\${version%%/*}" > ${JSON.stringify(privateVersion)}; cat ${JSON.stringify(privateBun)}`],
     ["gh", "exit 0"],
     ["git", `if [[ "\${1:-}" == "--version" ]]; then printf 'git version %s\\n' "\${COCKPIT_TEST_GIT_VERSION:-2.39.5}"; exit 0; fi
 exec /usr/bin/git "$@"`],
     // the readiness probe needs the server agent to own the listening port
     ["lsof", `printf '${listenerPid}\\n'`],
     ["curl", `printf '%s\\n' "$*" >> ${JSON.stringify(curlCalls)}
+for ((i = 1; i < $#; i++)); do if [[ "\${!i}" == "-o" ]]; then output=$((i + 1)); printf '%s' "\${@: -1}" > "\${!output}"; exit 0; fi; done
 if [[ "$*" == *"/healthz"* ]]; then
   if [[ "${healthFailure}" == "always" ]]; then exit 7; fi
   if [[ "${healthFailure}" == "once" && ! -f ${JSON.stringify(join(home, "health-failed"))} ]]; then
@@ -78,44 +92,63 @@ exit 0`,
     writeFileSync(path, `#!/usr/bin/env bash\n${body}\n`);
     chmodSync(path, 0o755);
   }
-  return { root, calls, curlCalls, reportCalls, reportDetails, path: `${bin}:/usr/bin:/bin:/usr/sbin` };
+  return { root, calls, curlCalls, reportCalls, reportDetails, toolCalls, path: `${bin}:/usr/bin:/bin:/usr/sbin` };
 }
 
 async function install(
   loadedRoot: string | null,
-  options: { platform?: "Darwin" | "Linux"; proxy?: string; healthRoot?: string; listenerPid?: string; healthFailure?: "once" | "always"; tailscalePort?: string; failInstall?: boolean; hangReporter?: boolean; startupRecovery?: boolean; gitVersion?: string } = {},
+  options: { platform?: "Darwin" | "Linux"; proxy?: string; healthRoot?: string; listenerPid?: string; healthFailure?: "once" | "always"; tailscalePort?: string; failInstall?: boolean; hangReporter?: boolean; startupRecovery?: boolean; gitVersion?: string; bunArchive?: "mismatch"; reinstall?: "reuse" | "tampered" | "symlinked" } = {},
 ) {
   const home = mkdtempSync(join(tmpdir(), "cockpit-install-"));
   try {
-    const fake = fakeInstall(home, loadedRoot, options.platform ?? "Darwin", options.healthRoot, options.listenerPid, options.healthFailure);
+    const fake = fakeInstall(home, loadedRoot, options.platform ?? "Darwin", options.healthRoot, options.listenerPid, options.healthFailure, options.bunArchive);
     const installHome = join(home, "home");
-    const proc = Bun.spawn([join(fake.root, "scripts/install")], {
-      env: {
-        PATH: fake.path,
-        HOME: installHome,
-        COCKPIT_PORT: "4820",
-        ...(options.proxy ? { COCKPIT_PROXY: options.proxy } : {}),
-        ...(options.tailscalePort ? {
-          COCKPIT_TAILSCALE_SERVE: "1",
-          COCKPIT_TAILSCALE_HTTPS_PORT: options.tailscalePort,
-        } : {}),
-        ...(options.startupRecovery ? { COCKPIT_STARTUP_RECOVERY: "1" } : {}),
-        ...(options.failInstall ? { COCKPIT_TEST_FAIL_BUN_INSTALL: "1" } : {}),
-        ...(options.hangReporter ? { COCKPIT_TEST_HANG_SENTRY_REPORTER: "1" } : {}),
-        ...(options.gitVersion ? { COCKPIT_TEST_GIT_VERSION: options.gitVersion } : {}),
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
+    const run = async () => {
+      const proc = Bun.spawn([join(fake.root, "scripts/install")], {
+        env: {
+          PATH: fake.path,
+          HOME: installHome,
+          COCKPIT_PORT: "4820",
+          ...(options.proxy ? { COCKPIT_PROXY: options.proxy } : {}),
+          ...(options.tailscalePort ? {
+            COCKPIT_TAILSCALE_SERVE: "1",
+            COCKPIT_TAILSCALE_HTTPS_PORT: options.tailscalePort,
+          } : {}),
+          ...(options.startupRecovery ? { COCKPIT_STARTUP_RECOVERY: "1" } : {}),
+          ...(options.failInstall ? { COCKPIT_TEST_FAIL_BUN_INSTALL: "1" } : {}),
+          ...(options.hangReporter ? { COCKPIT_TEST_HANG_SENTRY_REPORTER: "1" } : {}),
+          ...(options.gitVersion ? { COCKPIT_TEST_GIT_VERSION: options.gitVersion } : {}),
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      return Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+    };
+    const runtimeDir = join(installHome, "Library/Application Support/PR Cockpit");
+    const privateBunDir = join(runtimeDir, "bun");
+    if (options.reinstall) {
+      await run();
+      if (options.reinstall === "tampered") appendFileSync(join(privateBunDir, "bun"), "# changed\n");
+      if (options.reinstall === "symlinked") {
+        mkdirSync(join(home, "user-bun"));
+        writeFileSync(join(home, "user-bun/bun"), "user bun\n");
+        rmSync(privateBunDir, { recursive: true });
+        symlinkSync(join(home, "user-bun"), privateBunDir);
+      }
+    }
+    const [stdout, stderr, exitCode] = await run();
+    const runtimeEntries = existsSync(runtimeDir) ? readdirSync(runtimeDir) : [];
+    const privateBunText = existsSync(join(privateBunDir, "bun")) ? readFileSync(join(privateBunDir, "bun"), "utf8") : "";
+    const userBunText = existsSync(join(home, "user-bun/bun")) ? readFileSync(join(home, "user-bun/bun"), "utf8") : "";
     const calls = readFileSync(fake.calls, "utf8");
     const curlCalls = readFileSync(fake.curlCalls, "utf8");
     const reportCalls = readFileSync(fake.reportCalls, "utf8");
     const reportDetails = readFileSync(fake.reportDetails, "utf8");
+    const toolCalls = readFileSync(fake.toolCalls, "utf8");
     const serverPlistPath = join(installHome, "Library/LaunchAgents/app.pr-cockpit.server.plist");
     const serverPlist = existsSync(serverPlistPath) ? readFileSync(serverPlistPath, "utf8") : "";
     const configPath = join(installHome, ".config/pr-cockpit/config");
@@ -128,6 +161,10 @@ async function install(
       curlCalls,
       reportCalls,
       reportDetails,
+      toolCalls,
+      runtimeEntries,
+      privateBunText,
+      userBunText,
       root: fake.root,
       serverPlist,
       config,
@@ -307,7 +344,7 @@ test("an app registration left behind by another root is replaced", async () => 
   expect(result.calls).toContain(`bootout gui/${uid}/app.pr-cockpit\n`);
   expect(result.calls).toContain(`bootstrap gui/${uid} `);
   expect(result.calls).toContain("Library/LaunchAgents/app.pr-cockpit.plist");
-  expect(result.serverPlist).toContain(`<string>PATH=${result.localBin}:`);
+  expect(result.serverPlist).toMatch(new RegExp(`<string>PATH=[^:<]*/PR Cockpit/bun:${result.localBin}:`));
 });
 
 test("no loaded registration bootstraps the app", async () => {
@@ -368,4 +405,49 @@ test("replica installation restarts the local server", async () => {
   expect(result.serverPlist).toContain("<string>--server-only</string>");
   expect(result.serverPlist).toContain("<string>COCKPIT_REPLICA_SSH_HOST=root@dev-vm</string>");
   expect(result.serverPlist).toMatch(/<string>COCKPIT_LAUNCHER=.*\/Library\/Application Support\/PR Cockpit\/launch<\/string>/);
+});
+
+test("macOS install runs dependencies and launch agents on the verified private Bun release", async () => {
+  const result = await install(null);
+  expect(result.exitCode).toBe(0);
+  const download = result.curlCalls.split("\n").find((line) => line.includes("github.com/oven-sh/bun/releases/download/")) ?? "";
+  expect(download).toContain("--proto =https --tlsv1.2");
+  const version = /\/bun-v(\d+\.\d+\.\d+)\/bun-darwin-aarch64\.zip$/.exec(download)?.[1];
+  expect(version).toBeDefined();
+  expect(result.toolCalls).toContain("private install\n");
+  expect(result.runtimeEntries).toContain("bun");
+  // the private runtime leads the launch PATH, so no other Bun can shadow it for the server or app
+  expect(result.serverPlist).toContain(`<string>PATH=${join(result.localBin, "../../Library/Application Support/PR Cockpit")}/bun:`);
+});
+
+test("a Bun archive with an unexpected SHA-256 stops before dependency install", async () => {
+  const result = await install(null, { bunArchive: "mismatch" });
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("SHA-256 does not match the official release");
+  expect(result.toolCalls).toBe("");
+  expect(result.runtimeEntries.filter((entry) => entry === "bun" || entry.startsWith(".bun-download."))).toEqual([]);
+  expect(result.reportCalls).toContain("scripts/installFailure.ts Install dependencies 1 Darwin Bun runtime");
+  expect(result.serverPlist).toBe("");
+});
+
+test("an update reuses the installed private Bun without downloading it again", async () => {
+  const result = await install("__ROOT__", { reinstall: "reuse" });
+  expect(result.exitCode).toBe(0);
+  expect(result.curlCalls.split("\n").filter((line) => line.includes("github.com/oven-sh/bun/releases/download/"))).toHaveLength(1);
+  expect(result.toolCalls).toContain("private install\n");
+});
+
+test("an update replaces a changed private Bun from the verified archive", async () => {
+  const result = await install("__ROOT__", { reinstall: "tampered" });
+  expect(result.exitCode).toBe(0);
+  expect(result.curlCalls.split("\n").filter((line) => line.includes("github.com/oven-sh/bun/releases/download/"))).toHaveLength(2);
+  expect(result.privateBunText).not.toContain("changed");
+});
+
+test("an update refuses a symlinked private Bun directory without writing through it", async () => {
+  const result = await install("__ROOT__", { reinstall: "symlinked" });
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("refusing a symlinked or foreign private Bun path");
+  expect(result.userBunText).toBe("user bun\n");
+  expect(result.curlCalls.split("\n").filter((line) => line.includes("github.com/oven-sh/bun/releases/download/"))).toHaveLength(1);
 });

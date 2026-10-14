@@ -99,6 +99,11 @@ cockpit_port() {
   fi
   printf '%s\n' "${env_port:-${COCKPIT_PORT:-4820}}"
 }
+cockpit_bun() {
+  local private
+  private=$(private_bun) || return 1
+  printf '%s\n' "${private:-$(command -v bun || true)}"
+}
 
 source_path="${BASH_SOURCE[0]}"
 while [[ -L "$source_path" ]]; do
@@ -111,11 +116,13 @@ while [[ -L "$source_path" ]]; do
   fi
 done
 root="$(cd "$(dirname "$source_path")/.." && pwd -P)"
+# shellcheck source=scripts/private-bun.sh
+source "$root/scripts/private-bun.sh"
 
 
 if [[ "${1:-}" = "status" ]]; then
   [[ "$#" -eq 1 ]] || usage
-  bun_bin=$(command -v bun || true)
+  bun_bin=$(cockpit_bun)
   [[ -n "$bun_bin" ]] || { echo "pr-cockpit: bun is required" >&2; exit 1; }
   port=$(cockpit_port)
   health=$(curl --noproxy '*' --max-time 2 -fsS "http://127.0.0.1:$port/healthz" 2>/dev/null) || {
@@ -131,7 +138,7 @@ fi
 
 if [[ "${1:-}" = "update" ]]; then
   [[ "$#" -eq 1 ]] || usage
-  bun_bin=$(command -v bun || true)
+  bun_bin=$(cockpit_bun)
   [[ -n "$bun_bin" ]] || { echo "pr-cockpit: bun is required" >&2; exit 1; }
   port=$(cockpit_port)
   version_url="http://127.0.0.1:$port/api/version"
@@ -359,7 +366,7 @@ if [[ -n "$proxy" && ! "$proxy" =~ $proxy_pattern ]]; then
   echo "pr-cockpit: proxy must be an SSH host such as build-server or root@host" >&2
   exit 2
 fi
-bun_bin=$(command -v bun || true)
+bun_bin=$(cockpit_bun)
 [[ -n "$bun_bin" ]] || { echo "pr-cockpit: bun is required" >&2; exit 1; }
 
 server_health() {

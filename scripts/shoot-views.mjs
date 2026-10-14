@@ -1398,7 +1398,7 @@ function usage() {
 
 async function validateStatic() {
   const indexPath = join(ROOT, "static", "index.html");
-  const missing = `Static UI is missing or stale. Run \`cd ui && bun run build\` before the screenshot harness.`;
+  const missing = `Static UI is missing or stale. Run \`cd ui && bun --bun run build\` before the screenshot harness.`;
   try {
     await access(indexPath);
     const html = await readFile(indexPath, "utf8");

@@ -37,7 +37,7 @@ function makeCheckout(): { work: string; origin: string; cleanup: () => void } {
   git(work, ["config", "user.email", "t@t.t"]);
   git(work, ["config", "user.name", "t"]);
   mkdirSync(join(work, "scripts"));
-  cpSync(SCRIPT, join(work, "scripts", "update-pull"), { mode: 0o755 });
+  cpSync(SCRIPT, join(work, "scripts", "update-pull"));
 
   return { work, origin, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }

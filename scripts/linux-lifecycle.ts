@@ -531,7 +531,8 @@ function stage(source: string, expectedGeneration: string): { release: string; r
     failAt("electron-install"); run([bun, "node_modules/electron/install.js"], { cwd: join(staged, "shell") });
     failAt("release-check"); run([bun, "scripts/check-release.ts"], { cwd: staged });
     failAt("runtime-check"); run([bun, "scripts/check-worktree-runtime.ts"], { cwd: staged });
-    failAt("ui-build"); run([bun, "run", "build"], { cwd: join(staged, "ui") });
+    // --bun keeps Vite on the pinned runtime instead of whichever Node its shebang finds on PATH.
+    failAt("ui-build"); run([bun, "--bun", "run", "build"], { cwd: join(staged, "ui") });
     failAt("validate");
     for (const path of ["server/main.ts", "scripts/cockpit", "scripts/pr-cockpit", "scripts/linux-lifecycle.ts", "shell/main.js", "shell/node_modules/electron/dist/electron", "static/index.html"]) {
       if (!existsSync(join(staged, path))) throw new Error(`staged release is missing ${path}`);

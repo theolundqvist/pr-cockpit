@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 const UPDATE_SCRIPT = join(import.meta.dir, "..", "scripts", "update");
 const COCKPIT_SCRIPT = join(import.meta.dir, "..", "scripts", "cockpit");
+const PRIVATE_BUN_SCRIPT = join(import.meta.dir, "..", "scripts", "private-bun.sh");
 
 function git(cwd: string, args: string[]): void {
   const proc = Bun.spawnSync(["git", "-C", cwd, ...args], { stdout: "ignore", stderr: "ignore" });
@@ -28,7 +29,7 @@ describe("update handoff", () => {
     git(root, ["commit", "-q", "-m", "seed"]);
 
     mkdirSync(join(root, "scripts"));
-    cpSync(UPDATE_SCRIPT, join(root, "scripts", "update"), { mode: 0o755 });
+    cpSync(UPDATE_SCRIPT, join(root, "scripts", "update"));
     writeFileSync(join(root, "scripts", "update-pull"), '#!/usr/bin/env bash\necho "boom reason" >&2\nexit 1\n');
     chmodSync(join(root, "scripts", "update-pull"), 0o755);
     // a relaunch would exec this - the sentinel proves whether it ran
@@ -59,7 +60,7 @@ describe("update handoff", () => {
     git(root, ["commit", "-q", "-m", "seed"]);
 
     mkdirSync(join(root, "scripts"));
-    cpSync(UPDATE_SCRIPT, join(root, "scripts", "update"), { mode: 0o755 });
+    cpSync(UPDATE_SCRIPT, join(root, "scripts", "update"));
     writeFileSync(join(root, "scripts", "update-pull"), "#!/usr/bin/env bash\necho noop\n");
     chmodSync(join(root, "scripts", "update-pull"), 0o755);
     const order = join(root, "order");
@@ -86,7 +87,7 @@ describe("update handoff", () => {
     const order = join(root, "order");
     mkdirSync(join(root, "scripts"));
     mkdirSync(fakeBin);
-    cpSync(UPDATE_SCRIPT, join(root, "scripts", "update"), { mode: 0o755 });
+    cpSync(UPDATE_SCRIPT, join(root, "scripts", "update"));
     writeFileSync(join(root, "scripts", "update-linux"), `#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" > ${JSON.stringify(order)}\n`);
     chmodSync(join(root, "scripts", "update-linux"), 0o755);
     writeFileSync(join(fakeBin, "uname"), "#!/usr/bin/env bash\necho Linux\n");
@@ -114,7 +115,7 @@ describe("update handoff", () => {
     git(root, ["commit", "-q", "-m", "seed"]);
 
     mkdirSync(join(root, "scripts"));
-    cpSync(UPDATE_SCRIPT, join(root, "scripts", "update"), { mode: 0o755 });
+    cpSync(UPDATE_SCRIPT, join(root, "scripts", "update"));
     writeFileSync(join(root, "scripts", "update-pull"), "#!/usr/bin/env bash\necho noop\n");
     chmodSync(join(root, "scripts", "update-pull"), 0o755);
     const order = join(root, "order");
@@ -151,7 +152,8 @@ exit 1
     mkdirSync(fakeBin);
     mkdirSync(home);
     writeFileSync(join(root, "static", "index.html"), "ready\n");
-    cpSync(COCKPIT_SCRIPT, join(root, "scripts", "cockpit"), { mode: 0o755 });
+    cpSync(COCKPIT_SCRIPT, join(root, "scripts", "cockpit"));
+    cpSync(PRIVATE_BUN_SCRIPT, join(root, "scripts", "private-bun.sh"));
     writeFileSync(join(fakeBin, "launchctl"), "#!/usr/bin/env bash\necho 'pid = 111'\n");
     writeFileSync(join(fakeBin, "lsof"), "#!/usr/bin/env bash\necho 222\n");
     writeFileSync(join(fakeBin, "open"), `#!/usr/bin/env bash\ntouch ${JSON.stringify(opened)}\n`);
@@ -209,7 +211,8 @@ exit 1
     git(root, ["config", "user.name", "t"]);
     writeFileSync(join(root, "app.ts"), "seed\n");
     writeFileSync(join(root, "static", "index.html"), "ready\n");
-    cpSync(COCKPIT_SCRIPT, join(root, "scripts", "cockpit"), { mode: 0o755 });
+    cpSync(COCKPIT_SCRIPT, join(root, "scripts", "cockpit"));
+    cpSync(PRIVATE_BUN_SCRIPT, join(root, "scripts", "private-bun.sh"));
     git(root, ["add", "-A"]);
     git(root, ["commit", "-q", "-m", "seed"]);
 
@@ -218,7 +221,8 @@ exit 1
 set -e
 echo install >> ${JSON.stringify(order)}
 if [[ -f ${JSON.stringify(join(root, "fail-install"))} ]]; then exit 1; fi
-mkdir -p "$HOME/Library/Application Support/PR Cockpit"
+mkdir -p "$HOME/Library/Application Support/PR Cockpit/bun"
+cp ${JSON.stringify(join(fakeBin, "bun"))} "$HOME/Library/Application Support/PR Cockpit/bun/bun"
 git -C ${JSON.stringify(root)} rev-parse HEAD > "$HOME/Library/Application Support/PR Cockpit/installed-rev"
 `);
     chmodSync(join(root, "scripts", "install"), 0o755);
@@ -262,7 +266,8 @@ printf '{"root":"%s"}' ${JSON.stringify(canonicalRoot)}
 
     const runtimeDir = join(home, "Library", "Application Support", "PR Cockpit");
     const runtimeLauncher = join(runtimeDir, "launch");
-    cpSync(COCKPIT_SCRIPT, runtimeLauncher, { mode: 0o755 });
+    cpSync(PRIVATE_BUN_SCRIPT, join(runtimeDir, "private-bun.sh"));
+    cpSync(COCKPIT_SCRIPT, runtimeLauncher);
     writeFileSync(join(runtimeDir, "installed-rev"), "stale\n");
     const runtime = Bun.spawnSync([runtimeLauncher, "--managed-server", "--show"], {
       cwd: root,

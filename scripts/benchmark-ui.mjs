@@ -4,7 +4,6 @@ import { cpus } from "node:os";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { chromium } from "playwright";
-// Run the fixture open/diff pass with Bun; run the authenticated Origin and private-search passes with Node because Bun 1.3.14 hangs in Playwright connectOverCDP.
 
 const ROOT = resolve(import.meta.dirname, "..");
 const SNAPSHOT_DIR = resolve(ROOT, "server/mockData/microsoft-vscode");
@@ -224,7 +223,7 @@ async function mainLargeDiff() {
   let targetURL = LARGE_DIFF_URL;
   requireBenchmarkSettings(targetURL ? { COCKPIT_LARGE_DIFF_URL: targetURL } : { COCKPIT_LARGE_DIFF_REF: LARGE_DIFF_REF });
   if (!targetURL) {
-    const build = Bun.spawn([process.execPath, "run", "build"], {
+    const build = Bun.spawn([process.execPath, "--bun", "run", "build"], {
       cwd: join(ROOT, "ui"),
       stdout: "inherit",
       stderr: "inherit",

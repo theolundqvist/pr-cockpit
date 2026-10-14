@@ -23,6 +23,7 @@ describe("Linux desktop launcher", () => {
     const runtime = realpathSync(runtimePath);
     mkdirSync(bin, { recursive: true });
     cpSync(join(import.meta.dir, "cockpit"), join(source, "scripts", "cockpit"));
+    cpSync(join(import.meta.dir, "private-bun.sh"), join(source, "scripts", "private-bun.sh"));
     chmodSync(join(source, "scripts", "cockpit"), 0o755);
     mkdirSync(join(fixture, "run", "pr-cockpit"), { recursive: true });
     symlinkSync(join(source, "scripts", "cockpit"), protocolLauncher);

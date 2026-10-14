@@ -42,7 +42,7 @@ function fixture() {
   git(root, "init", "-b", "main", source);
   git(source, "config", "user.email", "fixture@example.test");
   git(source, "config", "user.name", "Fixture");
-  for (const name of ["cockpit", "recover-startup", "auto-update", "update", "update-pull"]) {
+  for (const name of ["cockpit", "private-bun.sh", "recover-startup", "auto-update", "update", "update-pull"]) {
     const content = readFileSync(join(import.meta.dir, name), "utf8");
     executable(join(source, "scripts", name), content.replace(/^#![^\n]*\n/, ""));
   }
