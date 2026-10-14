@@ -19,6 +19,7 @@
   import { SETTINGS_SECTION_KEY, SETTINGS_SECTIONS, normalizeSettingsSection, settingsSectionHref } from "./settingsSections.js";
   import { desktopShortcutDefaults, shortcutsClash } from "./shortcutPlatform.js";
   import { RESERVED_PR_KEYS } from "./prKeys.js";
+  import { QUICK_ACTIONS_AGENT_PROMPT, QUICK_ACTIONS_EXAMPLE, QUICK_ACTIONS_PATH } from "./quickActions.js";
   import { tailscaleAccess } from "./tailscaleAccess.js";
   let { onRunSetup, section = "general" } = $props();
 
@@ -138,6 +139,14 @@
 
   function removeAgent(id) {
     agents = agents.filter((a) => a.id !== id);
+  }
+
+  let quickActionsPromptCopied = $state(false);
+  function copyQuickActionsPrompt() {
+    navigator.clipboard.writeText(QUICK_ACTIONS_AGENT_PROMPT).then(() => {
+      quickActionsPromptCopied = true;
+      setTimeout(() => (quickActionsPromptCopied = false), 3000);
+    }, () => {});
   }
 
   let agentDefaults = $state([]);
@@ -954,6 +963,18 @@
           {/if}
         </div>
 
+        <details class="disclosure">
+          <summary>Quick actions</summary>
+          <div class="disclosure-body">
+            <span class="hint">PR sidebar buttons that post a comment or add a label. Each repository defines its own in <code>{QUICK_ACTIONS_PATH}</code>, read from the branch a PR merges into.</span>
+            <pre class="quick-actions-example mono">{QUICK_ACTIONS_EXAMPLE}</pre>
+            <div class="quick-generate-open">
+              <button class="btn" type="button" onclick={copyQuickActionsPrompt}>Copy agent prompt</button>
+              {#if quickActionsPromptCopied}<span class="hint">Copied. Paste it to an agent working in the repository.</span>{/if}
+            </div>
+          </div>
+        </details>
+
         <details class="disclosure merge-disclosure">
           <summary>Bypass required approval</summary>
           <div class="disclosure-body">
@@ -1247,6 +1268,7 @@
   .quick-generate-settings .hint :global(.kbd) { vertical-align: middle; }
   .quick-generate-open { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding-bottom: 6px; }
   .quick-generate-open .hint { margin-bottom: 0; }
+  .quick-actions-example { margin: 12px 0; padding: 12px; border-radius: 8px; background: var(--code-bg); font-size: 12px; overflow-x: auto; }
   .repo-toggles { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
   .repo-toggles .check-label { overflow-wrap: anywhere; }
   .private-access { padding-inline: 14px; background: var(--surface); border-radius: var(--radius-md); }

@@ -69,6 +69,19 @@ Press **⌘Z** (Ctrl+Z on Windows/Linux) to undo a title change from Rename or a
 
 Desktop notifications are off by default. In **Settings → Notifications**, choose events and combine rules for human or bot authors, comment text, repositories, and review requests. GitHub bot accounts and configured review bots count as bots; unknown authors match neither human nor bot filters.
 
+Repositories can add **quick actions**, PR sidebar buttons that post a fixed comment or add a label, by committing `.github/pr-cockpit.json`. Cockpit reads it from the branch the PR merges into:
+
+```json
+{
+  "quickActions": [
+    { "label": "Preview", "comment": "@preview", "key": "P" },
+    { "label": "Order", "addLabel": "order", "key": "O" }
+  ]
+}
+```
+
+Each entry needs exactly one of `comment` or `addLabel`; `key` is optional, and keys Cockpit already uses are ignored. **Settings → Agents & merging → Quick actions** shows the format and copies a prompt that asks your coding agent to write the file.
+
 <details>
 <summary><strong>Everyday shortcuts</strong></summary>
 
