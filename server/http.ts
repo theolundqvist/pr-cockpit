@@ -150,6 +150,7 @@ import { matchesQuery, parseQuery, wantsHistoricalPrs } from "./query.ts";
 import { buildWebhookRoutes } from "./webhooks.ts";
 import { findDefinition, grep, localFileHistoryPatch, symbolMentionHistory, withSearchCtx } from "./repoSearch.ts";
 import { lsTree, showFile } from "./gitShow.ts";
+import { QUICK_ACTIONS_PATH } from "../shared/quickActions.js";
 import { aggregateReviewScore, aggregateReviewStale, currentReviewerScores, reviewBots } from "./reviewScore.ts";
 import { isMockGithub, mockGithub, MOCK_FIXTURE_CLOCK } from "./mockGithub.ts";
 import { createTmuxFocusHandler } from "./tmuxFocus.ts";
@@ -2757,6 +2758,19 @@ async function handleRepoFile(url: URL): Promise<Response> {
   });
 }
 
+// Quick actions are repository configuration: always the default branch in the local mirror, never a PR's copy.
+async function handleRepoQuickActions(url: URL): Promise<Response> {
+  const repo = url.searchParams.get("repo") ?? "";
+  if (!REPO_RE.test(repo)) return json({ error: "invalid repo" }, 400);
+  const result = await fileFromMirror(repo, "HEAD", QUICK_ACTIONS_PATH);
+  if (result.status === "no-mirror") {
+    void fetchMirror(repo).catch(() => {});
+    return json({ status: "fetching" });
+  }
+  if (result.status === "ok") return json({ status: "ok", content: result.content });
+  return json({ status: result.status === "read-failed" ? "read-failed" : "not-found" });
+}
+
 const FILE_HISTORY_TTL_MS = 5 * 60_000;
 const FILE_HISTORY_CAP = 200;
 const fileHistoryCache = new Map<string, { commits: FileHistoryCommit[]; fetchedAt: number }>();
@@ -2980,6 +2994,7 @@ async function handlePutSettings(req: Request, runtime: HttpRuntime): Promise<Re
     quick_generate_key: string;
     quick_generate_model: string;
     quick_generate_env_file: string;
+    personal_quick_actions: string;
     pr_grouping: Settings["pr_grouping"];
   }>;
   try {
@@ -3551,6 +3566,9 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     }
     if (req.method === "GET" && url.pathname === "/api/repo-files") {
       return handleRepoFiles(url);
+    }
+    if (req.method === "GET" && url.pathname === "/api/repo-quick-actions") {
+      return handleRepoQuickActions(url);
     }
     if (req.method === "GET" && url.pathname === "/api/repo-file") {
       return handleRepoFile(url);

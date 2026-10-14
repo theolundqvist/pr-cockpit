@@ -19,7 +19,7 @@
   import { SETTINGS_SECTION_KEY, SETTINGS_SECTIONS, normalizeSettingsSection, settingsSectionHref } from "./settingsSections.js";
   import { desktopShortcutDefaults, shortcutsClash } from "./shortcutPlatform.js";
   import { RESERVED_PR_KEYS } from "./prKeys.js";
-  import { QUICK_ACTIONS_AGENT_PROMPT, QUICK_ACTIONS_EXAMPLE, QUICK_ACTIONS_PATH } from "./quickActions.js";
+  import { PERSONAL_QUICK_ACTIONS_EXAMPLE, QUICK_ACTIONS_AGENT_PROMPT, QUICK_ACTIONS_EXAMPLE, QUICK_ACTIONS_PATH } from "./quickActions.js";
   import { tailscaleAccess } from "./tailscaleAccess.js";
   let { onRunSetup, section = "general" } = $props();
 
@@ -68,6 +68,7 @@
   let quickGenerateModel = $state("");
   let savedQuickGenerateKey = $state("");
   let quickGenerateEnvFile = $state("");
+  let personalQuickActions = $state("");
   let savedQuickGenerateEnvFile = $state("");
   // Read from the host only while the toggle is on and this tab is open.
   let quickGenerateConfig = $state(null);
@@ -131,7 +132,15 @@
     return issues;
   });
   let groupIssues = $derived(grouping.mode === "manual" && grouping.groups.some((group, index) => !group.name.trim() || grouping.groups.some((other, otherIndex) => otherIndex < index && other.name.trim().toLowerCase() === group.name.trim().toLowerCase())));
-  let saveBlocked = $derived(keybindClash || agentKeybindIssues.size > 0 || notificationIssues.size > 0 || groupIssues);
+  let personalQuickActionsIssue = $derived.by(() => {
+    if (!personalQuickActions.trim()) return "";
+    try {
+      return Array.isArray(JSON.parse(personalQuickActions)?.quickActions) ? "" : 'Needs a "quickActions" list.';
+    } catch {
+      return "Not valid JSON.";
+    }
+  });
+  let saveBlocked = $derived(keybindClash || agentKeybindIssues.size > 0 || notificationIssues.size > 0 || groupIssues || !!personalQuickActionsIssue);
 
   function addAgent() {
     agents = [...agents, { id: `custom-${crypto.randomUUID().slice(0, 8)}`, name: "", enabled: true, trigger: "keybind", keybind: "", model: "opus", prompt_template: "", prompt_default: "", promptText: "" }];
@@ -203,6 +212,7 @@
     savedQuickGenerateKey = quickGenerateKey;
     quickGenerateModel = s.quick_generate_model ?? "";
     quickGenerateEnvFile = s.quick_generate_env_file ?? "";
+    personalQuickActions = s.personal_quick_actions ?? "";
     savedQuickGenerateEnvFile = quickGenerateEnvFile;
     cancelQuickGenerateRequests();
     quickGenerateConfig = null;
@@ -413,6 +423,7 @@
         quick_generate_key: quickGenerateKey,
         quick_generate_model: quickGenerateKey ? quickGenerateModel : "",
         quick_generate_env_file: quickGenerateEnvFile.trim(),
+        personal_quick_actions: personalQuickActions.trim(),
         relay_url: relayUrl.trim(),
         notifications: serializeNotificationSettings(notifications),
       });
@@ -966,12 +977,18 @@
         <details class="disclosure">
           <summary>Quick actions</summary>
           <div class="disclosure-body">
-            <span class="hint">PR sidebar buttons that post a comment or add a label. Each repository defines its own in <code>{QUICK_ACTIONS_PATH}</code>, read from the branch a PR merges into.</span>
+            <span class="hint">PR sidebar buttons that post a comment or add a label. Each repository defines its own in <code>{QUICK_ACTIONS_PATH}</code> on its default branch.</span>
             <pre class="quick-actions-example mono">{QUICK_ACTIONS_EXAMPLE}</pre>
             <div class="quick-generate-open">
               <button class="btn" type="button" onclick={copyQuickActionsPrompt}>Copy agent prompt</button>
               {#if quickActionsPromptCopied}<span class="hint">Copied. Paste it to an agent working in the repository.</span>{/if}
             </div>
+            <label class="field personal-quick-actions">
+              <span class="label">Your quick actions</span>
+              <span class="hint">Only on this Cockpit, applied over each repository's file. Match a label to change its fields or hide it with <code>"hidden": true</code>; other labels add buttons. <code>"repos"</code> limits an entry to some repositories.</span>
+              <textarea class="input mono" rows="8" bind:value={personalQuickActions} placeholder={PERSONAL_QUICK_ACTIONS_EXAMPLE} aria-invalid={!!personalQuickActionsIssue} spellcheck="false"></textarea>
+              {#if personalQuickActionsIssue}<span class="hint invalid-hint">{personalQuickActionsIssue}</span>{/if}
+            </label>
           </div>
         </details>
 
@@ -1097,6 +1114,8 @@
             <span class="invalid-hint">Fix conflicts in <a href={settingsSectionHref("keybinds")}>Keyboard shortcuts</a>.</span>
           {:else if agentKeybindIssues.size}
             <span class="invalid-hint">Fix shortcuts in <a href={settingsSectionHref("automerge")}>Agents &amp; merging</a>.</span>
+          {:else if personalQuickActionsIssue}
+            <span class="invalid-hint">Fix your quick actions in <a href={settingsSectionHref("automerge")}>Agents &amp; merging</a>.</span>
           {:else if notificationIssues.size}
             <span class="invalid-hint">Fix rules in <a href={settingsSectionHref("notifications")}>Notifications</a>.</span>
           {:else if error}

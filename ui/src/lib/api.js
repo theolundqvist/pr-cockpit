@@ -383,6 +383,12 @@ export async function repoFile(repo, sha, headRef, path) {
   return res.json();
 }
 
+export async function repoQuickActions(repo) {
+  const res = await fetch(`/api/repo-quick-actions?${new URLSearchParams({ repo })}`);
+  if (!res.ok) throw new Error(`repo-quick-actions ${res.status}`);
+  return res.json();
+}
+
 export async function fetchPrIndex() {
   const res = await fetch("/api/pr-index");
   if (!res.ok) throw new Error(`pr-index ${res.status}`);
