@@ -123,7 +123,7 @@
     const bound = new Map();
     const bindings = [
       ...agents.filter((a) => a.trigger === "keybind").map((a) => ({ id: a.id, key: a.keybind ?? "", name: a.name || a.id })),
-      ...quickActions.map((a) => ({ id: a.id, key: a.keybind ?? "", name: a.label || a.comment || "a quick action" })),
+      ...quickActions.map((a) => ({ id: a.id, key: a.keybind ?? "", name: a.label || a.value || "a quick action" })),
     ];
     for (const { id, key, name } of bindings) {
       if (!key) continue;
@@ -145,7 +145,7 @@
   }
 
   function addQuickAction() {
-    quickActions = [...quickActions, { id: `qa-${crypto.randomUUID().slice(0, 8)}`, label: "", comment: "", keybind: "" }];
+    quickActions = [...quickActions, { id: `qa-${crypto.randomUUID().slice(0, 8)}`, label: "", kind: "comment", value: "", keybind: "" }];
   }
 
   let agentDefaults = $state([]);
@@ -408,8 +408,8 @@
           prompt_template: agent.promptText.trim() === agent.prompt_default.trim() ? "" : agent.promptText.trim(),
         })),
         quick_actions: quickActions
-          .filter((action) => action.comment.trim())
-          .map((action) => ({ id: action.id, label: action.label.trim(), comment: action.comment.trim(), keybind: action.keybind || null })),
+          .filter((action) => action.value.trim())
+          .map((action) => ({ id: action.id, label: action.label.trim(), kind: action.kind, value: action.value.trim(), keybind: action.keybind || null })),
         keybind_open_app: keybindOpenApp,
         keybind_open_palette: keybindOpenPalette,
         quick_generate_enabled: quickGenerateEnabled,
@@ -968,11 +968,15 @@
 
         <div class="field quick-actions-settings">
           <span class="label">Quick actions</span>
-          <span class="hint">Sidebar buttons that post a fixed comment on the PR, such as <code>@preview</code>.</span>
+          <span class="hint">Sidebar buttons that post a fixed comment, such as <code>@preview</code>, or add a label.</span>
           {#each quickActions as action (action.id)}
             <div class="quick-action-row">
               <input class="input quick-action-label" bind:value={action.label} aria-label="Quick action name" placeholder="Name" spellcheck="false" autocomplete="off" />
-              <input class="input mono quick-action-comment" bind:value={action.comment} aria-label="Comment to post" placeholder="Comment" spellcheck="false" autocomplete="off" />
+              <select class="input quick-action-kind" bind:value={action.kind} aria-label="Quick action type">
+                <option value="comment">Comment</option>
+                <option value="label">Add label</option>
+              </select>
+              <input class="input mono quick-action-value" bind:value={action.value} aria-label={action.kind === "label" ? "Label to add" : "Comment to post"} placeholder={action.kind === "label" ? "Label" : "Comment"} spellcheck="false" autocomplete="off" />
               <input class="input mono keybind-input" maxlength="1" bind:value={action.keybind} aria-label={`Shortcut for ${action.label || "quick action"}`} aria-invalid={shortcutIssues.has(action.id)} placeholder="key" spellcheck="false" autocomplete="off" />
               <button class="reset-link" type="button" onclick={() => (quickActions = quickActions.filter((a) => a.id !== action.id))}>Remove</button>
             </div>
@@ -1279,7 +1283,8 @@
   .quick-actions-settings { margin-top: 24px; }
   .quick-action-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
   .quick-action-label { width: 160px; }
-  .quick-action-comment { flex: 1 1 auto; min-width: 0; }
+  .quick-action-kind { width: 130px; }
+  .quick-action-value { flex: 1 1 auto; min-width: 0; }
   .quick-action-row .keybind-input { width: 44px; text-align: center; }
   .repo-toggles { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
   .repo-toggles .check-label { overflow-wrap: anywhere; }

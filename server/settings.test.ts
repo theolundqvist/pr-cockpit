@@ -16,16 +16,18 @@ import {
 } from "./settings.ts";
 
 describe("normalizeQuickActions", () => {
-  test("keeps actions with a comment, labels them, and drops invalid keybinds and duplicates", () => {
+  test("keeps actions with text, labels them, and drops invalid keybinds and duplicates", () => {
     expect(normalizeQuickActions([
-      { id: "qa-1", label: " Preview ", comment: " @preview ", keybind: "P" },
-      { id: "qa-2", label: "", comment: "@deploy", keybind: "too long" },
-      { id: "qa-1", label: "Dup", comment: "@dup", keybind: "D" },
-      { id: "qa-3", label: "Empty", comment: "  ", keybind: "E" },
+      { id: "qa-1", label: " Preview ", kind: "comment", value: " @preview ", keybind: "P" },
+      { id: "qa-2", label: "", kind: "label", value: "order", keybind: "too long" },
+      { id: "qa-1", label: "Dup", value: "@dup", keybind: "D" },
+      { id: "qa-3", label: "Empty", value: "  ", keybind: "E" },
+      { id: "qa-4", label: "Old", comment: "@deploy", keybind: null },
       null,
     ])).toEqual([
-      { id: "qa-1", label: "Preview", comment: "@preview", keybind: "P" },
-      { id: "qa-2", label: "@deploy", comment: "@deploy", keybind: null },
+      { id: "qa-1", label: "Preview", kind: "comment", value: "@preview", keybind: "P" },
+      { id: "qa-2", label: "order", kind: "label", value: "order", keybind: null },
+      { id: "qa-4", label: "Old", kind: "comment", value: "@deploy", keybind: null },
     ]);
     expect(normalizeQuickActions("garbage")).toEqual([]);
   });

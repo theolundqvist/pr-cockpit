@@ -94,24 +94,36 @@ export function agentModel(id: string): AgentModel {
   return agentSettings().find((a) => a.id === id)?.model ?? "opus";
 }
 
-// A quick action posts a fixed comment on the open PR, e.g. "@preview" for a preview-deploy bot.
+// A quick action is one sidebar button on an open PR: it posts a fixed comment (e.g. "@preview" for a
+// preview-deploy bot) or adds a label (created on GitHub if the repository lacks it).
+export type QuickActionKind = "comment" | "label";
+
 export interface QuickAction {
   id: string;
   label: string;
-  comment: string;
+  kind: QuickActionKind;
+  value: string;
   keybind: string | null;
 }
+
+export const QUICK_ACTION_DEFAULTS: QuickAction[] = [
+  { id: "qa-preview", label: "Preview", kind: "comment", value: "@preview", keybind: "P" },
+  { id: "qa-order", label: "Order", kind: "label", value: "order", keybind: "O" },
+];
 
 export function normalizeQuickActions(value: unknown): QuickAction[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
   return value.flatMap((o): QuickAction[] => {
     if (!o || typeof o !== "object") return [];
-    const { id, label, comment, keybind } = o as Record<string, unknown>;
-    if (typeof id !== "string" || !id || seen.has(id) || typeof comment !== "string" || !comment.trim()) return [];
+    const { id, label, kind, keybind } = o;
+    // `comment` held the text before actions gained kinds.
+    const raw = "value" in o ? o.value : "comment" in o ? o.comment : undefined;
+    if (typeof id !== "string" || !id || seen.has(id) || typeof raw !== "string" || !raw.trim()) return [];
     seen.add(id);
+    const text = raw.trim();
     const name = typeof label === "string" ? label.trim() : "";
-    return [{ id, label: name || comment.trim(), comment: comment.trim(), keybind: sanitizeKeybind(keybind) }];
+    return [{ id, label: name || text, kind: kind === "label" ? "label" : "comment", value: text, keybind: sanitizeKeybind(keybind) }];
   });
 }
 
@@ -181,6 +193,7 @@ export function seedSettings(): void {
   if (getSetting("diff_layout") === null) setSetting("diff_layout", "split");
   if (getSetting("force_merge_repos") === null) setSetting("force_merge_repos", "");
   if (getSetting("pending_reviews_enabled") === null) setSetting("pending_reviews_enabled", "false");
+  if (getSetting("quick_actions") === null) setSetting("quick_actions", JSON.stringify(QUICK_ACTION_DEFAULTS));
   if (getSetting("review_bots") === null) setSetting("review_bots", envReviewBots);
   // migrate legacy per-agent keys and remove the retired rescorer without rewriting the remaining entries
   const storedAgents = getSetting("agents");

@@ -912,20 +912,24 @@
 
   let quickActionBusy = $state(null);
   let quickActionError = $state("");
-  // Uppercase keybinds are typed with Shift, shown "⇧P" like the key bar's "⇧E".
+  // Uppercase keybinds are typed with Shift, shown "⇧P" like the key bar's "⇧E". A label action is done once the PR has its label.
   let quickActions = $derived(
-    (liveState ? prefs.quickActions : []).map((a) => ({ ...a, keyLabel: a.keybind && a.keybind !== a.keybind.toLowerCase() ? `⇧${a.keybind}` : a.keybind })),
+    (liveState ? prefs.quickActions : []).map((a) => ({
+      ...a,
+      keyLabel: a.keybind && a.keybind !== a.keybind.toLowerCase() ? `⇧${a.keybind}` : a.keybind,
+      done: a.kind === "label" && appliedLabels.has(a.value),
+    })),
   );
 
   async function runQuickAction(action) {
-    if (quickActionBusy) return;
+    if (quickActionBusy || action.done) return;
     quickActionBusy = action.id;
     quickActionError = "";
     try {
-      await enqueueMutation(repo, number, { kind: "comment", body: action.comment });
+      await enqueueMutation(repo, number, action.kind === "label" ? { kind: "add-labels", labels: [action.value] } : { kind: "comment", body: action.value });
       await refreshMutations();
     } catch (error) {
-      quickActionError = presentMutationError(`post ${action.label}`, error).message;
+      quickActionError = presentMutationError(action.kind === "label" ? `add label ${action.value}` : `post ${action.label}`, error).message;
     } finally {
       quickActionBusy = null;
     }
@@ -2653,7 +2657,7 @@
     { key: "q", label: "request review" },
     { key: "p", label: "prompt agent" },
     ...agentActionKeys,
-    ...quickActions.flatMap((a) => (a.keybind ? [{ key: a.keyLabel, label: a.label.toLowerCase() }] : [])),
+    ...quickActions.flatMap((a) => (a.keybind && !a.done ? [{ key: a.keyLabel, label: a.label.toLowerCase() }] : [])),
     mergeKey,
     { key: "x", label: "close" },
     ...autoMergeKeys,
@@ -3495,9 +3499,14 @@
               <h3 class="side-title">Quick actions</h3>
               <div class="actions">
                 {#each quickActions as action (action.id)}
-                  <button class="btn wide shortcut-action" title={`Comment “${action.comment}”`} disabled={quickActionBusy !== null} onclick={() => runQuickAction(action)}>
-                    {quickActionBusy === action.id ? "Posting…" : action.label}
-                    {#if action.keybind}<Kbd keys={action.keyLabel} />{/if}
+                  <button
+                    class="btn wide shortcut-action"
+                    title={action.kind === "label" ? `Add label “${action.value}”` : `Comment “${action.value}”`}
+                    disabled={quickActionBusy !== null || action.done}
+                    onclick={() => runQuickAction(action)}
+                  >
+                    {quickActionBusy === action.id ? "Applying…" : action.label}
+                    {#if action.keybind && !action.done}<Kbd keys={action.keyLabel} />{/if}
                   </button>
                 {/each}
               </div>
