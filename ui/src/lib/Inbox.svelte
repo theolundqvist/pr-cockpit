@@ -12,7 +12,7 @@
   import { isSetAside, putAside } from "./setAside.svelte.js";
   import { lastViewed } from "./lastViewed.svelte.js";
   import { tick, untrack } from "svelte";
-  import { fetchInbox, fetchRecentClosed, fetchAllPrs, fetchPrDetails, setArchived, saveSettings, reorderPr, setMergeApproval, enqueueMutation, fetchMutations, retryMutation, discardMutation, fetchSettings, fetchRelayStatus, fetchRelayCoverage, autofixAgent, customAgent } from "./api.js";
+  import { fetchInbox, fetchRecentClosed, fetchAllPrs, fetchPrDetails, fetchPrDetail, fetchPrDetailSnapshot, repoFile, setArchived, saveSettings, reorderPr, setMergeApproval, enqueueMutation, fetchMutations, retryMutation, discardMutation, fetchSettings, fetchRelayStatus, fetchRelayCoverage, autofixAgent, customAgent } from "./api.js";
   import { cacheDetail, cachedHeadSha, cachedView, cacheView } from "./detailCache.js";
   import { preloadPr } from "./preload.js";
   import { filterPrs, countMatches, wantsHistory } from "./prFilter.js";
@@ -37,6 +37,8 @@
   import { presentMutationError } from "./mutationError.js";
   import { recordUndo } from "./undo.js";
   import MultiSelectDropdown from "./MultiSelectDropdown.svelte";
+  import { QUICK_ACTIONS_PATH, parseQuickActions, quickActionMutation } from "./quickActions.js";
+  import { labelsAfterMutations } from "./appliedLabels.js";
 
   let { active = true, refreshRevision = 0, pollCompletedAt = null, onFindPr = () => {} } = $props();
   let handledRefreshRevision = refreshRevision;
@@ -147,6 +149,15 @@
   const archiveFlash = timedFlag(4000, () => (undo = null));
   let contextMenu = $state(null);
   let contextMenuNode = $state();
+  let contextMenuRequest = 0;
+  let menuQuickActions = $state([]);
+  let menuQuickActionsLoading = $state(false);
+  let menuQuickActionsError = $state("");
+  let quickActionBusy = $state(false);
+  let quickSubmenu = $state(null);
+  let quickSubmenuNode = $state();
+  let quickSubmenuTrigger = $state();
+  let quickSubmenuCloseTimer;
   let titleEditor = $state(null);
   $effect(() => {
     if (!prefs.groupDragEnabled) titleEditor = null;
@@ -178,26 +189,167 @@
     const dismiss = () => (contextMenu = null);
     const outside = (event) => { if (!contextMenuNode?.contains(event.target)) dismiss(); };
     window.addEventListener("pointerdown", outside, true);
-    window.addEventListener("scroll", dismiss, true);
+    const scroll = (event) => { if (!contextMenuNode?.contains(event.target)) dismiss(); };
+    window.addEventListener("scroll", scroll, true);
     window.addEventListener("resize", dismiss);
     return () => {
       window.removeEventListener("pointerdown", outside, true);
-      window.removeEventListener("scroll", dismiss, true);
+      window.removeEventListener("scroll", scroll, true);
       window.removeEventListener("resize", dismiss);
+      cancelQuickSubmenuClose();
     };
   });
 
   async function openContextMenu(event, pr) {
     event.preventDefault();
+    const request = ++contextMenuRequest;
     contextMenu = { pr, x: 0, y: 0 };
+    cancelQuickSubmenuClose();
+    quickSubmenu = null;
+    menuQuickActions = [];
+    menuQuickActionsError = "";
+    menuQuickActionsLoading = pr.state === "OPEN";
+    await positionContextMenu(event.clientX, event.clientY);
+    if (!contextMenu || request !== contextMenuRequest) return;
+    contextMenuNode.querySelector("button")?.focus();
+    if (menuQuickActionsLoading) void loadContextActions(pr, request);
+  }
+
+  async function positionContextMenu(pointerX = null, pointerY = null) {
+    const request = contextMenuRequest;
     await tick();
-    if (!contextMenuNode || contextMenu?.pr !== pr) return;
+    if (!contextMenuNode || !contextMenu || request !== contextMenuRequest) return;
     const rect = contextMenuNode.getBoundingClientRect();
     const scale = Number.parseFloat(getComputedStyle(contextMenuNode.closest("#app")).zoom) || 1;
-    const x = Math.max(8, Math.min(event.clientX, window.innerWidth - rect.width - 8));
-    const y = Math.max(8, Math.min(event.clientY, window.innerHeight - rect.height - 8));
-    contextMenu = { pr, x: (x - rect.left) / scale, y: (y - rect.top) / scale };
-    contextMenuNode.querySelector("button")?.focus();
+    const x = Math.max(8, Math.min(pointerX ?? rect.left, window.innerWidth - rect.width - 8));
+    const y = Math.max(8, Math.min(pointerY ?? rect.top, window.innerHeight - rect.height - 8));
+    contextMenu.x += (x - rect.left) / scale;
+    contextMenu.y += (y - rect.top) / scale;
+  }
+
+  async function loadContextActions(pr, request, detail = null, attempt = 0) {
+    const current = () => contextMenu && request === contextMenuRequest;
+    try {
+      if (!detail) {
+        const snapshot = await fetchPrDetailSnapshot(pr.repo, pr.number, { prefetch: true });
+        if (!current()) return;
+        detail = snapshot?.detail ?? await fetchPrDetail(pr.repo, pr.number, { view: false });
+      }
+      if (!current()) return;
+      if (detail.state !== "OPEN" || !detail.baseRefOid) {
+        menuQuickActionsLoading = false;
+        return;
+      }
+      const config = await repoFile(pr.repo, detail.baseRefOid, detail.baseRefName, QUICK_ACTIONS_PATH);
+      if (!current()) return;
+      if (config.status === "fetching" && attempt < 10) {
+        setTimeout(() => { if (current()) void loadContextActions(pr, request, detail, attempt + 1); }, 1500);
+        return;
+      }
+      if (config.status === "ok") {
+        let actions;
+        try {
+          actions = parseQuickActions(config.content);
+        } catch {
+          menuQuickActionsError = "Quick actions configuration needs correcting.";
+          menuQuickActionsLoading = false;
+          return;
+        }
+        if (actions.length) {
+          const mutations = await fetchMutations(pr.repo, pr.number);
+          if (!current()) return;
+          const labels = labelsAfterMutations(detail.labels.nodes.map((label) => label.name), mutations);
+          menuQuickActions = actions.map((action) => ({ ...action, done: action.kind === "label" && labels.has(action.value) }));
+        }
+      } else if (config.status !== "not-found") {
+        menuQuickActionsError = "Couldn't load quick actions.";
+      }
+      menuQuickActionsLoading = false;
+    } catch {
+      if (current()) {
+        menuQuickActionsError = "Couldn't load quick actions.";
+        menuQuickActionsLoading = false;
+      }
+    } finally {
+      if (current() && !menuQuickActionsLoading) {
+        await positionContextMenu();
+        if (current() && quickSubmenuTrigger?.matches(":hover")) void openQuickSubmenu();
+      }
+    }
+  }
+
+  async function openQuickSubmenu(focus = false) {
+    if (!contextMenu || !menuQuickActions.length || quickActionBusy) return;
+    cancelQuickSubmenuClose();
+    const request = contextMenuRequest;
+    const scale = Number.parseFloat(getComputedStyle(contextMenuNode.closest("#app")).zoom) || 1;
+    const maxWidth = Math.min(320, (window.innerWidth - 16) / scale);
+    const maxHeight = (window.innerHeight - 16) / scale;
+    quickSubmenu = { x: 0, y: 0, maxWidth, maxHeight };
+    await tick();
+    if (!quickSubmenuNode || !quickSubmenuTrigger || !contextMenu || request !== contextMenuRequest) return;
+    const rect = quickSubmenuNode.getBoundingClientRect();
+    const parent = contextMenuNode.getBoundingClientRect();
+    const trigger = quickSubmenuTrigger.getBoundingClientRect();
+    const right = parent.right - 4;
+    const x = Math.max(8, right + rect.width <= window.innerWidth - 8 ? right : parent.left - rect.width + 4);
+    const y = Math.max(8, Math.min(trigger.top - 4, window.innerHeight - rect.height - 8));
+    quickSubmenu = { x: (x - rect.left) / scale, y: (y - rect.top) / scale, maxWidth, maxHeight };
+    if (focus) (quickSubmenuNode.querySelector("button:not(:disabled)") ?? quickSubmenuNode).focus();
+  }
+
+  function cancelQuickSubmenuClose() {
+    clearTimeout(quickSubmenuCloseTimer);
+  }
+
+  function closeQuickSubmenu(focusTarget = quickSubmenuTrigger) {
+    cancelQuickSubmenuClose();
+    if (quickSubmenuNode?.contains(document.activeElement)) focusTarget?.focus();
+    quickSubmenu = null;
+  }
+
+  function scheduleQuickSubmenuClose(focusTarget = quickSubmenuTrigger) {
+    cancelQuickSubmenuClose();
+    const request = contextMenuRequest;
+    quickSubmenuCloseTimer = setTimeout(() => {
+      if (contextMenu && request === contextMenuRequest) closeQuickSubmenu(focusTarget);
+    }, 200);
+  }
+
+  async function runContextQuickAction(pr, action) {
+    if (quickActionBusy || action.done) return;
+    quickActionBusy = true;
+    contextMenu = null;
+    try {
+      await enqueueMutation(pr.repo, pr.number, quickActionMutation(action.kind, action.value));
+      showFlash(`Queued ${action.label} for #${pr.number}.`);
+    } catch (error) {
+      showFlash(presentMutationError(action.kind === "label" ? `add label ${action.value}` : `post ${action.label}`, error).message);
+    } finally {
+      quickActionBusy = false;
+    }
+  }
+
+  function onContextMenuKey(event) {
+    const menu = event.target.closest('[role="menu"]');
+    if ((event.key === "Escape" || event.key === "ArrowLeft") && menu === quickSubmenuNode) {
+      closeQuickSubmenu();
+      event.preventDefault();
+    } else if (event.key === "Escape" || event.key === "Tab") {
+      contextMenu = null;
+      if (event.key === "Escape") event.preventDefault();
+    } else if (event.key === "ArrowRight" && event.target === quickSubmenuTrigger) {
+      void openQuickSubmenu(true);
+      event.preventDefault();
+    } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      if (menu === contextMenuNode) closeQuickSubmenu();
+      const buttons = [...menu.querySelectorAll(":scope > button:not(:disabled)")];
+      const index = buttons.indexOf(document.activeElement);
+      const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : index < 0 ? (event.key === "ArrowDown" ? 0 : buttons.length - 1) : (index + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+      buttons[next]?.focus();
+      event.preventDefault();
+    }
+    event.stopPropagation();
   }
 
   function archiveFromMenu(pr) {
@@ -1904,6 +2056,10 @@
     aria-label={`Actions for #${contextMenu.pr.number}`}
     style="left:{contextMenu.x}px;top:{contextMenu.y}px"
     oncontextmenu={(event) => event.preventDefault()}
+    onkeydown={onContextMenuKey}
+    onfocus={() => closeQuickSubmenu()}
+    onmouseleave={() => scheduleQuickSubmenuClose()}
+    onmouseover={(event) => { const button = event.target.closest("button"); if (button && button.closest('[role="menu"]') === contextMenuNode) { if (button === quickSubmenuTrigger) cancelQuickSubmenuClose(); else scheduleQuickSubmenuClose(button); } }}
   >
     <button role="menuitem" onclick={() => { location.hash = `#/pr/${contextMenu.pr.repo}/${contextMenu.pr.number}`; contextMenu = null; }}>Open pull request</button>
     <button role="menuitem" onclick={() => { openGithub(contextMenu.pr); contextMenu = null; }}>Open on GitHub</button>
@@ -1922,6 +2078,43 @@
       <button role="menuitem" onclick={() => archiveFromMenu(contextMenu.pr)}>{isArchived(contextMenu.pr) ? "Unarchive" : "Archive"}</button>
     {/if}
     <button role="menuitem" onclick={() => { putAside(contextMenu.pr); contextMenu = null; }}>Set aside</button>
+    {#if menuQuickActionsLoading || menuQuickActionsError || menuQuickActions.length}
+      <button
+        role="menuitem"
+        class="quick-submenu-trigger"
+        bind:this={quickSubmenuTrigger}
+        aria-haspopup="menu"
+        aria-expanded={!!quickSubmenu}
+        disabled={menuQuickActionsLoading || !!menuQuickActionsError || quickActionBusy}
+        title={menuQuickActionsError}
+        onmouseenter={() => openQuickSubmenu()}
+        onmousemove={() => { if (!quickSubmenu) void openQuickSubmenu(); }}
+        onclick={() => openQuickSubmenu(true)}
+      >
+        <span>{menuQuickActionsLoading ? "Loading quick actions…" : menuQuickActionsError ? "Quick actions unavailable" : "Quick actions"}</span>
+        <span aria-hidden="true">›</span>
+      </button>
+    {/if}
+    {#if quickSubmenu}
+      <div
+        class="pr-context-menu pr-quick-actions-menu"
+        bind:this={quickSubmenuNode}
+        role="menu"
+        tabindex="-1"
+        aria-label="Quick actions"
+        style="left:{quickSubmenu.x}px;top:{quickSubmenu.y}px;max-width:{quickSubmenu.maxWidth}px;max-height:{quickSubmenu.maxHeight}px"
+        onmouseenter={cancelQuickSubmenuClose}
+      >
+        {#each menuQuickActions as action (action.id)}
+          <button
+            role="menuitem"
+            disabled={quickActionBusy || action.done}
+            title={action.kind === "label" ? `Add label “${action.value}”` : `Comment “${action.value}”`}
+            onclick={() => runContextQuickAction(contextMenu.pr, action)}
+          >{action.label}{action.done ? " ✓" : ""}</button>
+        {/each}
+      </div>
+    {/if}
   </div>
 {/if}
 
@@ -2007,6 +2200,21 @@
   .pr-context-menu button:hover, .pr-context-menu button:focus-visible {
     outline: none;
     background: var(--hunk-hover);
+  }
+  .pr-context-menu button:disabled {
+    color: var(--text-dim);
+    cursor: default;
+    opacity: 0.55;
+  }
+  .pr-context-menu .quick-submenu-trigger {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .pr-quick-actions-menu {
+    overflow-y: auto;
+    overflow-wrap: anywhere;
   }
 
   .grouping-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 0; font-size: 12px; color: var(--muted); }

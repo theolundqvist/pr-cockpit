@@ -30,7 +30,8 @@
     switchLocalBranch,
     repoFile,
   } from "./api.js";
-  import { QUICK_ACTIONS_PATH, parseQuickActions } from "./quickActions.js";
+  import { QUICK_ACTIONS_PATH, parseQuickActions, quickActionMutation } from "./quickActions.js";
+  import { labelsAfterMutations } from "./appliedLabels.js";
   import { anchorThreads, fileDiffFingerprint } from "./diff.js";
   import { loadDiffDocument } from "./diffDocument.js";
   import { imageFallback, renderMarkdown } from "./markdown.js";
@@ -955,7 +956,7 @@
     quickActionBusy = action.id;
     quickActionError = "";
     try {
-      await enqueueMutation(repo, number, action.kind === "label" ? { kind: "add-labels", labels: [action.value] } : { kind: "comment", body: action.value });
+      await enqueueMutation(repo, number, quickActionMutation(action.kind, action.value));
       await refreshMutations();
     } catch (error) {
       quickActionError = presentMutationError(action.kind === "label" ? `add label ${action.value}` : `post ${action.label}`, error).message;
@@ -1981,15 +1982,7 @@
 
   let repoLabels = $state([]);
   let labelsByServer = $derived(new Set((pr?.labels.nodes ?? []).map((l) => l.name)));
-  let appliedLabels = $derived.by(() => {
-    const s = new Set(labelsByServer);
-    for (const m of mutations) {
-      if (m.state === "failed") continue;
-      if (m.kind === "add-labels") for (const name of m.payload.labels) s.add(name);
-      else if (m.kind === "remove-labels") for (const name of m.payload.labels) s.delete(name);
-    }
-    return s;
-  });
+  let appliedLabels = $derived(labelsAfterMutations(labelsByServer, mutations));
 
   let repoLabelsState = $state("idle");
   let repoLabelsRequest = 0;

@@ -12,7 +12,7 @@ export const QUICK_ACTIONS_EXAMPLE = `{
 
 export const QUICK_ACTIONS_AGENT_PROMPT = `Add PR Cockpit quick actions to this repository.
 
-Create or update ${QUICK_ACTIONS_PATH} on the default branch (and any other branch PRs merge into). PR Cockpit reads it from a PR's base branch and shows each entry as a button in the PR sidebar. Format:
+Create or update ${QUICK_ACTIONS_PATH} on the default branch (and any other branch PRs merge into). PR Cockpit reads it from a PR's base branch and shows each entry in the PR sidebar and the PR-row Quick actions submenu. Format:
 
 ${QUICK_ACTIONS_EXAMPLE}
 
@@ -41,4 +41,8 @@ export function parseQuickActions(text, takenKeys = new Set()) {
     const name = typeof entry.label === "string" && entry.label.trim() ? entry.label.trim() : value;
     return [{ id: String(index), label: name, kind: label ? "label" : "comment", value, keybind }];
   });
+}
+
+export function quickActionMutation(kind, value) {
+  return kind === "label" ? { kind: "add-labels", labels: [value] } : { kind: "comment", body: value };
 }

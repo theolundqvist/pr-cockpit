@@ -68,8 +68,13 @@ export async function setMergeApproval(repo, number, approved) {
 
 // A stale tracked snapshot comes back immediately and flagged; `fresh` waits for its refresh.
 // `prefetch` reads only what the server already holds locally: 204 (null here) when it has nothing.
-export async function fetchPrDetailSnapshot(repo, number, { fresh = false, prefetch = false } = {}) {
-  const res = await fetch(`/api/pr/${repo}/${number}${prefetch ? "?prefetch=1" : fresh ? "?fresh=1" : ""}`, requestInit(null, prefetch));
+export async function fetchPrDetailSnapshot(repo, number, { fresh = false, prefetch = false, view = true } = {}) {
+  const params = new URLSearchParams();
+  if (prefetch) params.set("prefetch", "1");
+  else if (fresh) params.set("fresh", "1");
+  if (!view) params.set("view", "0");
+  const query = params.size ? `?${params}` : "";
+  const res = await fetch(`/api/pr/${repo}/${number}${query}`, requestInit(null, prefetch));
   if (prefetch && res.status === 204) return null;
   if (!res.ok) {
     const body = await res.json().catch(() => null);
@@ -78,8 +83,8 @@ export async function fetchPrDetailSnapshot(repo, number, { fresh = false, prefe
   return { detail: await res.json(), revalidating: res.headers.get("x-cockpit-revalidating") === "1" };
 }
 
-export async function fetchPrDetail(repo, number, { fresh = false } = {}) {
-  return (await fetchPrDetailSnapshot(repo, number, { fresh })).detail;
+export async function fetchPrDetail(repo, number, { fresh = false, view = true } = {}) {
+  return (await fetchPrDetailSnapshot(repo, number, { fresh, view })).detail;
 }
 
 export async function fetchPendingReview(repo, number) {

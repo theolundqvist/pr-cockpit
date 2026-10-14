@@ -914,6 +914,7 @@ async function handlePrDetail(
   agentRead = false,
   awaitFresh = false,
   prefetch = false,
+  recordView = true,
 ): Promise<Response> {
   const repoName = `${owner}/${repo}`;
   const num = Number(number);
@@ -921,8 +922,8 @@ async function handlePrDetail(
     const cached = cachedPrSnapshot(repoName, num);
     return cached ? json(withBaseBranchPr(repoName, num, JSON.parse(cached.row.detail_json))) : notPreloaded();
   }
-  void fetchMirror(repoName).catch(() => {});
-  if (!agentRead) notePrViewed(repoName, num);
+  if (recordView || agentRead) void fetchMirror(repoName).catch(() => {});
+  if (recordView && !agentRead) notePrViewed(repoName, num);
 
   let snapshot = cachedPrSnapshot(repoName, num);
   if (snapshot) {
@@ -966,12 +967,13 @@ async function handlePrDetail(
   try {
     const snapshotCutoffAt = new Date().toISOString();
     const detail = await runtime.fetchPrDetail(repoName, num, agentRead ? "agent read" : "app detail");
-    const actionsCatalog = runtime.cacheGithubActionsForCommit(repoName, num, detail.headRefOid, undefined, true)
-      .catch((error) => console.error(`Actions coverage refresh failed for ${repoName}#${num}:`, error));
-    // Agent summaries report cached job logs, so they wait for the catalog. The app paints
-    // the detail now (the catalog adds 1-3s) and is told again once the catalog lands.
-    if (agentRead) await actionsCatalog;
-    else void actionsCatalog.then(() => invalidatePr(repoName, num));
+    if (recordView || agentRead) {
+      const actionsCatalog = runtime.cacheGithubActionsForCommit(repoName, num, detail.headRefOid, undefined, true)
+        .catch((error) => console.error(`Actions coverage refresh failed for ${repoName}#${num}:`, error));
+      // Agent summaries wait for logs; the PR view paints before the catalog finishes.
+      if (agentRead) await actionsCatalog;
+      else void actionsCatalog.then(() => invalidatePr(repoName, num));
+    }
     upsertCachedPrDetail({
       repo: repoName,
       number: num,
@@ -3903,7 +3905,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       }
     }
     if (req.method === "GET" && parts.length === 5 && parts[0] === "api" && parts[1] === "pr") {
-      return handlePrDetail(parts[2]!, parts[3]!, parts[4]!, runtime, false, url.searchParams.get("fresh") === "1", url.searchParams.get("prefetch") === "1");
+      return handlePrDetail(parts[2]!, parts[3]!, parts[4]!, runtime, false, url.searchParams.get("fresh") === "1", url.searchParams.get("prefetch") === "1", url.searchParams.get("view") !== "0");
     }
 
     const staticFile = Bun.file(`static${url.pathname === "/" ? "/index.html" : url.pathname}`);
