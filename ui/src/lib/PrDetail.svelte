@@ -28,9 +28,9 @@
     fetchRepoLabels,
     fetchRepoUsers,
     switchLocalBranch,
-    repoFile,
+    repoQuickActions,
   } from "./api.js";
-  import { QUICK_ACTIONS_PATH, parseQuickActions, quickActionMutation } from "./quickActions.js";
+  import { QUICK_ACTIONS_PATH, committedQuickActionsCache, resolveQuickActions, quickActionMutation } from "./quickActions.js";
   import { labelsAfterMutations } from "./appliedLabels.js";
   import { anchorThreads, fileDiffFingerprint } from "./diff.js";
   import { loadDiffDocument } from "./diffDocument.js";
@@ -915,36 +915,45 @@
 
   let quickActionBusy = $state(null);
   let quickActionError = $state("");
-  // The config file's text at the PR's base commit; null while loading or when the repo has none.
-  let quickActionsConfig = $state({ key: "", text: null });
-  let quickActionsKey = $derived(pr && liveState && pr.baseRefOid ? `${repo}#${pr.baseRefOid}` : "");
+  // The repository's committed config text (null when it has none), shown from the per-repo cache while it refreshes.
+  let committedQuickActions = $state({ repo: "", text: null });
+  let quickActionsRepo = $derived(pr && liveState ? repo : "");
   $effect(() => {
-    const key = quickActionsKey;
-    if (!key || key === untrack(() => quickActionsConfig.key)) return;
-    quickActionsConfig = { key, text: null };
-    const { baseRefOid, baseRefName } = untrack(() => pr);
+    const forRepo = quickActionsRepo;
+    if (!forRepo) return;
+    committedQuickActions = { repo: forRepo, text: committedQuickActionsCache.get(forRepo) ?? null };
+    let cancelled = false;
     const load = (attempt) =>
-      repoFile(repo, baseRefOid, baseRefName, QUICK_ACTIONS_PATH).then(
+      repoQuickActions(forRepo).then(
         (res) => {
-          if (quickActionsConfig.key !== key) return;
-          if (res.status === "ok") quickActionsConfig = { key, text: res.content };
-          else if (res.status === "fetching" && attempt < 10) setTimeout(() => quickActionsConfig.key === key && load(attempt + 1), 1500);
+          if (cancelled) return;
+          if (res.status === "fetching" && attempt < 10) {
+            setTimeout(() => !cancelled && load(attempt + 1), 1500);
+            return;
+          }
+          if (res.status === "ok") committedQuickActionsCache.set(forRepo, res.content);
+          else if (res.status === "not-found") committedQuickActionsCache.delete(forRepo);
+          else return;
+          committedQuickActions = { repo: forRepo, text: res.status === "ok" ? res.content : null };
         },
         () => {},
       );
     load(0);
+    return () => (cancelled = true);
   });
-  let parsedQuickActions = $derived.by(() => {
-    if (!quickActionsKey || quickActionsConfig.key !== quickActionsKey || quickActionsConfig.text === null) return { actions: [], invalid: false };
-    try {
-      return { actions: parseQuickActions(quickActionsConfig.text, new Set(keybindAgents.map((a) => a.keybind))), invalid: false };
-    } catch {
-      return { actions: [], invalid: true };
-    }
-  });
+  let resolvedQuickActions = $derived(
+    quickActionsRepo
+      ? resolveQuickActions({
+          committed: committedQuickActions.repo === quickActionsRepo ? committedQuickActions.text : null,
+          personal: prefs.personalQuickActions,
+          repo: quickActionsRepo,
+          takenKeys: new Set(keybindAgents.map((a) => a.keybind)),
+        })
+      : { actions: [], errors: [] },
+  );
   // Uppercase keybinds are typed with Shift, shown "⇧P" like the key bar's "⇧E". A label action is done once the PR has its label.
   let quickActions = $derived(
-    parsedQuickActions.actions.map((a) => ({
+    resolvedQuickActions.actions.map((a) => ({
       ...a,
       keyLabel: a.keybind && a.keybind !== a.keybind.toLowerCase() ? `⇧${a.keybind}` : a.keybind,
       done: a.kind === "label" && appliedLabels.has(a.value),
@@ -3516,7 +3525,7 @@
               </div>
             </div>
           {/if}
-          {#if quickActions.length || parsedQuickActions.invalid}
+          {#if quickActions.length || resolvedQuickActions.errors.length}
             <div class="side-block">
               <h3 class="side-title">Quick actions</h3>
               <div class="actions">
@@ -3532,7 +3541,7 @@
                   </button>
                 {/each}
               </div>
-              {#if parsedQuickActions.invalid}<span class="mut-error">{QUICK_ACTIONS_PATH} on {pr.baseRefName} is not valid JSON.</span>{/if}
+              {#if resolvedQuickActions.errors.includes("committed")}<span class="mut-error">{QUICK_ACTIONS_PATH} on the default branch is not valid JSON.</span>{/if}
               {#if quickActionError}<span class="mut-error">{quickActionError}</span>{/if}
             </div>
           {/if}

@@ -1,7 +1,7 @@
+import { QUICK_ACTIONS_PATH } from "../../../shared/quickActions.js";
 import { RESERVED_PR_KEYS } from "./prKeys.js";
 
-// Quick actions are committed to the PR's repository and read at its base commit.
-export const QUICK_ACTIONS_PATH = ".github/pr-cockpit.json";
+export { QUICK_ACTIONS_PATH };
 
 export const QUICK_ACTIONS_EXAMPLE = `{
   "quickActions": [
@@ -10,9 +10,17 @@ export const QUICK_ACTIONS_EXAMPLE = `{
   ]
 }`;
 
+export const PERSONAL_QUICK_ACTIONS_EXAMPLE = `{
+  "quickActions": [
+    { "label": "Preview", "key": "V" },
+    { "label": "Order", "hidden": true },
+    { "label": "Ship it", "comment": "@ship", "key": "S", "repos": ["owner/repo"] }
+  ]
+}`;
+
 export const QUICK_ACTIONS_AGENT_PROMPT = `Add PR Cockpit quick actions to this repository.
 
-Create or update ${QUICK_ACTIONS_PATH} on the default branch (and any other branch PRs merge into). PR Cockpit reads it from a PR's base branch and shows each entry in the PR sidebar and the PR-row Quick actions submenu. Format:
+Create or update ${QUICK_ACTIONS_PATH} on the default branch. PR Cockpit reads it from there and shows each entry in the PR sidebar and the PR-row Quick actions submenu for every open PR in the repository. Format:
 
 ${QUICK_ACTIONS_EXAMPLE}
 
@@ -23,14 +31,40 @@ Rules:
 
 The quick actions I want: <describe them, e.g. "Preview comments @preview">`;
 
-// Throws on invalid JSON so the sidebar can say the file is broken. Entries need exactly one of
-// `comment` or `addLabel`; a key already owned by the app, an agent, or an earlier action is dropped.
-export function parseQuickActions(text, takenKeys = new Set()) {
+function entries(text) {
   const config = JSON.parse(text);
-  const list = Array.isArray(config?.quickActions) ? config.quickActions : [];
+  return Array.isArray(config?.quickActions) ? config.quickActions.filter((entry) => entry && typeof entry === "object") : [];
+}
+
+const nameOf = (entry) => String(entry.label ?? entry.comment ?? entry.addLabel ?? "").trim().toLowerCase();
+
+// Personal entries apply to every repository unless they list `repos`. One whose label matches a committed
+// action changes only the fields it sets, or removes it with `"hidden": true`; any other adds a new action.
+function mergeQuickActionEntries(committed, personal, repo) {
+  const merged = [...committed];
+  for (const entry of personal) {
+    if (Array.isArray(entry.repos) && !entry.repos.includes(repo)) continue;
+    const at = merged.findIndex((existing) => nameOf(existing) === nameOf(entry));
+    if (entry.hidden === true) {
+      if (at >= 0) merged.splice(at, 1);
+      continue;
+    }
+    if (at < 0) {
+      merged.push(entry);
+      continue;
+    }
+    // Setting one kind of action replaces the other, so an override can turn a comment into a label.
+    const { comment, addLabel, ...base } = merged[at];
+    const kind = "comment" in entry || "addLabel" in entry ? {} : { comment, addLabel };
+    merged[at] = { ...base, ...kind, ...entry };
+  }
+  return merged;
+}
+
+// Entries need exactly one of `comment` or `addLabel`; a key already owned by the app, an agent, or an earlier action is dropped.
+function toQuickActions(list, takenKeys = new Set()) {
   const used = new Set(takenKeys);
   return list.flatMap((entry, index) => {
-    if (!entry || typeof entry !== "object") return [];
     const comment = typeof entry.comment === "string" ? entry.comment.trim() : "";
     const label = typeof entry.addLabel === "string" ? entry.addLabel.trim() : "";
     if (!comment === !label) return [];
@@ -46,3 +80,23 @@ export function parseQuickActions(text, takenKeys = new Set()) {
 export function quickActionMutation(kind, value) {
   return kind === "label" ? { kind: "add-labels", labels: [value] } : { kind: "comment", body: value };
 }
+
+// `committed` is the repository file's text (null without one), `personal` the user's setting ("" without one).
+// A broken source is reported and skipped, so the other still yields its actions.
+export function resolveQuickActions({ committed, personal, repo, takenKeys }) {
+  const errors = [];
+  const read = (text, source) => {
+    if (!text) return [];
+    try {
+      return entries(text);
+    } catch {
+      errors.push(source);
+      return [];
+    }
+  };
+  const list = mergeQuickActionEntries(read(committed, "committed"), read(personal, "personal"), repo);
+  return { actions: toQuickActions(list, takenKeys), errors };
+}
+
+// Committed config text per repository, so reopening any PR in it shows its buttons at once.
+export const committedQuickActionsCache = new Map();

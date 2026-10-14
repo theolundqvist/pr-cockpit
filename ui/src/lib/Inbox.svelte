@@ -12,7 +12,7 @@
   import { isSetAside, putAside } from "./setAside.svelte.js";
   import { lastViewed } from "./lastViewed.svelte.js";
   import { tick, untrack } from "svelte";
-  import { fetchInbox, fetchRecentClosed, fetchAllPrs, fetchPrDetails, fetchPrDetail, fetchPrDetailSnapshot, repoFile, setArchived, saveSettings, reorderPr, setMergeApproval, enqueueMutation, fetchMutations, retryMutation, discardMutation, fetchSettings, fetchRelayStatus, fetchRelayCoverage, autofixAgent, customAgent } from "./api.js";
+  import { fetchInbox, fetchRecentClosed, fetchAllPrs, fetchPrDetails, fetchPrDetail, fetchPrDetailSnapshot, repoQuickActions, setArchived, saveSettings, reorderPr, setMergeApproval, enqueueMutation, fetchMutations, retryMutation, discardMutation, fetchSettings, fetchRelayStatus, fetchRelayCoverage, autofixAgent, customAgent } from "./api.js";
   import { cacheDetail, cachedHeadSha, cachedView, cacheView } from "./detailCache.js";
   import { preloadPr } from "./preload.js";
   import { filterPrs, countMatches, wantsHistory } from "./prFilter.js";
@@ -37,7 +37,7 @@
   import { presentMutationError } from "./mutationError.js";
   import { recordUndo } from "./undo.js";
   import MultiSelectDropdown from "./MultiSelectDropdown.svelte";
-  import { QUICK_ACTIONS_PATH, parseQuickActions, quickActionMutation } from "./quickActions.js";
+  import { committedQuickActionsCache, resolveQuickActions, quickActionMutation } from "./quickActions.js";
   import { labelsAfterMutations } from "./appliedLabels.js";
 
   let { active = true, refreshRevision = 0, pollCompletedAt = null, onFindPr = () => {} } = $props();
@@ -227,42 +227,51 @@
     contextMenu.y += (y - rect.top) / scale;
   }
 
-  async function loadContextActions(pr, request, detail = null, attempt = 0) {
+  async function loadContextActions(pr, request, attempt = 0) {
     const current = () => contextMenu && request === contextMenuRequest;
     try {
-      if (!detail) {
+      let committed = committedQuickActionsCache.get(pr.repo) ?? null;
+      let config;
+      try {
+        config = await repoQuickActions(pr.repo);
+      } catch {
+        if (!current()) return;
+        menuQuickActionsError = "Couldn't load repository quick actions.";
+      }
+      if (!current()) return;
+      if (config?.status === "fetching" && attempt < 10) {
+        setTimeout(() => { if (current()) void loadContextActions(pr, request, attempt + 1); }, 1500);
+        return;
+      }
+      if (config?.status === "ok") {
+        committed = config.content;
+        committedQuickActionsCache.set(pr.repo, committed);
+      } else if (config?.status === "not-found") {
+        committed = null;
+        committedQuickActionsCache.delete(pr.repo);
+      } else {
+        menuQuickActionsError = "Couldn't load repository quick actions.";
+      }
+      const resolved = resolveQuickActions({
+        committed,
+        personal: prefs.personalQuickActions,
+        repo: pr.repo,
+        takenKeys: new Set(keybindAgents.map((agent) => agent.keybind)),
+      });
+      if (resolved.errors.length) menuQuickActionsError = "Quick actions configuration needs correcting.";
+      if (resolved.actions.length) {
         const snapshot = await fetchPrDetailSnapshot(pr.repo, pr.number, { prefetch: true });
         if (!current()) return;
-        detail = snapshot?.detail ?? await fetchPrDetail(pr.repo, pr.number, { view: false });
-      }
-      if (!current()) return;
-      if (detail.state !== "OPEN" || !detail.baseRefOid) {
-        menuQuickActionsLoading = false;
-        return;
-      }
-      const config = await repoFile(pr.repo, detail.baseRefOid, detail.baseRefName, QUICK_ACTIONS_PATH);
-      if (!current()) return;
-      if (config.status === "fetching" && attempt < 10) {
-        setTimeout(() => { if (current()) void loadContextActions(pr, request, detail, attempt + 1); }, 1500);
-        return;
-      }
-      if (config.status === "ok") {
-        let actions;
-        try {
-          actions = parseQuickActions(config.content);
-        } catch {
-          menuQuickActionsError = "Quick actions configuration needs correcting.";
+        const detail = snapshot?.detail ?? await fetchPrDetail(pr.repo, pr.number, { view: false });
+        if (!current()) return;
+        if (detail.state !== "OPEN") {
           menuQuickActionsLoading = false;
           return;
         }
-        if (actions.length) {
-          const mutations = await fetchMutations(pr.repo, pr.number);
-          if (!current()) return;
-          const labels = labelsAfterMutations(detail.labels.nodes.map((label) => label.name), mutations);
-          menuQuickActions = actions.map((action) => ({ ...action, done: action.kind === "label" && labels.has(action.value) }));
-        }
-      } else if (config.status !== "not-found") {
-        menuQuickActionsError = "Couldn't load quick actions.";
+        const mutations = await fetchMutations(pr.repo, pr.number);
+        if (!current()) return;
+        const labels = labelsAfterMutations(detail.labels.nodes.map((label) => label.name), mutations);
+        menuQuickActions = resolved.actions.map((action) => ({ ...action, done: action.kind === "label" && labels.has(action.value) }));
       }
       menuQuickActionsLoading = false;
     } catch {
@@ -2085,13 +2094,13 @@
         bind:this={quickSubmenuTrigger}
         aria-haspopup="menu"
         aria-expanded={!!quickSubmenu}
-        disabled={menuQuickActionsLoading || !!menuQuickActionsError || quickActionBusy}
+        disabled={menuQuickActionsLoading || (!!menuQuickActionsError && !menuQuickActions.length) || quickActionBusy}
         title={menuQuickActionsError}
         onmouseenter={() => openQuickSubmenu()}
         onmousemove={() => { if (!quickSubmenu) void openQuickSubmenu(); }}
         onclick={() => openQuickSubmenu(true)}
       >
-        <span>{menuQuickActionsLoading ? "Loading quick actions…" : menuQuickActionsError ? "Quick actions unavailable" : "Quick actions"}</span>
+        <span>{menuQuickActionsLoading ? "Loading quick actions…" : menuQuickActionsError && !menuQuickActions.length ? "Quick actions unavailable" : "Quick actions"}</span>
         <span aria-hidden="true">›</span>
       </button>
     {/if}
@@ -2113,6 +2122,7 @@
             onclick={() => runContextQuickAction(contextMenu.pr, action)}
           >{action.label}{action.done ? " ✓" : ""}</button>
         {/each}
+        {#if menuQuickActionsError}<div class="quick-actions-error" role="status">{menuQuickActionsError}</div>{/if}
       </div>
     {/if}
   </div>
@@ -2215,6 +2225,11 @@
   .pr-quick-actions-menu {
     overflow-y: auto;
     overflow-wrap: anywhere;
+  }
+  .quick-actions-error {
+    padding: 7px 9px;
+    color: var(--text-dim);
+    font: 12px var(--sans);
   }
 
   .grouping-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 0; font-size: 12px; color: var(--muted); }

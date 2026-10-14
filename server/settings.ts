@@ -289,6 +289,23 @@ function readHiddenReviewPaths(): HiddenReviewPaths {
   catch { return {}; }
 }
 
+// The user's own quick actions, kept as the JSON text they wrote; empty means none.
+export function normalizePersonalQuickActions(value: unknown): string {
+  if (typeof value !== "string") throw new Error("invalid personal quick actions");
+  const text = value.trim();
+  if (!text) return "";
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error("personal quick actions are not valid JSON");
+  }
+  if (!parsed || typeof parsed !== "object" || !("quickActions" in parsed) || !Array.isArray(parsed.quickActions)) {
+    throw new Error('personal quick actions need a "quickActions" list');
+  }
+  return text;
+}
+
 export interface Settings {
   desktop_platform: string;
   repos: string;
@@ -333,6 +350,7 @@ export interface Settings {
   quick_generate_key: string;
   quick_generate_model: string;
   quick_generate_env_file: string;
+  personal_quick_actions: string;
   pr_grouping: PrGrouping;
   agent_harness: Harness;
   relay_url: string;
@@ -387,6 +405,7 @@ export function readSettings(): Settings {
     quick_generate_key: getSetting("quick_generate_key") ?? "",
     quick_generate_model: getSetting("quick_generate_model") ?? "",
     quick_generate_env_file: getSetting("quick_generate_env_file") ?? "",
+    personal_quick_actions: getSetting("personal_quick_actions") ?? "",
     pr_grouping: readPrGrouping(),
     agent_harness: normalizeHarness(getSetting("agent_harness")),
     relay_url: relayConfig().url,
@@ -439,6 +458,7 @@ export function writeSettings(
     quick_generate_key: string;
     quick_generate_model: string;
     quick_generate_env_file: string;
+    personal_quick_actions: string;
     pr_grouping: PrGrouping;
     agent_harness: string;
     relay_url: string;
@@ -461,6 +481,10 @@ export function writeSettings(
   const quickGenerateEnvFile = patch.quick_generate_env_file === undefined
     ? undefined
     : normalizeQuickGenerateText(patch.quick_generate_env_file, "env file", 4096);
+  const personalQuickActions = patch.personal_quick_actions === undefined
+    ? undefined
+    : normalizePersonalQuickActions(patch.personal_quick_actions);
+  if (personalQuickActions !== undefined) setSetting("personal_quick_actions", personalQuickActions);
   if (patch.pr_grouping !== undefined) setSetting("pr_grouping", JSON.stringify(normalizePrGrouping(patch.pr_grouping)));
   if (patch.repos !== undefined) setSetting("repos", patch.repos);
   if (patch.default_repo !== undefined) setSetting("default_repo", patch.default_repo);

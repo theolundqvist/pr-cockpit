@@ -10,9 +10,20 @@ import {
   normalizeDiffLayout,
   normalizeInboxLabels,
   normalizeFontPreference,
+  normalizePersonalQuickActions,
   normalizeScale,
   normalizeThemePreference,
 } from "./settings.ts";
+
+describe("normalizePersonalQuickActions", () => {
+  test("keeps the written text, clears blanks, and rejects invalid configs", () => {
+    const text = '{ "quickActions": [{ "label": "Preview", "key": "V" }] }';
+    expect(normalizePersonalQuickActions(`  ${text}\n`)).toBe(text);
+    expect(normalizePersonalQuickActions("  ")).toBe("");
+    expect(() => normalizePersonalQuickActions("{")).toThrow("not valid JSON");
+    expect(() => normalizePersonalQuickActions('{ "quickActions": {} }')).toThrow('"quickActions" list');
+  });
+});
 
 describe("mergeAgents", () => {
   test("non-array input yields the defaults", () => {

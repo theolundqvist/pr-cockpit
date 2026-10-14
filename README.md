@@ -69,7 +69,7 @@ Press **⌘Z** (Ctrl+Z on Windows/Linux) to undo a title change from Rename or a
 
 Desktop notifications are off by default. In **Settings → Notifications**, choose events and combine rules for human or bot authors, comment text, repositories, and review requests. GitHub bot accounts and configured review bots count as bots; unknown authors match neither human nor bot filters.
 
-Repositories can add **quick actions** to the PR sidebar and the PR-row **Quick actions** submenu by committing `.github/pr-cockpit.json`. Each action posts a fixed comment or adds a label. Cockpit reads it from the branch the PR merges into:
+Repositories can add **quick actions** to the PR sidebar and the PR-row **Quick actions** submenu by committing `.github/pr-cockpit.json`. Each action posts a fixed comment or adds a label. Cockpit reads it from the repository's default branch and shows the actions on every open PR there:
 
 ```json
 {
@@ -80,7 +80,7 @@ Repositories can add **quick actions** to the PR sidebar and the PR-row **Quick 
 }
 ```
 
-Each entry needs exactly one of `comment` or `addLabel`; `key` is optional, and keys Cockpit already uses are ignored. **Settings → Agents & merging → Quick actions** shows the format and copies a prompt that asks your coding agent to write the file.
+Each entry needs exactly one of `comment` or `addLabel`; `key` is optional, and keys Cockpit already uses are ignored. **Settings → Agents & merging → Quick actions** shows the format and copies a prompt that asks your coding agent to write the file. **Your quick actions** in the same place apply only to your Cockpit, on top of each repository's file: an entry with a matching `label` changes only the fields it sets or hides that action with `"hidden": true`, other entries add buttons, and `"repos": ["owner/repo"]` limits an entry to those repositories.
 
 <details>
 <summary><strong>Everyday shortcuts</strong></summary>

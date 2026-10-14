@@ -27,6 +27,7 @@ export const prefs = $state({
   quickGenerateEnabled: false,
   agentConversationsEnabled: false,
   quickGenerateEnvFile: "",
+  personalQuickActions: "",
   agents: [
     { id: "fixer", name: "Auto-merge fixer", enabled: true, trigger: "keybind", keybind: "a", model: "opus", prompt_template: "" },
     { id: "autofix", name: "Auto-fix", enabled: true, trigger: "keybind", keybind: "f", model: "opus", prompt_template: "" },
@@ -55,6 +56,7 @@ export function setPrefs(settings) {
   prefs.quickGenerateEnabled = settings.quick_generate_enabled === true;
   prefs.agentConversationsEnabled = settings.agent_conversations_enabled === true;
   prefs.quickGenerateEnvFile = settings.quick_generate_env_file ?? "";
+  prefs.personalQuickActions = settings.personal_quick_actions ?? "";
   whiteboardSession.current?.setEnabled(prefs.whiteboardEnabled);
   prefs.loaded = true;
 }
