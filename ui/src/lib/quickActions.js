@@ -1,8 +1,27 @@
 import { RESERVED_PR_KEYS } from "./prKeys.js";
 
-// Quick actions are committed to the PR's repository and read at its base commit, e.g.
-// {"quickActions": [{"label": "Preview", "comment": "@preview", "key": "P"}, {"label": "Order", "addLabel": "order", "key": "O"}]}
+// Quick actions are committed to the PR's repository and read at its base commit.
 export const QUICK_ACTIONS_PATH = ".github/pr-cockpit.json";
+
+export const QUICK_ACTIONS_EXAMPLE = `{
+  "quickActions": [
+    { "label": "Preview", "comment": "@preview", "key": "P" },
+    { "label": "Order", "addLabel": "order", "key": "O" }
+  ]
+}`;
+
+export const QUICK_ACTIONS_AGENT_PROMPT = `Add PR Cockpit quick actions to this repository.
+
+Create or update ${QUICK_ACTIONS_PATH} on the default branch (and any other branch PRs merge into). PR Cockpit reads it from a PR's base branch and shows each entry as a button in the PR sidebar. Format:
+
+${QUICK_ACTIONS_EXAMPLE}
+
+Rules:
+- Each entry has a "label" (button text) and exactly one of "comment" (posted as a PR comment) or "addLabel" (label added to the PR; GitHub creates it if missing).
+- "key" is optional: one character. Uppercase is typed with Shift. Keys PR Cockpit already uses are ignored, so prefer uppercase letters other than A, C, G, J, K, M, T.
+- Keep the file valid JSON; PR Cockpit shows an error instead of the buttons otherwise.
+
+The quick actions I want: <describe them, e.g. "Preview comments @preview">`;
 
 // Throws on invalid JSON so the sidebar can say the file is broken. Entries need exactly one of
 // `comment` or `addLabel`; a key already owned by the app, an agent, or an earlier action is dropped.
