@@ -76,6 +76,7 @@ Desktop notifications are off by default. In **Settings → Notifications**, cho
 | --- | --- |
 | <kbd>j</kbd> / <kbd>k</kbd> | Move |
 | <kbd>enter</kbd> / <kbd>esc</kbd> | Open / back |
+| <kbd>⌘[</kbd> / <kbd>⌘]</kbd> | Back / forward (macOS) |
 | <kbd>d</kbd> | Conversation / Files |
 | <kbd>c</kbd> / <kbd>r</kbd> | Comment / reply |
 | <kbd>p</kbd> | Open in the configured agent |

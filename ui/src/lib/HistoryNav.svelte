@@ -1,15 +1,17 @@
 <script>
   import { history, goBackOrFallback, goForward } from "./history.svelte.js";
-  import { isTypingTarget } from "./dom.js";
+  import { isTypingTarget, isQuickGenerateOpen } from "./dom.js";
+  import { isRecordingShortcut } from "./shortcutCapture.js";
 
   let { backFallback = null } = $props();
 
   $effect(() => {
     function onKey(e) {
-      if (e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
-      if (isTypingTarget(e.target)) return;
-      if (e.key === "H") goBackOrFallback(backFallback);
-      else if (e.key === "L") goForward();
+      if (e.defaultPrevented || isRecordingShortcut() || isQuickGenerateOpen()) return;
+      const commandBracket = e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === "[" || e.key === "]");
+      if (!commandBracket && (e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target))) return;
+      if (e.key === "H" || (commandBracket && e.key === "[")) goBackOrFallback(backFallback);
+      else if (e.key === "L" || (commandBracket && e.key === "]")) goForward();
       else return;
       e.preventDefault();
     }

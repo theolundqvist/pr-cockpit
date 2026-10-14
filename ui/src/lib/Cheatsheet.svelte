@@ -29,6 +29,7 @@
         { key: "⇧⏎ / ⌘⏎", label: "jump list: new window / github" },
         { key: "/", label: "search / filter" },
         { key: "⇧H / ⇧L", label: "back / forward" },
+        { key: "⌘[ / ⌘]", label: "back / forward" },
         { key: "⌘+ / ⌘- / ⌘0", label: "zoom in / out / reset" },
         { key: "j / k", label: "move" },
         { key: "⇧J / ⇧K", label: "next / previous file or PR" },
