@@ -1,3 +1,4 @@
+import { cookingScenarios } from "./cooking-scenarios.mjs";
 import { groupingScenarios } from "./grouping-scenarios.mjs";
 import { createServer } from "node:net";
 import { inflateSync } from "node:zlib";
@@ -221,6 +222,7 @@ function setAsideScenario(roundtrip) {
 
 const scenarios = [
   ...groupingScenarios(),
+  ...cookingScenarios(),
   setAsideScenario(false),
   setAsideScenario(true),
   repositoryPickerScenario(false),

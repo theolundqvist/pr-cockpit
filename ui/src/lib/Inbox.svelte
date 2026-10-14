@@ -7,6 +7,7 @@
 </script>
 
 <script>
+  import { cookingStage } from "./cookingStage.js";
   import { categoryForPr, normalizePrGrouping, orderQueueUnits, planGroupDrop, PR_TYPES, TYPE_TITLES } from "../../../shared/prGrouping.ts";
   import { assignments, assignPr, syncAssignments, onAssignmentStorage } from "./prAssignments.svelte.js";
   import { isSetAside, putAside } from "./setAside.svelte.js";
@@ -62,6 +63,15 @@
   }
 
   let keybindAgents = $derived(prefs.agents.filter((a) => a.trigger === "keybind" && a.enabled && a.keybind));
+  let cookingHidden = $state(localStorage.getItem("cockpit:cooking-hidden") === "true");
+  let cookingActive = $derived(prefs.cookingSectionEnabled && view === "open");
+  function toggleCooking() {
+    const key = ordered[selected] && prKey(ordered[selected]);
+    cookingHidden = !cookingHidden;
+    localStorage.setItem("cockpit:cooking-hidden", String(cookingHidden));
+    selected = Math.max(0, ordered.findIndex((pr) => prKey(pr) === key));
+    multiAnchor = null;
+  }
   let filterOpen = $state(false);
   let groupingSaving = $state(false);
   let filterQuery = $state("");
@@ -886,9 +896,11 @@
   });
 
   // A failed merge outranks approval, pinning, and grouping; stacks never pull a failed PR under a healthy ancestor.
+  // Cooking labels place only their own PR; pins and approvals retain their saved state.
   // Approval places only its own PR, never the stack beneath it.
   function groupId(pr) {
     if (pr.mergeFailed === true) return "merge-failed";
+    if (cookingActive && cookingStage(pr)) return "cooking";
     if (isApproved(pr)) return "approved";
     if (pr.rank != null) return "pinned";
     const root = topUnit(pr);
@@ -925,6 +937,7 @@
         : mode === "feature" ? [...buckets.keys()].filter((id) => id.startsWith("feature:")).sort().map((id) => ({ id, title: id.slice("feature:".length) }))
         : prefs.prGrouping.groups.map((group) => ({ id: `group:${group.id}`, title: group.name }))),
         { id: "other", title: mode === "manual" ? "Ungrouped" : "Other" }];
+    if (cookingActive) categories.push({ id: "cooking", title: "Cooking" });
     // A stack sorts by its root row; feature groups also order by status, then type. A timestamp order
     // re-sorts only unpinned roots inside each section, with queue order breaking ties.
     const statusRank = mode === "feature" ? (pr) => GROUP_ORDER.indexOf(classify(pr, viewerLogin).group) : undefined;
@@ -933,7 +946,11 @@
     // already exist, plus Other.
     const shown = (id, rows) => rows.length > 0 || (revealKey !== null && revealKey === dragKey && dropPlan(dragKey, id) !== null);
     const statusGroups = categories.filter(({ id }) => shown(id, buckets.get(id) ?? [])).map(({ id, title }) => {
-      const { units, unrankedCount, items } = orderGroup(buckets.get(id) ?? [], sortUnits);
+      const rows = buckets.get(id) ?? [];
+      // Kitchen stages sort independently of review categories; hide/show never changes saved ranks.
+      const { units, unrankedCount, items } = id === "cooking"
+        ? { units: [], unrankedCount: 0, items: [...sortUnits(rows)].sort((a, b) => cookingStage(a).rank - cookingStage(b).rank).map((pr) => ({ pr })) }
+        : orderGroup(rows, sortUnits);
       return { id, title, units, unrankedCount, items };
     });
     const leading = [];
@@ -952,7 +969,7 @@
     return [...leading, ...statusGroups];
   });
 
-  let openOrdered = $derived(groups.flatMap((g) => g.items.filter((i) => i.pr).map((i) => i.pr)));
+  let openOrdered = $derived(groups.filter((g) => g.id !== "cooking" || !cookingHidden).flatMap((g) => g.items.filter((i) => i.pr).map((i) => i.pr)));
 
   // warm each queued PR's tabs in idle time; a row the cursor moves to (hover or j/k) jumps the queue
   $effect(() => {
@@ -1176,7 +1193,7 @@
   // Cross-section drops exist only while group dragging is on, for the dragged row's own section.
   function dropPlan(key, target) {
     const pr = prefs.groupDragEnabled && key ? prs.find((p) => prKey(p) === key) : null;
-    if (!pr) return null;
+    if (!pr || target === "cooking" || groupId(pr) === "cooking") return null;
     const plan = planGroupDrop({
       from: groupId(pr),
       to: target,
@@ -1779,6 +1796,7 @@
       {@const editing = titleEditor && prKey(titleEditor.pr) === prKey(pr)}
       <PrRow
         {pr}
+        cooking={cookingActive ? cookingStage(pr) : null}
         status={classify(pr, viewerLogin)}
         href={`#/pr/${pr.repo}/${pr.number}`}
         {editing}
@@ -1787,13 +1805,13 @@
         selected={index === selected}
         multiSelected={multiRange && index >= multiRange.lo && index <= multiRange.hi}
         archived={isArchived(pr)}
-        stacked={info?.indent}
+        stacked={info?.indent && !(cookingActive && cookingStage(pr))}
         dragging={dragKey === prKey(pr)}
         dropBefore={dropHint?.key === prKey(pr) && dropHint.before}
         dropAfter={dropHint?.key === prKey(pr) && !dropHint.before}
         descriptionChanged={viewedDescription && viewedDescription !== pr.descriptionDigest}
         oncontextmenu={(event) => openContextMenu(event, pr)}
-        draggable={!titleEditor && !info?.indent && !isArchived(pr)}
+        draggable={!titleEditor && !info?.indent && !isArchived(pr) && !(cookingActive && cookingStage(pr))}
         ondragstart={(e) => onDragStart(e, pr)}
         ondragend={onDragEnd}
         ondragover={(e) => onDragOverRow(e, pr)}
@@ -1967,11 +1985,21 @@
                 ondragover={(e) => onDragOverGroup(e, group)}
                 ondrop={(e) => onDropGroup(e, group)}
               >
-                <span>{group.title}</span>
+                {#if group.id === "cooking"}
+                  <button class="cooking-toggle" aria-expanded={!cookingHidden} aria-controls="cooking-prs" onclick={toggleCooking}>
+                    <span class="cooking-indicator" aria-hidden="true"></span>
+                    <span>{group.title}</span>
+                    <span class="group-count">{groupCount}</span>
+                    <span class="cooking-description">Kitchen labels</span>
+                    <span class="cooking-action">{cookingHidden ? "Show" : "Hide"} <span aria-hidden="true">{cookingHidden ? "▸" : "▾"}</span></span>
+                  </button>
+                {:else}<span>{group.title}</span>{/if}
                 {#if dropHint?.plan && dropHint.target === group.id}<span class="drop-preview">{describeDrop(dropHint.plan)}</span>{/if}
-                <span class="group-count">{groupCount}</span>
+                {#if group.id !== "cooking"}<span class="group-count">{groupCount}</span>{/if}
               </div>
-              <div class="group-body">{@render groupBody(group)}</div>
+              {#if group.id !== "cooking" || !cookingHidden}
+                <div class="group-body" id={group.id === "cooking" ? "cooking-prs" : undefined}>{@render groupBody(group)}</div>
+              {/if}
             </section>
           {/each}
 
@@ -2149,6 +2177,13 @@
 {/if}
 
 <style>
+  .cooking-toggle { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+  .cooking-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 4px; }
+  .cooking-indicator { width: 7px; height: 7px; border-radius: 50%; background: #d99a39; flex-shrink: 0; }
+  .cooking-description { font-weight: 400; text-transform: none; letter-spacing: normal; opacity: .65; }
+  .cooking-action { margin-left: auto; text-transform: none; letter-spacing: normal; }
+  @media (max-width: 700px) { .cooking-description { display: none; } }
+
   .row-title-editor {
     display: flex;
     align-items: center;

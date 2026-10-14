@@ -51,6 +51,7 @@
   // Approval consent belongs to the source Cockpit, so a save forwards it only when this toggle changed.
   let savedSafeMergeApproval = false;
   let groupDragEnabled = $state(false);
+  let cookingSectionEnabled = $state(false);
   let queueTimeControlsEnabled = $state(false);
   let reviewFileMenuEnabled = $state(false);
   let hiddenReviewPaths = $state({});
@@ -192,6 +193,7 @@
     safeMergeApprovalEnabled = s.safe_merge_approval_enabled === true;
     savedSafeMergeApproval = safeMergeApprovalEnabled;
     groupDragEnabled = s.group_drag_enabled === true;
+    cookingSectionEnabled = s.cooking_section_enabled === true;
     queueTimeControlsEnabled = s.queue_time_controls_enabled === true;
     reviewFileMenuEnabled = s.review_file_menu_enabled === true;
     hiddenReviewPaths = s.hidden_review_paths ?? {};
@@ -398,6 +400,7 @@
         whiteboard_enabled: whiteboardEnabled,
         ...(safeMergeApprovalEnabled !== savedSafeMergeApproval ? { safe_merge_approval_enabled: safeMergeApprovalEnabled } : {}),
         group_drag_enabled: groupDragEnabled,
+        cooking_section_enabled: cookingSectionEnabled,
         queue_time_controls_enabled: queueTimeControlsEnabled,
         review_file_menu_enabled: reviewFileMenuEnabled,
         // Sent only when edited here, so saving other settings never undoes a file hidden from a PR meanwhile.
@@ -621,6 +624,14 @@
             <span class="check-text">
               <span class="check-label">Rename and move PRs between groups</span>
               <span class="hint">Rename from the right-click menu, or drag to change a title's type or scope, a manual group, a pin, or approval.</span>
+            </span>
+          </label>
+
+          <label class="check-field settings-option field-wide">
+            <input class="check" type="checkbox" bind:checked={cookingSectionEnabled} />
+            <span class="check-text">
+              <span class="check-label">Separate PRs that are cooking</span>
+              <span class="hint">Group PRs with active kitchen labels by stage in Your queue, with a saved hide/show toggle. Burnt PRs and failed merges stay visible.</span>
             </span>
           </label>
 

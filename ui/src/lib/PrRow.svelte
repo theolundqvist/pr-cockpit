@@ -10,6 +10,7 @@
     pr,
     status,
     href,
+    cooking = null,
     age = undefined,
     ageTitle = undefined,
     editing = false,
@@ -85,6 +86,7 @@
       {:else}
         {@const statsDiffer = pr.additions !== pr.rawAdditions || pr.deletions !== pr.rawDeletions}
         <span class="num">#{pr.number}</span>
+        {#if cooking}<span class="cooking-stage" title={cooking.label}>{cooking.title}</span>{/if}
         <span class="sep">·</span>
         <span>{pr.repo.split("/")[1] ?? pr.repo}</span>
         {#if prefs.inboxLabels !== "off" && pr.labels?.length}
@@ -131,6 +133,7 @@
 </svelte:element>
 
 <style>
+  .cooking-stage { color: var(--text); border: 1px solid color-mix(in srgb, #d99a39 45%, transparent); background: color-mix(in srgb, #d99a39 10%, transparent); border-radius: 4px; padding: 1px 5px; }
   .archived-row {
     opacity: 0.5;
   }

@@ -342,6 +342,7 @@ export interface Settings {
   safe_merge_approval_enabled: boolean;
   group_drag_enabled: boolean;
   queue_time_controls_enabled: boolean;
+  cooking_section_enabled: boolean;
   review_file_menu_enabled: boolean;
   hidden_review_paths: HiddenReviewPaths;
   agent_conversations_enabled: boolean;
@@ -396,6 +397,7 @@ export function readSettings(): Settings {
     whiteboard_enabled: getSetting("whiteboard_enabled") === "true",
     safe_merge_approval_enabled: safeMergeApprovalEnabled(),
     group_drag_enabled: getSetting("group_drag_enabled") === "true",
+    cooking_section_enabled: getSetting("cooking_section_enabled") === "true",
     queue_time_controls_enabled: getSetting("queue_time_controls_enabled") === "true",
     review_file_menu_enabled: getSetting("review_file_menu_enabled") === "true",
     hidden_review_paths: readHiddenReviewPaths(),
@@ -449,6 +451,7 @@ export function writeSettings(
     safe_merge_approval_enabled: boolean;
     group_drag_enabled: boolean;
     queue_time_controls_enabled: boolean;
+    cooking_section_enabled: boolean;
     review_file_menu_enabled: boolean;
     hidden_review_paths: HiddenReviewPaths;
     agent_conversations_enabled: boolean;
@@ -537,6 +540,13 @@ export function writeSettings(
     const enabled = patch.group_drag_enabled === true ? "true" : "false";
     if (getSetting("group_drag_enabled") !== enabled) {
       setSetting("group_drag_enabled", enabled);
+      invalidateSettings();
+    }
+  }
+  if (patch.cooking_section_enabled !== undefined) {
+    const enabled = patch.cooking_section_enabled === true ? "true" : "false";
+    if (getSetting("cooking_section_enabled") !== enabled) {
+      setSetting("cooking_section_enabled", enabled);
       invalidateSettings();
     }
   }

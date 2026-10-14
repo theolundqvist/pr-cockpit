@@ -2988,6 +2988,7 @@ async function handlePutSettings(req: Request, runtime: HttpRuntime): Promise<Re
     safe_merge_approval_enabled: boolean;
     group_drag_enabled: boolean;
     queue_time_controls_enabled: boolean;
+    cooking_section_enabled: boolean;
     review_file_menu_enabled: boolean;
     hidden_review_paths: Settings["hidden_review_paths"];
     agent_conversations_enabled: boolean;
