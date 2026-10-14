@@ -106,8 +106,11 @@ export interface QuickAction {
   keybind: string | null;
 }
 
+const REVIEW_QUICK_ACTION: QuickAction = { id: "qa-review", label: "Review", kind: "comment", value: "@review", keybind: "R" };
+
 export const QUICK_ACTION_DEFAULTS: QuickAction[] = [
   { id: "qa-preview", label: "Preview", kind: "comment", value: "@preview", keybind: "P" },
+  REVIEW_QUICK_ACTION,
   { id: "qa-order", label: "Order", kind: "label", value: "order", keybind: "O" },
 ];
 
@@ -193,7 +196,19 @@ export function seedSettings(): void {
   if (getSetting("diff_layout") === null) setSetting("diff_layout", "split");
   if (getSetting("force_merge_repos") === null) setSetting("force_merge_repos", "");
   if (getSetting("pending_reviews_enabled") === null) setSetting("pending_reviews_enabled", "false");
-  if (getSetting("quick_actions") === null) setSetting("quick_actions", JSON.stringify(QUICK_ACTION_DEFAULTS));
+  if (getSetting("quick_actions") === null) {
+    setSetting("quick_actions", JSON.stringify(QUICK_ACTION_DEFAULTS));
+    setSetting("quick_actions_review_added", "true");
+  } else if (getSetting("quick_actions_review_added") !== "true") {
+    // Lists stored before Review existed get it once, after Preview, unless its key or comment is already taken.
+    const actions = readQuickActions();
+    if (!actions.some((a) => a.id === REVIEW_QUICK_ACTION.id || a.keybind === REVIEW_QUICK_ACTION.keybind || a.value === REVIEW_QUICK_ACTION.value)) {
+      const at = actions.findIndex((a) => a.id === "qa-preview") + 1 || actions.length;
+      actions.splice(at, 0, REVIEW_QUICK_ACTION);
+      setSetting("quick_actions", JSON.stringify(actions));
+    }
+    setSetting("quick_actions_review_added", "true");
+  }
   if (getSetting("review_bots") === null) setSetting("review_bots", envReviewBots);
   // migrate legacy per-agent keys and remove the retired rescorer without rewriting the remaining entries
   const storedAgents = getSetting("agents");
