@@ -94,6 +94,32 @@ export function agentModel(id: string): AgentModel {
   return agentSettings().find((a) => a.id === id)?.model ?? "opus";
 }
 
+// A quick action posts a fixed comment on the open PR, e.g. "@preview" for a preview-deploy bot.
+export interface QuickAction {
+  id: string;
+  label: string;
+  comment: string;
+  keybind: string | null;
+}
+
+export function normalizeQuickActions(value: unknown): QuickAction[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  return value.flatMap((o): QuickAction[] => {
+    if (!o || typeof o !== "object") return [];
+    const { id, label, comment, keybind } = o as Record<string, unknown>;
+    if (typeof id !== "string" || !id || seen.has(id) || typeof comment !== "string" || !comment.trim()) return [];
+    seen.add(id);
+    const name = typeof label === "string" ? label.trim() : "";
+    return [{ id, label: name || comment.trim(), comment: comment.trim(), keybind: sanitizeKeybind(keybind) }];
+  });
+}
+
+function readQuickActions(): QuickAction[] {
+  try { return normalizeQuickActions(JSON.parse(getSetting("quick_actions") ?? "[]")); }
+  catch { return []; }
+}
+
 const parseRepos = (raw: string): string[] => raw.split(",").map((r) => r.trim()).filter(Boolean);
 
 const clampInterval = (raw: number): number =>
@@ -312,6 +338,7 @@ export interface Settings {
   diff_layout: DiffLayout;
   force_merge_repos: string;
   agents: AgentSetting[];
+  quick_actions: QuickAction[];
   review_bots: string;
   keybind_open_app: string;
   keybind_open_palette: string;
@@ -367,6 +394,7 @@ export function readSettings(): Settings {
     force_merge_repos: getSetting("force_merge_repos") ?? "",
     review_bots: getSetting("review_bots") ?? envReviewBots,
     agents: agentSettings(),
+    quick_actions: readQuickActions(),
     keybind_open_app: getSetting("keybind_open_app") ?? "",
     keybind_open_palette: getSetting("keybind_open_palette") ?? "",
     saved_views: getSetting("saved_views") ?? "[]",
@@ -417,6 +445,7 @@ export function writeSettings(
     diff_layout: string;
     force_merge_repos: string;
     agents: AgentSetting[];
+    quick_actions: QuickAction[];
     review_bots: string;
     keybind_open_app: string;
     keybind_open_palette: string;
@@ -483,6 +512,7 @@ export function writeSettings(
   if (patch.diff_layout !== undefined) setSetting("diff_layout", normalizeDiffLayout(patch.diff_layout));
   if (patch.force_merge_repos !== undefined) setSetting("force_merge_repos", patch.force_merge_repos);
   if (patch.agents !== undefined) setSetting("agents", JSON.stringify(mergeAgents(patch.agents)));
+  if (patch.quick_actions !== undefined) setSetting("quick_actions", JSON.stringify(normalizeQuickActions(patch.quick_actions)));
   if (patch.review_bots !== undefined) setSetting("review_bots", patch.review_bots);
   if (patch.keybind_open_app !== undefined) setSetting("keybind_open_app", patch.keybind_open_app);
   if (patch.keybind_open_palette !== undefined) setSetting("keybind_open_palette", patch.keybind_open_palette);

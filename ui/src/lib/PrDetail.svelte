@@ -910,6 +910,27 @@
     submitComment();
   }
 
+  let quickActionBusy = $state(null);
+  let quickActionError = $state("");
+  // Uppercase keybinds are typed with Shift, shown "⇧P" like the key bar's "⇧E".
+  let quickActions = $derived(
+    (liveState ? prefs.quickActions : []).map((a) => ({ ...a, keyLabel: a.keybind && a.keybind !== a.keybind.toLowerCase() ? `⇧${a.keybind}` : a.keybind })),
+  );
+
+  async function runQuickAction(action) {
+    if (quickActionBusy) return;
+    quickActionBusy = action.id;
+    quickActionError = "";
+    try {
+      await enqueueMutation(repo, number, { kind: "comment", body: action.comment });
+      await refreshMutations();
+    } catch (error) {
+      quickActionError = presentMutationError(`post ${action.label}`, error).message;
+    } finally {
+      quickActionBusy = null;
+    }
+  }
+
   async function submitReply(rootCommentId, body) {
     await enqueueMutation(repo, number, { kind: "reply-to-thread", rootCommentId, body });
     await refreshMutations();
@@ -2552,6 +2573,8 @@
         if (!localBranchBusy) switchToLocalBranch();
       } else if (e.key === "p") {
         promptOpen = true;
+      } else if (quickActions.some((a) => a.keybind === e.key)) {
+        runQuickAction(quickActions.find((a) => a.keybind === e.key));
       } else if (autofixDef?.keybind === e.key && fixShortcutTarget) {
         if (fixShortcutTarget === "ci") requestCiFix();
         else if (fixShortcutTarget === "conflict") requestConflictResolution();
@@ -2630,6 +2653,7 @@
     { key: "q", label: "request review" },
     { key: "p", label: "prompt agent" },
     ...agentActionKeys,
+    ...quickActions.flatMap((a) => (a.keybind ? [{ key: a.keyLabel, label: a.label.toLowerCase() }] : [])),
     mergeKey,
     { key: "x", label: "close" },
     ...autoMergeKeys,
@@ -3464,6 +3488,20 @@
                   {/if}
                 {/if}
               </div>
+            </div>
+          {/if}
+          {#if quickActions.length}
+            <div class="side-block">
+              <h3 class="side-title">Quick actions</h3>
+              <div class="actions">
+                {#each quickActions as action (action.id)}
+                  <button class="btn wide shortcut-action" title={`Comment “${action.comment}”`} disabled={quickActionBusy !== null} onclick={() => runQuickAction(action)}>
+                    {quickActionBusy === action.id ? "Posting…" : action.label}
+                    {#if action.keybind}<Kbd keys={action.keyLabel} />{/if}
+                  </button>
+                {/each}
+              </div>
+              {#if quickActionError}<span class="mut-error">{quickActionError}</span>{/if}
             </div>
           {/if}
           {#if agentRuns.length || (!prIsGreen && !mergedState)}

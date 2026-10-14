@@ -27,6 +27,7 @@ export const prefs = $state({
   quickGenerateEnabled: false,
   agentConversationsEnabled: false,
   quickGenerateEnvFile: "",
+  quickActions: [],
   agents: [
     { id: "fixer", name: "Auto-merge fixer", enabled: true, trigger: "keybind", keybind: "a", model: "opus", prompt_template: "" },
     { id: "autofix", name: "Auto-fix", enabled: true, trigger: "keybind", keybind: "f", model: "opus", prompt_template: "" },
@@ -41,6 +42,7 @@ export function setPrefs(settings) {
   prefs.testPathRegex = settings.test_path_regex;
   prefs.diffLayout = settings.diff_layout === "unified" ? "unified" : "split";
   prefs.agents = settings.agents;
+  prefs.quickActions = settings.quick_actions ?? [];
   prefs.notificationsEnabled = settings.notifications?.enabled === true;
   prefs.pendingReviewsEnabled = settings.pending_reviews_enabled === true;
   prefs.descriptionUnreadDots = settings.description_unread_dots === true;

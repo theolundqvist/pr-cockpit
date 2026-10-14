@@ -2960,6 +2960,7 @@ async function handlePutSettings(req: Request, runtime: HttpRuntime): Promise<Re
     diff_layout: string;
     force_merge_repos: string;
     agents: AgentSetting[];
+    quick_actions: Settings["quick_actions"];
     keybind_open_app: string;
     keybind_open_palette: string;
     agent_harness: string;
