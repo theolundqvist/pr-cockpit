@@ -371,6 +371,23 @@
     event.stopPropagation();
   }
 
+  function closeFromMenu(pr) {
+    contextMenu = null;
+    confirmAction = {
+      title: `Close #${pr.number}?`,
+      confirmLabel: "Close pull request",
+      danger: true,
+      run: async () => {
+        try {
+          await enqueueMutation(pr.repo, pr.number, { kind: "close" });
+          showFlash(`Queued closing #${pr.number}.`);
+        } catch (error) {
+          showFlash(presentMutationError("close pull request", error).message);
+        }
+      },
+    };
+  }
+
   function archiveFromMenu(pr) {
     const archived = isArchived(pr);
     contextMenu = null;
@@ -2132,6 +2149,9 @@
         <span aria-hidden="true">›</span>
       </button>
     {/if}
+    {#if contextMenu.pr.state === "OPEN"}
+      <button role="menuitem" onclick={() => closeFromMenu(contextMenu.pr)}>Close PR</button>
+    {/if}
     {#if quickSubmenu}
       <div
         class="pr-context-menu pr-quick-actions-menu"
@@ -2161,6 +2181,7 @@
   <ConfirmDialog
     title={confirmAction.title}
     confirmLabel={confirmAction.confirmLabel}
+    danger={confirmAction.danger}
     onConfirm={runConfirmAction}
     onCancel={() => (confirmAction = null)}
   />
@@ -2242,9 +2263,9 @@
     text-align: left;
     cursor: pointer;
   }
-  .pr-context-menu button:hover, .pr-context-menu button:focus-visible {
+  .pr-context-menu button:hover:not(:disabled), .pr-context-menu button:focus-visible:not(:disabled) {
     outline: none;
-    background: var(--hunk-hover);
+    background: var(--surface-hover);
   }
   .pr-context-menu button:disabled {
     color: var(--text-dim);

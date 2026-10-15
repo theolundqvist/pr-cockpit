@@ -61,6 +61,8 @@ Enable **Mark changed descriptions** in **Settings → Workspace** to show a sma
 
 Task-list checkboxes (`- [ ]`, `- [x]`) in a PR description can be ticked in the Conversation tab; comments stay read-only. Each tick is queued as a description edit that rewrites only that checkbox in the description GitHub currently holds, so text republished since you loaded the PR, such as a regenerated report, is kept. A task is matched by the PR number that starts it (`#123`), otherwise by its text; if it is gone or ambiguous the edit fails and you reload. Checkboxes stay disabled while a description edit is open, queued, or failed.
 
+Right-click an open PR and choose **Close PR** to close it without opening the review. Cockpit asks for confirmation before queuing the close on GitHub.
+
 Enable **Approve PRs for safe merge** in **Settings → Workspace**, then right-click a PR and choose **Approve for safe merge**. It appears above ordinary pins, below failed merges, without launching an agent. Approval covers that PR through fixes and base updates until revoked; closing it or disabling the feature clears approval. Ordinary pins remain bookmarks.
 
 Enable **Rename and move PRs between groups** in **Settings → Workspace** to rename a PR from its right-click menu or move it onto another section or row. Rename edits the title inline: Enter saves and Escape cancels. Type grouping changes the title's conventional-commit type; feature grouping changes its scope; manual grouping changes only your assignment. Dragging preserves the summary, draft prefix, and breaking-change marker. Status sections remain read-only. Dropping into **Approved for safe merge** grants approval; dropping out revokes it.
