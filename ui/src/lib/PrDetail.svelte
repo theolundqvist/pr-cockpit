@@ -2601,7 +2601,8 @@
         else if (mergeGate.reason) mergeFlash.show(mergeGate.reason);
       } else if (e.key === "M") {
         requestForceMergeShortcut();
-      } else if (e.key === "u" && mergeGate.action === "update") {
+      } else if (e.key === "u" && liveState) {
+        // mergeStateStatus reports BLOCKED over BEHIND, so an out-of-date branch can't be detected reliably.
         if (!updateMutation) submitUpdateBranch();
       } else if (e.key === "s") {
         pickerMode = "assign";
