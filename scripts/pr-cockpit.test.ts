@@ -1014,6 +1014,7 @@ test("mutation commands enqueue every PR operation under the system Bash and wai
     { args: ["merge", "owner/repo#17", "--method", "rebase", "--force"], payload: { kind: "merge", force: true, method: "rebase" } },
     { args: ["update-branch", "owner/repo#17"], payload: { kind: "update-branch" } },
     { args: ["ready-for-review", "owner/repo#17"], payload: { kind: "ready-for-review" } },
+    { args: ["convert-to-draft", "owner/repo#17"], payload: { kind: "convert-to-draft" } },
     { args: ["close", "owner/repo#17"], payload: { kind: "close" } },
     { args: ["edit-body", "owner/repo#17", "--body-file", bodyPath], payload: { kind: "edit-body", body } },
     { args: ["edit-title", "owner/repo#17", "fix(ui): preserve width"], payload: { kind: "edit-title", title: "fix(ui): preserve width" } },

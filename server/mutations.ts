@@ -25,6 +25,7 @@ import {
   editPendingReviewComment,
   fetchPullRequestBody,
   getViewerLogin,
+  convertPullRequestToDraft,
   markPullRequestReadyForReview,
   postInlineComment,
   postIssueComment,
@@ -68,6 +69,7 @@ export type MutationPayload =
   | { kind: "merge"; force: boolean; baseRef: string; method: MergeMethod; source: MergeMethodSource }
   | { kind: "update-branch" }
   | { kind: "ready-for-review" }
+  | { kind: "convert-to-draft" }
   | { kind: "close" }
   // With `tasks`, `body` is only the client's preview.
   | { kind: "edit-body"; body: string; tasks?: TaskIntent[] }
@@ -111,6 +113,7 @@ const KNOWN_KINDS: ReadonlySet<string> = new Set([
   "merge",
   "update-branch",
   "ready-for-review",
+  "convert-to-draft",
   "close",
   "edit-body",
   "edit-title",
@@ -352,6 +355,9 @@ async function executeMutation(row: MutationRow): Promise<boolean> {
       await markPullRequestReadyForReview(requirePrRef(row.repo, row.number).nodeId);
       return false;
     }
+    case "convert-to-draft":
+      await convertPullRequestToDraft(requirePrRef(row.repo, row.number).nodeId);
+      return false;
     case "close":
       await closePullRequest(row.repo, row.number);
       return true;

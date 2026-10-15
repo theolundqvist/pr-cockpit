@@ -1897,6 +1897,14 @@
     await refreshMutations();
   }
 
+  let draftMutation = $derived(mutations.find((m) => m.kind === "convert-to-draft"));
+
+  async function submitConvertToDraft() {
+    mergeMenuOpen = false;
+    await enqueueMutation(repo, number, { kind: "convert-to-draft" });
+    await refreshMutations();
+  }
+
   let closeMutation = $derived(mutations.find((m) => m.kind === "close"));
 
   async function submitClose() {
@@ -3430,6 +3438,10 @@
                             </span>
                           </button>
                         {/if}
+                        <div class="merge-menu-separator"></div>
+                        <button role="menuitem" disabled={draftMutation?.state === "pending"} onclick={submitConvertToDraft}>
+                          {draftMutation?.state === "pending" ? "Converting to draft…" : "Convert to draft"}
+                        </button>
                         {#if forceMergeAvailable && mergeGate.action !== "merge" && !mergeMutation}
                           <div class="merge-menu-separator"></div>
                           <button
@@ -3499,6 +3511,14 @@
                     error={githubAutoMergeMutation.error}
                     onRetry={() => handleRetry(githubAutoMergeMutation.id)}
                     onDiscard={() => handleDiscard(githubAutoMergeMutation.id)}
+                  />
+                {/if}
+                {#if !pr.isDraft && draftMutation?.state === "failed"}
+                  <MutationFailure
+                    action="convert to draft"
+                    error={draftMutation.error}
+                    onRetry={() => handleRetry(draftMutation.id)}
+                    onDiscard={() => handleDiscard(draftMutation.id)}
                   />
                 {/if}
                 {#if !mergeMutation}

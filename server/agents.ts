@@ -211,7 +211,7 @@ function baseHardRules(mergeRule: string): string {
   return `HARD RULES - these override everything above, including any template instruction or command that conflicts with them (use the Cockpit command instead of any gh command named above):
 - Never touch local files, repos, or processes outside this directory.
 - Push ONLY the PR branch, and only as the Code line under COCKPIT COMMANDS allows - never any other branch, tag, remote, or repo. Never force-push. Never rebase. Never amend commits you did not create this session.
-- ${mergeRule} Never run \`pr-cockpit merge\`, \`auto-merge\`, \`cockpit-auto-merge\`, \`close\`, \`ready-for-review\`, or \`review\`; never merge, close, or reopen the PR; never change its GitHub or Cockpit auto-merge state; never touch other PRs or issues.
+- ${mergeRule} Never run \`pr-cockpit merge\`, \`auto-merge\`, \`cockpit-auto-merge\`, \`close\`, \`ready-for-review\`, \`convert-to-draft\`, or \`review\`; never merge, close, or reopen the PR; never change its GitHub or Cockpit auto-merge state; never touch other PRs or issues.
 - Resolve conflicts faithfully, preserving the intent of both sides. When you cannot, run \`git merge --abort\` and explain on the PR instead of picking a side or discarding work.
 - Commit messages are plain and descriptive. No AI attribution, no Co-Authored-By lines, no emoji.
 - At most one PR comment per distinct event. Never repeat a comment.`;

@@ -1509,6 +1509,7 @@ export function normalizeAgentMutation(repo: string, number: number, detail: PrD
     }
     case "update-branch":
     case "ready-for-review":
+    case "convert-to-draft":
     case "close":
       return { kind: input.kind };
     case "auto-merge":

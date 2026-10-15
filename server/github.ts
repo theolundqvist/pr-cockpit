@@ -3947,6 +3947,16 @@ export async function markPullRequestReadyForReview(pullRequestId: string): Prom
   await graphql(MARK_READY_MUTATION, { pullRequestId }, "user action", "mark PR ready");
 }
 
+const CONVERT_TO_DRAFT_MUTATION = `
+mutation($pullRequestId: ID!) {
+  convertPullRequestToDraft(input: { pullRequestId: $pullRequestId }) { pullRequest { isDraft } }
+}`;
+
+export async function convertPullRequestToDraft(pullRequestId: string): Promise<void> {
+  if (mockGithub) return;
+  await graphql(CONVERT_TO_DRAFT_MUTATION, { pullRequestId }, "user action", "convert PR to draft");
+}
+
 
 export async function closePullRequest(repo: string, number: number): Promise<void> {
   if (mockGithub) return;

@@ -27,6 +27,7 @@ Mutation commands:
   merge                merge with the cached base snapshot; defaults to the repository method
   update-branch        update the PR branch from its base
   ready-for-review     mark a draft ready
+  convert-to-draft     convert the PR back to a draft
   close                close the PR
   edit-body            replace the PR body from --body-file
   edit-title           replace the PR title with one quoted positional argument
@@ -177,7 +178,7 @@ fi
 
 command="read"
 case "${1:-}" in
-  listen|resolve|cache-run|comment|reply|unresolve|dismiss-alert|review|merge|update-branch|ready-for-review|close|edit-body|edit-title|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers|add-labels|remove-labels)
+  listen|resolve|cache-run|comment|reply|unresolve|dismiss-alert|review|merge|update-branch|ready-for-review|convert-to-draft|close|edit-body|edit-title|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers|add-labels|remove-labels)
     command="$1"
     shift
     ;;
@@ -185,7 +186,7 @@ esac
 
 mutation_command=0
 case "$command" in
-  comment|reply|unresolve|dismiss-alert|review|merge|update-branch|ready-for-review|close|edit-body|edit-title|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers|add-labels|remove-labels)
+  comment|reply|unresolve|dismiss-alert|review|merge|update-branch|ready-for-review|convert-to-draft|close|edit-body|edit-title|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers|add-labels|remove-labels)
     mutation_command=1
     ;;
 esac
@@ -777,6 +778,10 @@ try {
     case "ready-for-review":
       exact(0, "ready-for-review takes only a PR reference");
       payload = { kind: "ready-for-review" };
+      break;
+    case "convert-to-draft":
+      exact(0, "convert-to-draft takes only a PR reference");
+      payload = { kind: "convert-to-draft" };
       break;
     case "close":
       exact(0, "close takes only a PR reference");
