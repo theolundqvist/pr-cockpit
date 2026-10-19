@@ -1615,10 +1615,10 @@
 
   let stateChip = $derived.by(() => {
     if (!pr) return { label: "", tone: "wait" };
-    if (pr.isDraft) return { label: "draft", tone: "wait" };
     const s = pr.state.toUpperCase();
     if (s === "MERGED") return { label: "merged", tone: "merged" };
     if (s === "CLOSED") return { label: "closed", tone: "closed" };
+    if (pr.isDraft) return { label: "draft", tone: "wait" };
     return { label: "open", tone: "ready" };
   });
 
