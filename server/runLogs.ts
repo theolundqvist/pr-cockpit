@@ -655,7 +655,8 @@ export async function cacheActionsRun(
   return "fetched";
 }
 
-async function repairActionsLease(repo: string, number: number, headSha: string, fetchers: ActionsFetchers): Promise<void> {
+async function repairActionsLease(repo: string, number: number, headSha: string, fetchers: ActionsFetchers, refreshCatalog: boolean): Promise<void> {
+  if (refreshCatalog) await cacheGithubActionsForCommit(repo, number, headSha, fetchers, true);
   const lease = actionsLease(repo, number);
   if (!lease || lease.head_sha !== headSha) return;
   if (lease.bootstrapped_at === null) {
@@ -685,13 +686,14 @@ function queueActionsLease(
   number: number,
   headSha: string,
   fetchers: ActionsFetchers,
+  refreshCatalog = false,
 ): Promise<void> {
   const key = `${repo}#${number}`;
   const pending = activations.get(key);
   if (pending?.headSha === headSha) return pending.promise;
   const start = pending
-    ? pending.promise.catch(() => {}).then(() => repairActionsLease(repo, number, headSha, fetchers))
-    : repairActionsLease(repo, number, headSha, fetchers);
+    ? pending.promise.catch(() => {}).then(() => repairActionsLease(repo, number, headSha, fetchers, refreshCatalog))
+    : repairActionsLease(repo, number, headSha, fetchers, refreshCatalog);
   let entry: { headSha: string; promise: Promise<void> };
   entry = {
     headSha,
@@ -715,7 +717,8 @@ export async function cacheGithubActionsForCommit(
     // Once this head is read in full, webhooks deliver every later run and job change, so
     // rereading it on each check event only spent REST quota (a job list per running workflow).
     const coveredSince = fetchers.webhookCoveredSince?.(repo) ?? null;
-    if (lease.bootstrapped_at !== null && coveredSince !== null && coveredSince <= Date.parse(lease.bootstrapped_at)) return;
+    if (lease.bootstrapped_at !== null && coveredSince !== null && coveredSince <= Date.parse(lease.bootstrapped_at)
+      && workflowRunsForLease(repo, number, headSha).every((run) => run.jobs_fetched_at !== null)) return;
   }
   const runs = (await catalogRequest(() => fetchers.fetchWorkflowRuns(repo, headSha))).map(compactRun);
   for (const run of runs) storeRun(repo, number, run);
@@ -783,8 +786,9 @@ export function activateActionsLease(
   headSha: string,
   fetchers: ActionsFetchers = liveFetchers,
 ): Promise<void> {
-  renewActionsLease(repo, number, headSha);
-  return queueActionsLease(repo, number, headSha, fetchers);
+  const active = actionsLease(repo, number);
+  const lease = renewActionsLease(repo, number, headSha);
+  return queueActionsLease(repo, number, headSha, fetchers, !active && lease.bootstrapped_at !== null);
 }
 
 

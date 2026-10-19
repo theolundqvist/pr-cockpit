@@ -135,9 +135,11 @@ pr-cockpit owner/repo#123 --logs verify --run 987 --attempt 2
 pr-cockpit listen owner/repo#123
 ```
 
-`listen` waits for substantive cached state changes—a push, check result, review, comment, or merge conflict—then prints what changed and exits. It returns at once when the PR already has failing checks, open comments, or merge conflicts. `--ci-only`, `--comments-only`, and `--conflicts-only` narrow the wake signal.
+`listen` waits for substantive cached state changes—a push, check result, review, comment, or merge conflict—then prints what changed and exits. It returns at once when the PR already has failing checks, open comments, or merge conflicts, but never from a snapshot older than known webhook activity: it waits for revalidation first. `--ci-only`, `--comments-only`, and `--conflicts-only` narrow the wake signal.
 
 `pr-cockpit listen owner/repo#123 --run 987` waits for a specific run and reconciles it about every 30 seconds at the default interval, so missed webhooks cannot leave completion unobserved. A failed reconciliation exits with an error.
+
+CI completeness is durable for the observed head; an expired Actions viewing lease does not turn settled jobs back into pending work. Checks use the latest result per job name within each workflow/App, so metadata-only workflows with different names do not erase earlier required checks on that head. Skipped and neutral jobs retain their displayed state but satisfy required checks, [as on GitHub](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks); missing checks, incomplete pages, and unobserved jobs remain pending.
 
 The CLI also supports comments, reviews, thread resolution, edits, and merges through Cockpit's mutation queue. Run **`pr-cockpit --help`** for commands and options, including `--body-file` for exact multiline text and `--json` for machine-readable status. The installer separately asks before adding Cockpit instructions to supported coding assistants.
 

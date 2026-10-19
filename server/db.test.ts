@@ -502,7 +502,7 @@ test("schema updates preserve the normalized PR cache", () => {
   }
 });
 
-test("startup drops Actions leases because browser presence cannot survive the server process", async () => {
+test("startup expires Actions presence but retains durable head coverage", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-actions-lease-reset-"));
   const databasePath = join(dataDir, "cockpit.db");
   const scenario = `
@@ -517,11 +517,16 @@ test("startup drops Actions leases because browser presence cannot survive the s
         bootstrapped_at TEXT,
         PRIMARY KEY (repo, number)
       );
-      INSERT INTO actions_leases VALUES ('acme/app', 7, 'head', '2099-01-01T00:00:00Z', NULL);
+      INSERT INTO actions_leases VALUES ('acme/app', 7, 'head', '2099-01-01T00:00:00Z', '2026-10-18T10:00:00Z');
     \`);
     stored.close();
-    const { db } = await import(${JSON.stringify(dbModuleUrl)});
-    console.log(db.query("SELECT COUNT(*) AS count FROM actions_leases").get().count);
+    // Import after seeding to exercise startup expiration against an existing database.
+    const { db, actionsLease, actionsObservation, renewActionsLease } = await import(${JSON.stringify(dbModuleUrl)});
+    const active = actionsLease("acme/app", 7);
+    const observed = actionsObservation("acme/app", 7);
+    const renewed = renewActionsLease("acme/app", 7, "head");
+    const changed = renewActionsLease("acme/app", 7, "new-head");
+    console.log(JSON.stringify({ active, observed: observed.bootstrapped_at, renewed: renewed.bootstrapped_at, changed: changed.bootstrapped_at }));
     db.close();
   `;
 
@@ -537,7 +542,9 @@ test("startup drops Actions leases because browser presence cannot survive the s
       new Response(process.stderr).text(),
     ]);
     if (exitCode !== 0) throw new Error(stderr);
-    expect(stdout.trim()).toBe("0");
+    expect(JSON.parse(stdout)).toEqual({
+      active: null, observed: "2026-10-18T10:00:00Z", renewed: "2026-10-18T10:00:00Z", changed: null,
+    });
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }

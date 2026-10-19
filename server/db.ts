@@ -554,7 +554,8 @@ db.exec("DELETE FROM pr_webhook_activity WHERE received_at < datetime('now', '-3
 db.exec("DELETE FROM diffs WHERE fetched_at < datetime('now', '-30 days')");
 db.exec("DELETE FROM run_jobs WHERE fetched_at < datetime('now', '-30 days')");
 db.exec("DELETE FROM workflow_runs WHERE fetched_at < datetime('now', '-30 days')");
-db.exec("DELETE FROM actions_leases");
+// Presence expires at restart, but a completed catalog is durable evidence for its head.
+db.exec("UPDATE actions_leases SET expires_at = datetime('now')");
 
 export interface PrRow {
   repo: string;
@@ -1355,6 +1356,12 @@ export function actionsLease(repo: string, number: number): ActionsLeaseRow | nu
   ).get(repo, number) ?? null;
 }
 
+export function actionsObservation(repo: string, number: number): ActionsLeaseRow | null {
+  return db.query<ActionsLeaseRow, [string, number]>(
+    "SELECT * FROM actions_leases WHERE repo = ? AND number = ?",
+  ).get(repo, number) ?? null;
+}
+
 export function renewActionsLease(repo: string, number: number, headSha: string): ActionsLeaseRow {
   db.query(`
     INSERT INTO actions_leases (repo, number, head_sha, expires_at, bootstrapped_at)
@@ -1362,7 +1369,7 @@ export function renewActionsLease(repo: string, number: number, headSha: string)
     ON CONFLICT (repo, number) DO UPDATE SET
       head_sha = excluded.head_sha, expires_at = excluded.expires_at,
       bootstrapped_at = CASE
-        WHEN actions_leases.head_sha = excluded.head_sha AND actions_leases.expires_at > datetime('now')
+        WHEN actions_leases.head_sha = excluded.head_sha
         THEN actions_leases.bootstrapped_at
         ELSE NULL
       END

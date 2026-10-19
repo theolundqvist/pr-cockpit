@@ -14,7 +14,7 @@ describe("checkState", () => {
     ["SUCCESS", "passed"],
     ["SKIPPED", "skipped"],
     ["NEUTRAL", "skipped"],
-    ["STALE", "skipped"],
+    ["STALE", "failed"],
     ["CANCELLED", "cancelled"],
     ["FAILURE", "failed"],
     ["TIMED_OUT", "failed"],
@@ -71,6 +71,16 @@ test("current checks isolate workflow identities and order retry jobs independen
   expect(history.map(checkState)).toEqual(["passed", "cancelled", "failed", "failed"]);
 });
 
+test("metadata-only workflow names do not erase earlier required checks on the same head", () => {
+  const required = { ...checkRun("SUCCESS", "COMPLETED", true), databaseId: 100,
+    checkSuite: { workflowRun: { databaseId: 10, workflow: { name: "Backend" } } } } as PrCheck;
+  const metadata = { ...checkRun("SKIPPED"), name: "Backend metadata-only", databaseId: 200,
+    checkSuite: { workflowRun: { databaseId: 20, workflow: { name: "Backend" } } } } as PrCheck;
+  expect(currentChecks([metadata, required])).toEqual([metadata, required]);
+  const replacement = { ...metadata, name: "job", isRequired: true } as PrCheck;
+  expect(currentChecks([replacement, required])).toEqual([replacement]);
+});
+
 describe("unsatisfiedRequiredChecks", () => {
   function detailJson(nodes: PrCheck[]): string {
     return JSON.stringify({ lastCommit: { nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS", contexts: { nodes } } } }] } });
@@ -80,9 +90,19 @@ describe("unsatisfiedRequiredChecks", () => {
     expect(unsatisfiedRequiredChecks(detailJson([checkRun("SUCCESS", "COMPLETED", true)]))).toEqual([]);
   });
 
-  test("a skipped or cancelled required check is unsatisfied", () => {
-    const nodes = [checkRun("SKIPPED", "COMPLETED", true), checkRun("CANCELLED", "COMPLETED", true), checkRun("SUCCESS", "COMPLETED", true)];
-    expect(unsatisfiedRequiredChecks(detailJson(nodes))).toEqual(["job", "job"]);
+  test("skipped and neutral required checks satisfy GitHub while cancellation and stale do not", () => {
+    for (const conclusion of ["SUCCESS", "SKIPPED", "NEUTRAL"]) {
+      expect(unsatisfiedRequiredChecks(detailJson([checkRun(conclusion, "COMPLETED", true)]))).toEqual([]);
+    }
+    for (const conclusion of ["CANCELLED", "STALE", "FAILURE"]) {
+      expect(unsatisfiedRequiredChecks(detailJson([checkRun(conclusion, "COMPLETED", true)]))).toEqual(["job"]);
+    }
+  });
+
+  test("a skipped replacement satisfies a required check without reviving its historical failure", () => {
+    const failed = { ...checkRun("FAILURE", "COMPLETED", true), databaseId: 1 } as PrCheck;
+    const skipped = { ...checkRun("SKIPPED", "COMPLETED", true), databaseId: 2 } as PrCheck;
+    expect(unsatisfiedRequiredChecks(detailJson([skipped, failed]))).toEqual([]);
   });
 
   test("optional checks in any state are ignored", () => {

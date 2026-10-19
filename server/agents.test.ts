@@ -82,13 +82,14 @@ describe("isGreen", () => {
     expect(isGreen(pr({ review_decision: "CHANGES_REQUESTED" }))).toBe(false);
   });
 
-  test("not green when a required check was skipped or cancelled instead of passing", () => {
+  test("skipped and neutral required checks are green but cancelled checks block", () => {
     const withRequired = (conclusion: string) => JSON.stringify({
       lastCommit: { nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS", contexts: { nodes: [
         { __typename: "CheckRun", name: "trpc compat", status: "COMPLETED", conclusion, isRequired: true },
       ] } } } }] },
     });
-    expect(isGreen(pr({ detail_json: withRequired("SKIPPED") }))).toBe(false);
+    expect(isGreen(pr({ detail_json: withRequired("SKIPPED") }))).toBe(true);
+    expect(isGreen(pr({ detail_json: withRequired("NEUTRAL") }))).toBe(true);
     expect(isGreen(pr({ detail_json: withRequired("CANCELLED") }))).toBe(false);
     expect(isGreen(pr({ detail_json: withRequired("SUCCESS") }))).toBe(true);
   });

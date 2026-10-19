@@ -722,6 +722,65 @@ describe("agent PR summary", () => {
     }
   });
 
+  test("settled head coverage survives lease expiry and newer detail snapshots with metadata-only runs", () => {
+    const repo = "test/settled-metadata";
+    const current = structuredClone(detail);
+    const rollup = current.lastCommit.nodes[0]!.commit.statusCheckRollup!;
+    // Captured shape: an earlier required success, then a skipped metadata-only workflow.
+    rollup.contexts.nodes = [10, 20].map((id) => ({
+      __typename: "CheckRun" as const, databaseId: id, name: id === 10 ? "Important (Backend)" : "Backend metadata-only",
+      status: "COMPLETED", conclusion: id === 10 ? "SUCCESS" : "SKIPPED", isRequired: id === 10,
+      detailsUrl: null, startedAt: null, completedAt: null,
+      checkSuite: { workflowRun: { databaseId: id, workflow: { name: "Backend" } } },
+    }));
+    renewActionsLease(repo, 1, current.headRefOid);
+    markActionsLeaseBootstrapped(repo, 1, current.headRefOid);
+    for (const id of [10, 20]) {
+      upsertWorkflowRun({
+        repo, run_id: id, run_attempt: 1, pr_number: 1, head_sha: current.headRefOid,
+        head_branch: current.headRefName, workflow_name: "Backend", workflow_path: "backend.yml",
+        status: "completed", conclusion: id === 10 ? "success" : "skipped",
+        event_at: "2026-10-18T10:00:00Z", html_url: null,
+      });
+      upsertRunJob({
+        repo, job_id: id, run_id: id, run_attempt: 1, head_sha: current.headRefOid,
+        head_branch: current.headRefName, workflow_name: "Backend",
+        name: id === 10 ? "Important (Backend)" : "Backend metadata-only",
+        status: "completed", conclusion: id === 10 ? "success" : "skipped",
+        started_at: null, completed_at: null, html_url: null, runner_name: null,
+        runner_group_name: null, labels_json: "[]", failed_step: null,
+      });
+      markWorkflowRunJobsFetched(repo, id, 1);
+    }
+    try {
+      const before = buildPrAgentSummary(`${repo}#1`, current, null).ci;
+      expect(before).toMatchObject({ state: "SUCCESS", complete: true, passed: 1, skipped: 1, running: 0 });
+      db.query("UPDATE actions_leases SET expires_at = '2000-01-01', bootstrapped_at = '2026-10-18T10:00:00Z' WHERE repo = ?").run(repo);
+      const snapshot = { ...current, agentSnapshot: snapshotStatus("2026-10-18T10:01:00Z", null) };
+      expect(buildPrAgentSummary(`${repo}#1`, snapshot, null).ci).toEqual(before);
+      renewActionsLease(repo, 1, current.headRefOid);
+      expect(buildPrAgentSummary(`${repo}#1`, snapshot, null).ci).toEqual(before);
+      // Reusing the required name honestly shows skipped, but still satisfies branch protection.
+      const metadata = rollup.contexts.nodes[1]!;
+      if (metadata.__typename !== "CheckRun") throw new Error("expected metadata check fixture");
+      metadata.name = "Important (Backend)";
+      metadata.isRequired = true;
+      expect(buildPrAgentSummary(`${repo}#1`, snapshot, null).ci).toMatchObject({
+        state: "SUCCESS", complete: true, passed: 0, skipped: 1,
+      });
+      rollup.contexts.pageInfo!.hasNextPage = true;
+      expect(buildPrAgentSummary(`${repo}#1`, snapshot, null).ci).toMatchObject({ state: "PENDING", complete: false });
+      rollup.contexts.pageInfo!.hasNextPage = false;
+      db.query("UPDATE workflow_runs SET jobs_fetched_at = NULL WHERE repo = ? AND run_id = 20").run(repo);
+      expect(buildPrAgentSummary(`${repo}#1`, snapshot, null).ci).toMatchObject({ state: "PENDING", complete: false });
+      markWorkflowRunJobsFetched(repo, 20, 1);
+      expect(buildPrAgentSummary(`${repo}#1`, { ...snapshot, headRefOid: "b".repeat(40) }, null).ci)
+        .toMatchObject({ state: "PENDING", complete: false });
+    } finally {
+      for (const table of ["workflow_runs", "run_jobs", "actions_leases"]) db.query(`DELETE FROM ${table} WHERE repo = ?`).run(repo);
+    }
+  });
+
   test("keeps a four-minute-old snapshot recent without newer webhook evidence", () => {
     const fetchedAt = new Date(Date.now() - 4 * 60_000).toISOString();
     const agentSnapshot = snapshotStatus(fetchedAt, null);
@@ -1215,6 +1274,57 @@ describe("agent PR summary", () => {
       releaseRefresh();
       if (refreshCalls > 0) await refreshFinished;
       db.query("DELETE FROM pr_detail_cache WHERE repo = ? AND number = ?").run(repo, number);
+    }
+  });
+
+  test("agent reads join known newer activity and fresh responses reject a webhook arriving during refresh", async () => {
+    const repo = "test/known-newer";
+    const number = 1;
+    const oldHead = "a".repeat(40);
+    const newHead = "b".repeat(40);
+    const fetchedAt = new Date(Date.now() - 60_000).toISOString();
+    upsertCachedPrDetail({ repo, number, head_sha: oldHead, detail_json: JSON.stringify(detail), fetched_at: fetchedAt });
+    recordPrWebhookActivity(repo, number, new Date(Date.now() - 30_000).toISOString());
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let started!: () => void;
+    const refreshStarted = new Promise<void>((resolve) => { started = resolve; });
+    let calls = 0;
+    const quotaWindow = { limit: 5000, used: 0, remaining: 5000, resetAt: fetchedAt };
+    const quota = { rest: quotaWindow, graphql: quotaWindow, search: quotaWindow, fetchedAt };
+    const handler = buildFetchHandler(4820, {
+      fetchGithubQuota: async () => quota,
+      fetchPrDetail: async () => {
+        calls++;
+        started();
+        await gate;
+        return { ...detail, headRefOid: newHead };
+      },
+    });
+    const url = `http://127.0.0.1:4820/api/agent/pr/${repo}/${number}?format=json`;
+    try {
+      let answered = false;
+      const response = handler(new Request(url)).then((result) => { answered = true; return result; });
+      await refreshStarted;
+      expect(answered).toBe(false);
+      release();
+      expect(await (await response).json()).toMatchObject({
+        headSha: newHead, snapshot: { freshness: "recent", newerActivityAt: null },
+      });
+      expect(calls).toBe(1);
+      const racingHandler = buildFetchHandler(4820, {
+        fetchGithubQuota: async () => quota,
+        fetchPrDetail: async () => {
+          recordPrWebhookActivity(repo, number, new Date(Date.now() + 1000).toISOString());
+          return { ...detail, headRefOid: newHead };
+        },
+      });
+      recordPrWebhookActivity(repo, number, new Date(Date.now() + 1).toISOString());
+      const racing = await racingHandler(new Request(`${url}&fresh=1`));
+      expect(racing.status).toBe(409);
+    } finally {
+      release();
+      for (const table of ["pr_detail_cache", "pr_webhook_activity"]) db.query(`DELETE FROM ${table} WHERE repo = ?`).run(repo);
     }
   });
 

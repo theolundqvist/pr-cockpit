@@ -4,7 +4,7 @@ import { realpath } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import {
-  actionsLease,
+  actionsObservation,
   countPrs,
   getCachedPrDetail,
   getDiff,
@@ -931,7 +931,7 @@ async function handlePrDetail(
     let detail = JSON.parse(snapshot.row.detail_json);
     const nowMs = Date.now();
     const lastWebhookAt = lastWebhookAtForPr(repoName, num);
-    const agentSnapshot = snapshotStatus(snapshot.row.fetched_at, lastWebhookAt);
+    let agentSnapshot = snapshotStatus(snapshot.row.fetched_at, lastWebhookAt);
     const stale = snapshot.tracked
       ? trackedDetailIsStale(snapshot.row.fetched_at, nowMs, lastWebhookAt, runtime.webhookCoveredSince(repoName))
       : nowMs - Date.parse(snapshot.row.fetched_at) > UNTRACKED_STALE_MS;
@@ -943,7 +943,17 @@ async function handlePrDetail(
     const revalidate = snapshot.tracked ? runtime.revalidateTrackedPr : runtime.revalidateCachedPrDetail;
     if (agentRead) {
       if (agentSnapshot.freshness === "outdated" || stale || mergeabilityStale) {
-        revalidate(repoName, num, "agent read");
+        const revalidation = revalidate(repoName, num, "agent read");
+        // Age alone can refresh in the background; known newer activity must be joined.
+        if (agentSnapshot.newerActivityAt) {
+          // The revalidator reports failures; retain an explicitly outdated cache on quota/outage.
+          await revalidation.catch(() => {});
+          snapshot = cachedPrSnapshot(repoName, num);
+          if (snapshot) {
+            detail = JSON.parse(snapshot.row.detail_json);
+            agentSnapshot = snapshotStatus(snapshot.row.fetched_at, lastWebhookAtForPr(repoName, num));
+          }
+        }
       }
       return json({ ...withBaseBranchPr(repoName, num, detail), agentSnapshot });
     }
@@ -1097,23 +1107,18 @@ export function buildPrAgentSummary(
 ): PrAgentSummary {
   const rollup = detail.lastCommit?.nodes?.[0]?.commit?.statusCheckRollup;
   const checksFetched = detail.lastCommit?.nodes?.[0] !== undefined;
-  let checkNodes = currentChecks(rollup?.contexts?.nodes ?? []);
+  const checkNodes = currentChecks(rollup?.contexts?.nodes ?? []);
   const repo = ref.slice(0, ref.lastIndexOf("#"));
   const number = Number(ref.slice(ref.lastIndexOf("#") + 1));
-  const lease = actionsLease(repo, number);
+  const observation = actionsObservation(repo, number);
   const runs = latestActionRunAttempts(workflowRunsForLease(repo, number, detail.headRefOid));
   const latestRuns = new Map<string, WorkflowRunRow>();
   for (const run of runs) {
     const identity = run.workflow_path || run.workflow_name;
     if ((latestRuns.get(identity)?.run_id ?? 0) < run.run_id) latestRuns.set(identity, run);
   }
-  checkNodes = checkNodes.filter((check) => {
-    const runId = check.__typename === "CheckRun" ? check.checkSuite?.workflowRun?.databaseId : null;
-    const run = runId == null ? null : runs.find((candidate) => candidate.run_id === runId);
-    return !run || latestRuns.get(run.workflow_path || run.workflow_name)?.run_id === runId;
-  });
-  const workflowCoverageComplete = lease?.head_sha === detail.headRefOid && lease.bootstrapped_at !== null
-    && (!detail.agentSnapshot || Date.parse(lease.bootstrapped_at) >= Date.parse(detail.agentSnapshot.fetchedAt))
+  // Catalog evidence belongs to the head, not to an active viewer or detail-fetch time.
+  const workflowCoverageComplete = observation?.head_sha === detail.headRefOid && observation.bootstrapped_at !== null
     && checkNodes.every((check) => {
       const runId = check.__typename === "CheckRun" ? check.checkSuite?.workflowRun?.databaseId : null;
       return runId == null || runs.some((run) => run.run_id === runId);
@@ -1380,6 +1385,11 @@ async function handleAgentPr(
   const detailResponse = await handlePrDetail(owner, repo, number, runtime, true);
   if (!detailResponse.ok) return detailResponse;
   const detail = await detailResponse.json() as unknown as PrDetail & { agentSnapshot: AgentSnapshotStatus };
+  detail.agentSnapshot = snapshotStatus(detail.agentSnapshot.fetchedAt, lastWebhookAtForPr(`${owner}/${repo}`, Number(number)));
+  // A webhook may arrive during revalidation. Listen retries rather than emitting that snapshot.
+  if (url.searchParams.get("fresh") === "1" && detail.agentSnapshot?.newerActivityAt) {
+    return json({ error: "PR snapshot predates known activity" }, 409);
+  }
   const summary = buildPrAgentSummary(`${owner}/${repo}#${number}`, detail, quota, newCommentsSince, commentsSince);
   if (format === "json") return json(summary);
   return new Response(formatPrAgentSummary(summary, { comments: includeComments, body: includeBody, digest }), {

@@ -284,6 +284,56 @@ test("listen returns immediately for current review blockers", async () => {
   }
 });
 
+test("listen ignores known-outdated blockers and changes in every scope and retries a stale rendered response", async () => {
+  for (const scope of [[], ["--ci-only"], ["--comments-only"], ["--conflicts-only"]]) {
+    for (const initiallyStale of [true, false]) {
+      let reads = 0;
+      let renders = 0;
+      const server = Bun.serve({
+        port: 0,
+        fetch(request) {
+          const url = new URL(request.url);
+          if (url.searchParams.get("format") === "json") {
+            reads++;
+            const outdated = initiallyStale ? reads < 3 : reads === 2;
+            const blocked = initiallyStale || reads > 1;
+            return Response.json({
+              headSha: reads < 3 ? "old-head" : "new-head", state: "OPEN",
+              snapshot: { freshness: outdated ? "outdated" : "recent", newerActivityAt: outdated ? "2026-10-18T10:00:00Z" : null },
+              ci: { state: blocked ? "FAILURE" : "SUCCESS", failed: blocked ? 1 : 0 },
+              openComments: blocked ? [{ path: "src/value.ts" }] : [], merge: blocked ? "DIRTY" : "CLEAN",
+            });
+          }
+          if (request.method === "POST") return Response.json({});
+          renders++;
+          expect(reads).toBeGreaterThanOrEqual(3);
+          expect(url.searchParams.get("fresh")).toBe("1");
+          return renders === 1
+            ? Response.json({ error: "new activity" }, { status: 409 })
+            : new Response("new-head\n");
+        },
+      });
+      const child = Bun.spawn([join(import.meta.dir, "pr-cockpit"), "listen", ...scope, "owner/repo#1"], {
+        env: { ...Bun.env, COCKPIT_PORT: String(server.port), COCKPIT_LISTEN_INTERVAL: "0.01" },
+        stdout: "pipe", stderr: "pipe",
+      });
+      try {
+        const [output, error, code] = await Promise.all([
+          new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+        ]);
+        expect(code).toBe(0);
+        expect(error).toBe("");
+        expect(output).toBe("new-head\n");
+        expect(reads).toBe(3);
+        expect(renders).toBe(2);
+      } finally {
+        child.kill();
+        server.stop(true);
+      }
+    }
+  }
+});
+
 test("listen --ci-only ignores comments and unrelated changes, then exits on CI failure", async () => {
   let reads = 0;
   const server = Bun.serve({

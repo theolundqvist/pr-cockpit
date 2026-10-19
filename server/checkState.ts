@@ -10,7 +10,7 @@ const STATE_BY_RESULT: Record<string, CheckState> = {
   SUCCESS: "passed",
   SKIPPED: "skipped",
   NEUTRAL: "skipped",
-  STALE: "skipped",
+  STALE: "failed",
   CANCELLED: "cancelled",
   FAILURE: "failed",
   ERROR: "failed",
@@ -31,21 +31,13 @@ export function checkState(check: PrCheck): CheckState {
   return STATE_BY_RESULT[result] ?? "failed";
 }
 
-// Keep raw contexts/jobs as history; only the newest run of a workflow votes on CI.
+// Select each job's latest check, not every job from only the latest workflow run.
+// Metadata-only names do not replace required jobs; distinct workflow/app sources stay separate.
 export function currentChecks(checks: PrCheck[]): PrCheck[] {
-  const latestRuns = new Map<string, number>();
-  for (const check of checks) {
-    if (check.__typename !== "CheckRun") continue;
-    const run = check.checkSuite?.workflowRun;
-    if (run?.databaseId == null) continue;
-    const identity = String(run.workflow.databaseId ?? run.workflow.name);
-    latestRuns.set(identity, Math.max(latestRuns.get(identity) ?? 0, run.databaseId));
-  }
   const selected = new Map<string, PrCheck>();
   for (const check of checks) {
     const run = check.__typename === "CheckRun" ? check.checkSuite?.workflowRun : null;
     const workflow = run ? String(run.workflow.databaseId ?? run.workflow.name) : "";
-    if (run?.databaseId != null && latestRuns.get(workflow) !== run.databaseId) continue;
     const identity = check.__typename === "CheckRun"
       ? `check:${check.checkSuite?.app?.databaseId ?? ""}:${workflow}:${check.name}`
       : `status:${check.context}`;
@@ -55,16 +47,18 @@ export function currentChecks(checks: PrCheck[]): PrCheck[] {
       : value.createdAt ?? "";
     const jobId = (value: PrCheck) => value.__typename === "CheckRun"
       ? value.databaseId ?? Number(value.detailsUrl?.match(/\/jobs?\/(\d+)/)?.[1] ?? 0) : 0;
+    const runId = (value: PrCheck) => value.__typename === "CheckRun"
+      ? value.checkSuite?.workflowRun?.databaseId ?? 0 : 0;
     if (!previous || jobId(check) > jobId(previous)
-      || (jobId(check) === jobId(previous) && observedAt(check) >= observedAt(previous))) {
+      || (jobId(check) === jobId(previous) && (runId(check) > runId(previous)
+        || (runId(check) === runId(previous) && observedAt(check) >= observedAt(previous))))) {
       selected.set(identity, check);
     }
   }
   return [...selected.values()];
 }
 
-// a required check only counts as satisfied when it actually passed: skipped, cancelled and
-// still-running required checks leave the merge requirement unmet
+// Skipped and neutral jobs satisfy GitHub's required checks, without claiming they ran.
 export function unsatisfiedRequiredChecks(detailJson: string): string[] {
   let detail: PrDetail | null = null;
   try {
@@ -73,7 +67,7 @@ export function unsatisfiedRequiredChecks(detailJson: string): string[] {
     return [];
   }
   const nodes = detail?.lastCommit?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
-  return nodes
-    .filter((check) => check.isRequired === true && checkState(check) !== "passed")
+  return currentChecks(nodes)
+    .filter((check) => check.isRequired === true && !["passed", "skipped"].includes(checkState(check)))
     .map((check) => String(check.__typename === "CheckRun" ? check.name : check.context));
 }
