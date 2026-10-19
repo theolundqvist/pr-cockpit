@@ -76,15 +76,27 @@
   let groupingSaving = $state(false);
   let filterQuery = $state("");
   let filterInput;
-  // Opened-date filter and timestamp order stay local to this window and start at All time / Queue order.
-  // `openedChoice` is the select's value; `openedRange` is what the lists apply, so a custom range in
-  // progress never changes the lists until Apply commits a valid one.
-  let openedChoice = $state("all");
-  let openedRange = $state("all");
-  let timeOrder = $state("queue");
-  let customFrom = $state("");
-  let customTo = $state("");
-  let appliedCustom = $state(null);
+  function storedTimeControls() {
+    try {
+      const stored = JSON.parse(localStorage.getItem("cockpit:queue-time") ?? "{}");
+      const custom = typeof stored?.custom?.from === "string" && typeof stored?.custom?.to === "string" ? stored.custom : null;
+      const range = custom && customOpenedRange(custom.from, custom.to).range;
+      const opened = OPENED_RANGES.some((option) => option.value === stored?.opened) && (stored.opened !== "custom" || range) ? stored.opened : "all";
+      const order = TIME_ORDERS.some((option) => option.value === stored?.order) ? stored.order : "queue";
+      return { opened, range: opened === "custom" ? range : opened, order, custom: range ? custom : null };
+    } catch {
+      return { opened: "all", range: "all", order: "queue", custom: null };
+    }
+  }
+
+  const timeSnapshot = storedTimeControls();
+  // Custom edits do not change the applied or saved range until Apply.
+  let openedChoice = $state(timeSnapshot.opened);
+  let openedRange = $state(timeSnapshot.range);
+  let timeOrder = $state(timeSnapshot.order);
+  let customFrom = $state(timeSnapshot.custom?.from ?? "");
+  let customTo = $state(timeSnapshot.custom?.to ?? "");
+  let appliedCustom = $state(timeSnapshot.custom);
   let clock = $state(Date.now());
   const copied = timedFlag(1200);
   let inboxSeq = 0;
@@ -762,13 +774,11 @@
     : OPENED_RANGES.find((option) => option.value === openedRange).label);
 
   $effect(() => {
-    if (prefs.queueTimeControlsEnabled) return;
-    openedChoice = "all";
-    openedRange = "all";
-    timeOrder = "queue";
-    customFrom = "";
-    customTo = "";
-    appliedCustom = null;
+    localStorage.setItem("cockpit:queue-time", JSON.stringify({
+      opened: typeof openedRange === "object" ? "custom" : openedRange,
+      order: timeOrder,
+      custom: appliedCustom,
+    }));
   });
 
   // Rolling presets re-evaluate once a minute; the clock runs only while one is applied.
