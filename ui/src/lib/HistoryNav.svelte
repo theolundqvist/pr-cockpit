@@ -1,13 +1,13 @@
 <script>
   import { history, goBackOrFallback, goForward } from "./history.svelte.js";
-  import { isTypingTarget, isQuickGenerateOpen } from "./dom.js";
+  import { isTypingTarget, isPromptDialogOpen } from "./dom.js";
   import { isRecordingShortcut } from "./shortcutCapture.js";
 
   let { backFallback = null } = $props();
 
   $effect(() => {
     function onKey(e) {
-      if (e.defaultPrevented || isRecordingShortcut() || isQuickGenerateOpen()) return;
+      if (e.defaultPrevented || isRecordingShortcut() || isPromptDialogOpen()) return;
       const commandBracket = e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === "[" || e.key === "]");
       if (!commandBracket && (e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target))) return;
       if (e.key === "H" || (commandBracket && e.key === "[")) goBackOrFallback(backFallback);

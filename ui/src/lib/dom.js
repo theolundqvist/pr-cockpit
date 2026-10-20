@@ -4,9 +4,9 @@ export function isTypingTarget(el) {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
 }
 
-// Capture-phase handlers can register before the prompt's own, so they must yield to it explicitly.
-export function isQuickGenerateOpen() {
-  return document.querySelector('[role="dialog"][aria-label="Quick Generate"]') !== null;
+// Capture-phase handlers can register before a prompt dialog's own, so they must yield to it explicitly.
+export function isPromptDialogOpen() {
+  return document.querySelector('[role="dialog"][data-prompt-dialog]') !== null;
 }
 
 export function shouldCopyPrUrl(event) {

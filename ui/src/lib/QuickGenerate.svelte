@@ -206,7 +206,7 @@
 
 {#if open}
   <div class="scrim" class:standalone onmousedown={close} role="presentation">
-    <div class="quick-generate" class:standalone role="dialog" aria-label="Quick Generate" tabindex="-1" onmousedown={(e) => e.stopPropagation()}>
+    <div class="quick-generate" class:standalone role="dialog" aria-label="Quick Generate" data-prompt-dialog tabindex="-1" onmousedown={(e) => e.stopPropagation()}>
       <div class="head">
         <span class="title">Quick Generate</span>
         {#if enabled && config?.keys.length}

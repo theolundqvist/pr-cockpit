@@ -2,7 +2,7 @@
   import DiffView from "./DiffView.svelte";
   import { parseDiff } from "./diff.js";
   import { fetchFileHistory, fetchFileHistoryDiff } from "./api.js";
-  import { isQuickGenerateOpen } from "./dom.js";
+  import { isPromptDialogOpen } from "./dom.js";
   import { cachedView, cacheView } from "./detailCache.js";
   import { relativeTime } from "./time.js";
   import Kbd from "./Kbd.svelte";
@@ -175,7 +175,7 @@
 
   $effect(() => {
     function onKey(e) {
-      if (!open || isQuickGenerateOpen()) return;
+      if (!open || isPromptDialogOpen()) return;
       if (e.key === "Escape") close();
       else if (e.key === "j" || e.key === "ArrowDown") move(1);
       else if (e.key === "k" || e.key === "ArrowUp") move(-1);
