@@ -6,7 +6,7 @@
   import { setCodeTheme, setFonts, setScales, setTheme } from "./theme.svelte.js";
   import { prefs, setPrefs } from "./prefs.svelte.js";
   import { BUILTIN_TEST_PATH } from "./testPath.js";
-  import { isQuickGenerateOpen, isTypingTarget } from "./dom.js";
+  import { isPromptDialogOpen, isTypingTarget } from "./dom.js";
   import { scrollStep, scrollPage, scrollEdge } from "./scroll.js";
   import KeyBar from "./KeyBar.svelte";
   import ShortcutInput from "./ShortcutInput.svelte";
@@ -65,6 +65,7 @@
   let keybindOpenApp = $state("");
   let keybindOpenPalette = $state("");
   let quickGenerateEnabled = $state(false);
+  let askViewEnabled = $state(false);
   let quickGenerateKey = $state("");
   let quickGenerateModel = $state("");
   let savedQuickGenerateKey = $state("");
@@ -209,6 +210,7 @@
     keybindOpenApp = s.keybind_open_app;
     keybindOpenPalette = s.keybind_open_palette;
     quickGenerateEnabled = s.quick_generate_enabled === true;
+    askViewEnabled = s.ask_view_enabled === true;
     agentConversationsEnabled = s.agent_conversations_enabled === true;
     quickGenerateKey = s.quick_generate_key ?? "";
     savedQuickGenerateKey = quickGenerateKey;
@@ -340,12 +342,12 @@
     quickGenerateModelsFor = null;
   }
 
-  let quickGenerateActive = $derived(loaded && activeTab === "automerge" && quickGenerateEnabled);
+  let quickGenerateActive = $derived(loaded && activeTab === "automerge" && (quickGenerateEnabled || askViewEnabled));
   $effect(() => {
     if (quickGenerateActive && !quickGenerateConfig && !quickGenerateConfigError && !quickGenerateConfigLoading) loadQuickGenerateConfig();
   });
   $effect(() => {
-    if (quickGenerateActive && quickGenerateConfig && quickGenerateKey && quickGenerateModelsFor !== quickGenerateKey) loadQuickGenerateModels(quickGenerateKey);
+    if (quickGenerateActive && quickGenerateEnabled && quickGenerateConfig && quickGenerateKey && quickGenerateModelsFor !== quickGenerateKey) loadQuickGenerateModels(quickGenerateKey);
   });
   $effect(() => {
     if (!quickGenerateActive) untrack(cancelQuickGenerateRequests);
@@ -423,6 +425,7 @@
         keybind_open_app: keybindOpenApp,
         keybind_open_palette: keybindOpenPalette,
         quick_generate_enabled: quickGenerateEnabled,
+        ask_view_enabled: askViewEnabled,
         quick_generate_key: quickGenerateKey,
         quick_generate_model: quickGenerateKey ? quickGenerateModel : "",
         quick_generate_env_file: quickGenerateEnvFile.trim(),
@@ -450,7 +453,7 @@
 
   $effect(() => {
     function onKey(e) {
-      if (isQuickGenerateOpen()) return;
+      if (isPromptDialogOpen()) return;
       if (activeTab !== "analytics" && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
         save();
@@ -906,7 +909,14 @@
               <span class="hint">Press <Kbd keys={quickGenerateShortcut} /> anywhere to draft text from a prompt. Each API key goes only to its provider.</span>
             </span>
           </label>
-          {#if quickGenerateEnabled}
+          <label class="check-field settings-option">
+            <input class="check" type="checkbox" bind:checked={askViewEnabled} />
+            <span class="check-text">
+              <span class="check-label">Ask</span>
+              <span class="hint">Press <Kbd keys="cmd+j" /> to ask about the PRs, PR or page on screen. Uses TYPESAFE_API_KEY and CEREBRAS_API_KEY, or GROQ_API_KEY.</span>
+            </span>
+          </label>
+          {#if quickGenerateEnabled || askViewEnabled}
             <div class="settings-grid quick-generate-grid">
               <label class="field field-wide">
                 <span class="label">API key file</span>
@@ -935,6 +945,7 @@
                 {/if}
               </label>
 
+              {#if quickGenerateEnabled}
               <label class="field">
                 <span class="label">API key</span>
                 {#if quickGenerateConfigError}
@@ -977,11 +988,14 @@
                   <button class="reset-link" type="button" onclick={() => (quickGenerateModelsFor = null)}>Try again</button>
                 {/if}
               </label>
+              {/if}
             </div>
-            <div class="quick-generate-open">
-              <button class="btn" type="button" disabled={!prefs.quickGenerateEnabled} onclick={openQuickGenerate}>Open prompt</button>
-              {#if !prefs.quickGenerateEnabled}<span class="hint">Save to turn it on.</span>{/if}
-            </div>
+            {#if quickGenerateEnabled}
+              <div class="quick-generate-open">
+                <button class="btn" type="button" disabled={!prefs.quickGenerateEnabled} onclick={openQuickGenerate}>Open prompt</button>
+                {#if !prefs.quickGenerateEnabled}<span class="hint">Save to turn it on.</span>{/if}
+              </div>
+            {/if}
           {/if}
         </div>
 

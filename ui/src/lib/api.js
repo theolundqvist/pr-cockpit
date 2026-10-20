@@ -489,6 +489,16 @@ export async function quickGenerate({ key, model, prompt }, signal = null) {
   return body.text;
 }
 
+export async function askView({ question, view }, signal = null) {
+  const res = await fetch("/api/ask", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ question, view }),
+    signal,
+  });
+  return quickGenerateJson(res, "ask");
+}
+
 export async function claimNotifications() {
   const res = await fetch("/api/notifications/claim", { method: "POST" });
   if (!res.ok) throw new Error(`notifications ${res.status}`);

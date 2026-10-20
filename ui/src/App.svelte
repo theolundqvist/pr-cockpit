@@ -4,6 +4,7 @@
   import PrDetail from "./lib/PrDetail.svelte";
   import Palette from "./lib/Palette.svelte";
   import QuickGenerate from "./lib/QuickGenerate.svelte";
+  import AskView from "./lib/AskView.svelte";
   import Settings from "./lib/Settings.svelte";
   import Usage from "./lib/Usage.svelte";
   import ActionsPage from "./lib/ActionsPage.svelte";
@@ -28,7 +29,7 @@
   import { quotaImpact } from "./lib/quotaImpact.js";
   import { navigationForShortcut } from "./lib/navigationShortcuts.js";
   import { isRecordingShortcut } from "./lib/shortcutCapture.js";
-  import { isQuickGenerateOpen } from "./lib/dom.js";
+  import { isPromptDialogOpen } from "./lib/dom.js";
   import { SETTINGS_SECTION_KEY, SETTINGS_SECTIONS, normalizeSettingsSection, settingsSectionHref } from "./lib/settingsSections.js";
 
   window.cockpitFlash = showFlash;
@@ -141,7 +142,7 @@
 
   $effect(() => {
     const navigate = (event) => {
-      if (isRecordingShortcut() || isQuickGenerateOpen()) return;
+      if (isRecordingShortcut() || isPromptDialogOpen()) return;
       const destination = navigationForShortcut(event);
       if (!destination) return;
       event.preventDefault();
@@ -432,6 +433,7 @@
     <SetAsideTray />
     <Palette />
     {#if prefs.quickGenerateEnabled}<QuickGenerate />{/if}
+    {#if prefs.askViewEnabled}<AskView {route} />{/if}
     <FlashBar />
     <Cheatsheet />
     <Lightbox />

@@ -26,6 +26,7 @@ export const prefs = $state({
   hiddenReviewPaths: {},
   restFallbackEnabled: true,
   quickGenerateEnabled: false,
+  askViewEnabled: false,
   agentConversationsEnabled: false,
   quickGenerateEnvFile: "",
   personalQuickActions: "",
@@ -56,6 +57,7 @@ export function setPrefs(settings) {
   prefs.hiddenReviewPaths = settings.hidden_review_paths ?? {};
   prefs.restFallbackEnabled = settings.rest_fallback_enabled !== false;
   prefs.quickGenerateEnabled = settings.quick_generate_enabled === true;
+  prefs.askViewEnabled = settings.ask_view_enabled === true;
   prefs.agentConversationsEnabled = settings.agent_conversations_enabled === true;
   prefs.quickGenerateEnvFile = settings.quick_generate_env_file ?? "";
   prefs.personalQuickActions = settings.personal_quick_actions ?? "";

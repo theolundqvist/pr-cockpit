@@ -40,6 +40,7 @@
   import MultiSelectDropdown from "./MultiSelectDropdown.svelte";
   import { committedQuickActionsCache, resolveQuickActions, quickActionMutation } from "./quickActions.js";
   import { labelsAfterMutations } from "./appliedLabels.js";
+  import { listedPrs } from "./listedPrs.svelte.js";
 
   let { active = true, refreshRevision = 0, pollCompletedAt = null, onFindPr = () => {} } = $props();
   let handledRefreshRevision = refreshRevision;
@@ -1362,6 +1363,15 @@
   let ordered = $derived(view === "all" ? visibleAllPrs : view === "closed" ? filteredClosedPrs : showArchived ? [...openOrdered, ...visibleArchivedPrs] : openOrdered);
   let archivedSet = $derived(new Set(archivedPrs.map((pr) => prKey(pr))));
   const isArchived = (pr) => archivedSet.has(prKey(pr));
+  $effect(() => {
+    if (!active || view === "agents") return;
+    const sections = new Map(groups.flatMap((group) => group.items.filter((item) => item.pr).map((item) => [prKey(item.pr), group.title])));
+    listedPrs.title = activeView ?? (view === "all" ? "All PRs" : view === "closed" ? "Recently merged" : view === "whiteboard" ? "Whiteboard" : "Your queue");
+    listedPrs.rows = ordered.map((pr) => ({ pr, section: view === "open" || view === "whiteboard" ? (sections.get(prKey(pr)) ?? (isArchived(pr) ? "Archived" : null)) : null }));
+    return () => {
+      listedPrs.rows = null;
+    };
+  });
   $effect(() => {
     if (titleEditor && (!active || !ordered.some((pr) => prKey(pr) === prKey(titleEditor.pr)))) titleEditor = null;
   });
