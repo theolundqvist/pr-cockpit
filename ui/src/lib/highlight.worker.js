@@ -1,20 +1,8 @@
-import { ensureTheme, getHighlighter } from "./highlight.js";
+import { tokenizeRequest } from "./highlight.js";
 
-const colourOnly = (tokens) => tokens.map(({ content, color }) => ({ content, color }));
-
-self.onmessage = async ({ data }) => {
-  const { id, lang, theme, lines, code } = data;
+self.onmessage = async ({ data: { id, ...request } }) => {
   try {
-    const highlighter = await getHighlighter();
-    await ensureTheme(highlighter, theme);
-    if (!highlighter.getLoadedLanguages().includes(lang)) {
-      self.postMessage({ id, tokens: null });
-      return;
-    }
-    const tokens = code !== undefined
-      ? highlighter.codeToTokensBase(code, { lang, theme }).map(colourOnly)
-      : lines.map((line) => colourOnly(highlighter.codeToTokensBase(line, { lang, theme })[0] ?? []));
-    self.postMessage({ id, tokens });
+    self.postMessage({ id, result: await tokenizeRequest(request) });
   } catch (error) {
     self.postMessage({ id, error: error instanceof Error ? error.message : String(error) });
   }

@@ -3,7 +3,7 @@
   import { repoSearch, repoFiles, repoFile, repoDefinition } from "./api.js";
   import { isQuickGenerateOpen } from "./dom.js";
   import { langForPath } from "./highlight.js";
-  import { tokenizeLines } from "./offThreadHighlight.js";
+  import { tokenizeCodeBlock, tokenizeLines } from "./offThreadHighlight.js";
   import { theme } from "./theme.svelte.js";
   import { fuzzyRankWithPriority } from "./fuzzy.js";
   import { showFlash } from "./flash.svelte.js";
@@ -284,7 +284,7 @@
   async function colourPreview(path, entry) {
     const lang = langForPath(path);
     if (!lang || entry.lines.length > PREVIEW_MAX_HIGHLIGHT_LINES) return;
-    const tokens = await tokenizeLines(entry.lines, lang, theme.shiki).catch(() => null);
+    const tokens = await tokenizeCodeBlock(entry.lines.join("\n"), lang, theme.shiki).catch(() => null);
     if (!tokens || previews.get(path) !== entry) return;
     const after = new Map(previews);
     after.set(path, { ...entry, tokens });

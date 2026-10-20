@@ -1,4 +1,4 @@
-import { ensureTheme, getHighlighter } from "./highlight.js";
+import { tokenizeRequest } from "./highlight.js";
 
 // Syntax highlighting runs in a worker: compiling a grammar's rules or matching one long line
 // can hold the main thread for 100 ms, which stalled the first Files paint, diff scrolling,
@@ -30,33 +30,25 @@ function highlightWorker() {
     if (!request) return;
     pending.delete(data.id);
     if (data.error) request.reject(new Error(data.error));
-    else request.resolve(data.tokens);
+    else request.resolve(data.result);
   };
   worker.onerror = (event) => failWorker(event.error ?? new Error(event.message || "highlight worker failed"));
   return worker;
 }
 
-async function tokenizeOnMainThread({ lang, theme, lines, code }) {
-  const highlighter = await getHighlighter();
-  await ensureTheme(highlighter, theme);
-  if (!highlighter.getLoadedLanguages().includes(lang)) return null;
-  if (code !== undefined) return highlighter.codeToTokensBase(code, { lang, theme });
-  return lines.map((line) => highlighter.codeToTokensBase(line, { lang, theme })[0] ?? []);
-}
-
-// Resolves to one token list per line, or null when the language cannot be highlighted.
+// Resolves to the request's tokens, or null when the language cannot be highlighted.
 function tokenize(request) {
   const target = highlightWorker();
-  if (!target) return tokenizeOnMainThread(request);
+  if (!target) return tokenizeRequest(request);
   const id = ++nextId;
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject });
     target.postMessage({ id, ...request });
-  }).catch(() => (workerFailed ? tokenizeOnMainThread(request) : null));
+  }).catch(() => (workerFailed ? tokenizeRequest(request) : null));
 }
 
-// Diff lines are tokenized one by one and cached per theme, language, and text, so revisits
-// and repeated lines are free.
+// Independent lines (search hits, editor viewport lines) are cached per theme, language, and
+// text, so revisits and repeated lines are free.
 const lineCache = new Map();
 
 function lineKey(text, lang, theme) {
@@ -72,6 +64,25 @@ export async function tokenizeLines(lines, lang, theme) {
   if (!tokens) return null;
   tokens.forEach((lineTokens, index) => lineCache.set(lineKey(lines[index], lang, theme), lineTokens));
   return tokens;
+}
+
+// Consecutive lines of one file are tokenized in blocks, each continuing the grammar state the
+// previous block ended in ("" for the first), so block comments colour every line they span.
+// Keying by that state keeps revisits free.
+const blockCache = new Map();
+
+function blockKey(lines, lang, theme, after) {
+  return `${theme}\n${lang}\n${after}\n${lines.join("\n")}`;
+}
+
+export function cachedBlockTokens(lines, lang, theme, after) {
+  return blockCache.get(blockKey(lines, lang, theme, after));
+}
+
+export async function tokenizeBlock(lines, lang, theme, after) {
+  const block = await tokenize({ lang, theme, lines, after });
+  if (block) blockCache.set(blockKey(lines, lang, theme, after), block);
+  return block;
 }
 
 // A code block keeps grammar state across its lines, so it is tokenized as one text.

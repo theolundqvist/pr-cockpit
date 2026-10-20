@@ -5,7 +5,7 @@
   import MutationBadge from "./MutationBadge.svelte";
   import PendingReviewComment from "./PendingReviewComment.svelte";
   import { langForPath } from "./highlight.js";
-  import { cachedLineTokens, tokenizeLines } from "./offThreadHighlight.js";
+  import { cachedBlockTokens, tokenizeBlock } from "./offThreadHighlight.js";
   import { renderMarkdown } from "./markdown.js";
   import { presentMutationError } from "./mutationError.js";
   import { theme } from "./theme.svelte.js";
@@ -587,6 +587,21 @@
       }
     }
     return selected;
+  }
+  // Each side reads as file text, so grammar state carries across its lines: context and
+  // additions form the new file, context and deletions the old one, which colours only deletions.
+  const highlightSidesCache = new WeakMap();
+  function highlightSides(rows) {
+    let sides = highlightSidesCache.get(rows);
+    if (!sides) {
+      sides = [{ rows: rows.filter((row) => row.type !== "del"), deletionsOnly: false }];
+      if (rows.some((row) => row.type === "del")) sides.push({ rows: rows.filter((row) => row.type !== "add"), deletionsOnly: true });
+      highlightSidesCache.set(rows, sides);
+    }
+    return sides;
+  }
+  function highlightText(row) {
+    return row.text.length > MAX_HIGHLIGHT_LINE ? "" : row.text;
   }
   function usesSplitLayout(file) {
     return !compactLayout && fileUsesSplitLayout(file, layout);
@@ -1457,21 +1472,31 @@
     let cancelled = false;
     (async () => {
       const seen = new Set();
-      const batches = [];
-      const collect = (rows, lang) => {
-        let missing = [];
-        for (const row of rows) {
-          if (row.text.length > MAX_HIGHLIGHT_LINE) continue;
-          seen.add(row);
-          const tokens = cachedLineTokens(row.text, lang, themeName);
-          if (!tokens) missing.push(row);
-          else if (rowTokens.get(row) !== tokens) rowTokens.set(row, tokens);
-          if (missing.length === HIGHLIGHT_BATCH_ROWS) {
-            batches.push({ rows: missing, lang });
-            missing = [];
+      const runs = [];
+      const apply = (block, tokens, deletionsOnly) => {
+        block.forEach((row, index) => {
+          if (row.text.length > MAX_HIGHLIGHT_LINE || (deletionsOnly && row.type !== "del")) return;
+          if (rowTokens.get(row) !== tokens[index]) rowTokens.set(row, tokens[index]);
+        });
+      };
+      // Blocks run from the start of a side through its last visible row; cached blocks paint now.
+      const collect = (rows, split, lang) => {
+        const visible = visibleHighlightRows(rows, split, chunkSnapshot);
+        for (const { rows: side, deletionsOnly } of highlightSides(rows)) {
+          const last = visible === rows ? side.length - 1 : side.findLastIndex((row) => visible.has(row));
+          if (last < 0) continue;
+          for (const row of side.slice(0, Math.ceil((last + 1) / HIGHLIGHT_BATCH_ROWS) * HIGHLIGHT_BATCH_ROWS)) seen.add(row);
+          let start = 0;
+          let after = "";
+          for (; start <= last; start += HIGHLIGHT_BATCH_ROWS) {
+            const block = side.slice(start, start + HIGHLIGHT_BATCH_ROWS);
+            const cached = cachedBlockTokens(block.map(highlightText), lang, themeName, after);
+            if (!cached) break;
+            apply(block, cached.tokens, deletionsOnly);
+            after = cached.state;
           }
+          if (start <= last) runs.push({ side, deletionsOnly, start, last, after, lang });
         }
-        if (missing.length) batches.push({ rows: missing, lang });
       };
       for (const indexedFile of snapshot) {
         const file = hydratedSnapshot.get(indexedFile.path) ?? indexedFile;
@@ -1479,23 +1504,28 @@
         const lang = langForPath(file.path);
         if (!lang) continue;
         const split = fileUsesSplitLayout(file, layoutSnapshot);
-        for (const hunk of file.hunks) collect(visibleHighlightRows(hunk.rows, split, chunkSnapshot), lang);
+        for (const hunk of file.hunks) collect(hunk.rows, split, lang);
         const whole = wholeSnapshot.get(file.path);
-        if (whole?.status === "ready") collect(visibleHighlightRows(whole.rows, split, chunkSnapshot), lang);
+        if (whole?.status === "ready") collect(whole.rows, split, lang);
         for (let hi = 0; hi <= file.hunks.length; hi++) {
           const g = gapSnapshot.get(gapKey(file, hi));
-          if (Array.isArray(g)) collect(visibleHighlightRows(g, split, chunkSnapshot), lang);
+          if (Array.isArray(g)) collect(g, split, lang);
         }
       }
       for (const row of [...rowTokens.keys()]) {
         if (!seen.has(row)) rowTokens.delete(row);
       }
-      // One batch in flight at a time, so a scroll or theme change abandons queued work quickly.
-      for (const batch of batches) {
-        const tokens = await tokenizeLines(batch.rows.map((row) => row.text), batch.lang, themeName).catch(() => null);
-        if (cancelled) return;
-        if (!tokens) continue;
-        batch.rows.forEach((row, index) => rowTokens.set(row, tokens[index]));
+      // One block in flight at a time, so a scroll or theme change abandons queued work quickly.
+      for (const run of runs) {
+        let after = run.after;
+        for (let start = run.start; start <= run.last; start += HIGHLIGHT_BATCH_ROWS) {
+          const block = run.side.slice(start, start + HIGHLIGHT_BATCH_ROWS);
+          const result = await tokenizeBlock(block.map(highlightText), run.lang, themeName, after).catch(() => null);
+          if (cancelled) return;
+          if (!result) break;
+          apply(block, result.tokens, run.deletionsOnly);
+          after = result.state;
+        }
       }
     })();
     return () => {

@@ -77,3 +77,26 @@ export async function ensureTheme(highlighter, themeName) {
   await highlighter.loadTheme(mod.default ?? mod);
   loadedThemes.add(themeName);
 }
+
+const colourOnly = (tokens) => tokens.map(({ content, color }) => ({ content, color }));
+
+// Grammar states stay in the realm that computed them; callers continue a run by state id.
+const grammarStates = new Map();
+const MAX_GRAMMAR_STATES = 2000;
+const stateRealm = Math.random().toString(36).slice(2, 8);
+let nextStateId = 0;
+
+// `lines` without `after` are independent lines; with `after` they continue the run whose
+// previous block ended in that state ("" starts a run), so comments and strings span lines.
+export async function tokenizeRequest({ lang, theme, lines, code, after }) {
+  const highlighter = await getHighlighter();
+  await ensureTheme(highlighter, theme);
+  if (!highlighter.getLoadedLanguages().includes(lang)) return null;
+  if (code !== undefined) return highlighter.codeToTokensBase(code, { lang, theme }).map(colourOnly);
+  if (after === undefined) return lines.map((line) => colourOnly(highlighter.codeToTokensBase(line, { lang, theme })[0] ?? []));
+  const tokens = highlighter.codeToTokensBase(lines.join("\n"), { lang, theme, grammarState: grammarStates.get(after) });
+  const state = `${stateRealm}:${++nextStateId}`;
+  grammarStates.set(state, highlighter.getLastGrammarState(tokens));
+  if (grammarStates.size > MAX_GRAMMAR_STATES) grammarStates.delete(grammarStates.keys().next().value);
+  return { tokens: tokens.map(colourOnly), state };
+}
