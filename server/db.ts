@@ -28,6 +28,11 @@ db.exec("PRAGMA synchronous = NORMAL;");
 db.exec("PRAGMA mmap_size = 2147418112;");
 
 db.exec(`
+CREATE TABLE IF NOT EXISTS kitchen_prs (
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  PRIMARY KEY (repo, number)
+);
 CREATE TABLE IF NOT EXISTS prs (
   repo TEXT NOT NULL,
   number INTEGER NOT NULL,
@@ -676,7 +681,34 @@ UPDATE pr_index SET created_at = ${cachedDetailCreatedAtSql("$repo", "$number")}
 WHERE repo = $repo AND number = $number AND created_at IS NULL
 `);
 
+// Membership survives label removal and pruning of the live inbox.
+function rememberKitchenPr(row: { repo: string; number: number; detail_json: string }): void {
+  if (getSetting("cooking_section_enabled") !== "true") return;
+  const labels = JSON.parse(row.detail_json)?.labels?.nodes;
+  if (Array.isArray(labels) && labels.some((label) => typeof label.name === "string" && label.name.toLowerCase().trim().startsWith("kitchen:"))) {
+    db.query("INSERT OR IGNORE INTO kitchen_prs (repo, number) VALUES (?, ?)").run(row.repo, row.number);
+  }
+}
+
+let kitchenHistorySeeded = false;
+export function listKitchenHistory(limit: number, offset: number): PrIndexRow[] {
+  // Recover pre-existing history from details already on disk; never fetch GitHub here.
+  if (!kitchenHistorySeeded) db.exec(`INSERT OR IGNORE INTO kitchen_prs (repo, number)
+    SELECT repo, number FROM prs WHERE EXISTS (
+      SELECT 1 FROM json_each(detail_json, '$.labels.nodes') WHERE lower(trim(json_extract(value, '$.name'))) LIKE 'kitchen:%'
+    ) UNION SELECT repo, number FROM pr_detail_cache WHERE EXISTS (
+      SELECT 1 FROM json_each(detail_json, '$.labels.nodes') WHERE lower(trim(json_extract(value, '$.name'))) LIKE 'kitchen:%'
+    )`);
+  kitchenHistorySeeded = true;
+  return db.query<PrIndexRow, [number, number]>(`SELECT p.* FROM pr_index p
+    JOIN kitchen_prs k ON k.repo = p.repo AND k.number = p.number
+    WHERE p.state = 'MERGED' AND p.involves_me = 1
+    ORDER BY COALESCE(p.merged_at, p.closed_at, p.updated_at) DESC, p.repo, p.number DESC
+    LIMIT ? OFFSET ?`).all(limit, offset);
+}
+
 export function upsertPr(row: PrRow): void {
+  rememberKitchenPr(row);
   const body = detailBody(row.detail_json);
   upsertStmt.run({
     $repo: row.repo,
@@ -1755,6 +1787,7 @@ WHERE excluded.fetched_at >= pr_detail_cache.fetched_at
 `);
 
 export function upsertCachedPrDetail(row: CachedPrDetailRow): void {
+  rememberKitchenPr(row);
   upsertCachedPrDetailStmt.run({
     $repo: row.repo,
     $number: row.number,

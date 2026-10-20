@@ -2826,3 +2826,28 @@ describe("repository settings refresh", () => {
     }
   });
 });
+
+test("Kitchen history retains participation after label removal and pages only merged PRs", async () => {
+  const repo = "fixture/kitchen-history";
+  const previous = getSetting("cooking_section_enabled");
+  setSetting("cooking_section_enabled", "true");
+  try {
+    for (const number of [1, 2, 3, 4]) {
+      upsertCachedPrDetail({ repo, number, head_sha: "abc", fetched_at: "2026-10-20T00:00:00Z", detail_json: JSON.stringify({ labels: { nodes: number === 4 ? [] : [{ name: "kitchen: oven" }] } }) });
+    }
+    upsertCachedPrDetail({ repo, number: 1, head_sha: "abc", fetched_at: "2026-10-20T01:00:00Z", detail_json: JSON.stringify({ labels: { nodes: [] } }) });
+    upsertPrIndex([1, 2, 3, 4].map((number) => ({ repo, number, title: `Completion ${number}`, state: number === 3 ? "CLOSED" : "MERGED", isDraft: false, author: "octocat", updatedAt: `2026-10-20T0${number}:00:00Z`, mergedAt: number === 3 ? null : `2026-10-20T0${number}:00:00Z`, closedAt: null, involvesMe: true })));
+    const handler = buildFetchHandler(4820);
+    const page = async (offset = 0) => (await handler(new Request(`http://127.0.0.1:4820/api/kitchen-history?limit=1&offset=${offset}`))).json();
+    expect((await page()).prs.map((pr) => pr.number)).toEqual([2]);
+    expect((await page()).hasMore).toBe(true);
+    expect((await page(1)).prs.map((pr) => pr.number)).toEqual([1]);
+    expect((await page(1)).hasMore).toBe(false);
+    setSetting("cooking_section_enabled", "false");
+    expect((await page()).prs).toEqual([]);
+  } finally {
+    for (const table of ["pr_index", "pr_detail_cache", "kitchen_prs"]) db.query(`DELETE FROM ${table} WHERE repo = ?`).run(repo);
+    if (previous === null) db.query("DELETE FROM settings WHERE key = 'cooking_section_enabled'").run();
+    else setSetting("cooking_section_enabled", previous);
+  }
+});

@@ -113,8 +113,12 @@ test("a local server imports inbox state and proxies GitHub-backed APIs through 
     expect(sourceAllPrs.status).toBe(200);
     expect(replicaAllPrs.status).toBe(200);
     expect(await replicaAllPrs.json()).toEqual(await sourceAllPrs.json());
+    const sourceHistory = await fetch(`http://127.0.0.1:${sourcePort}/api/kitchen-history`).then((r) => r.json());
+    const replicaHistory = await fetch(`http://127.0.0.1:${replicaPort}/api/kitchen-history`).then((r) => r.json());
+    expect(replicaHistory).toEqual(sourceHistory);
     source.kill();
     await source.exited;
+    expect((await fetch(`http://127.0.0.1:${replicaPort}/api/kitchen-history`)).status).toBe(503);
     const offlineInbox = await fetch(`http://127.0.0.1:${replicaPort}/api/inbox`).then((response) => response.json());
     expect(offlineInbox).toEqual(replicaInbox);
     const offlineAllPrs = await fetch(`http://127.0.0.1:${replicaPort}${allPrsPath}`);

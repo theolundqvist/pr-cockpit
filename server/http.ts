@@ -25,6 +25,7 @@ import {
   listBodyMedia,
   listFailedMergeKeys,
   listClosedPrs,
+  listKitchenHistory,
   listPrIndex,
   prIndexCreatedAt,
   listActionWorkflows,
@@ -381,7 +382,11 @@ function handleClosed(url: URL): Response {
     ? Math.min(requestedLimit, 200)
     : 100;
   const media = listBodyMedia();
-  const prs = listClosedPrs(limit).map((pr) => ({
+  const kitchen = url.pathname === "/api/kitchen-history";
+  if (kitchen && !readSettings().cooking_section_enabled) return json({ prs: [], hasMore: false });
+  const offset = Math.max(0, Math.min(Number(url.searchParams.get("offset")) || 0, 1000000));
+  const rows = kitchen ? listKitchenHistory(limit + 1, Math.floor(offset)) : listClosedPrs(limit);
+  const prs = rows.slice(0, limit).map((pr) => ({
     repo: pr.repo,
     number: pr.number,
     title: pr.title,
@@ -395,7 +400,7 @@ function handleClosed(url: URL): Response {
     terminalAt: pr.merged_at ?? pr.closed_at ?? pr.updated_at,
     ...(media.has(prKey(pr)) ? mediaFields(media.get(prKey(pr))) : {}),
   }));
-  return json({ prs });
+  return json({ prs, ...(kitchen ? { hasMore: rows.length > limit } : {}) });
 }
 
 function inboxRows(prs: PrRow[]) {
@@ -3553,7 +3558,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     if (req.method === "GET" && url.pathname === "/api/all-prs") {
       return handleAllPrs(url, runtime);
     }
-    if (req.method === "GET" && url.pathname === "/api/closed") {
+    if (req.method === "GET" && (url.pathname === "/api/closed" || url.pathname === "/api/kitchen-history")) {
       return handleClosed(url);
     }
     if (req.method === "GET" && url.pathname === "/api/auth/status") {

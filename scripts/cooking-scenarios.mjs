@@ -1,6 +1,6 @@
 // Exercise the real settings and list UI against the screenshot harness's isolated backend.
 export function cookingScenarios() {
-  return ["before", "expanded", "hidden"].map((mode) => ({
+  return ["before", "expanded", "hidden", "history"].map((mode) => ({
     name: `inbox-cooking-${mode}`,
     route: mode === "before" ? "#/" : "#/settings/general",
     ready: mode === "before" ? ".queue-group" : ".settings-panel",
@@ -15,9 +15,14 @@ export function cookingScenarios() {
       return () => update(previous.cooking_section_enabled);
     },
     beforeGoto: async (page) => {
+      await page.route("**/api/kitchen-history?*", (route) => route.fulfill({ json: { hasMore: false, prs: [
+        { repo: "fixture/cockpit", number: 510, title: "Improve workspace search", author: "octocat", state: "MERGED", terminalAt: "2026-07-15T09:30:00Z" },
+        { repo: "fixture/cockpit", number: 509, title: "Fix export ordering", author: "octocat", state: "MERGED", terminalAt: "2026-07-14T09:30:00Z" },
+      ] } }));
       await page.addInitScript(() => {
         if (!sessionStorage.getItem("cooking-fixture")) {
           localStorage.removeItem("cockpit:cooking-hidden");
+          localStorage.setItem("cockpit:kitchen-seen", JSON.stringify({ "fixture/cockpit#509:2026-07-14T09:30:00Z": true }));
           sessionStorage.setItem("cooking-fixture", "1");
         }
       });
@@ -68,10 +73,30 @@ export function cookingScenarios() {
       await toggle.waitFor();
       if (await toggle.getAttribute("aria-expanded") !== "false") throw new Error("Hidden state did not survive reload");
       if (mode === "expanded") await toggle.click();
+      if (mode === "history") {
+        await page.getByRole("tab", { name: /Kitchen history/ }).click();
+        await page.getByRole("region", { name: "New completions" }).waitFor();
+        await page.getByRole("region", { name: "Older history" }).waitFor();
+      }
     },
     verify: async (page) => {
+      if (mode === "history") {
+        if (await page.getByRole("region", { name: "New completions" }).locator(".row").count() !== 1) throw new Error("New history count is wrong");
+        await page.getByRole("button", { name: "Mark seen", exact: true }).click();
+        if (await page.getByRole("region", { name: "New completions" }).count()) throw new Error("Acknowledged completions remain new");
+        if (await page.getByRole("region", { name: "Older history" }).locator(".row").count() !== 2) throw new Error("Mark seen lost history");
+        await page.reload();
+        await page.getByRole("tab", { name: "Kitchen history", exact: true }).click();
+        await page.getByRole("region", { name: "Older history" }).waitFor();
+        if (await page.getByRole("region", { name: "New completions" }).count()) throw new Error("Seen state did not persist");
+        // Restore the mixed state for the review screenshot.
+        await page.evaluate(() => { localStorage.setItem("cockpit:kitchen-seen", JSON.stringify({ "fixture/cockpit#509:2026-07-14T09:30:00Z": true })); });
+        await page.reload();
+        await page.getByRole("tab", { name: /Kitchen history/ }).click();
+        await page.getByRole("region", { name: "New completions" }).waitFor();
+      }
       if (mode === "before" && await page.locator(".cooking-toggle,.cooking-stage").count()) throw new Error("Cooking UI visible before opt-in");
-      if (mode !== "before" && await page.locator(".cooking-toggle .group-count").textContent() !== "4") throw new Error("Cooking count is wrong");
+      if (mode !== "before" && mode !== "history" && await page.locator(".cooking-toggle .group-count").textContent() !== "4") throw new Error("Cooking count is wrong");
     },
   }));
 }
