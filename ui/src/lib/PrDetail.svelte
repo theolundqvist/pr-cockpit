@@ -3608,7 +3608,7 @@
                     />
                   {:else}
                     <button
-                      class="merge-btn fail"
+                      class="btn wide shortcut-action fail"
                       disabled={kitchenServing || cancelOrderBusy || cancelOrderPending}
                       title={kitchenServing ? "Kitchen is already merging this order." : "Remove this PR’s order and rush labels"}
                       onclick={requestCancelOrder}
@@ -3626,8 +3626,8 @@
               <h3 class="side-title">Preview</h3>
               <div class="actions">
                 {#each previewLinks as link (link.url)}
-                  <a class="preview-launch" href={link.url} target="_blank" rel="noreferrer" title={link.url}>
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <a class="btn wide shortcut-action preview-launch" href={link.url} target="_blank" rel="noreferrer" title={link.url}>
+                    <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
                       {#if link.kind === "desktop"}
                         <rect x="3" y="4" width="18" height="12" rx="2" />
                         <path d="M12 16v4m-4 0h8" />
@@ -4369,6 +4369,7 @@
     opacity: 0.6;
     cursor: default;
   }
+  .btn.fail,
   .merge-btn.fail {
     background: var(--fail-bg);
     border-color: var(--fail);
@@ -6070,6 +6071,7 @@
     font-weight: 600;
     box-shadow: 0 1px 1px color-mix(in srgb, var(--ready) 22%, transparent);
   }
+  .btn.fail,
   .merge-btn.fail {
     background: var(--fail-bg);
     border-color: color-mix(in srgb, var(--fail) 45%, var(--border));
@@ -6597,38 +6599,8 @@
   .side-block + .side-block {
     padding-top: 14px;
   }
-  .preview-block {
-    border: 1px solid color-mix(in srgb, var(--text) 20%, var(--border));
-  }
   .preview-launch {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 12px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    background: var(--panel-raised);
-    color: var(--text);
-    font-size: 13px;
-    font-weight: 500;
     text-decoration: none;
-  }
-  .preview-launch:hover {
-    background: var(--surface-hover);
-  }
-  .preview-launch:focus-visible {
-    outline: 2px solid var(--text);
-    outline-offset: 2px;
-  }
-  .preview-launch svg {
-    width: 20px;
-    height: 20px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.5;
-  }
-  .preview-launch span:first-of-type {
-    flex: 1;
   }
   .block-title,
   .side-title {
@@ -6820,6 +6792,7 @@
     opacity: 0.78;
     text-transform: capitalize;
   }
+  .btn.fail,
   .merge-btn.fail {
     border: 0;
     background: var(--panel);
@@ -6871,6 +6844,7 @@
     .composer .btn:hover:not(:disabled) {
       background: var(--brand-hover);
     }
+    .btn.fail:hover:not(:disabled),
     .merge-btn.fail:hover:not(:disabled) {
       background: color-mix(in srgb, var(--fail-bg) 38%, var(--panel));
     }
