@@ -113,9 +113,10 @@ import { cachedGeneratedPathsFromMirror, generatedFilesFromMirror, generatedPath
 import { checkState, currentChecks, type CheckState } from "./checkState.ts";
 import { currentBaseRef, discardMutation, enqueueMutation, isTaskIntent, mutationsForPr, retryMutation, type MutationPayload } from "./mutations.ts";
 import { isMergeMethod, mergeMethodFor, mergeMethodSourceFor, setMergeMethodPreference } from "./mergeMethod.ts";
-import { AGENT_DEFAULTS, pendingReviewsEnabled, quickGenerateEnabled, readSettings, relayConfig, restFallbackEnabled, restUsageEnabled, RELAY_APP_INSTALL_URL, RELAY_APP_SLUG, safeMergeApprovalEnabled, settingsRepos, writeSettings, type AgentSetting, type Settings } from "./settings.ts";
+import { AGENT_DEFAULTS, askViewEnabled, pendingReviewsEnabled, quickGenerateEnabled, readSettings, relayConfig, restFallbackEnabled, restUsageEnabled, RELAY_APP_INSTALL_URL, RELAY_APP_SLUG, safeMergeApprovalEnabled, settingsRepos, writeSettings, type AgentSetting, type Settings } from "./settings.ts";
 import { claudeBinPath, codexBinPath, ompBinPath } from "./harness.ts";
 import { CommitMessageError, generateCommitMessage } from "./commitMessage.ts";
+import { askView, parseAskRequest } from "./askView.ts";
 import { QuickGenerateError, quickGenerate, quickGenerateConfig, quickGenerateModels } from "./quickGenerate.ts";
 import { relayStatus, webhookCoveredSince } from "./relayClient.ts";
 import { relayCoverage } from "./relayCoverage.ts";
@@ -2702,6 +2703,25 @@ async function handleQuickGenerate(req: Request, url: URL): Promise<Response> {
   }
 }
 
+async function handleAsk(req: Request): Promise<Response> {
+  if (req.method !== "POST") return json({ error: "not found" }, 404);
+  if (!askViewEnabled()) return json({ error: "Ask is off in Settings." }, 403);
+  try {
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: "invalid JSON body" }, 400);
+    }
+    const { question, view } = parseAskRequest(body);
+    return json(await askView(question, view, req.signal));
+  } catch (error) {
+    if (error instanceof QuickGenerateError) return json({ error: error.message }, error.status);
+    console.error("Ask failed:", error);
+    return json({ error: "Ask failed." }, 500);
+  }
+}
+
 const REPO_RE = /^[^/]+\/[^/]+$/;
 // headRef reaches `git fetch origin <ref>` - a leading-dash value would be parsed as a git option, so forbid it
 const REF_RE = /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/;
@@ -3008,6 +3028,7 @@ async function handlePutSettings(req: Request, runtime: HttpRuntime): Promise<Re
     quick_generate_key: string;
     quick_generate_model: string;
     quick_generate_env_file: string;
+    ask_view_enabled: boolean;
     personal_quick_actions: string;
     pr_grouping: Settings["pr_grouping"];
   }>;
@@ -3402,6 +3423,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
         || (req.method === "POST" && url.pathname === "/api/inbox/reorder")
         || (req.method === "POST" && url.pathname === "/api/commit-message")
         || (req.method === "POST" && url.pathname === "/api/quick-generate")
+        || (req.method === "POST" && url.pathname === "/api/ask")
         || (req.method === "POST" && url.pathname === "/api/auth/setup")
         || (req.method === "PUT" && url.pathname === "/api/settings")
         || (req.method === "PUT" && url.pathname === "/api/whiteboard")
@@ -3448,10 +3470,11 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     }
     // Personal board data belongs to this installation, never to a replica's upstream.
     if (url.pathname === "/api/whiteboard") return handleWhiteboard(req);
-    // Provider keys live on this machine, so quick generation never reaches a replica's source.
+    // Provider keys live on this machine, so quick generation and asks never reach a replica's source.
     if (url.pathname === "/api/quick-generate" || url.pathname.startsWith("/api/quick-generate/")) {
       return handleQuickGenerate(req, url);
     }
+    if (url.pathname === "/api/ask") return handleAsk(req);
     const replicaResponse = await proxyReplicaRequest(req, url);
     if (replicaResponse) return replicaResponse;
 

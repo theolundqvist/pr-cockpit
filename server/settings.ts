@@ -252,6 +252,10 @@ export function quickGenerateEnabled(): boolean {
   return getSetting("quick_generate_enabled") === "true";
 }
 
+export function askViewEnabled(): boolean {
+  return getSetting("ask_view_enabled") === "true";
+}
+
 function normalizeQuickGenerateKey(value: unknown): string {
   if (typeof value !== "string") throw new Error("invalid quick generate key");
   const key = value.trim();
@@ -351,6 +355,7 @@ export interface Settings {
   quick_generate_key: string;
   quick_generate_model: string;
   quick_generate_env_file: string;
+  ask_view_enabled: boolean;
   personal_quick_actions: string;
   pr_grouping: PrGrouping;
   agent_harness: Harness;
@@ -407,6 +412,7 @@ export function readSettings(): Settings {
     quick_generate_key: getSetting("quick_generate_key") ?? "",
     quick_generate_model: getSetting("quick_generate_model") ?? "",
     quick_generate_env_file: getSetting("quick_generate_env_file") ?? "",
+    ask_view_enabled: askViewEnabled(),
     personal_quick_actions: getSetting("personal_quick_actions") ?? "",
     pr_grouping: readPrGrouping(),
     agent_harness: normalizeHarness(getSetting("agent_harness")),
@@ -461,6 +467,7 @@ export function writeSettings(
     quick_generate_key: string;
     quick_generate_model: string;
     quick_generate_env_file: string;
+    ask_view_enabled: boolean;
     personal_quick_actions: string;
     pr_grouping: PrGrouping;
     agent_harness: string;
@@ -600,6 +607,13 @@ export function writeSettings(
     const enabled = patch.quick_generate_enabled === true;
     if (quickGenerateEnabled() !== enabled) {
       setSetting("quick_generate_enabled", enabled ? "true" : "false");
+      invalidateSettings();
+    }
+  }
+  if (patch.ask_view_enabled !== undefined) {
+    const enabled = patch.ask_view_enabled === true;
+    if (askViewEnabled() !== enabled) {
+      setSetting("ask_view_enabled", enabled ? "true" : "false");
       invalidateSettings();
     }
   }
