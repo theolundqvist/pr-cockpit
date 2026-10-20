@@ -11,7 +11,7 @@ export interface QuickGenerateRoots {
 }
 
 // Key values stay in memory per request and are never copied into process.env, which agents and actions inherit.
-function systemRoots(): QuickGenerateRoots {
+export function systemRoots(): QuickGenerateRoots {
   const home = homedir();
   const xdg = Bun.env.XDG_CONFIG_HOME;
   return { home, configHome: xdg && isAbsolute(xdg) ? xdg : join(home, ".config"), processEnv: Bun.env };
@@ -24,7 +24,7 @@ const MODELS_TIMEOUT_MS = 10_000;
 const MAX_PROMPT_CHARS = 100_000;
 const ANTHROPIC_MAX_TOKENS = 4096;
 
-type ProviderId = "cerebras" | "openai" | "anthropic" | "groq";
+export type ProviderId = "cerebras" | "openai" | "anthropic" | "groq";
 
 // Only these vendors' fixed endpoints ever receive a key, and only the key named for that vendor.
 const PROVIDERS: Record<ProviderId, { label: string; envPrefix: string; baseUrl: string }> = {
@@ -36,7 +36,7 @@ const PROVIDERS: Record<ProviderId, { label: string; envPrefix: string; baseUrl:
 const PROVIDER_ORDER: ProviderId[] = ["cerebras", "openai", "anthropic", "groq"];
 const KEY_NAME_RE = /^(CEREBRAS|OPENAI|ANTHROPIC|GROQ)_API_KEY(?:_([A-Z0-9][A-Z0-9_]*))?$/;
 
-interface DetectedKey {
+export interface DetectedKey {
   id: string;
   provider: ProviderId;
   label: string;
@@ -62,7 +62,8 @@ function envFiles(roots: QuickGenerateRoots): { files: string[]; explicit: boole
   return { files: [resolve(expanded)], explicit: true };
 }
 
-function detectKeys(roots: QuickGenerateRoots): { keys: DetectedKey[]; files: string[] } {
+// Earlier sources win: the key file(s) in order, then the server's own environment.
+export function readKeySources(roots: QuickGenerateRoots): { sources: Array<Map<string, string>>; files: string[] } {
   const { files, explicit } = envFiles(roots);
   const readFiles: string[] = [];
   const sources: Array<Map<string, string>> = [];
@@ -79,6 +80,11 @@ function detectKeys(roots: QuickGenerateRoots): { keys: DetectedKey[]; files: st
     sources.push(new Map(Object.entries(parseEnv(text) as Record<string, string>)));
   }
   sources.push(new Map(Object.entries(roots.processEnv).filter((entry): entry is [string, string] => typeof entry[1] === "string")));
+  return { sources, files: readFiles };
+}
+
+export function detectKeys(roots: QuickGenerateRoots): { keys: DetectedKey[]; files: string[] } {
+  const { sources, files: readFiles } = readKeySources(roots);
   const keys = new Map<string, DetectedKey>();
   for (const source of sources) {
     for (const [name, value] of source) {
@@ -141,28 +147,51 @@ function redact(text: string, secret: string): string {
     .slice(0, 300);
 }
 
-interface Deadline {
+export interface Deadline {
   signal: AbortSignal;
   ms: number;
 }
 
-async function providerFetch(
+export interface Vendor {
+  label: string;
+  baseUrl: string;
+  headers: Record<string, string>;
+}
+
+function vendorFor(key: DetectedKey): Vendor {
+  const { label, baseUrl } = PROVIDERS[key.provider];
+  const headers: Record<string, string> = key.provider === "anthropic"
+    ? { "x-api-key": key.secret, "anthropic-version": "2023-06-01" }
+    : { authorization: `Bearer ${key.secret}` };
+  return { label, baseUrl, headers };
+}
+
+export function providerFetch(
   key: DetectedKey,
   path: string,
   init: { method: "GET" | "POST"; body?: unknown },
   deadline: Deadline,
   signal: AbortSignal | undefined,
 ): Promise<unknown> {
-  const provider = PROVIDERS[key.provider];
-  const headers: Record<string, string> = key.provider === "anthropic"
-    ? { "x-api-key": key.secret, "anthropic-version": "2023-06-01" }
-    : { authorization: `Bearer ${key.secret}` };
+  return vendorFetch(vendorFor(key), key.id, key.secret, path, init, deadline, signal);
+}
+
+export async function vendorFetch(
+  vendor: Vendor,
+  keyName: string,
+  secret: string,
+  path: string,
+  init: { method: "GET" | "POST"; body?: unknown },
+  deadline: Deadline,
+  signal: AbortSignal | undefined,
+): Promise<unknown> {
+  const headers = { ...vendor.headers };
   if (init.body !== undefined) headers["content-type"] = "application/json";
   const timeout = deadline.signal;
   let response: Response;
   let text: string;
   try {
-    response = await fetch(`${provider.baseUrl}${path}`, {
+    response = await fetch(`${vendor.baseUrl}${path}`, {
       method: init.method,
       headers,
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
@@ -171,10 +200,10 @@ async function providerFetch(
     });
     text = await response.text();
   } catch (error) {
-    if (timeout.aborted) throw new QuickGenerateError(504, `${provider.label} did not answer within ${deadline.ms / 1000}s.`);
+    if (timeout.aborted) throw new QuickGenerateError(504, `${vendor.label} did not answer within ${deadline.ms / 1000}s.`);
     if (signal?.aborted) throw new QuickGenerateError(499, "Request cancelled.");
     const reason = error instanceof Error ? error.message : String(error);
-    throw new QuickGenerateError(502, `Couldn't reach ${provider.label}: ${redact(reason, key.secret)}`);
+    throw new QuickGenerateError(502, `Couldn't reach ${vendor.label}: ${redact(reason, secret)}`);
   }
   let body: unknown = null;
   try {
@@ -182,20 +211,20 @@ async function providerFetch(
   } catch {}
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) {
-      throw new QuickGenerateError(502, `${provider.label} rejected ${key.id} (HTTP ${response.status}).`);
+      throw new QuickGenerateError(502, `${vendor.label} rejected ${keyName} (HTTP ${response.status}).`);
     }
     const error = field(body, "error");
     const nested = typeof error === "string" ? error : field(error, "message");
     const message = field(body, "message");
     const detail = typeof nested === "string" ? nested : typeof message === "string" ? message : "";
-    const suffix = detail ? `: ${redact(detail, key.secret)}` : ".";
-    throw new QuickGenerateError(502, `${provider.label} request failed (HTTP ${response.status})${suffix}`);
+    const suffix = detail ? `: ${redact(detail, secret)}` : ".";
+    throw new QuickGenerateError(502, `${vendor.label} request failed (HTTP ${response.status})${suffix}`);
   }
-  if (body === null) throw new QuickGenerateError(502, `${provider.label} returned a non-JSON response.`);
+  if (body === null) throw new QuickGenerateError(502, `${vendor.label} returned a non-JSON response.`);
   return body;
 }
 
-function field(value: unknown, name: string): unknown {
+export function field(value: unknown, name: string): unknown {
   return value !== null && typeof value === "object" ? Reflect.get(value, name) : undefined;
 }
 
@@ -205,7 +234,7 @@ const OPENAI_NON_CHAT_RE = /audio|realtime|transcribe|tts|image|search|embedding
 // Groq lists speech and transcription models (told apart by output_modalities) and prompt-guard classifiers.
 const GROQ_NON_CHAT_RE = /guard/;
 
-async function fetchModels(
+export async function fetchModels(
   key: DetectedKey,
   signal: AbortSignal | undefined,
   deadline: Deadline = { signal: AbortSignal.timeout(MODELS_TIMEOUT_MS), ms: MODELS_TIMEOUT_MS },
