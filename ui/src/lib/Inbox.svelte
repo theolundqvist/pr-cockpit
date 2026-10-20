@@ -1364,7 +1364,7 @@
   let archivedSet = $derived(new Set(archivedPrs.map((pr) => prKey(pr))));
   const isArchived = (pr) => archivedSet.has(prKey(pr));
   $effect(() => {
-    if (!active || view === "agents") return;
+    if (!active || view === "agents" || !loaded) return;
     const sections = new Map(groups.flatMap((group) => group.items.filter((item) => item.pr).map((item) => [prKey(item.pr), group.title])));
     listedPrs.title = activeView ?? (view === "all" ? "All PRs" : view === "closed" ? "Recently merged" : view === "whiteboard" ? "Whiteboard" : "Your queue");
     listedPrs.rows = ordered.map((pr) => ({ pr, section: view === "open" || view === "whiteboard" ? (sections.get(prKey(pr)) ?? (isArchived(pr) ? "Archived" : null)) : null }));

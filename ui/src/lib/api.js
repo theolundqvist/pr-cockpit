@@ -489,14 +489,31 @@ export async function quickGenerate({ key, model, prompt }, signal = null) {
   return body.text;
 }
 
-export async function askView({ question, view }, signal = null) {
+// Resolves with the final answer; steps and answer text arrive through onEvent while the server works.
+export async function askView({ question, view }, onEvent, signal = null) {
   const res = await fetch("/api/ask", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ question, view }),
     signal,
   });
-  return quickGenerateJson(res, "ask");
+  if (!res.ok) await quickGenerateJson(res, "ask");
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    buffer += value ?? "";
+    const lines = buffer.split("\n");
+    buffer = done ? "" : lines.pop();
+    for (const line of lines) {
+      if (!line) continue;
+      const event = JSON.parse(line);
+      if (event.type === "answer") return event;
+      if (event.type === "error") throw new Error(event.message);
+      onEvent(event);
+    }
+    if (done) throw new Error("Ask ended without an answer.");
+  }
 }
 
 export async function claimNotifications() {

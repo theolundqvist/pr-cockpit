@@ -10,6 +10,7 @@
   let { route } = $props();
 
   const PAGE_TITLES = { settings: "Settings", actions: "Actions", actionsRun: "Workflow run", inbox: "Agents" };
+  const SHOWN_SOURCES = 8;
   // Cached details are read in batches so a long list never builds one oversized URL.
   const DETAIL_BATCH = 150;
 
@@ -18,6 +19,9 @@
   let asking = $state(false);
   let error = $state(null);
   let result = $state(null);
+  let steps = $state([]);
+  let draft = $state("");
+  let now = $state(0);
   let inputEl = $state(null);
   let request = null;
 
@@ -108,25 +112,38 @@
     request = controller;
     asking = true;
     error = null;
+    draft = "";
     const label = target.label;
     if (result?.label !== label) result = null;
+    const kind = target.kind;
+    steps = [{ text: kind === "list" ? `Loading ${listedPrs.rows?.length ?? 0} PRs` : kind === "pr" ? "Loading the PR and diff" : "Reading the page", at: performance.now() }];
     try {
-      const kind = target.kind;
       const view = kind === "list"
         ? await listView(controller.signal)
         : kind === "pr"
           ? await prView(controller.signal)
           : { kind: "page", title: label, text: pageText(document.querySelector(".app-main")) };
       if (!view) return;
-      const answer = await askView({ question, view }, controller.signal);
+      const answer = await askView({ question, view }, (event) => {
+        if (controller.signal.aborted) return;
+        if (event.type === "step") steps = [...steps, { text: event.text, at: performance.now() }];
+        else if (event.type === "text") draft += event.text;
+        else if (event.type === "discard") draft = "";
+      }, controller.signal);
       const titles = new Map(kind === "list" ? view.prs.map((pr) => [pr.key, pr.title]) : []);
-      if (!controller.signal.aborted) result = { ...answer, label, titles };
+      if (!controller.signal.aborted) result = { ...answer, label, titles, steps: timed(steps, performance.now()) };
     } catch (e) {
       if (!controller.signal.aborted) error = e instanceof Error ? e.message : String(e);
     } finally {
       if (request === controller) asking = false;
     }
   }
+
+  function timed(list, end) {
+    return list.map((step, index) => ({ text: step.text, ms: (list[index + 1]?.at ?? end) - step.at }));
+  }
+
+  const seconds = (ms) => `${(ms / 1000).toFixed(1)}s`;
 
   function openPr(key) {
     const [repo, number] = key.split("#");
@@ -135,6 +152,13 @@
   }
 
   $effect(() => () => request?.abort());
+
+  $effect(() => {
+    if (!asking) return;
+    now = performance.now();
+    const timer = setInterval(() => (now = performance.now()), 100);
+    return () => clearInterval(timer);
+  });
 
   $effect(() => {
     function onKey(e) {
@@ -180,8 +204,20 @@
         <div class="error" role="alert">{error}</div>
       {/if}
 
-      {#if result}
-        <div class="result" class:stale={asking} aria-busy={asking}>
+      {#if asking}
+        <div class="result" aria-busy="true">
+          <ol class="steps" aria-label="Progress">
+            {#each timed(steps, Math.max(now, steps.at(-1)?.at ?? 0)) as step, index (index)}
+              <li class:current={index === steps.length - 1}>
+                <span class="step-text">{step.text}</span>
+                <span class="step-time">{seconds(step.ms)}</span>
+              </li>
+            {/each}
+          </ol>
+          {#if draft}<div class="answer md">{@html renderMarkdown(draft)}</div>{/if}
+        </div>
+      {:else if result}
+        <div class="result">
           {#if result.label !== target.label}<p class="was">About {result.label}</p>{/if}
           <div class="answer md">{@html renderMarkdown(result.answer)}</div>
           {#if result.matches?.length}
@@ -202,15 +238,22 @@
             <p class="meta">Checked {result.filters.map((filter) => `“${filter}”`).join(", then ")}</p>
           {/if}
           {#if result.sources?.length}
-            <p class="meta">From {[...new Set(result.sources.map((source) => source.label))].join(" · ")}</p>
+            <ul class="sources" aria-label="Sources">
+              {#each result.sources.slice(0, SHOWN_SOURCES) as source (source.label)}
+                <li title={source.detail}>{source.label}</li>
+              {/each}
+              {#if result.sources.length > SHOWN_SOURCES}
+                <li title={result.sources.slice(SHOWN_SOURCES).map((source) => source.label).join("\n")}>+{result.sources.length - SHOWN_SOURCES}</li>
+              {/if}
+            </ul>
           {/if}
           {#if result.skipped}<p class="meta">Skipped {result.skipped} parts too large to read.</p>{/if}
         </div>
       {/if}
 
       <div class="foot">
-        <span class="status" aria-live="polite">
-          {#if asking}Reading…{:else if result}Qwen on {result.provider}{result.fallback ? ` (${result.fallback})` : ""}{/if}
+        <span class="status" aria-live="polite" title={result && !asking ? result.steps.map((step) => `${step.text}: ${seconds(step.ms)}`).join("\n") : undefined}>
+          {#if asking}{seconds(Math.max(0, now - steps[0].at))}{:else if result}Qwen on {result.provider} · {seconds(result.steps.reduce((total, step) => total + step.ms, 0))}{result.fallback ? ` (${result.fallback})` : ""}{/if}
         </span>
         <button class="btn primary" type="button" disabled={asking || !question.trim()} onclick={ask}>
           {asking ? "Asking…" : "Ask"}
@@ -314,8 +357,53 @@
     overflow-wrap: anywhere;
     user-select: text;
   }
-  .result.stale {
-    opacity: 0.55;
+  .steps {
+    display: grid;
+    gap: 2px;
+    margin: 0 0 10px;
+    padding: 0;
+    list-style: none;
+    color: var(--text-faint);
+    font-size: 12.5px;
+  }
+  .steps li {
+    display: flex;
+    gap: 12px;
+  }
+  .steps li.current {
+    color: var(--text-dim);
+  }
+  .step-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .step-time {
+    flex: none;
+    font: 11.5px var(--mono);
+    font-variant-numeric: tabular-nums;
+  }
+  .sources {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 6px;
+    margin: 12px 0 0;
+    padding: 0;
+    list-style: none;
+  }
+  .sources li {
+    max-width: 260px;
+    padding: 1px 7px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-dim);
+    font-size: 11.5px;
+    line-height: 1.6;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .was,
   .meta {
