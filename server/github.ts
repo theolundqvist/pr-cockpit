@@ -511,6 +511,8 @@ export async function ghToken(): Promise<string> {
 }
 
 let cachedViewerLogin: string | null = null;
+// Undefined until REST /user answered; GraphQL viewer reads carry no id.
+let cachedViewerId: number | null | undefined;
 
 const VIEWER_LOGIN_QUERY = `
 query {
@@ -526,16 +528,30 @@ export async function getViewerLogin(source: GithubUsageSource = "app detail"): 
   } catch (error) {
     if (!coreQuotaExhausted(error)) throw error;
   }
+  if (cachedViewerLogin) return cachedViewerLogin;
   const data = await graphql<{ viewer: { login: string } }>(VIEWER_LOGIN_QUERY, {}, source, "viewer login");
   cachedViewerLogin = data.viewer.login;
   return cachedViewerLogin;
 }
 
+// A login learned through GraphQL lacks the id the relay records usage under, so REST reads the
+// viewer once more when core allows.
 async function restViewerLogin(): Promise<string> {
-  if (cachedViewerLogin) return cachedViewerLogin;
-  const viewer = await restJson<{ login: string }>("/user");
+  if (cachedViewerLogin && cachedViewerId !== undefined) return cachedViewerLogin;
+  const viewer = await restJson<{ login: string; id?: number }>("/user");
   cachedViewerLogin = viewer.login;
+  cachedViewerId = typeof viewer.id === "number" && Number.isSafeInteger(viewer.id) ? viewer.id : null;
   return cachedViewerLogin;
+}
+
+export interface GithubViewer {
+  id: number;
+  login: string;
+}
+
+// The viewer as far as an earlier request already established it; never requests anything.
+export function cachedViewer(): GithubViewer | null {
+  return cachedViewerLogin !== null && typeof cachedViewerId === "number" ? { id: cachedViewerId, login: cachedViewerLogin } : null;
 }
 
 // The core pool's primary budget is spent, so the same read may go to GraphQL. A secondary
@@ -3213,6 +3229,27 @@ export interface WorkflowRun {
 export async function fetchWorkflowRun(repo: string, runId: number): Promise<WorkflowRun> {
   if (mockGithub) return mockGithub.workflowRun(repo, runId);
   return githubRestJson<WorkflowRun>("GET", `/repos/${repo}/actions/runs/${runId}`);
+}
+
+export interface RefActivity {
+  after: string;
+  activity_type: string;
+}
+
+export async function fetchRepositoryIdentity(repo: string): Promise<{ id: number; defaultBranch: string }> {
+  if (mockGithub) throw new GithubRequestError(`${repo} has no repository identity in mock mode`, 404);
+  const repository = await githubRestJson<{ id: number; default_branch: string }>("GET", `/repos/${encodedRepo(repo)}`);
+  return { id: repository.id, defaultBranch: repository.default_branch };
+}
+
+// The newest page only, newest first.
+export async function fetchRefActivity(repo: string, ref: string): Promise<RefActivity[]> {
+  return githubRestJson<RefActivity[]>("GET", `/repos/${encodedRepo(repo)}/activity?ref=${encodeURIComponent(ref)}&per_page=100`);
+}
+
+export async function fetchCommitTree(repo: string, sha: string): Promise<string> {
+  const commit = await githubRestJson<{ tree: { sha: string } }>("GET", `/repos/${encodedRepo(repo)}/git/commits/${sha}`);
+  return commit.tree.sha;
 }
 
 

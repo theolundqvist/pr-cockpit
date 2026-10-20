@@ -1,5 +1,5 @@
 import { getCachedPrDetail, getPr, getSetting, openPrNumbersForBranch, recordPrWebhookActivity, setSetting } from "./db.ts";
-import { ghToken, type PrDetail, type PrDetailScope } from "./github.ts";
+import { cachedViewer, ghToken, type GithubViewer, type PrDetail, type PrDetailScope } from "./github.ts";
 import { withGithubUsageSource } from "./githubUsage.ts";
 import { backgroundPollAllowed, pollOnce, refreshPr, trackedRepos } from "./poller.ts";
 import { createPollRequester, prDetailScopeForEvent, refreshPrFromEvent } from "./eventRefresh.ts";
@@ -10,6 +10,7 @@ import { refreshCachedPrDetail } from "./cachedPrDetail.ts";
 import { prsViewedRecently, prViewedRecently } from "./recentPrViews.ts";
 import { forwarderCoveredSince } from "./forwarders.ts";
 import { setWebhookCoverage } from "./webhookCoverage.ts";
+import { relayAnchors, relayCapability, type RelayAnchors, type RelayCapability } from "./relayAnchors.ts";
 
 const POLL_MS = 5_000;
 const ERROR_BACKOFF_MS = 60_000;
@@ -17,6 +18,7 @@ const FULL_POLL_DEBOUNCE_MS = 30_000;
 const STREAM_BACKOFF_MAX_MS = 30_000;
 const RELAY_PING_INTERVAL_MS = 20_000;
 const RELAY_SILENCE_TIMEOUT_MS = 45_000;
+const SESSION_PROOF_LIMIT = 50;
 
 export interface RelayMarker {
   seq: number;
@@ -54,6 +56,8 @@ interface RelayStreamDependencies extends RelayPollDependencies {
   keepalive?: { pingIntervalMs: number; silenceTimeoutMs: number };
   socket?: (url: string) => RelayWebSocket;
   onOpen?: () => void;
+  // Absent outside anchor sessions, where the relay never rotates anything.
+  onRotate?: (repo: string) => void;
   expectedClose?: () => boolean;
 }
 
@@ -61,14 +65,20 @@ interface RelayClientDependencies extends RelayStreamDependencies {
   token?: typeof ghToken;
   repos?: typeof trackedRepos;
   now?: () => number;
+  anchors?: RelayAnchors;
+  viewer?: typeof cachedViewer;
 }
 
 type RelayFrame =
   | { type: "ready"; latest: number }
   | { type: "marker"; marker: RelayMarker }
-  | { type: "reset"; latest: number };
+  | { type: "reset"; latest: number }
+  | { type: "rotate"; repo: string };
+
+type RelaySession = { ticket: string; expiresAt: number; repos: Record<string, boolean> };
 
 const RELAY_CURSOR_KEY = "relay_cursor";
+const RELAY_INSTALL_KEY = "relay_install_id";
 let backoffUntil = 0;
 let lastOkAt: number | null = null;
 let lastEventAt: number | null = null;
@@ -226,21 +236,12 @@ export async function pollRelayOnce(
   return events.length;
 }
 
-export async function relayCapability(url: string, fetcher: typeof fetch = fetch): Promise<"legacy" | "websocket"> {
-  const response = await fetcher(`${url}/capabilities`, { signal: AbortSignal.timeout(4_000) });
-  if (response.status === 404) return "legacy";
-  if (!response.ok) throw new Error(`relay capabilities responded ${response.status}`);
-  const capabilities = (await response.json()) as { stream?: unknown };
-  if (capabilities.stream !== "websocket-v1") throw new Error("relay advertised an unsupported stream");
-  return "websocket";
-}
-
 export async function createRelaySession(
   url: string,
   token: string,
   repos: string[],
   fetcher: typeof fetch = fetch,
-): Promise<{ ticket: string; expiresAt: number; repos: Record<string, boolean> }> {
+): Promise<RelaySession> {
   const response = await fetcher(`${url}/session`, {
     method: "POST",
     headers: {
@@ -251,7 +252,34 @@ export async function createRelaySession(
     signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) throw new Error(`relay session responded ${response.status}`);
-  return await response.json() as { ticket: string; expiresAt: number; repos: Record<string, boolean> };
+  return await response.json() as RelaySession;
+}
+
+// The relay's stream limits key on this rather than on the changing proof set.
+function relayInstallId(): string {
+  const stored = getSetting(RELAY_INSTALL_KEY);
+  if (stored) return stored;
+  const created = crypto.randomUUID();
+  setSetting(RELAY_INSTALL_KEY, created);
+  return created;
+}
+
+// Resolves null when the relay accepted none of the proofs.
+async function createAnchorSession(
+  url: string,
+  proofs: Record<string, string>,
+  user: GithubViewer | null,
+  fetcher: typeof fetch = fetch,
+): Promise<RelaySession | null> {
+  const response = await fetcher(`${url}/session`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ proofs, install: relayInstallId(), ...(user ? { user } : {}) }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (response.status === 403) return null;
+  if (!response.ok) throw new Error(`relay session responded ${response.status}`);
+  return await response.json() as RelaySession;
 }
 
 function streamUrl(url: string, ticket: string, cursor: number | null): string {
@@ -332,6 +360,14 @@ export async function streamRelayOnce(
           if (relayCoveredSince !== null) relayCoveredSince = Date.now();
           return;
         }
+        if (frame.type === "rotate") {
+          if (!deps.onRotate) return;
+          deps.onRotate(frame.repo);
+          // A fresh session re-proves the repository; the persisted cursor replays what follows.
+          settle();
+          socket.close();
+          return;
+        }
         if (frame.type !== "marker") throw new Error("relay sent an unsupported frame");
         await processMarker(frame.marker, deps);
         lastEventAt = Date.now();
@@ -363,7 +399,7 @@ export async function streamRelayOnce(
 
 class RelayConnection {
   private url = "";
-  private mode: "unknown" | "legacy" | "websocket" = "unknown";
+  private mode: "unknown" | RelayCapability = "unknown";
   private stream: RelayWebSocket | null = null;
   private running = false;
   private generation = 0;
@@ -372,6 +408,10 @@ class RelayConnection {
   private repoSignature = "";
 
   constructor(private readonly deps: RelayClientDependencies = {}) {}
+
+  private get streaming(): boolean {
+    return this.mode === "websocket" || this.mode === "anchors";
+  }
 
   private dropStream(): void {
     this.generation++;
@@ -386,7 +426,7 @@ class RelayConnection {
   // A stream opened before the machine slept is presumed dead; the next tick opens a fresh one
   // and replays everything after the persisted cursor.
   reconnect(): void {
-    if (this.mode === "websocket") {
+    if (this.streaming) {
       this.dropStream();
       relayLost();
     }
@@ -403,7 +443,7 @@ class RelayConnection {
       relayLost();
     }
     if (!url) return;
-    if (this.mode === "websocket" && this.running) {
+    if (this.streaming && this.running) {
       sessionRepos = await (this.deps.repos ?? trackedRepos)();
       const signature = [...new Set(sessionRepos)].sort().join("\n");
       if (signature === this.repoSignature) return;
@@ -413,45 +453,39 @@ class RelayConnection {
       return;
     }
 
-    if (this.mode === "legacy") {
-      if (now() < backoffUntil) return;
-      try {
+    if (now() < (this.mode === "legacy" ? backoffUntil : this.reconnectAt)) return;
+    const generation = this.generation;
+    this.running = true;
+    try {
+      // Re-read before every use of the token: a relay that has since offered token-free access
+      // must not receive it again.
+      if (this.mode !== "anchors") {
+        const mode = await relayCapability(url, this.deps.fetcher);
+        if (generation !== this.generation) return;
+        if (mode !== this.mode) relayLost();
+        this.mode = mode;
+      }
+      if (this.mode === "legacy") {
         const token = await (this.deps.token ?? ghToken)();
         const eventCount = await pollRelayOnce(url, token, this.deps);
         lastOkAt = now();
         lastError = null;
         relayLive(lastOkAt);
         if (eventCount > 0) lastEventAt = now();
-      } catch (error) {
-        relayLost();
-        backoffUntil = now() + ERROR_BACKOFF_MS;
-        lastError = error instanceof Error ? error.message : String(error);
-        console.error("relay poll failed:", error);
-      }
-      return;
-    }
-
-    if (this.mode === "websocket" && now() < this.reconnectAt) return;
-    const generation = this.generation;
-    this.running = true;
-    try {
-      if (this.mode === "unknown") {
-        const mode = await relayCapability(url, this.deps.fetcher);
-        if (generation !== this.generation) return;
-        this.mode = mode;
-        if (mode === "legacy") {
-          this.running = false;
-          await this.tick(url);
-          return;
-        }
+        return;
       }
       const repos = sessionRepos ?? await (this.deps.repos ?? trackedRepos)();
       if (generation !== this.generation) return;
       this.repoSignature = [...new Set(repos)].sort().join("\n");
       if (repos.length === 0) return;
-      const token = await (this.deps.token ?? ghToken)();
-      if (generation !== this.generation) return;
-      const session = await createRelaySession(url, token, repos, this.deps.fetcher);
+      let session: RelaySession;
+      if (this.mode === "anchors") {
+        session = await this.anchorSession(url, repos);
+      } else {
+        const token = await (this.deps.token ?? ghToken)();
+        if (generation !== this.generation) return;
+        session = await createRelaySession(url, token, repos, this.deps.fetcher);
+      }
       if (generation !== this.generation) return;
       const createSocket = this.deps.socket ?? ((target: string) => new WebSocket(target));
       await streamRelayOnce(url, session.ticket, {
@@ -466,11 +500,18 @@ class RelayConnection {
           relayLive(now(), Object.keys(session.repos ?? {}).filter((repo) => session.repos[repo]));
           this.deps.onOpen?.();
         },
+        ...(this.mode === "anchors" ? { onRotate: (repo: string) => (this.deps.anchors ?? relayAnchors).rotate(url, repo) } : {}),
         expectedClose: () => generation !== this.generation,
       });
     } catch (error) {
       if (generation !== this.generation) return;
       lastError = error instanceof Error ? error.message : String(error);
+      if (this.mode === "legacy") {
+        relayLost();
+        backoffUntil = now() + ERROR_BACKOFF_MS;
+        console.error("relay poll failed:", error);
+        return;
+      }
       this.reconnectAttempt++;
       const delayMs = Math.min(1_000 * 2 ** (this.reconnectAttempt - 1), STREAM_BACKOFF_MAX_MS);
       this.reconnectAt = now() + delayMs;
@@ -479,8 +520,26 @@ class RelayConnection {
     } finally {
       if (generation === this.generation) {
         this.running = false;
-        if (this.mode === "websocket") relayLost();
+        if (this.streaming) relayLost();
       }
+    }
+  }
+
+  // Cached proofs first. Refused proofs that are due resolve again once before the stream opens;
+  // the rest wait for a later session.
+  private async anchorSession(url: string, repos: string[]): Promise<RelaySession> {
+    const anchors = this.deps.anchors ?? relayAnchors;
+    const user = (this.deps.viewer ?? cachedViewer)();
+    for (let attempt = 1; ; attempt++) {
+      // The relay refuses a session with more proofs than it accepts; the rest stay on polling.
+      const proofs = Object.fromEntries(Object.entries(await anchors.proofs(url, repos)).slice(0, SESSION_PROOF_LIMIT));
+      const presented = Object.keys(proofs);
+      if (presented.length === 0) throw new Error("no tracked repository can prove relay access yet");
+      const session = await createAnchorSession(url, proofs, user, this.deps.fetcher);
+      const retry = anchors.reject(url, presented.filter((repo) => session?.repos[repo] !== true));
+      if (retry && attempt === 1) continue;
+      if (session === null) throw new Error("relay accepted none of the repository proofs");
+      return session;
     }
   }
 }

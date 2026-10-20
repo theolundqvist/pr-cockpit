@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +9,88 @@ const dbUrl = new URL("./db.ts", import.meta.url).href;
 const mockGithubUrl = new URL("./mockGithub.ts", import.meta.url).href;
 const invalidationUrl = new URL("./rendererInvalidation.ts", import.meta.url).href;
 const recentPrViewsUrl = new URL("./recentPrViews.ts", import.meta.url).href;
+const relayAnchorsUrl = new URL("./relayAnchors.ts", import.meta.url).href;
+
+const A1 = "a".repeat(40);
+const A2 = "b".repeat(40);
+const A3 = "1".repeat(40);
+const T1 = "c".repeat(40);
+const TREES: Record<string, string> = { [A1]: "d".repeat(40), [A2]: "f".repeat(40), [A3]: "2".repeat(40), [T1]: "e".repeat(40) };
+const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
+const anchorIdOf = (repo: string, repoId: number, after: string) => sha256(`pr-cockpit-relay anchor\n${repo}\n${repoId}\n${after}`);
+const proofOf = (repo: string, repoId: number, after: string) => sha256(`pr-cockpit-relay proof\n${repo}\n${repoId}\n${after}\n${TREES[after]}`);
+
+// Fakes shared by the anchor scripts: GitHub answers with the push activity in `activity`, the relay matches
+// the anchorId at `relayIndex[repo]` among those sent, and sockets replay their frames and then
+// close as an expired ticket unless told to stay open.
+const ANCHOR_FAKES = `
+  console.warn = console.error = () => {};
+  const A1 = ${JSON.stringify(A1)}, A2 = ${JSON.stringify(A2)}, A3 = ${JSON.stringify(A3)}, T1 = ${JSON.stringify(T1)};
+  const TREES = ${JSON.stringify(TREES)};
+  let clock = 0;
+  const githubCalls = [];
+  const activity = {
+    "acme/app": [{ after: A2, activity_type: "push" }, { after: "0".repeat(40), activity_type: "branch_deletion" }, { after: A1, activity_type: "pr_merge" }],
+    "acme/tools": [{ after: T1, activity_type: "push" }],
+  };
+  const github = {
+    repository: async (repo) => repo === "acme/app" ? { id: 101, defaultBranch: "main" } : { id: 202, defaultBranch: "trunk" },
+    activity: async (repo, ref) => {
+      githubCalls.push("activity " + repo + " " + ref);
+      return [...activity[repo]];
+    },
+    tree: async (repo, sha) => { githubCalls.push("tree " + repo + " " + sha); return TREES[sha]; },
+  };
+  const requests = [];
+  const relayIndex = { "acme/app": 1, "acme/tools": 0 };
+  let refused = new Set();
+  const fetcher = async (input, init = {}) => {
+    const url = new URL(String(input));
+    const body = init.body ? JSON.parse(init.body) : null;
+    requests.push({ path: url.pathname, authorization: new Headers(init.headers).get("authorization"), body });
+    if (url.pathname === "/capabilities") return Response.json({ stream: "websocket-v1", anchors: "v1" });
+    if (url.pathname === "/anchors") {
+      return Response.json({ repos: Object.fromEntries(Object.entries(body.repos).map(([repo, ids]) => [repo, ids[relayIndex[repo]] ?? null])) });
+    }
+    const repos = Object.fromEntries(Object.keys(body.proofs).map((repo) => [repo, !refused.has(repo)]));
+    if (!Object.values(repos).some(Boolean)) return new Response("", { status: 403 });
+    return Response.json({ ticket: "ticket-" + requests.length, expiresAt: 1_777_580_800_000, repos });
+  };
+  class ScriptedSocket {
+    listeners = {};
+    closed = false;
+    constructor(frames, expire = true) {
+      queueMicrotask(() => {
+        this.emit("open");
+        for (const frame of frames) this.emit("message", { data: JSON.stringify(frame) });
+        if (expire) this.emit("close", { code: 1008, reason: "authorization expired" });
+      });
+    }
+    addEventListener(type, listener) { (this.listeners[type] ??= []).push(listener); }
+    emit(type, event) { for (const listener of this.listeners[type] ?? []) listener(event); }
+    close() {
+      if (this.closed) return;
+      this.closed = true;
+      this.emit("close", { code: 1000, reason: "client closed" });
+    }
+  }
+`;
+
+async function runRelayScript(prefix: string, script: string) {
+  const dataDir = mkdtempSync(join(tmpdir(), prefix));
+  try {
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_MOCK: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([process.exited, new Response(process.stdout).text(), new Response(process.stderr).text()]);
+    if (exitCode !== 0) throw new Error(stderr);
+    return JSON.parse(stdout);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+}
 
 test("relay cursor survives restart and acknowledges only handled markers", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-relay-cursor-"));
@@ -654,9 +737,11 @@ test("advertised WebSocket failures reconnect without polling and URL changes re
     expect(result.beforeBackoff).toBe(1);
     expect(result.afterReconnect).toBe(2);
     expect(result.sessions).toBe(3);
+    // Every token session re-reads capabilities first, so a relay that adds anchors never gets it again.
     expect(result.requests).toEqual([
       "https://first.test/capabilities",
       "https://first.test/session",
+      "https://first.test/capabilities",
       "https://first.test/session",
       "https://second.test/capabilities",
       "https://second.test/session",
@@ -929,4 +1014,269 @@ test("unchanged repos do not invalidate a pending WebSocket session", async () =
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }
+});
+
+test("anchor relays get proofs and never the token; refused proofs re-resolve at most every ten minutes", async () => {
+  const result = await runRelayScript("pr-cockpit-relay-anchors-", `
+    ${ANCHOR_FAKES}
+    const { createRelayConnection } = await import(${JSON.stringify(relayClientUrl)});
+    const { RelayAnchors } = await import(${JSON.stringify(relayAnchorsUrl)});
+    const { db, getSetting } = await import(${JSON.stringify(dbUrl)});
+    let tokenRequests = 0;
+    const connection = createRelayConnection({
+      fetcher,
+      anchors: new RelayAnchors({ fetcher, github, now: () => clock }),
+      token: async () => { tokenRequests++; return "github-secret"; },
+      viewer: () => ({ id: 7, login: "octo" }),
+      repos: async () => ["acme/app", "acme/tools"],
+      now: () => clock,
+      socket: () => new ScriptedSocket([]),
+    });
+    const steps = [];
+    const tick = async (at) => {
+      clock = at;
+      const before = requests.length;
+      await connection.tick("https://relay.test");
+      steps.push({
+        at,
+        github: githubCalls.splice(0),
+        anchors: requests.slice(before).filter((request) => request.path === "/anchors").map((request) => Object.keys(request.body.repos)),
+        sessions: requests.slice(before).filter((request) => request.path === "/session").map((request) => Object.keys(request.body.proofs)),
+      });
+    };
+    refused = new Set(["acme/tools"]);
+    await tick(0);
+    await tick(60_000);
+    refused = new Set();
+    await tick(11 * 60_000);
+    refused = new Set(["acme/app"]);
+    await tick(30 * 60_000);
+    await tick(31 * 60_000);
+    console.log(JSON.stringify({ tokenRequests, requests, steps, install: getSetting("relay_install_id") }));
+    db.close();
+  `);
+  expect(result.tokenRequests).toBe(0);
+  expect(result.requests.filter((request: { authorization: string | null }) => request.authorization !== null)).toEqual([]);
+  const [firstAnchors, firstSession] = result.requests.filter((request: { path: string }) => request.path !== "/capabilities");
+  expect(firstAnchors.body).toEqual({ repos: {
+    "acme/app": [anchorIdOf("acme/app", 101, A2), anchorIdOf("acme/app", 101, A1)],
+    "acme/tools": [anchorIdOf("acme/tools", 202, T1)],
+  } });
+  expect(firstSession.body).toEqual({
+    proofs: { "acme/app": proofOf("acme/app", 101, A1), "acme/tools": proofOf("acme/tools", 202, T1) },
+    install: result.install,
+    user: { id: 7, login: "octo" },
+  });
+  expect(result.install).toMatch(/^[0-9a-f-]{36}$/);
+  expect(result.steps).toEqual([
+    {
+      at: 0,
+      github: ["activity acme/app refs/heads/main", "activity acme/tools refs/heads/trunk", "tree acme/app " + A1, "tree acme/tools " + T1],
+      anchors: [["acme/app", "acme/tools"]],
+      sessions: [["acme/app", "acme/tools"]],
+    },
+    // The refused repository waits out its ten minutes; the accepted one keeps its cached proof.
+    { at: 60_000, github: [], anchors: [], sessions: [["acme/app"]] },
+    // Re-resolved from fresh activity; the unchanged anchor commit needs no second tree read.
+    { at: 11 * 60_000, github: ["activity acme/tools refs/heads/trunk"], anchors: [["acme/tools"]], sessions: [["acme/app", "acme/tools"]] },
+    // A cached proof refused long after it resolved is re-resolved once, then the session goes ahead without it.
+    {
+      at: 30 * 60_000,
+      github: ["activity acme/app refs/heads/main"],
+      anchors: [["acme/app"]],
+      sessions: [["acme/app", "acme/tools"], ["acme/app", "acme/tools"]],
+    },
+    { at: 31 * 60_000, github: [], anchors: [], sessions: [["acme/tools"]] },
+  ]);
+});
+
+test("a rotate frame reconnects from the cursor and re-resolves only the rotated repository", async () => {
+  const result = await runRelayScript("pr-cockpit-relay-rotate-", `
+    ${ANCHOR_FAKES}
+    const { createRelayConnection } = await import(${JSON.stringify(relayClientUrl)});
+    const { RelayAnchors } = await import(${JSON.stringify(relayAnchorsUrl)});
+    const { db, setSetting } = await import(${JSON.stringify(dbUrl)});
+    setSetting("relay_cursor", "3");
+    const socketUrls = [];
+    const sockets = [];
+    const scripts = [
+      [
+        { type: "marker", marker: { seq: 4, ts: 1, repo: "acme/tools", number: 5, event: "check_run" } },
+        { type: "rotate", repo: "Acme/App" },
+      ],
+      [],
+    ];
+    const connection = createRelayConnection({
+      fetcher,
+      anchors: new RelayAnchors({ fetcher, github, now: () => clock }),
+      token: async () => { throw new Error("token requested"); },
+      viewer: () => null,
+      viewedRecently: () => false,
+      repos: async () => ["acme/app", "acme/tools"],
+      now: () => clock,
+      socket: (url) => {
+        socketUrls.push(url);
+        // The first stream never expires, so only the rotate frame can end it.
+        const socket = new ScriptedSocket(scripts[sockets.length], sockets.length > 0);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    await connection.tick("https://relay.test");
+    const firstGithub = githubCalls.splice(0);
+    relayIndex["acme/app"] = 0;
+    clock = 1_000;
+    const before = requests.length;
+    await connection.tick("https://relay.test");
+    console.log(JSON.stringify({
+      firstGithub,
+      secondGithub: githubCalls,
+      rotatedClosed: sockets[0].closed,
+      socketUrls,
+      relay: requests.slice(before).map((request) => ({ path: request.path, body: request.body })),
+    }));
+    db.close();
+  `);
+  expect(result.firstGithub).toHaveLength(4);
+  expect(result.rotatedClosed).toBe(true);
+  expect(result.socketUrls).toEqual([
+    "wss://relay.test/stream?ticket=ticket-3&since=3",
+    "wss://relay.test/stream?ticket=ticket-5&since=4",
+  ]);
+  expect(result.secondGithub).toEqual(["activity acme/app refs/heads/main", "tree acme/app " + A2]);
+  expect(result.relay).toEqual([
+    { path: "/anchors", body: { repos: { "acme/app": [anchorIdOf("acme/app", 101, A2), anchorIdOf("acme/app", 101, A1)] } } },
+    {
+      path: "/session",
+      body: {
+        proofs: { "acme/app": proofOf("acme/app", 101, A2), "acme/tools": proofOf("acme/tools", 202, T1) },
+        install: expect.any(String),
+      },
+    },
+  ]);
+});
+
+test("after a rotate the previous proof is still presented until activity shows the new push", async () => {
+  const result = await runRelayScript("pr-cockpit-relay-rotate-lag-", `
+    ${ANCHOR_FAKES}
+    const { createRelayConnection } = await import(${JSON.stringify(relayClientUrl)});
+    const { RelayAnchors } = await import(${JSON.stringify(relayAnchorsUrl)});
+    const { db } = await import(${JSON.stringify(dbUrl)});
+    let sockets = 0;
+    const connection = createRelayConnection({
+      fetcher,
+      anchors: new RelayAnchors({ fetcher, github, now: () => clock }),
+      token: async () => { throw new Error("token requested"); },
+      viewer: () => null,
+      repos: async () => ["acme/app", "acme/tools"],
+      now: () => clock,
+      // The first stream stays open until its rotate frame; later ones end as expired tickets.
+      socket: () => sockets++ === 0 ? new ScriptedSocket([{ type: "rotate", repo: "acme/app" }], false) : new ScriptedSocket([]),
+    });
+    const steps = [];
+    const tick = async (at) => {
+      clock = at;
+      const before = requests.length;
+      await connection.tick("https://relay.test");
+      steps.push({
+        at,
+        github: githubCalls.splice(0),
+        proofs: requests.slice(before).filter((request) => request.path === "/session").map((request) => request.body.proofs["acme/app"]),
+      });
+    };
+    await tick(0);
+    // The relay rotated onto A3, which GitHub's activity list does not show yet. Within the grace
+    // it still matches the previous anchor A1 (index 1), as the real relay does.
+    await tick(1_000);
+    await tick(30_000);
+    activity["acme/app"].unshift({ after: A3, activity_type: "push" });
+    relayIndex["acme/app"] = 0;
+    await tick(61_000);
+    console.log(JSON.stringify(steps));
+    db.close();
+  `);
+  const previous = proofOf("acme/app", 101, A1);
+  expect(result).toEqual([
+    {
+      at: 0,
+      github: ["activity acme/app refs/heads/main", "activity acme/tools refs/heads/trunk", "tree acme/app " + A1, "tree acme/tools " + T1],
+      proofs: [previous],
+    },
+    { at: 1_000, github: ["activity acme/app refs/heads/main"], proofs: [previous] },
+    // Still within a minute of the unmatched read: no GitHub request, the previous proof again.
+    { at: 30_000, github: [], proofs: [previous] },
+    { at: 61_000, github: ["activity acme/app refs/heads/main", "tree acme/app " + A3], proofs: [proofOf("acme/app", 101, A3)] },
+  ]);
+});
+
+test("a relay URL that offered anchors, or the hosted relay, never falls back to the token", async () => {
+  const result = await runRelayScript("pr-cockpit-relay-downgrade-", `
+    ${ANCHOR_FAKES}
+    const { createRelayConnection, relayStatus } = await import(${JSON.stringify(relayClientUrl)});
+    const { RelayAnchors, relayCapability } = await import(${JSON.stringify(relayAnchorsUrl)});
+    const { db, getSetting } = await import(${JSON.stringify(dbUrl)});
+    const answers = { "relay.test": "anchors", "relay.prcockpit.com": 404, "self.test": 404 };
+    const relayRequests = [];
+    let tokenRequests = 0;
+    const relay = async (input, init = {}) => {
+      const url = new URL(String(input));
+      relayRequests.push(url.host + url.pathname + " " + new Headers(init.headers).get("authorization"));
+      if (url.pathname === "/capabilities") {
+        const answer = answers[url.host];
+        if (answer === 404) return new Response("", { status: 404 });
+        return Response.json(answer === "anchors" ? { stream: "websocket-v1", anchors: "v1" } : { stream: "websocket-v1" });
+      }
+      if (url.pathname === "/events") return Response.json({ latest: 0, events: [] });
+      return fetcher(input, init);
+    };
+    const connect = () => createRelayConnection({
+      fetcher: relay,
+      anchors: new RelayAnchors({ fetcher: relay, github, now: () => clock }),
+      token: async () => { tokenRequests++; return "github-secret"; },
+      viewer: () => null,
+      repos: async () => ["acme/app"],
+      now: () => clock,
+      socket: () => new ScriptedSocket([]),
+    });
+    const steps = [];
+    const tick = async (connection, url) => {
+      relayRequests.length = 0;
+      clock += 60_000;
+      await connection.tick(url);
+      steps.push({ requests: [...relayRequests], tokenRequests, error: relayStatus().lastError });
+    };
+    await tick(connect(), "https://relay.test");
+    const remembered = JSON.parse(getSetting("relay_anchor_urls"));
+
+    const downgraded = connect();
+    answers["relay.test"] = "websocket";
+    await tick(downgraded, "https://relay.test");
+    answers["relay.test"] = 404;
+    await tick(downgraded, "https://relay.test");
+    await tick(connect(), "https://relay.prcockpit.com");
+
+    const selfHosted = connect();
+    await tick(selfHosted, "https://self.test");
+    answers["self.test"] = "anchors";
+    await relayCapability("https://self.test", relay);
+    answers["self.test"] = 404;
+    await tick(selfHosted, "https://self.test");
+    console.log(JSON.stringify({ remembered, steps }));
+    db.close();
+  `);
+  expect(result.remembered).toEqual(["https://relay.test"]);
+  expect(result.steps).toEqual([
+    {
+      requests: ["relay.test/capabilities null", "relay.test/anchors null", "relay.test/session null"],
+      tokenRequests: 0,
+      error: null,
+    },
+    { requests: ["relay.test/capabilities null"], tokenRequests: 0, error: "relay no longer advertises token-free access" },
+    { requests: ["relay.test/capabilities null"], tokenRequests: 0, error: "relay capabilities responded 404" },
+    { requests: ["relay.prcockpit.com/capabilities null"], tokenRequests: 0, error: "relay capabilities responded 404" },
+    // A self-hosted relay that never offered anchors keeps the token flow...
+    { requests: ["self.test/capabilities null", "self.test/events Bearer github-secret"], tokenRequests: 1, error: null },
+    // ...until it does once; a later 404 is then an error, not a reason to send the token again.
+    { requests: ["self.test/capabilities null"], tokenRequests: 1, error: "relay capabilities responded 404" },
+  ]);
 });

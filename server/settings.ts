@@ -212,7 +212,7 @@ export function cockpitWebhooksEnabled(): boolean {
   return getSetting("cockpit_webhooks") === "true";
 }
 
-const DEFAULT_RELAY_URL = "https://relay.prcockpit.com";
+export const DEFAULT_RELAY_URL = "https://relay.prcockpit.com";
 const LEGACY_RELAY_URL = "https://pr-cockpit-relay.theodor-lundqvist.workers.dev";
 export const RELAY_APP_SLUG = "pr-cockpit-webhook-relay";
 export const RELAY_APP_INSTALL_URL = `https://github.com/apps/${RELAY_APP_SLUG}/installations/new`;
