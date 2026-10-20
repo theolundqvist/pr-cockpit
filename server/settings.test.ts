@@ -195,8 +195,8 @@ test("window and diff layout settings persist independently", async () => {
     const unified = writeSettings({ diff_layout: "unified" });
     const appearance = writeSettings({ font_interface: "alacritty", font_code: "alacritty", code_theme: "catppuccin", general_scale: 125, diff_scale: 150 });
     const replica = writeSettings({ replica_ssh_host: "ssh://root@dev-vm/" });
-    const pendingReviews = writeSettings({ pending_reviews_enabled: true });
-    const agentConversations = writeSettings({ agent_conversations_enabled: true });
+    const pendingReviews = writeSettings({ pending_reviews_enabled: false });
+    const agentConversations = writeSettings({ agent_conversations_enabled: false });
     let invalidReplicaError = "";
     try {
       writeSettings({ default_repo: "should-not-persist", replica_ssh_host: "root@dev-vm:22" });
@@ -238,10 +238,10 @@ test("window and diff layout settings persist independently", async () => {
     expect(result.initial.general_scale).toBe(100);
     expect(result.initial.diff_scale).toBe(100);
     expect(result.initial.replica_ssh_host).toBe("build-server");
-    expect(result.initial.pending_reviews_enabled).toBe(false);
-    expect(result.pendingReviews.pending_reviews_enabled).toBe(true);
-    expect(result.initial.agent_conversations_enabled).toBe(false);
-    expect(result.agentConversations.agent_conversations_enabled).toBe(true);
+    expect(result.initial.pending_reviews_enabled).toBe(true);
+    expect(result.pendingReviews.pending_reviews_enabled).toBe(false);
+    expect(result.initial.agent_conversations_enabled).toBe(true);
+    expect(result.agentConversations.agent_conversations_enabled).toBe(false);
     expect(result.replica.replica_ssh_host).toBe("root@dev-vm");
     expect(result.invalidReplicaError).toBe("invalid replica SSH host");
     expect(result.afterInvalidReplica.replica_ssh_host).toBe("root@dev-vm");
@@ -342,6 +342,75 @@ test("shortcut defaults migrate once to an empty platform sentinel", async () =>
     expect(result.written.keybind_open_app).toBe("  Super+Alt+ß  ");
     expect(result.written.keybind_open_palette).toBe("Control+Shift+P");
     expect(result.written.desktop_platform).toBe(process.platform);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("features that became on by default are switched on once, and cooking only for Scape repositories", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-feature-defaults-"));
+  const settingsModuleUrl = new URL("./settings.ts", import.meta.url).href;
+  const dbModuleUrl = new URL("./db.ts", import.meta.url).href;
+  // Static imports cannot isolate the database because the child must set COCKPIT_DATA_DIR before module loading.
+  const scenario = `
+    const { readSettings, seedSettings, writeSettings } = await import(${JSON.stringify(settingsModuleUrl)});
+    const { db } = await import(${JSON.stringify(dbModuleUrl)});
+    const keys = ["hide_tests_default", "pending_reviews_enabled", "description_unread_dots", "group_drag_enabled", "queue_time_controls_enabled", "review_file_menu_enabled", "agent_conversations_enabled", "ask_view_enabled", "cooking_section_enabled"];
+    const pick = (settings) => Object.fromEntries(keys.map((key) => [key, settings[key]]));
+    const olderInstall = (repos) => {
+      db.query("delete from settings").run();
+      if (repos !== null) db.query("insert into settings (key, value) values ('repos', ?)").run(repos);
+      for (const key of keys) db.query("insert into settings (key, value) values (?, 'false')").run(key);
+    };
+
+    olderInstall("theolundqvist/dotfiles,Scape-App/scape");
+    seedSettings();
+    const scapeUpgrade = pick(readSettings());
+    writeSettings({ ask_view_enabled: false, cooking_section_enabled: false });
+    seedSettings();
+    const turnedOffAfterUpgrade = pick(readSettings());
+
+    olderInstall("acme/app");
+    seedSettings();
+    const otherUpgrade = pick(readSettings());
+
+    db.query("delete from settings").run();
+    seedSettings();
+    const fresh = pick(readSettings());
+    const freshWithScape = pick(writeSettings({ repos: "scape-app/scape" }));
+
+    console.log(JSON.stringify({ scapeUpgrade, turnedOffAfterUpgrade, otherUpgrade, fresh, freshWithScape }));
+    db.close();
+  `;
+
+  try {
+    const childProcess = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_REPOS: "" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      childProcess.exited,
+      new Response(childProcess.stdout).text(),
+      new Response(childProcess.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(stderr);
+    const result = JSON.parse(stdout);
+    const on = {
+      hide_tests_default: true,
+      pending_reviews_enabled: true,
+      description_unread_dots: true,
+      group_drag_enabled: true,
+      queue_time_controls_enabled: true,
+      review_file_menu_enabled: true,
+      agent_conversations_enabled: true,
+      ask_view_enabled: true,
+    };
+    expect(result.scapeUpgrade).toEqual({ ...on, cooking_section_enabled: true });
+    expect(result.turnedOffAfterUpgrade).toEqual({ ...on, ask_view_enabled: false, cooking_section_enabled: false });
+    expect(result.otherUpgrade).toEqual({ ...on, cooking_section_enabled: false });
+    expect(result.fresh).toEqual({ ...on, cooking_section_enabled: false });
+    expect(result.freshWithScape).toEqual({ ...on, cooking_section_enabled: true });
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }

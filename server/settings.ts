@@ -14,6 +14,16 @@ const envRepos = Bun.env.COCKPIT_REPOS ?? "";
 const envRepoRoots = Bun.env.COCKPIT_REPO_ROOTS ?? "";
 const envReviewBots = Bun.env.COCKPIT_REVIEW_BOTS ?? "[]";
 const envReplicaSshHost = Bun.env.COCKPIT_REPLICA_SSH_HOST ?? Bun.env.COCKPIT_PROXY ?? "";
+const ON_BY_DEFAULT = [
+  "hide_tests_default",
+  "pending_reviews_enabled",
+  "description_unread_dots",
+  "group_drag_enabled",
+  "queue_time_controls_enabled",
+  "review_file_menu_enabled",
+  "agent_conversations_enabled",
+  "ask_view_enabled",
+] as const;
 
 export type AgentTrigger = "keybind" | "activity";
 export type AgentModel = "opus" | "sonnet";
@@ -149,12 +159,10 @@ export function seedSettings(): void {
   if (getSetting("general_scale") === null) setSetting("general_scale", "100");
   if (getSetting("diff_scale") === null) setSetting("diff_scale", "100");
   if (getSetting("hide_sidebar") === null) setSetting("hide_sidebar", "false");
-  if (getSetting("hide_tests_default") === null) setSetting("hide_tests_default", "false");
   if (getSetting("newest_comments_first") === null) setSetting("newest_comments_first", "false");
   if (getSetting("test_path_regex") === null) setSetting("test_path_regex", "");
   if (getSetting("diff_layout") === null) setSetting("diff_layout", "split");
   if (getSetting("force_merge_repos") === null) setSetting("force_merge_repos", "");
-  if (getSetting("pending_reviews_enabled") === null) setSetting("pending_reviews_enabled", "false");
   if (getSetting("review_bots") === null) setSetting("review_bots", envReviewBots);
   // migrate legacy per-agent keys and remove the retired rescorer without rewriting the remaining entries
   const storedAgents = getSetting("agents");
@@ -181,6 +189,12 @@ export function seedSettings(): void {
       setSetting("keybind_open_palette", "");
     }
     setSetting("keybind_platform_defaults_migrated", "true");
+  }
+  // Every Settings save stored each toggle, so older installs hold "false" for features that are now on by default.
+  if (getSetting("feature_defaults_migrated") !== "true") {
+    for (const key of ON_BY_DEFAULT) setSetting(key, "true");
+    if (hasScapeRepos()) setSetting("cooking_section_enabled", "true");
+    setSetting("feature_defaults_migrated", "true");
   }
   if (getSetting("saved_views") === null) setSetting("saved_views", "[]");
   if (getSetting("repo_roots") === null) setSetting("repo_roots", envRepoRoots);
@@ -229,8 +243,22 @@ export function notificationSettings(): NotificationSettings {
   return storedNotificationSettings();
 }
 
+function onUnlessOff(key: (typeof ON_BY_DEFAULT)[number]): boolean {
+  return getSetting(key) !== "false";
+}
+
+function hasScapeRepos(): boolean {
+  return parseRepos(getSetting("repos") ?? "").some((repo) => repo.toLowerCase().startsWith("scape-app/"));
+}
+
+// Kitchen labels only exist on Scape's repositories, so the section starts on only for installs that list one.
+function cookingSectionEnabled(): boolean {
+  const stored = getSetting("cooking_section_enabled");
+  return stored === null ? hasScapeRepos() : stored === "true";
+}
+
 export function pendingReviewsEnabled(): boolean {
-  return getSetting("pending_reviews_enabled") === "true";
+  return onUnlessOff("pending_reviews_enabled");
 }
 
 // On unless turned off: an exhausted GraphQL pool otherwise stops every PR refresh, which
@@ -253,7 +281,7 @@ export function quickGenerateEnabled(): boolean {
 }
 
 export function askViewEnabled(): boolean {
-  return getSetting("ask_view_enabled") === "true";
+  return onUnlessOff("ask_view_enabled");
 }
 
 function normalizeQuickGenerateKey(value: unknown): string {
@@ -384,7 +412,7 @@ export function readSettings(): Settings {
     general_scale: normalizeScale(getSetting("general_scale")),
     diff_scale: normalizeScale(getSetting("diff_scale")),
     hide_sidebar: getSetting("hide_sidebar") === "true",
-    hide_tests_default: getSetting("hide_tests_default") === "true",
+    hide_tests_default: onUnlessOff("hide_tests_default"),
     newest_comments_first: getSetting("newest_comments_first") === "true",
     test_path_regex: getSetting("test_path_regex") ?? "",
     diff_layout: normalizeDiffLayout(getSetting("diff_layout")),
@@ -397,16 +425,16 @@ export function readSettings(): Settings {
     repo_roots: getSetting("repo_roots") ?? envRepoRoots,
     cockpit_webhooks: getSetting("cockpit_webhooks") === "true",
     pending_reviews_enabled: pendingReviewsEnabled(),
-    description_unread_dots: getSetting("description_unread_dots") === "true",
+    description_unread_dots: onUnlessOff("description_unread_dots"),
     inbox_labels: normalizeInboxLabels(getSetting("inbox_labels")),
     whiteboard_enabled: getSetting("whiteboard_enabled") === "true",
     safe_merge_approval_enabled: safeMergeApprovalEnabled(),
-    group_drag_enabled: getSetting("group_drag_enabled") === "true",
-    cooking_section_enabled: getSetting("cooking_section_enabled") === "true",
-    queue_time_controls_enabled: getSetting("queue_time_controls_enabled") === "true",
-    review_file_menu_enabled: getSetting("review_file_menu_enabled") === "true",
+    group_drag_enabled: onUnlessOff("group_drag_enabled"),
+    cooking_section_enabled: cookingSectionEnabled(),
+    queue_time_controls_enabled: onUnlessOff("queue_time_controls_enabled"),
+    review_file_menu_enabled: onUnlessOff("review_file_menu_enabled"),
     hidden_review_paths: readHiddenReviewPaths(),
-    agent_conversations_enabled: getSetting("agent_conversations_enabled") === "true",
+    agent_conversations_enabled: onUnlessOff("agent_conversations_enabled"),
     rest_fallback_enabled: restFallbackEnabled(),
     quick_generate_enabled: quickGenerateEnabled(),
     quick_generate_key: getSetting("quick_generate_key") ?? "",

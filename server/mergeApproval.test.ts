@@ -118,7 +118,7 @@ test("safe-merge approval is explicit, pin-independent, survives head changes, a
     const granted = { text: "Merge approval: approved for safe merge", json: true };
     const notGranted = { text: "Merge approval: not granted", json: false };
 
-    expect(result.defaults).toEqual({ approval: false, drag: false });
+    expect(result.defaults).toEqual({ approval: false, drag: true });
     expect(result.disabledGrant).toEqual({ status: 409, body: { error: "safe merge approval is disabled" } });
     expect(result.disabledInbox).toEqual({ 7: { approved: false, rank: null }, 8: { approved: false, rank: null } });
     expect(result.enabled).toMatchObject({ safe_merge_approval_enabled: true, group_drag_enabled: true });
