@@ -870,10 +870,7 @@
       return byHead.get(`${pr.repo}:${pr.baseRef}`) ?? null;
     };
     const info = new Map();
-    for (const pr of filteredPrs) {
-      const parent = parentOf(pr);
-      info.set(prKey(pr), { parent, indent: parent ? 1 : 0 });
-    }
+    for (const pr of filteredPrs) info.set(prKey(pr), { parent: parentOf(pr) });
     return info;
   });
 
@@ -901,17 +898,18 @@
         topUnits.push(pr);
       }
     }
-    const subtree = (pr) => {
-      const out = [pr];
-      for (const child of childrenOf.get(prKey(pr)) ?? []) out.push(...subtree(child));
+    // A row indents only beneath its parent; one whose parent sits in another section is a root here.
+    const subtree = (pr, stacked = false) => {
+      const out = [{ pr, stacked }];
+      for (const child of childrenOf.get(prKey(pr)) ?? []) out.push(...subtree(child, true));
       return out;
     };
     const unranked = sortUnits(topUnits.filter((pr) => pr.rank == null));
     const ranked = topUnits.filter((pr) => pr.rank != null).sort((a, b) => a.rank - b.rank);
     const items = [];
-    for (const pr of unranked) for (const p of subtree(pr)) items.push({ pr: p });
+    for (const pr of unranked) items.push(...subtree(pr));
     if (ranked.length > 0) items.push({ divider: true });
-    for (const pr of ranked) for (const p of subtree(pr)) items.push({ pr: p });
+    for (const pr of ranked) items.push(...subtree(pr));
     return { units: [...unranked, ...ranked], unrankedCount: unranked.length, items };
   }
 
@@ -1816,9 +1814,8 @@
       {/if}
     {/snippet}
 
-    {#snippet row(pr)}
+    {#snippet row(pr, stacked = false)}
       {@const index = ordered.indexOf(pr)}
-      {@const info = stack.get(prKey(pr))}
       {@const viewedDescription = prefs.descriptionUnreadDots && pr.descriptionDigest ? lastViewed.all[prKey(pr)]?.descriptionDigest : undefined}
       {@const editing = titleEditor && prKey(titleEditor.pr) === prKey(pr)}
       <PrRow
@@ -1832,13 +1829,13 @@
         selected={index === selected}
         multiSelected={multiRange && index >= multiRange.lo && index <= multiRange.hi}
         archived={isArchived(pr)}
-        stacked={info?.indent && !(cookingActive && cookingStage(pr))}
+        {stacked}
         dragging={dragKey === prKey(pr)}
         dropBefore={dropHint?.key === prKey(pr) && dropHint.before}
         dropAfter={dropHint?.key === prKey(pr) && !dropHint.before}
         descriptionChanged={viewedDescription && viewedDescription !== pr.descriptionDigest}
         oncontextmenu={(event) => openContextMenu(event, pr)}
-        draggable={!titleEditor && !info?.indent && !isArchived(pr) && !(cookingActive && cookingStage(pr))}
+        draggable={!titleEditor && !stacked && !isArchived(pr) && !(cookingActive && cookingStage(pr))}
         ondragstart={(e) => onDragStart(e, pr)}
         ondragend={onDragEnd}
         ondragover={(e) => onDragOverRow(e, pr)}
@@ -1886,7 +1883,7 @@
             </div>
           {/if}
         {:else}
-          {@render row(item.pr)}
+          {@render row(item.pr, item.stacked)}
         {/if}
       {/each}
     {/snippet}
