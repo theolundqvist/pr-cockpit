@@ -7,6 +7,7 @@
 </script>
 
 <script>
+  import KitchenNotifications from "./KitchenNotifications.svelte";
   import { cookingStage } from "./cookingStage.js";
   import { categoryForPr, normalizePrGrouping, orderQueueUnits, planGroupDrop, PR_TYPES, TYPE_TITLES } from "../../../shared/prGrouping.ts";
   import { assignments, assignPr, syncAssignments, onAssignmentStorage } from "./prAssignments.svelte.js";
@@ -157,68 +158,6 @@
   });
   $effect(() => {
     if (prefs.whiteboardEnabled && view === "whiteboard") localStorage.setItem("cockpit:list-view", "whiteboard");
-  });
-  let kitchenPrs = $state([]);
-  let kitchenLoaded = $state(false);
-  let kitchenLoading = $state(false);
-  let kitchenError = $state(null);
-  let kitchenMore = $state(false);
-  let kitchenSeq = 0;
-  function readKitchenSeen() {
-    try { const value = JSON.parse(localStorage.getItem("cockpit:kitchen-seen") ?? "{}"); return value && typeof value === "object" && !Array.isArray(value) ? value : {}; } catch { return {}; }
-  }
-  let kitchenSeen = $state(readKitchenSeen());
-  const kitchenEvent = (pr) => `${prKey(pr)}:${pr.terminalAt}`;
-  const kitchenIsNew = (pr) => !kitchenSeen[kitchenEvent(pr)];
-  let kitchenScoped = $derived(filterByRepositories(kitchenPrs, selectedRepos));
-  let kitchenNew = $derived(kitchenScoped.filter(kitchenIsNew));
-  let kitchenOlder = $derived(kitchenScoped.filter((pr) => !kitchenIsNew(pr)));
-  function markKitchenSeen() {
-    const selectedKey = view === "kitchen" && ordered[selected] ? prKey(ordered[selected]) : null;
-    const next = { ...readKitchenSeen() };
-    for (const pr of kitchenScoped) next[kitchenEvent(pr)] = true;
-    localStorage.setItem("cockpit:kitchen-seen", JSON.stringify(next));
-    kitchenSeen = next;
-    if (selectedKey) selected = Math.max(0, ordered.findIndex((pr) => prKey(pr) === selectedKey));
-  }
-  async function loadKitchen(more = false) {
-    const seq = ++kitchenSeq;
-    kitchenLoading = true;
-    kitchenError = null;
-    try {
-      const offset = more ? kitchenPrs.length : 0;
-      const limit = more ? 100 : Math.max(100, Math.min(200, kitchenPrs.length));
-      const response = await fetch(`/api/kitchen-history?limit=${limit}&offset=${offset}`);
-      if (!response.ok) throw new Error(`History unavailable (${response.status})`);
-      const result = await response.json();
-      if (seq !== kitchenSeq) return;
-      const selectedKey = view === "kitchen" && ordered[selected] ? prKey(ordered[selected]) : null;
-      const retained = !more && kitchenPrs.length > limit;
-      const rows = more ? [...kitchenPrs, ...result.prs] : retained ? [...result.prs, ...kitchenPrs] : result.prs;
-      kitchenPrs = [...new Map(rows.map((pr) => [prKey(pr), pr])).values()].sort((a, b) => b.terminalAt.localeCompare(a.terminalAt));
-      if (!retained) kitchenMore = result.hasMore;
-      kitchenLoaded = true;
-      if (selectedKey) selected = Math.max(0, ordered.findIndex((pr) => prKey(pr) === selectedKey));
-    } catch (error) {
-      if (seq === kitchenSeq) kitchenError = error.message;
-    } finally {
-      if (seq === kitchenSeq) kitchenLoading = false;
-    }
-  }
-  $effect(() => {
-    if (!prefs.cookingSectionEnabled || !active) {
-      if (!prefs.cookingSectionEnabled && view === "kitchen") view = "open";
-      return;
-    }
-    refreshRevision;
-    pollCompletedAt;
-    untrack(() => loadKitchen());
-    return () => { kitchenSeq++; };
-  });
-  $effect(() => {
-    const onStorage = (event) => { if (event.key === "cockpit:kitchen-seen") kitchenSeen = readKitchenSeen(); };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
   });
   let closedPrs = $state([]);
   let closedLoaded = $state(false);
@@ -585,14 +524,14 @@
       loaded = true;
       error = null;
       // a background poll can reorder the list mid-navigation; keep the same PR selected, not the same index
-      if (view !== "all" && view !== "kitchen" && restoreKey !== null) {
+      if (view !== "all" && restoreKey !== null) {
         const idx = ordered.findIndex((pr) => prKey(pr) === restoreKey);
         restoreKey = null;
         if (idx >= 0) {
           selected = idx;
           scrollSelectedIntoView();
         }
-      } else if (view !== "all" && view !== "kitchen" && selectedKey !== null) {
+      } else if (view !== "all" && selectedKey !== null) {
         const idx = ordered.findIndex((pr) => prKey(pr) === selectedKey);
         if (idx >= 0) selected = idx;
       }
@@ -1422,13 +1361,13 @@
   let visibleAllPrs = $derived(sortByTime(orderQueueUnits(filterByOpened(scopedAllPrs, openedFilter)), listOrder));
   let scopedArchivedPrs = $derived(archivedPrs.filter((pr) => !isSetAside(pr)));
   let visibleArchivedPrs = $derived(sortByTime(filterByOpened(scopedArchivedPrs, openedFilter), listOrder));
-  let ordered = $derived(view === "kitchen" ? [...kitchenNew, ...kitchenOlder] : view === "all" ? visibleAllPrs : view === "closed" ? filteredClosedPrs : showArchived ? [...openOrdered, ...visibleArchivedPrs] : openOrdered);
+  let ordered = $derived(view === "all" ? visibleAllPrs : view === "closed" ? filteredClosedPrs : showArchived ? [...openOrdered, ...visibleArchivedPrs] : openOrdered);
   let archivedSet = $derived(new Set(archivedPrs.map((pr) => prKey(pr))));
   const isArchived = (pr) => archivedSet.has(prKey(pr));
   $effect(() => {
     if (!active || view === "agents" || !loaded) return;
     const sections = new Map(groups.flatMap((group) => group.items.filter((item) => item.pr).map((item) => [prKey(item.pr), group.title])));
-    listedPrs.title = activeView ?? (view === "kitchen" ? "Kitchen history" : view === "all" ? "All PRs" : view === "closed" ? "Recently merged" : view === "whiteboard" ? "Whiteboard" : "Your queue");
+    listedPrs.title = activeView ?? (view === "all" ? "All PRs" : view === "closed" ? "Recently merged" : view === "whiteboard" ? "Whiteboard" : "Your queue");
     listedPrs.rows = ordered.map((pr) => ({ pr, section: view === "open" || view === "whiteboard" ? (sections.get(prKey(pr)) ?? (isArchived(pr) ? "Archived" : null)) : null }));
     return () => {
       listedPrs.rows = null;
@@ -1449,10 +1388,10 @@
       { key: "j / k", label: "move" },
       { key: "⏎", label: "open" },
     ];
-    if (pr && view !== "kitchen") keys.push({ key: "b", label: "set aside" });
-    if (view === "all" || view === "closed" || view === "kitchen") {
+    if (pr) keys.push({ key: "b", label: "set aside" });
+    if (view === "all" || view === "closed") {
       keys.push({ key: "o", label: "github" });
-      keys.push({ key: "Tab", label: view === "all" ? "recently merged" : view === "closed" && prefs.cookingSectionEnabled ? "Kitchen history" : "back to open" });
+      keys.push({ key: "Tab", label: view === "all" ? "recently merged" : "back to open" });
       return keys;
     }
     if (pr) keys.push({ key: "s", label: pr.rank == null ? "pin" : "unpin" });
@@ -1577,7 +1516,7 @@
         e.preventDefault();
         return;
       }
-      if (view !== "all" && view !== "kitchen" && e.metaKey && e.key.toLowerCase() === "f") {
+      if (view !== "all" && e.metaKey && e.key.toLowerCase() === "f") {
         openFilter();
         e.preventDefault();
         return;
@@ -1600,19 +1539,19 @@
         return;
       }
       if (e.key === "Enter" && e.target.closest?.("button, a")) return;
-      if (view !== "all" && view !== "kitchen" && e.key === "/") {
+      if (view !== "all" && e.key === "/") {
         openFilter();
         e.preventDefault();
         return;
       }
-      if (view !== "all" && view !== "kitchen" && e.key >= "1" && e.key <= "9" && savedViews[Number(e.key) - 1]) {
+      if (view !== "all" && e.key >= "1" && e.key <= "9" && savedViews[Number(e.key) - 1]) {
         applyView(savedViews[Number(e.key) - 1].query);
         e.preventDefault();
         return;
       }
       if (confirmAction) return;
       const pr = ordered[selected];
-      if (view !== "kitchen" && e.key === "b" && !e.shiftKey) {
+      if (e.key === "b" && !e.shiftKey) {
         e.preventDefault();
         if (!e.repeat && pr && putAside(pr)) {
           multiAnchor = null;
@@ -1636,11 +1575,11 @@
         e.preventDefault();
         return;
       }
-      if (view !== "all" && view !== "kitchen" && (e.key === "J" || (e.shiftKey && e.key === "ArrowDown"))) {
+      if (view !== "all" && (e.key === "J" || (e.shiftKey && e.key === "ArrowDown"))) {
         if (multiAnchor === null) multiAnchor = selected;
         selected = Math.min(ordered.length - 1, selected + 1);
         scrollSelectedIntoView(true);
-      } else if (view !== "all" && view !== "kitchen" && (e.key === "K" || (e.shiftKey && e.key === "ArrowUp"))) {
+      } else if (view !== "all" && (e.key === "K" || (e.shiftKey && e.key === "ArrowUp"))) {
         if (multiAnchor === null) multiAnchor = selected;
         selected = Math.max(0, selected - 1);
         scrollSelectedIntoView(true);
@@ -1682,7 +1621,7 @@
       } else if (view === "open" && e.key === "A") {
         toggleArchived();
       } else if (e.key === "Tab") {
-        const tabs = ["open", "all", "closed", ...(prefs.cookingSectionEnabled ? ["kitchen"] : [])];
+        const tabs = ["open", "all", "closed"];
         showView(tabs[(tabs.indexOf(view) + (e.shiftKey ? tabs.length - 1 : 1)) % tabs.length]);
       } else {
         return;
@@ -1702,6 +1641,9 @@
     <header class="head">
       <span class="head-title">{view === "agents" ? "Agents" : "Review queue"}</span>
       <span class="head-right">
+        {#if prefs.cookingSectionEnabled}
+          <KitchenNotifications {active} {refreshRevision} {pollCompletedAt} />
+        {/if}
         <UpdateButton />
         <span
           class="sync-status"
@@ -1729,11 +1671,6 @@
         <button class="view-tab" role="tab" aria-selected={view === "closed"} class:active={view === "closed"} onclick={() => showView("closed")}>
           Recently merged {#if view === "all"}<Kbd keys="tab" />{/if}
         </button>
-        {#if prefs.cookingSectionEnabled}
-          <button class="view-tab" role="tab" aria-selected={view === "kitchen"} class:active={view === "kitchen"} onclick={() => showView("kitchen")}>
-            Kitchen history {#if kitchenNew.length}<span class="view-tab-count">{kitchenNew.length} new</span>{/if}
-          </button>
-        {/if}
         <a class="view-tab" role="tab" aria-selected="false" href={actionsHref}>Actions</a>
         {#if prefs.agentConversationsEnabled}
           <button class="view-tab" role="tab" aria-selected={view === "agents"} class:active={view === "agents"} onclick={() => showView("agents")}>Agents</button>
@@ -1744,7 +1681,7 @@
       </div>
       {#if view !== "whiteboard" && view !== "agents"}
       <div class="queue-filters">
-      {#if prefs.queueTimeControlsEnabled && view !== "kitchen"}
+      {#if prefs.queueTimeControlsEnabled}
         <div class="time-controls">
           <label class="time-field">
             <span class="time-field-label">Opened</span>
@@ -2042,27 +1979,6 @@
               </div>
             </section>
           {/if}
-        {:else if view === "kitchen"}
-          {#if kitchenError}
-            <div class="empty" role="alert">{kitchenError} <button class="view-save" onclick={() => loadKitchen()}>Retry</button></div>
-          {:else if !kitchenLoaded}
-            <div class="empty" role="status">Loading Kitchen history…</div>
-          {:else if !kitchenScoped.length}
-            <div class="empty">No Kitchen completions in the cached history for these repositories yet.</div>
-          {/if}
-          {#if kitchenNew.length}
-            <section class="queue-group" aria-label="New completions">
-              <div class="group-label kitchen-history-label"><span>New completions</span><span class="group-count">{kitchenNew.length}</span><button class="kitchen-history-action" onclick={markKitchenSeen}>Mark seen</button></div>
-              <div class="group-body">{#each kitchenNew as pr (prKey(pr))}{@render closedRow(pr)}{/each}</div>
-            </section>
-          {/if}
-          {#if kitchenOlder.length}
-            <section class="queue-group" aria-label="Older history">
-              <div class="group-label"><span>Older history</span><span class="group-count">{kitchenOlder.length}</span></div>
-              <div class="group-body">{#each kitchenOlder as pr (prKey(pr))}{@render closedRow(pr)}{/each}</div>
-            </section>
-          {/if}
-          {#if kitchenMore}<button class="view-save" disabled={kitchenLoading} onclick={() => loadKitchen(true)}>{kitchenLoading ? "Loading…" : "Load older completions"}</button>{/if}
         {:else if view === "closed"}
           {#if !closedLoaded}
             <div class="empty">Loading recent merges…</div>
@@ -2176,7 +2092,7 @@
           {/if}
         </section>
 
-        {#if view !== "all" && view !== "kitchen" && loaded && prs.length > 0 && savedViews.length > 0}
+        {#if view !== "all" && loaded && prs.length > 0 && savedViews.length > 0}
           <section class="side-panel saved-views">
             <div class="side-panel-head"><span>Saved views</span></div>
             <div class="view-item" class:active={!filterQuery.trim()}>
@@ -2303,9 +2219,6 @@
 {/if}
 
 <style>
-  .group-label.kitchen-history-label { justify-content: flex-start; gap: 9px; }
-  .kitchen-history-action { margin-left: auto; padding: 4px 8px; border: 1px solid var(--border-hover); border-radius: var(--radius-sm); background: transparent; color: var(--text-dim); font: inherit; cursor: pointer; white-space: nowrap; }
-  .kitchen-history-action:hover { color: var(--text); background: var(--surface); }
   .cooking-toggle { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
   .cooking-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 4px; }
   .cooking-indicator { width: 7px; height: 7px; border-radius: 50%; background: #d99a39; flex-shrink: 0; }

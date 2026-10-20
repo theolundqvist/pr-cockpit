@@ -74,26 +74,37 @@ export function cookingScenarios() {
       if (await toggle.getAttribute("aria-expanded") !== "false") throw new Error("Hidden state did not survive reload");
       if (mode === "expanded") await toggle.click();
       if (mode === "history") {
-        await page.getByRole("tab", { name: /Kitchen history/ }).click();
-        await page.getByRole("region", { name: "New completions" }).waitFor();
-        await page.getByRole("region", { name: "Older history" }).waitFor();
+        await page.getByRole("button", { name: /^Notifications/ }).click();
+        await page.getByRole("dialog", { name: "Notifications" }).waitFor();
       }
     },
     verify: async (page) => {
       if (mode === "history") {
-        if (await page.getByRole("region", { name: "New completions" }).locator(".row").count() !== 1) throw new Error("New history count is wrong");
-        await page.getByRole("button", { name: "Mark seen", exact: true }).click();
-        if (await page.getByRole("region", { name: "New completions" }).count()) throw new Error("Acknowledged completions remain new");
-        if (await page.getByRole("region", { name: "Older history" }).locator(".row").count() !== 2) throw new Error("Mark seen lost history");
+        const dialog = page.getByRole("dialog", { name: "Notifications" });
+        if (await dialog.locator(".notification-item.unread").count() !== 1) throw new Error("Unread count is wrong");
+        await dialog.getByRole("button", { name: /^Mark as unread:/ }).click();
+        if (await dialog.locator(".notification-item.unread").count() !== 2) throw new Error("Mark unread failed");
+        await dialog.getByRole("button", { name: /^Mark as read:/ }).first().click();
+        if (await dialog.locator(".notification-item.unread").count() !== 1) throw new Error("Mark read failed");
+        await dialog.getByRole("button", { name: "Mark all read", exact: true }).click();
+        await dialog.getByRole("button", { name: /^Unread/ }).click();
+        await dialog.getByText("You're all caught up.").waitFor();
+        await page.keyboard.press("Escape");
+        if (await dialog.isVisible()) throw new Error("Escape did not close notifications");
         await page.reload();
-        await page.getByRole("tab", { name: "Kitchen history", exact: true }).click();
-        await page.getByRole("region", { name: "Older history" }).waitFor();
-        if (await page.getByRole("region", { name: "New completions" }).count()) throw new Error("Seen state did not persist");
+        await page.getByRole("button", { name: "Notifications", exact: true }).click();
+        await dialog.waitFor();
+        if (await dialog.locator(".notification-item.unread").count()) throw new Error("Read state did not persist");
+        await dialog.getByRole("button", { name: /^Mark as unread:/ }).first().click();
+        if (await dialog.locator(".notification-item.unread").count() !== 1) throw new Error("Cannot mark unread after mark all read");
+        await dialog.locator(".notification-link").first().click();
+        await page.waitForFunction(() => JSON.parse(localStorage.getItem("cockpit:kitchen-seen"))["fixture/cockpit#510:2026-07-15T09:30:00Z"] === true);
+        await page.evaluate(() => { location.hash = "#/"; });
         // Restore the mixed state for the review screenshot.
         await page.evaluate(() => { localStorage.setItem("cockpit:kitchen-seen", JSON.stringify({ "fixture/cockpit#509:2026-07-14T09:30:00Z": true })); });
         await page.reload();
-        await page.getByRole("tab", { name: /Kitchen history/ }).click();
-        await page.getByRole("region", { name: "New completions" }).waitFor();
+        await page.getByRole("button", { name: /^Notifications/ }).click();
+        await page.getByRole("dialog", { name: "Notifications" }).waitFor();
       }
       if (mode === "before" && await page.locator(".cooking-toggle,.cooking-stage").count()) throw new Error("Cooking UI visible before opt-in");
       if (mode !== "before" && mode !== "history" && await page.locator(".cooking-toggle .group-count").textContent() !== "4") throw new Error("Cooking count is wrong");
