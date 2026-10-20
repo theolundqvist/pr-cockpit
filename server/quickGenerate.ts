@@ -176,7 +176,36 @@ export function providerFetch(
   return vendorFetch(vendorFor(key), key.id, key.secret, path, init, deadline, signal);
 }
 
-export async function vendorFetch(
+// Server-sent events from an OpenAI-compatible stream; each `data:` payload goes to onData as parsed JSON.
+export function providerStream(
+  key: DetectedKey,
+  path: string,
+  body: unknown,
+  deadline: Deadline,
+  signal: AbortSignal | undefined,
+  onData: (data: unknown) => void,
+): Promise<void> {
+  return vendorRequest(vendorFor(key), key.id, key.secret, path, { method: "POST", body }, deadline, signal, async (response) => {
+    if (!response.body) throw new QuickGenerateError(502, `${PROVIDERS[key.provider].label} returned an empty stream.`);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const lines = buffer.split("\n");
+      buffer = done ? "" : lines.pop()!;
+      for (const line of lines) {
+        const data = line.startsWith("data:") ? line.slice(5).trim() : "";
+        if (data === "[DONE]") return;
+        if (data) onData(JSON.parse(data));
+      }
+      if (done) return;
+    }
+  });
+}
+
+export function vendorFetch(
   vendor: Vendor,
   keyName: string,
   secret: string,
@@ -185,6 +214,26 @@ export async function vendorFetch(
   deadline: Deadline,
   signal: AbortSignal | undefined,
 ): Promise<unknown> {
+  return vendorRequest(vendor, keyName, secret, path, init, deadline, signal, async (response) => {
+    const text = await response.text();
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new QuickGenerateError(502, `${vendor.label} returned a non-JSON response.`);
+    }
+  });
+}
+
+async function vendorRequest<T>(
+  vendor: Vendor,
+  keyName: string,
+  secret: string,
+  path: string,
+  init: { method: "GET" | "POST"; body?: unknown },
+  deadline: Deadline,
+  signal: AbortSignal | undefined,
+  read: (response: Response) => Promise<T>,
+): Promise<T> {
   const headers = { ...vendor.headers };
   if (init.body !== undefined) headers["content-type"] = "application/json";
   const timeout = deadline.signal;
@@ -198,30 +247,28 @@ export async function vendorFetch(
       redirect: "error",
       signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     });
+    if (response.ok) return await read(response);
     text = await response.text();
   } catch (error) {
+    if (error instanceof QuickGenerateError) throw error;
     if (timeout.aborted) throw new QuickGenerateError(504, `${vendor.label} did not answer within ${deadline.ms / 1000}s.`);
     if (signal?.aborted) throw new QuickGenerateError(499, "Request cancelled.");
     const reason = error instanceof Error ? error.message : String(error);
     throw new QuickGenerateError(502, `Couldn't reach ${vendor.label}: ${redact(reason, secret)}`);
   }
+  if (response.status === 401 || response.status === 403) {
+    throw new QuickGenerateError(502, `${vendor.label} rejected ${keyName} (HTTP ${response.status}).`);
+  }
   let body: unknown = null;
   try {
     body = JSON.parse(text);
   } catch {}
-  if (!response.ok) {
-    if (response.status === 401 || response.status === 403) {
-      throw new QuickGenerateError(502, `${vendor.label} rejected ${keyName} (HTTP ${response.status}).`);
-    }
-    const error = field(body, "error");
-    const nested = typeof error === "string" ? error : field(error, "message");
-    const message = field(body, "message");
-    const detail = typeof nested === "string" ? nested : typeof message === "string" ? message : "";
-    const suffix = detail ? `: ${redact(detail, secret)}` : ".";
-    throw new QuickGenerateError(502, `${vendor.label} request failed (HTTP ${response.status})${suffix}`);
-  }
-  if (body === null) throw new QuickGenerateError(502, `${vendor.label} returned a non-JSON response.`);
-  return body;
+  const error = field(body, "error");
+  const nested = typeof error === "string" ? error : field(error, "message");
+  const message = field(body, "message");
+  const detail = typeof nested === "string" ? nested : typeof message === "string" ? message : "";
+  const suffix = detail ? `: ${redact(detail, secret)}` : ".";
+  throw new QuickGenerateError(502, `${vendor.label} request failed (HTTP ${response.status})${suffix}`);
 }
 
 export function field(value: unknown, name: string): unknown {

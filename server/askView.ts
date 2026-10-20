@@ -4,7 +4,7 @@ import {
   detectKeys,
   fetchModels,
   field,
-  providerFetch,
+  providerStream,
   readKeySources,
   systemRoots,
   vendorFetch,
@@ -31,7 +31,7 @@ const TOTAL_ITEM_CHARS = 1_500_000;
 const LIST_BODY_CHARS = 1_200;
 const QWEN_ROWS = 400;
 const QWEN_EXCERPT_CHARS = 60_000;
-const TOOL_ROUNDS = 3;
+const TOOL_ROUNDS = 1;
 const MODEL_CACHE_MS = 10 * 60_000;
 
 export interface AskPr {
@@ -57,13 +57,15 @@ export type AskView =
 interface Item {
   label: string;
   text: string;
+  // What the user sees in the answer's source list; parts of one file or thread share it.
+  source: string;
 }
 
 interface AskResult {
   answer: string;
   filters: string[];
   matches: Array<{ key: string; probability: number }> | null;
-  sources: Array<{ label: string; probability: number }> | null;
+  sources: Array<{ label: string; detail: string }> | null;
   skipped: number;
 }
 
@@ -86,7 +88,12 @@ interface AskContext {
   fallback: string | null;
   deadline: Deadline;
   signal: AbortSignal | undefined;
+  emit: (event: AskEvent) => void;
 }
+
+// Progress streamed to the client before the answer: steps name the work in flight, text deltas build the
+// answer, and discard drops streamed text that turned out to precede a tool call or a failed provider.
+export type AskEvent = { type: "step"; text: string } | { type: "text"; text: string } | { type: "discard" };
 
 interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
@@ -178,8 +185,8 @@ export function parseAskRequest(body: unknown): { question: string; view: AskVie
   throw new QuickGenerateError(400, "invalid ask request");
 }
 
-function splitText(label: string, body: string): Item[] {
-  if (body.length <= ITEM_CHARS) return [{ label, text: body }];
+function splitText(label: string, body: string, source = label): Item[] {
+  if (body.length <= ITEM_CHARS) return [{ label, text: body, source }];
   const parts: string[] = [];
   let current = "";
   for (const line of body.split("\n")) {
@@ -190,7 +197,7 @@ function splitText(label: string, body: string): Item[] {
     current += (current ? "\n" : "") + line.slice(0, ITEM_CHARS);
   }
   if (current) parts.push(current);
-  return parts.map((part, index) => ({ label: `${label}, part ${index + 1} of ${parts.length}`, text: part }));
+  return parts.map((part, index) => ({ label: `${label}, part ${index + 1} of ${parts.length}`, text: part, source }));
 }
 
 function diffFiles(diff: string): Item[] {
@@ -201,7 +208,7 @@ function diffFiles(diff: string): Item[] {
     const path = header[2]!;
     const label = header[1] === path ? `File ${path}` : `File ${path} (moved from ${header[1]})`;
     const hunks = section.slice(section.search(/^@@/m) >= 0 ? section.search(/^@@/m) : section.length);
-    items.push(...splitText(label, hunks || "(no textual changes)"));
+    items.push(...splitText(label, hunks || "(no textual changes)", path.split("/").pop()!));
   }
   return items;
 }
@@ -242,7 +249,8 @@ export function prItems(detail: unknown, diff: string | null): Item[] {
     const status = field(thread, "isResolved") === true ? "resolved" : "unresolved";
     const hunk = text(field(first, "diffHunk"));
     const replies = comments.map((comment) => `@${login(comment)}: ${cleanBody(text(field(comment, "body")))}`).join("\n\n");
-    items.push(...splitText(`Review thread on ${where} (${status})`, `${hunk ? `${hunk}\n\n` : ""}${replies}`));
+    const name = `${text(field(thread, "path")).split("/").pop()}${typeof line === "number" ? `:${line}` : ""}`;
+    items.push(...splitText(`Review thread on ${where} (${status})`, `${hunk ? `${hunk}\n\n` : ""}${replies}`, `Thread on ${name}`));
   }
   const commit = field(nodes(field(detail, "lastCommit"))[0], "commit");
   const checks = nodes(field(field(commit, "statusCheckRollup"), "contexts")).map((check) => {
@@ -250,7 +258,7 @@ export function prItems(detail: unknown, diff: string | null): Item[] {
     const outcome = text(field(check, "conclusion")) || text(field(check, "status")) || text(field(check, "state"));
     return `${name}: ${outcome.toLowerCase()}`;
   });
-  if (checks.length) items.push(...splitText("Checks on the latest commit", checks.join("\n")));
+  if (checks.length) items.push(...splitText("Checks on the latest commit", checks.join("\n"), "Checks"));
   const commits = nodes(field(detail, "commitList")).map((node) => {
     const entry = field(node, "commit");
     return `${text(field(entry, "abbreviatedOid"))} ${text(field(entry, "messageHeadline"))}`;
@@ -261,7 +269,7 @@ export function prItems(detail: unknown, diff: string | null): Item[] {
     const files = nodes(field(detail, "files")).map((file) =>
       `${text(field(file, "path"))} (+${Number(field(file, "additions")) || 0} -${Number(field(file, "deletions")) || 0})`
     );
-    if (files.length) items.push(...splitText("Changed files (diff not loaded)", files.join("\n")));
+    if (files.length) items.push(...splitText("Changed files (diff not loaded)", files.join("\n"), "Changed files"));
   }
   return items;
 }
@@ -272,7 +280,7 @@ export function pageItems(page: string): Item[] {
   const flush = () => {
     if (!current) return;
     const first = current.split("\n", 1)[0]!.slice(0, 60);
-    items.push(...splitText(`Section "${first}"`, current));
+    items.push(...splitText(`Section "${first}"`, current, first.length > 40 ? `${first.slice(0, 40)}…` : first));
     current = "";
   };
   for (const line of page.split("\n")) {
@@ -336,36 +344,55 @@ async function qwenModel(key: DetectedKey, ctx: AskContext): Promise<string> {
   return model;
 }
 
+// Reasoning blocks are dropped as they stream; a half-received opening tag is held back until it resolves.
+function visibleText(raw: string): string {
+  return raw.replace(/<think>[\s\S]*?(?:<\/think>|$)/g, "").replace(/<(?:t(?:h(?:i(?:n(?:k)?)?)?)?)?$/, "").trimStart();
+}
+
 // Cerebras first; Groq answers when Cerebras has no key or fails, for the rest of this ask. The deadline
 // is shared, so a timeout or cancellation ends the ask instead of moving on.
 async function chat(ctx: AskContext, messages: ChatMessage[], tools?: { choice: "auto" | "none"; list: unknown[] }): Promise<ChatMessage> {
   for (;;) {
     const key = ctx.generators[0]!;
+    let raw = "";
+    let shown = "";
+    const calls: ToolCall[] = [];
     try {
       const model = ctx.active?.model ?? await qwenModel(key, ctx);
       ctx.active = { key, model };
-      const body = await providerFetch(key, "/chat/completions", {
-        method: "POST",
-        body: { model, messages, stream: false, ...(tools ? { tools: tools.list, tool_choice: tools.choice } : {}) },
-      }, ctx.deadline, ctx.signal);
-      const choices = field(body, "choices");
-      const message = field(Array.isArray(choices) ? choices[0] : undefined, "message");
-      const content = text(field(message, "content")).replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-      const calls = field(message, "tool_calls");
-      const toolCalls = (Array.isArray(calls) ? calls : []).flatMap((call): ToolCall[] => {
-        const id = field(call, "id");
-        const name = field(field(call, "function"), "name");
-        const args = field(field(call, "function"), "arguments");
-        return typeof id === "string" && typeof name === "string"
-          ? [{ id, type: "function", function: { name, arguments: typeof args === "string" ? args : "" } }]
-          : [];
+      const body = { model, messages, stream: true, ...(tools ? { tools: tools.list, tool_choice: tools.choice } : {}) };
+      await providerStream(key, "/chat/completions", body, ctx.deadline, ctx.signal, (data) => {
+        const failure = field(data, "error");
+        if (failure !== undefined) throw new QuickGenerateError(502, `${key.label} stream failed: ${text(field(failure, "message")) || "unknown error"}`);
+        const choices = field(data, "choices");
+        const delta = field(Array.isArray(choices) ? choices[0] : undefined, "delta");
+        const parts = field(delta, "tool_calls");
+        for (const part of Array.isArray(parts) ? parts : []) {
+          const index = field(part, "index");
+          const at = typeof index === "number" ? index : calls.length;
+          calls[at] ??= { id: "", type: "function", function: { name: "", arguments: "" } };
+          const call = calls[at];
+          call.id += text(field(part, "id"));
+          call.function.name += text(field(field(part, "function"), "name"));
+          call.function.arguments += text(field(field(part, "function"), "arguments"));
+        }
+        raw += text(field(delta, "content"));
+        const visible = visibleText(raw);
+        if (visible.length > shown.length && !calls.length) {
+          ctx.emit({ type: "text", text: visible.slice(shown.length) });
+          shown = visible;
+        }
       });
-      return { role: "assistant", content, ...(toolCalls.length ? { tool_calls: toolCalls } : {}) };
+      const toolCalls = calls.filter((call) => call.id && call.function.name);
+      if (toolCalls.length && shown) ctx.emit({ type: "discard" });
+      return { role: "assistant", content: visibleText(raw).trim(), ...(toolCalls.length ? { tool_calls: toolCalls } : {}) };
     } catch (error) {
       if (!(error instanceof QuickGenerateError) || error.status === 499 || error.status === 504 || ctx.generators.length < 2) throw error;
+      if (shown) ctx.emit({ type: "discard" });
       ctx.fallback = `${key.label}: ${error.message}`;
       ctx.generators = ctx.generators.slice(1);
       ctx.active = null;
+      ctx.emit({ type: "step", text: `${key.label} failed, asking ${ctx.generators[0]!.label}` });
     }
   }
 }
@@ -413,7 +440,7 @@ const FILTER_TOOL = {
   type: "function",
   function: {
     name: "filter_prs",
-    description: "A classifier checks every listed PR, including its description, against one yes/no condition and returns the keys it holds for. The last call's matches are shown to the user as the result list.",
+    description: "A classifier checks every listed PR, including its description, against one yes/no condition and returns the keys it holds for.",
     parameters: {
       type: "object",
       properties: { condition: { type: "string", description: "A yes/no condition about one PR, e.g. \"The PR changes the billing API.\"" } },
@@ -425,8 +452,8 @@ const FILTER_TOOL = {
 const LIST_PROMPT = [
   "Answer the user's question about the pull requests listed in their PR Cockpit view.",
   "Rows: key | title | author | state | CI | review | labels | section | updated.",
-  "Call filter_prs when the answer depends on which PRs meet a condition the rows alone can't settle (topic, content, intent); conditions on row fields you can apply yourself.",
-  "Reply in at most three short sentences of Markdown, naming PRs by key. The user sees the filtered PRs as a list under your reply, so don't repeat them all.",
+  "Call filter_prs once when the answer depends on what PRs contain (topic, code, intent) that the rows can't show; decide anything visible in the rows (title, type prefix, state, CI, labels) yourself.",
+  "Reply in at most three short sentences of Markdown and name every PR you mean by #number: exactly those appear as a list under your reply.",
 ].join("\n");
 
 async function askList(ctx: AskContext, question: string, view: { title: string; prs: AskPr[] }): Promise<AskResult> {
@@ -444,13 +471,18 @@ async function askList(ctx: AskContext, question: string, view: { title: string;
   relevant.catch(() => {});
   const filters: string[] = [];
   let matches: AskAnswer["matches"] = null;
+  ctx.emit({ type: "step", text: `Thinking about ${view.prs.length} PRs` });
   for (let round = 0; ; round++) {
     const reply = await chat(ctx, messages, { choice: round < TOOL_ROUNDS ? "auto" : "none", list: [FILTER_TOOL] });
     if (!reply.tool_calls || round >= TOOL_ROUNDS) {
+      // PRs the answer names are the list, so the two never disagree; the raw-question pass covers answers that name none.
+      const named = new Set([...reply.content.matchAll(/#(\d+)\b/g)].map((match) => match[1]));
+      const cited = view.prs.filter((pr) => named.has(pr.key.split("#")[1])).map((pr) => ({ key: pr.key, probability: 1 }));
+      if (!matches && !cited.length) ctx.emit({ type: "step", text: `Matching ${view.prs.length} PRs` });
       return {
         answer: reply.content,
         filters,
-        matches: matches ?? await relevant,
+        matches: cited.length ? cited : matches ?? await relevant,
         sources: null,
         skipped: 0,
       };
@@ -465,9 +497,11 @@ async function askList(ctx: AskContext, question: string, view: { title: string;
         messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ error: "Call filter_prs with a condition." }) });
         continue;
       }
+      ctx.emit({ type: "step", text: `Checking “${condition}” on ${view.prs.length} PRs` });
       matches = await filterPrs(ctx, question, condition, view.prs);
       filters.push(condition);
       messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ matched: matches.length, of: view.prs.length, keys: matches.map((entry) => entry.key) }) });
+      ctx.emit({ type: "step", text: `${matches.length} of ${view.prs.length} match, writing` });
     }
   }
 }
@@ -481,11 +515,12 @@ const ITEMS_PROMPT = [
 async function askItems(ctx: AskContext, question: string, title: string, all: Item[]): Promise<AskResult> {
   let total = 0;
   const items = all.filter((item) => (total += item.text.length) <= TOTAL_ITEM_CHARS);
+  ctx.emit({ type: "step", text: `Reading ${items.length} part${items.length === 1 ? "" : "s"}` });
   const probabilities = items.length
     ? await jevNouls(
       ctx,
       items,
-      (part) => ({ question, view: title, items: part }),
+      (part) => ({ question, view: title, items: part.map(({ label, text }) => ({ label, text })) }),
       (index) => `Does \`items[${index}]\` contain information that helps answer \`question\` about \`view\`?`,
     )
     : [];
@@ -498,6 +533,7 @@ async function askItems(ctx: AskContext, question: string, title: string, all: I
   const context = excerpts.length
     ? excerpts.map((item) => `### ${item.label}\n${item.text}`).join("\n\n")
     : "(No excerpt was judged relevant.)";
+  ctx.emit({ type: "step", text: `Writing from ${excerpts.length} relevant part${excerpts.length === 1 ? "" : "s"}` });
   const reply = await chat(ctx, [
     { role: "system", content: ITEMS_PROMPT },
     { role: "user", content: `${title}\n\nExcerpts:\n\n${context}\n\nQuestion: ${question}` },
@@ -506,7 +542,7 @@ async function askItems(ctx: AskContext, question: string, title: string, all: I
     answer: reply.content,
     filters: [],
     matches: null,
-    sources: excerpts.map(({ label, probability }) => ({ label, probability })),
+    sources: [...Map.groupBy(excerpts, (item) => item.source)].map(([label, group]) => ({ label, detail: group.map((item) => item.label).join("\n") })),
     skipped: all.length - items.length,
   };
 }
@@ -522,6 +558,7 @@ function jevSecret(roots: QuickGenerateRoots): string {
 export async function askView(
   question: string,
   view: AskView,
+  emit: (event: AskEvent) => void,
   signal?: AbortSignal,
   roots: QuickGenerateRoots = systemRoots(),
 ): Promise<AskAnswer> {
@@ -537,6 +574,7 @@ export async function askView(
     deadline: { signal: AbortSignal.timeout(ASK_TIMEOUT_MS), ms: ASK_TIMEOUT_MS },
     // Ends background Jev passes (the unfiltered list pass, queued chunks) once the answer settles.
     signal: signal ? AbortSignal.any([signal, done.signal]) : done.signal,
+    emit,
   };
   if (!ctx.generators.length) throw new QuickGenerateError(400, "Add CEREBRAS_API_KEY or GROQ_API_KEY to the key file.");
   try {

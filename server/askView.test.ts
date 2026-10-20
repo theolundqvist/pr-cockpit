@@ -65,6 +65,18 @@ function jevAnswer(body: unknown): Response {
 
 const models = (id: string) => Response.json({ data: [{ id: "gpt-oss-120b" }, { id }] });
 
+// An OpenAI-style stream: one `data:` line per delta, split across network chunks mid-line.
+function sse(deltas: unknown[]): Response {
+  const payload = [...deltas.map((delta) => `data: ${JSON.stringify({ choices: [{ delta }] })}\n\n`), "data: [DONE]\n\n"].join("");
+  const encoder = new TextEncoder();
+  return new Response(new ReadableStream({
+    start(controller) {
+      for (let index = 0; index < payload.length; index += 7) controller.enqueue(encoder.encode(payload.slice(index, index + 7)));
+      controller.close();
+    },
+  }), { headers: { "content-type": "text/event-stream" } });
+}
+
 describe("ask about a list", () => {
   test("Qwen's filter condition is judged by Jev for every listed PR across chunks, and its matches are the result", async () => {
     const prs = Array.from({ length: 120 }, (_, index) => pr(index + 1, index % 40 === 7 ? `fix(billing): invoice rounding ${index}` : `chore: tidy ${index}`));
@@ -76,12 +88,19 @@ describe("ask about a list", () => {
       const messages = field(call.body, "messages");
       const tool = (Array.isArray(messages) ? messages : []).find((message) => field(message, "role") === "tool");
       if (!tool) {
-        return Response.json({ choices: [{ message: { content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "filter_prs", arguments: JSON.stringify({ condition: "The PR changes billing." }) } }] } }] });
+        const args = JSON.stringify({ condition: "The PR changes billing." });
+        return sse([
+          { tool_calls: [{ index: 0, id: "c1", type: "function", function: { name: "filter_prs", arguments: args.slice(0, 12) } }] },
+          { tool_calls: [{ index: 0, function: { arguments: args.slice(12) } }] },
+        ]);
       }
-      return Response.json({ choices: [{ message: { content: `Found ${field(JSON.parse(String(field(tool, "content"))), "matched")} billing PRs.` } }] });
+      return sse([{ content: `Found ${field(JSON.parse(String(field(tool, "content"))), "matched")} ` }, { content: "billing PRs." }]);
     });
     try {
-      const result = await askView("Which PRs touch billing?", { kind: "list", title: "Queue", prs }, undefined, keyFile("TYPESAFE_API_KEY=ts-secret\nCEREBRAS_API_KEY=csk-secret\nGROQ_API_KEY=gsk-secret"));
+      const steps: string[] = [];
+      const result = await askView("Which PRs touch billing?", { kind: "list", title: "Queue", prs }, (event) => {
+        if (event.type === "step") steps.push(event.text);
+      }, undefined, keyFile("TYPESAFE_API_KEY=ts-secret\nCEREBRAS_API_KEY=csk-secret\nGROQ_API_KEY=gsk-secret"));
       expect(result.answer).toBe("Found 3 billing PRs.");
       expect(result.filters).toEqual(["The PR changes billing."]);
       expect(result.matches?.map((match) => match.key)).toEqual(["acme/app#8", "acme/app#48", "acme/app#88"]);
@@ -91,6 +110,7 @@ describe("ask about a list", () => {
       expect(jevCalls.length).toBe(6);
       expect(jevCalls.every((call) => call.auth === "Bearer ts-secret")).toBe(true);
       expect(chatBodies.length).toBe(2);
+      expect(steps).toEqual(["Thinking about 120 PRs", "Checking “The PR changes billing.” on 120 PRs", "3 of 120 match, writing"]);
     } finally {
       vendors.restore();
     }
@@ -103,11 +123,17 @@ describe("Qwen provider", () => {
       if (call.url.startsWith("https://api.typesafe.ai/")) return jevAnswer(call.body);
       if (call.url.startsWith("https://api.cerebras.ai/")) return Response.json({ error: { message: "overloaded" } }, { status: 503 });
       if (call.url.endsWith("/models")) return models("qwen/qwen3.8-27b");
-      return Response.json({ choices: [{ message: { content: "The invoice change is in the description." } }] });
+      return sse([{ content: "<thi" }, { content: "nk>weighing</think>The invoice " }, { content: "change is in the description." }]);
     });
     try {
       const detail = { title: "Invoice rounding", state: "OPEN", author: { login: "dev" }, body: "Rounds invoice totals.", comments: { nodes: [{ author: { login: "bot" }, body: "Looks fine." }] } };
-      const result = await askView("What changes for invoices?", { kind: "pr", key: "acme/app#1", detail, diff: null }, undefined, keyFile("TYPESAFE_API_KEY=ts-secret\nCEREBRAS_API_KEY=csk-secret\nGROQ_API_KEY=gsk-secret"));
+      const events: string[] = [];
+      const result = await askView("What changes for invoices?", { kind: "pr", key: "acme/app#1", detail, diff: null }, (event) => {
+        events.push(event.type === "discard" ? "discard" : `${event.type}:${event.text}`);
+      }, undefined, keyFile("TYPESAFE_API_KEY=ts-secret\nCEREBRAS_API_KEY=csk-secret\nGROQ_API_KEY=gsk-secret"));
+      expect(result.answer).toBe("The invoice change is in the description.");
+      expect(events.filter((event) => event.startsWith("text:")).map((event) => event.slice(5)).join("")).toBe(result.answer);
+      expect(events).toContain("step:Cerebras failed, asking Groq");
       expect(result.provider).toBe("Groq");
       expect(result.model).toBe("qwen/qwen3.8-27b");
       expect(result.fallback).toContain("Cerebras");
@@ -126,7 +152,7 @@ describe("Qwen provider", () => {
   test("an ask without a TypeSafe key fails before any provider is called", async () => {
     const vendors = mockVendors(() => Response.json({}));
     try {
-      const error = await askView("anything", { kind: "page", title: "Actions", text: "Runs" }, undefined, keyFile("CEREBRAS_API_KEY=csk-secret"))
+      const error = await askView("anything", { kind: "page", title: "Actions", text: "Runs" }, () => {}, undefined, keyFile("CEREBRAS_API_KEY=csk-secret"))
         .then(() => null, (reason: unknown) => reason);
       expect(error).toMatchObject({ status: 400, message: "Add TYPESAFE_API_KEY to the key file." });
       expect(vendors.calls).toEqual([]);

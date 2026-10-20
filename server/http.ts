@@ -116,7 +116,7 @@ import { isMergeMethod, mergeMethodFor, mergeMethodSourceFor, setMergeMethodPref
 import { AGENT_DEFAULTS, askViewEnabled, pendingReviewsEnabled, quickGenerateEnabled, readSettings, relayConfig, restFallbackEnabled, restUsageEnabled, RELAY_APP_INSTALL_URL, RELAY_APP_SLUG, safeMergeApprovalEnabled, settingsRepos, writeSettings, type AgentSetting, type Settings } from "./settings.ts";
 import { claudeBinPath, codexBinPath, ompBinPath } from "./harness.ts";
 import { CommitMessageError, generateCommitMessage } from "./commitMessage.ts";
-import { askView, parseAskRequest } from "./askView.ts";
+import { askView, parseAskRequest, type AskView } from "./askView.ts";
 import { QuickGenerateError, quickGenerate, quickGenerateConfig, quickGenerateModels } from "./quickGenerate.ts";
 import { relayStatus, webhookCoveredSince } from "./relayClient.ts";
 import { relayCoverage } from "./relayCoverage.ts";
@@ -2706,6 +2706,8 @@ async function handleQuickGenerate(req: Request, url: URL): Promise<Response> {
 async function handleAsk(req: Request): Promise<Response> {
   if (req.method !== "POST") return json({ error: "not found" }, 404);
   if (!askViewEnabled()) return json({ error: "Ask is off in Settings." }, 403);
+  let question: string;
+  let view: AskView;
   try {
     let body: unknown;
     try {
@@ -2713,13 +2715,32 @@ async function handleAsk(req: Request): Promise<Response> {
     } catch {
       return json({ error: "invalid JSON body" }, 400);
     }
-    const { question, view } = parseAskRequest(body);
-    return json(await askView(question, view, req.signal));
+    ({ question, view } = parseAskRequest(body));
   } catch (error) {
     if (error instanceof QuickGenerateError) return json({ error: error.message }, error.status);
-    console.error("Ask failed:", error);
-    return json({ error: "Ask failed." }, 500);
+    throw error;
   }
+  const encoder = new TextEncoder();
+  let open = true;
+  // One JSON event per line: steps and answer text while it runs, then a final answer or error.
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (event: unknown) => {
+        if (open) controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+      };
+      try {
+        send({ type: "answer", ...await askView(question, view, send, req.signal) });
+      } catch (error) {
+        if (!(error instanceof QuickGenerateError)) console.error("Ask failed:", error);
+        send({ type: "error", message: error instanceof QuickGenerateError ? error.message : "Ask failed." });
+      }
+      if (open) controller.close();
+    },
+    cancel() {
+      open = false;
+    },
+  });
+  return new Response(stream, { headers: { "content-type": "application/x-ndjson", "cache-control": "no-store" } });
 }
 
 const REPO_RE = /^[^/]+\/[^/]+$/;
