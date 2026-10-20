@@ -81,6 +81,31 @@ export function cookingScenarios() {
     verify: async (page) => {
       if (mode === "history") {
         const dialog = page.getByRole("dialog", { name: "Notifications" });
+        const bell = page.getByRole("button", { name: /^Notifications/ });
+        const badge = await page.locator(".notification-count").boundingBox();
+        if (Math.abs(badge.width - badge.height) > 1) throw new Error("Single-digit count is not circular");
+        // The native invoker must close on a second click, even during a transition.
+        await page.emulateMedia({ reducedMotion: "no-preference" });
+        for (let i = 0; i < 3; i++) {
+          await bell.click();
+          await page.waitForFunction(() => !document.querySelector(".notifications").matches(":popover-open"));
+          await bell.click();
+          await page.waitForFunction(() => document.querySelector(".notifications").matches(":popover-open"));
+        }
+        const duration = await dialog.evaluate((node) => getComputedStyle(node).transitionDuration);
+        if (!duration.includes("0.16s")) throw new Error(`Pointer transition is missing: ${duration}`);
+        await page.keyboard.press("Escape");
+        await bell.focus();
+        await page.keyboard.press("Enter");
+        await page.waitForFunction(() => document.querySelector(".notifications").matches(":popover-open") && document.querySelector(".notifications").dataset.instant === "true");
+        if (await dialog.evaluate((node) => getComputedStyle(node).transitionDuration) !== "0s") throw new Error("Keyboard open animates");
+        await page.locator(".head-title").click();
+        await page.waitForFunction(() => !document.querySelector(".notifications").matches(":popover-open"));
+        await page.emulateMedia({ reducedMotion: "reduce" });
+        await bell.click();
+        const reduced = await dialog.evaluate((node) => ({ duration: getComputedStyle(node).transitionDuration, reduced: matchMedia("(prefers-reduced-motion: reduce)").matches }));
+        if (!reduced.reduced || reduced.duration.split(",").some((value) => parseFloat(value) > 0.00001)) throw new Error(`Reduced motion animates: ${JSON.stringify(reduced)}`);
+
         if (await dialog.locator(".notification-item.unread").count() !== 1) throw new Error("Unread count is wrong");
         await dialog.getByRole("button", { name: /^Mark as unread:/ }).click();
         if (await dialog.locator(".notification-item.unread").count() !== 2) throw new Error("Mark unread failed");
