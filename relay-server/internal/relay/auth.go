@@ -265,9 +265,16 @@ func tokenHash(token string) string {
 	return hex.EncodeToString(digest[:])
 }
 
+// repoGrant is keyed by the lowercase repository; proof is empty for bearer-token sessions.
+type repoGrant struct {
+	proof   string
+	expires time.Time
+}
+
 type ticketSession struct {
 	principal        string
-	repos            map[string]struct{}
+	anchored         bool
+	repos            map[string]repoGrant
 	admissionExpires time.Time
 	authExpires      time.Time
 }
@@ -286,25 +293,30 @@ func NewTickets() *Tickets {
 	}
 }
 
-func (t *Tickets) Issue(principal string, repos []string, authExpires time.Time) (ticket string, err error) {
+func (t *Tickets) Issue(principal string, repos []string, authExpires time.Time) (string, error) {
+	grants := make(map[string]repoGrant, len(repos))
+	for _, repo := range repos {
+		grants[strings.ToLower(repo)] = repoGrant{expires: authExpires}
+	}
+	return t.issue(ticketSession{principal: principal, repos: grants, authExpires: authExpires})
+}
+
+func (t *Tickets) IssueAnchored(principal string, grants map[string]repoGrant, authExpires time.Time) (string, error) {
+	return t.issue(ticketSession{principal: principal, anchored: true, repos: grants, authExpires: authExpires})
+}
+
+func (t *Tickets) issue(session ticketSession) (ticket string, err error) {
 	bytes := make([]byte, 32)
 	if _, err = rand.Read(bytes); err != nil {
 		return "", fmt.Errorf("create ticket: %w", err)
 	}
 	ticket = base64.RawURLEncoding.EncodeToString(bytes)
 	now := time.Now()
-	admissionExpires := now.Add(ticketTTL)
-	if authExpires.Before(admissionExpires) {
-		admissionExpires = authExpires
+	session.admissionExpires = now.Add(ticketTTL)
+	if session.authExpires.Before(session.admissionExpires) {
+		session.admissionExpires = session.authExpires
 	}
-	repoSet := make(map[string]struct{}, len(repos))
-	for _, repo := range repos {
-		repoSet[repo] = struct{}{}
-	}
-	session := ticketSession{
-		principal: principal, repos: repoSet,
-		admissionExpires: admissionExpires, authExpires: authExpires,
-	}
+	principal := session.principal
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if !t.nextSweep.After(now) {
@@ -317,6 +329,16 @@ func (t *Tickets) Issue(principal string, repos []string, authExpires time.Time)
 	t.sessions[tokenHash(ticket)] = session
 	t.principalTickets[principal]++
 	return ticket, nil
+}
+
+func (t *Tickets) restrict(key string, change anchorChange, now time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, session := range t.sessions {
+		if grant, ok := session.repos[key]; ok && session.anchored {
+			session.repos[key], _ = change.restrict(grant, now)
+		}
+	}
 }
 
 func (t *Tickets) sweep(now time.Time) {

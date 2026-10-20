@@ -68,11 +68,13 @@ func signedWebhookRequest(body []byte, event string) *http.Request {
 	request.Header.Set("X-GitHub-Event", event)
 	return request
 }
-func testTicket(repos map[string]struct{}) ticketSession {
-	return ticketSession{
-		principal: "test-principal", repos: repos,
-		admissionExpires: time.Now().Add(time.Minute), authExpires: time.Now().Add(authTTL),
+func subscribeTestTicket(t *testing.T, server *Server, cursor int64, hasCursor bool) (*subscriber, []Marker, readyFrame, error) {
+	t.Helper()
+	ticket, err := server.tickets.Issue("test-principal", []string{"owner/repo"}, time.Now().Add(authTTL))
+	if err != nil {
+		t.Fatal(err)
 	}
+	return server.subscribeTicket(context.Background(), ticket, cursor, hasCursor)
 }
 
 func TestRejectsInvalidWebhookSignature(t *testing.T) {
@@ -105,8 +107,7 @@ func TestCursorBaselineReplayAndReset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repos := map[string]struct{}{"owner/repo": {}}
-	baseline, replay, initial, err := server.subscribe(context.Background(), testTicket(repos), 0, false)
+	baseline, replay, initial, err := subscribeTestTicket(t, server, 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +115,7 @@ func TestCursorBaselineReplayAndReset(t *testing.T) {
 	if initial.Type != "ready" || initial.Latest != second.Seq || len(replay) != 0 {
 		t.Fatalf("baseline = %#v replay=%d", initial, len(replay))
 	}
-	subscription, replay, initial, err := server.subscribe(context.Background(), testTicket(repos), first.Seq, true)
+	subscription, replay, initial, err := subscribeTestTicket(t, server, first.Seq, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +126,7 @@ func TestCursorBaselineReplayAndReset(t *testing.T) {
 	if _, err := store.db.Exec(`DELETE FROM markers WHERE seq = ?`, first.Seq); err != nil {
 		t.Fatal(err)
 	}
-	reset, replay, initial, err := server.subscribe(context.Background(), testTicket(repos), 0, true)
+	reset, replay, initial, err := subscribeTestTicket(t, server, 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +134,7 @@ func TestCursorBaselineReplayAndReset(t *testing.T) {
 	if initial.Type != "reset" || initial.Latest != second.Seq || len(replay) != 0 {
 		t.Fatalf("retention reset = %#v replay=%d", initial, len(replay))
 	}
-	future, _, initial, err := server.subscribe(context.Background(), testTicket(repos), second.Seq+100, true)
+	future, _, initial, err := subscribeTestTicket(t, server, second.Seq+100, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +184,7 @@ func TestReplayToLiveOrdering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	subscription, replay, initial, err := server.subscribe(context.Background(), testTicket(map[string]struct{}{"owner/repo": {}}), 0, true)
+	subscription, replay, initial, err := subscribeTestTicket(t, server, 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -443,20 +444,19 @@ func TestStreamClosesWhenAuthorizationExpires(t *testing.T) {
 
 func TestSubscriberPrincipalCapReleasesOnDisconnect(t *testing.T) {
 	server, _ := newTestRelay(t, githubAccess(func(*http.Request) int { return http.StatusOK }))
-	session := testTicket(map[string]struct{}{"owner/repo": {}})
 	subscribers := make([]*subscriber, 0, maxPrincipalStreams)
 	for range maxPrincipalStreams {
-		subscription, _, _, err := server.subscribe(context.Background(), session, 0, false)
+		subscription, _, _, err := subscribeTestTicket(t, server, 0, false)
 		if err != nil {
 			t.Fatal(err)
 		}
 		subscribers = append(subscribers, subscription)
 	}
-	if _, _, _, err := server.subscribe(context.Background(), session, 0, false); !errors.Is(err, errSubscriberCapacity) {
+	if _, _, _, err := subscribeTestTicket(t, server, 0, false); !errors.Is(err, errSubscriberCapacity) {
 		t.Fatalf("fifth stream error = %v", err)
 	}
 	server.unsubscribe(subscribers[0])
-	replacement, _, _, err := server.subscribe(context.Background(), session, 0, false)
+	replacement, _, _, err := subscribeTestTicket(t, server, 0, false)
 	if err != nil {
 		t.Fatalf("replacement stream: %v", err)
 	}
@@ -489,7 +489,7 @@ func TestGlobalSubscriberCapFailsFast(t *testing.T) {
 	for range maxSubscribers {
 		server.subscribers[&subscriber{done: make(chan struct{})}] = struct{}{}
 	}
-	if _, _, _, err := server.subscribe(context.Background(), testTicket(map[string]struct{}{"owner/repo": {}}), 0, false); !errors.Is(err, errSubscriberCapacity) {
+	if _, _, _, err := subscribeTestTicket(t, server, 0, false); !errors.Is(err, errSubscriberCapacity) {
 		t.Fatalf("global stream cap error = %v", err)
 	}
 	clear(server.subscribers)
@@ -580,7 +580,7 @@ func TestOversizedReplayBacklogResets(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	subscription, replay, initial, err := server.subscribe(context.Background(), testTicket(map[string]struct{}{"owner/repo": {}}), 0, true)
+	subscription, replay, initial, err := subscribeTestTicket(t, server, 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}

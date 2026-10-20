@@ -54,7 +54,10 @@ type Marker struct {
 }
 
 type sessionRequest struct {
-	Repos []string `json:"repos"`
+	Repos   []string          `json:"repos"`
+	Proofs  map[string]string `json:"proofs"`
+	User    *GitHubIdentity   `json:"user"`
+	Install *string           `json:"install"`
 }
 
 type readyFrame struct {

@@ -40,18 +40,43 @@ type Config struct {
 	Logger                    *slog.Logger
 }
 
-var errSubscriberCapacity = errors.New("subscriber capacity reached")
+var (
+	errSubscriberCapacity = errors.New("subscriber capacity reached")
+	errInvalidTicket      = errors.New("invalid ticket")
+)
 
 type subscriber struct {
 	principal   string
-	repos       map[string]struct{}
+	anchored    bool
 	authExpires time.Time
 	queue       chan Marker
+	rotations   chan string
 	done        chan struct{}
 	once        sync.Once
+	mu          sync.Mutex
+	repos       map[string]repoGrant
 }
 
 func (s *subscriber) stop() { s.once.Do(func() { close(s.done) }) }
+
+func (s *subscriber) allows(repo string, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	grant, ok := s.repos[strings.ToLower(repo)]
+	return ok && now.Before(grant.expires)
+}
+
+func (s *subscriber) restrict(key string, change anchorChange, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	grant, ok := s.repos[key]
+	if !ok {
+		return false
+	}
+	restricted, affected := change.restrict(grant, now)
+	s.repos[key] = restricted
+	return affected
+}
 
 type Server struct {
 	store                     *Store
@@ -150,6 +175,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /events", s.handleEvents)
 	mux.HandleFunc("GET /coverage", s.handleCoverage)
 	mux.HandleFunc("POST /session", s.handleSession)
+	mux.HandleFunc("POST /anchors", s.handleAnchors)
 	mux.HandleFunc("GET /stream", s.handleStream)
 	return mux
 }
@@ -194,7 +220,7 @@ func (s *Server) handleHealth(response http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleCapabilities(response http.ResponseWriter, _ *http.Request) {
-	writeJSON(response, http.StatusOK, map[string]string{"stream": "websocket-v1"})
+	writeJSON(response, http.StatusOK, map[string]string{"stream": "websocket-v1", "anchors": "v1"})
 }
 
 func (s *Server) handleGitHub(response http.ResponseWriter, request *http.Request) {
@@ -227,7 +253,7 @@ func (s *Server) handleGitHub(response http.ResponseWriter, request *http.Reques
 	message := "ok"
 	forward := true
 	if event == "installation" || event == "installation_repositories" {
-		if err := s.store.UpdateInstallation(request.Context(), event, payload); err != nil {
+		if err := s.updateInstallation(request.Context(), event, payload, receivedAt); err != nil {
 			s.internalError(response, err)
 			return
 		}
@@ -235,6 +261,10 @@ func (s *Server) handleGitHub(response http.ResponseWriter, request *http.Reques
 		status = http.StatusAccepted
 		message = "no repository"
 	} else {
+		// Revoke before publishing so a recreated repository's push never reaches the old readers.
+		if event == "push" {
+			s.captureAnchor(request.Context(), body, receivedAt)
+		}
 		run, job := compactActions(event, payload)
 		marker := Marker{TS: receivedAt.UnixMilli(), Repo: payload.Repository.FullName, Number: pullNumber(payload), Event: event, Ref: pushRef(event, payload), Run: run, Job: job}
 		if _, err := s.publish(request.Context(), marker); err != nil {
@@ -318,8 +348,9 @@ func (s *Server) publish(ctx context.Context, marker Marker) (Marker, error) {
 		s.publishMu.Unlock()
 		return Marker{}, err
 	}
+	receivedAt := time.UnixMilli(stored.TS)
 	for subscriber := range s.subscribers {
-		if _, allowed := subscriber.repos[stored.Repo]; !allowed {
+		if !subscriber.allows(stored.Repo, receivedAt) {
 			continue
 		}
 		select {
@@ -448,26 +479,31 @@ func (s *Server) handleCoverage(response http.ResponseWriter, request *http.Requ
 }
 
 func (s *Server) handleSession(response http.ResponseWriter, request *http.Request) {
-	token, ok := bearerToken(request)
-	if !ok {
-		http.Error(response, "unauthorized", http.StatusUnauthorized)
-		return
-	}
 	release, ok := s.acquireBodyReader(response)
 	if !ok {
 		return
 	}
 	var input sessionRequest
-	decoder := json.NewDecoder(http.MaxBytesReader(response, request.Body, 64<<10))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&input); err != nil {
-		release()
+	err := decodeStrictJSON(http.MaxBytesReader(response, request.Body, 64<<10), &input)
+	release()
+	if err != nil {
 		http.Error(response, "invalid JSON", http.StatusBadRequest)
 		return
 	}
-	err := decoder.Decode(&struct{}{})
-	release()
-	if err != io.EOF {
+	if input.Proofs != nil {
+		if request.Header.Get("Authorization") != "" || input.Repos != nil {
+			http.Error(response, "proof sessions take neither a token nor a repository list", http.StatusBadRequest)
+			return
+		}
+		s.handleProofSession(response, request, input)
+		return
+	}
+	token, ok := bearerToken(request)
+	if !ok {
+		http.Error(response, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if input.User != nil || input.Install != nil {
 		http.Error(response, "invalid JSON", http.StatusBadRequest)
 		return
 	}
@@ -540,13 +576,11 @@ func (s *Server) handleStream(response http.ResponseWriter, request *http.Reques
 		http.Error(response, "invalid cursor", http.StatusBadRequest)
 		return
 	}
-	ticket := request.URL.Query().Get("ticket")
-	session, ok := s.tickets.Consume(ticket)
-	if !ok {
+	subscriber, replay, initial, err := s.subscribeTicket(request.Context(), request.URL.Query().Get("ticket"), cursor, hasCursor)
+	if errors.Is(err, errInvalidTicket) {
 		http.Error(response, "invalid ticket", http.StatusUnauthorized)
 		return
 	}
-	subscriber, replay, initial, err := s.subscribe(request.Context(), session, cursor, hasCursor)
 	if errors.Is(err, errSubscriberCapacity) {
 		http.Error(response, "stream capacity reached", http.StatusServiceUnavailable)
 		return
@@ -572,9 +606,15 @@ func parseCursor(raw string) (int64, bool, bool) {
 	return cursor, true, err == nil && cursor >= 0
 }
 
-func (s *Server) subscribe(ctx context.Context, session ticketSession, cursor int64, hasCursor bool) (*subscriber, []Marker, readyFrame, error) {
+// subscribeTicket consumes and subscribes under publishMu so a rotation cannot fall between
+// the ticket and the live subscriber.
+func (s *Server) subscribeTicket(ctx context.Context, ticket string, cursor int64, hasCursor bool) (*subscriber, []Marker, readyFrame, error) {
 	s.publishMu.Lock()
 	defer s.publishMu.Unlock()
+	session, ok := s.tickets.Consume(ticket)
+	if !ok {
+		return nil, nil, readyFrame{}, errInvalidTicket
+	}
 	if len(s.subscribers) >= maxSubscribers || s.principalStreams[session.principal] >= maxPrincipalStreams {
 		return nil, nil, readyFrame{}, errSubscriberCapacity
 	}
@@ -596,13 +636,17 @@ func (s *Server) subscribe(ctx context.Context, session ticketSession, cursor in
 		replay = nil
 	}
 	subscriber := &subscriber{
-		principal: session.principal, repos: session.repos, authExpires: session.authExpires,
+		principal: session.principal, anchored: session.anchored, repos: session.repos, authExpires: session.authExpires,
 		queue: make(chan Marker, subscriberBuffer), done: make(chan struct{}),
+	}
+	if session.anchored {
+		subscriber.rotations = make(chan string, len(session.repos))
 	}
 	s.subscribers[subscriber] = struct{}{}
 	s.principalStreams[subscriber.principal]++
 	return subscriber, replay, initial, nil
 }
+
 func (s *Server) removeSubscriberLocked(subscriber *subscriber) {
 	if _, exists := s.subscribers[subscriber]; exists {
 		delete(s.subscribers, subscriber)
@@ -661,7 +705,7 @@ func (s *Server) serveConnection(connection *websocket.Conn, subscriber *subscri
 			return
 		default:
 		}
-		if _, allowed := subscriber.repos[marker.Repo]; allowed && !write(markerFrame{Type: "marker", Marker: marker}) {
+		if subscriber.allows(marker.Repo, s.now()) && !write(markerFrame{Type: "marker", Marker: marker}) {
 			return
 		}
 	}
@@ -679,7 +723,11 @@ func (s *Server) serveConnection(connection *websocket.Conn, subscriber *subscri
 				connection.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "authorization expired"), time.Now().Add(time.Second))
 				return
 			}
-			if !write(markerFrame{Type: "marker", Marker: marker}) {
+			if subscriber.allows(marker.Repo, s.now()) && !write(markerFrame{Type: "marker", Marker: marker}) {
+				return
+			}
+		case repo := <-subscriber.rotations:
+			if !write(rotateFrame{Type: "rotate", Repo: repo}) {
 				return
 			}
 		case <-authTimer.C:
@@ -698,6 +746,18 @@ func writeJSON(response http.ResponseWriter, status int, value any) {
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(status)
 	json.NewEncoder(response).Encode(value)
+}
+
+func decodeStrictJSON(body io.Reader, value any) error {
+	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return errors.New("trailing JSON")
+	}
+	return nil
 }
 
 func (s *Server) internalError(response http.ResponseWriter, err error) {

@@ -113,6 +113,21 @@ CREATE TABLE IF NOT EXISTS usage_repo_daily (
   sessions INTEGER NOT NULL,
   PRIMARY KEY(day, github_user_id, repo)
 );
+CREATE TABLE IF NOT EXISTS relay_anchors (
+  repo TEXT PRIMARY KEY,
+  repo_id INTEGER NOT NULL,
+  "after" TEXT NOT NULL,
+  tree TEXT NOT NULL,
+  anchor_id TEXT NOT NULL,
+  proof TEXT NOT NULL,
+  set_at_ms INTEGER NOT NULL,
+  pushes_since INTEGER NOT NULL,
+  prev_after TEXT,
+  prev_tree TEXT,
+  prev_anchor_id TEXT,
+  prev_proof TEXT,
+  prev_until_ms INTEGER
+);
 `)
 	if err != nil {
 		return err
@@ -354,62 +369,161 @@ func (s *Store) CoverageFor(ctx context.Context, repos []string) (map[string]boo
 	return coverage, nil
 }
 
-func (s *Store) UpdateInstallation(ctx context.Context, event string, payload webhookPayload) error {
+// UpdateInstallation returns the anchor keys it deleted so live grants for them can be revoked.
+func (s *Store) UpdateInstallation(ctx context.Context, event string, payload webhookPayload) ([]string, error) {
 	if payload.Installation == nil || payload.Installation.Account == nil || payload.Installation.Account.Login == "" {
-		return nil
+		return nil, nil
 	}
 	owner := payload.Installation.Account.Login
 	all := payload.Installation.RepositorySelection == "all"
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer tx.Rollback()
+	var removedAnchors []string
 	switch event {
 	case "installation":
 		switch payload.Action {
 		case "created", "unsuspend":
 			if _, err = tx.ExecContext(ctx, `INSERT INTO installation_coverage(owner, all_repos) VALUES(?, ?) ON CONFLICT(owner) DO UPDATE SET all_repos=excluded.all_repos`, owner, all); err != nil {
-				return err
+				return nil, err
 			}
 			if _, err = tx.ExecContext(ctx, `DELETE FROM installation_repos WHERE owner = ?`, owner); err != nil {
-				return err
+				return nil, err
 			}
 			for _, repo := range payload.Repositories {
 				if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO installation_repos(owner, repo) VALUES(?, ?)`, owner, repo.FullName); err != nil {
-					return err
+					return nil, err
 				}
 			}
 		case "deleted", "suspend":
 			if _, err = tx.ExecContext(ctx, `DELETE FROM installation_coverage WHERE owner = ?`, owner); err != nil {
-				return err
+				return nil, err
+			}
+			prefix := anchorKey(owner) + "/"
+			if removedAnchors, err = deleteAnchors(ctx, tx, `DELETE FROM relay_anchors WHERE substr(repo, 1, ?) = ? RETURNING repo`, len(prefix), prefix); err != nil {
+				return nil, err
 			}
 		default:
-			return nil
+			return nil, nil
 		}
 	case "installation_repositories":
 		switch payload.Action {
 		case "added", "removed":
 			if _, err = tx.ExecContext(ctx, `INSERT INTO installation_coverage(owner, all_repos) VALUES(?, ?) ON CONFLICT(owner) DO UPDATE SET all_repos=excluded.all_repos`, owner, all); err != nil {
-				return err
+				return nil, err
 			}
 			for _, repo := range payload.RepositoriesRemoved {
 				if _, err = tx.ExecContext(ctx, `DELETE FROM installation_repos WHERE owner = ? AND repo = ?`, owner, repo.FullName); err != nil {
-					return err
+					return nil, err
 				}
+				removed, err := deleteAnchors(ctx, tx, `DELETE FROM relay_anchors WHERE repo = ? RETURNING repo`, anchorKey(repo.FullName))
+				if err != nil {
+					return nil, err
+				}
+				removedAnchors = append(removedAnchors, removed...)
 			}
 			for _, repo := range payload.RepositoriesAdded {
 				if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO installation_repos(owner, repo) VALUES(?, ?)`, owner, repo.FullName); err != nil {
-					return err
+					return nil, err
 				}
 			}
 		default:
-			return nil
+			return nil, nil
 		}
 	default:
-		return nil
+		return nil, nil
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return removedAnchors, nil
+}
+
+func deleteAnchors(ctx context.Context, tx *sql.Tx, query string, args ...any) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var repos []string
+	for rows.Next() {
+		var repo string
+		if err := rows.Scan(&repo); err != nil {
+			return nil, err
+		}
+		repos = append(repos, repo)
+	}
+	return repos, rows.Err()
+}
+
+func (s *Store) Anchors(ctx context.Context, repos []string) (map[string]relayAnchor, error) {
+	anchors := make(map[string]relayAnchor, len(repos))
+	for _, repo := range repos {
+		var anchor relayAnchor
+		var prevAnchorID, prevProof sql.NullString
+		var prevUntil sql.NullInt64
+		err := s.db.QueryRowContext(ctx, `SELECT anchor_id, proof, prev_anchor_id, prev_proof, prev_until_ms FROM relay_anchors WHERE repo = ?`, repo).
+			Scan(&anchor.anchorID, &anchor.proof, &prevAnchorID, &prevProof, &prevUntil)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if prevAnchorID.Valid && prevProof.Valid && prevUntil.Valid {
+			anchor.prevAnchorID, anchor.prevProof, anchor.prevUntil = prevAnchorID.String, prevProof.String, time.UnixMilli(prevUntil.Int64)
+		}
+		anchors[repo] = anchor
+	}
+	return anchors, nil
+}
+
+// CaptureAnchor applies one default-branch push. Each step is a single conditional statement, so
+// concurrent deliveries cannot both rotate the same anchor.
+func (s *Store) CaptureAnchor(ctx context.Context, repo string, repoID int64, after, tree string, now time.Time) (anchorChange, bool, error) {
+	id, proof := anchorID(repo, repoID, after), anchorProof(repo, repoID, after, tree)
+	nowMS := now.UnixMilli()
+	var prevProof string
+	var prevUntilMS int64
+	err := s.db.QueryRowContext(ctx, `
+UPDATE relay_anchors SET
+  prev_after = "after", prev_tree = tree, prev_anchor_id = anchor_id, prev_proof = proof, prev_until_ms = ?,
+  "after" = ?, tree = ?, anchor_id = ?, proof = ?, set_at_ms = ?, pushes_since = 0
+WHERE repo = ? AND repo_id = ? AND (set_at_ms <= ? OR pushes_since >= ?)
+RETURNING prev_proof, prev_until_ms`,
+		now.Add(anchorGrace).UnixMilli(), after, tree, id, proof, nowMS, repo, repoID, now.Add(-anchorRotationAge).UnixMilli(), anchorRotationPushes,
+	).Scan(&prevProof, &prevUntilMS)
+	if err == nil {
+		return anchorChange{proof: proof, prevProof: prevProof, prevUntil: time.UnixMilli(prevUntilMS)}, true, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return anchorChange{}, false, err
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE relay_anchors SET pushes_since = pushes_since + 1 WHERE repo = ? AND repo_id = ?`, repo, repoID)
+	if err != nil {
+		return anchorChange{}, false, err
+	}
+	if counted, err := result.RowsAffected(); err != nil || counted > 0 {
+		return anchorChange{}, false, err
+	}
+	var stored int
+	err = s.db.QueryRowContext(ctx, `
+INSERT INTO relay_anchors(repo, repo_id, "after", tree, anchor_id, proof, set_at_ms, pushes_since) VALUES(?, ?, ?, ?, ?, ?, ?, 0)
+ON CONFLICT(repo) DO UPDATE SET
+  repo_id = excluded.repo_id, "after" = excluded."after", tree = excluded.tree, anchor_id = excluded.anchor_id,
+  proof = excluded.proof, set_at_ms = excluded.set_at_ms, pushes_since = 0,
+  prev_after = NULL, prev_tree = NULL, prev_anchor_id = NULL, prev_proof = NULL, prev_until_ms = NULL
+WHERE relay_anchors.repo_id != excluded.repo_id
+RETURNING 1`, repo, repoID, after, tree, id, proof, nowMS).Scan(&stored)
+	if errors.Is(err, sql.ErrNoRows) {
+		return anchorChange{}, false, nil
+	}
+	if err != nil {
+		return anchorChange{}, false, err
+	}
+	return anchorChange{proof: proof}, true, nil
 }
 
 func repoOwner(repo string) string {
