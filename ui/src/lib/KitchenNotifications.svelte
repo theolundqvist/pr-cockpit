@@ -24,8 +24,17 @@
   let seen = $state(readSeen());
   const eventKey = (pr) => `${prKey(pr)}:${pr.terminalAt}`;
   const isUnread = (pr) => seen[eventKey(pr)] === false || (!seen[eventKey(pr)] && Date.parse(pr.terminalAt) > Number(seen.readThrough ?? 0));
-  let unreadCount = $derived(items.filter(isUnread).length);
-  let visible = $derived(unreadOnly ? items.filter(isUnread) : items);
+  let remaining = $derived(items.filter((pr) => Date.parse(pr.terminalAt) > Number(seen.clearedThrough ?? 0)));
+  let unreadCount = $derived(remaining.filter(isUnread).length);
+  let visible = $derived(unreadOnly ? remaining.filter(isUnread) : remaining);
+  let moreUncleared = $derived(hasMore && (!items.length || Date.parse(items.at(-1).terminalAt) > Number(seen.clearedThrough ?? 0)));
+  function clearNotifications() {
+    // Keep the source history intact and dismiss older, unloaded pages as well.
+    const next = { ...readSeen(), clearedThrough: Math.max(Date.now(), ...items.map((pr) => Date.parse(pr.terminalAt)).filter(Number.isFinite)) };
+    localStorage.setItem(storageKey, JSON.stringify(next));
+    seen = next;
+    panel?.querySelector(".notification-filter")?.focus();
+  }
 
   function setRead(pr, read) {
     const next = { ...readSeen() };
@@ -38,7 +47,7 @@
   function markAllRead() {
     const next = { ...readSeen() };
     // A watermark also acknowledges older pages that have not been loaded yet.
-    for (const key of Object.keys(next)) if (key !== "readThrough") next[key] = true;
+    for (const key of Object.keys(next)) if (typeof next[key] === "boolean") next[key] = true;
     next.readThrough = Date.now();
     for (const pr of items) next[eventKey(pr)] = true;
     localStorage.setItem(storageKey, JSON.stringify(next));
@@ -132,7 +141,7 @@
   <div class="notification-head"><strong>Notifications</strong><button class="close-notifications" aria-label="Close notifications" onclick={(event) => close(event.detail === 0)}><svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg></button></div>
   <div class="notification-toolbar">
     <div class="notification-filters">
-      <button class="notification-filter" class:chosen={!unreadOnly} aria-pressed={!unreadOnly} onclick={() => unreadOnly = false}>All <span class="filter-count">{items.length > 99 ? "99+" : items.length}</span></button>
+      <button class="notification-filter" class:chosen={!unreadOnly} aria-pressed={!unreadOnly} onclick={() => unreadOnly = false}>All <span class="filter-count">{remaining.length > 99 ? "99+" : remaining.length}</span></button>
       <button class="notification-filter" class:chosen={unreadOnly} aria-pressed={unreadOnly} onclick={() => unreadOnly = true}>Unread <span class="filter-count">{unreadCount > 99 ? "99+" : unreadCount}</span></button>
     </div>
     <button class="mark-all" disabled={!unreadCount} onclick={markAllRead}>Mark all read</button>
@@ -140,7 +149,7 @@
   <div class="notification-list">
     {#if error}<div class="notification-empty" role="alert">{error}<button class="retry" onclick={() => load()}>Retry</button></div>
     {:else if !loaded}<div class="notification-empty" role="status">Loading notifications…</div>
-    {:else if !visible.length}<div class="notification-empty">{unreadOnly ? "You're all caught up." : "No Kitchen completions yet."}</div>{/if}
+    {:else if !visible.length}<div class="notification-empty">{unreadOnly ? "You're all caught up." : "No notifications."}</div>{/if}
     {#each visible as pr (prKey(pr))}
       <div class="notification-item" class:unread={isUnread(pr)}>
         <a class="notification-link" href={`#/pr/${pr.repo}/${pr.number}`} onclick={() => { setRead(pr, true); panel.hidePopover(); }}>
@@ -150,8 +159,11 @@
         <button class="read-toggle" aria-label={`${isUnread(pr) ? "Mark as read" : "Mark as unread"}: ${pr.title}`} title={isUnread(pr) ? "Mark as read" : "Mark as unread"} onclick={() => setRead(pr, isUnread(pr))}><span class:filled={isUnread(pr)}></span></button>
       </div>
     {/each}
-    {#if hasMore}<button class="load-more" disabled={loading} onclick={() => load(true)}>{loading ? "Loading…" : "Load older notifications"}</button>{/if}
+    {#if moreUncleared}<button class="load-more" disabled={loading} onclick={() => load(true)}>{loading ? "Loading…" : "Load older notifications"}</button>{/if}
   </div>
+  {#if remaining.length}
+    <div class="notification-footer"><button class="clear-notifications" onclick={clearNotifications}>Clear notifications</button></div>
+  {/if}
 </div>
 
 <style>
@@ -178,7 +190,7 @@
   .filter-count { background: var(--surface-hover); color: var(--text-dim); }
   .chosen .filter-count { background: var(--panel); color: var(--text); }
   .mark-all { font-size: 11px; color: var(--text-dim); padding: 6px 4px; border-radius: 6px; white-space: nowrap; }
-  .notification-list { max-height: min(480px, calc(var(--available-height, 600px) - 92px)); overflow: auto; overscroll-behavior: contain; padding: 4px; }
+  .notification-list { max-height: min(480px, calc(var(--available-height, 600px) - 132px)); overflow: auto; overscroll-behavior: contain; padding: 4px; }
   .notification-item { display: flex; align-items: center; border-radius: 9px; margin: 2px 0; }
   .notification-item.unread { background: color-mix(in srgb, var(--native-accent) 4%, var(--panel)); }
   .notification-link { flex: 1; min-width: 0; padding: 12px 0 12px 12px; color: inherit; text-decoration: none; display: flex; flex-direction: column; gap: 6px; border-radius: 8px; }
@@ -189,11 +201,13 @@
   .read-toggle { display: grid; place-items: center; width: 30px; height: 30px; flex: none; padding: 0; margin: 0 8px; border-radius: 50%; }
   .read-toggle span { box-sizing: border-box; display: block; width: 8px; height: 8px; border: 1px solid var(--text-faint); border-radius: 50%; }
   .read-toggle .filled { background: var(--native-accent); border-color: var(--native-accent); }
+  .notification-footer { padding: 6px 12px; border-top: 1px solid var(--border-soft); display: flex; justify-content: flex-end; }
+  .clear-notifications { padding: 6px 4px; border-radius: 6px; color: var(--text-dim); font-size: 11px; }
   .notification-empty { padding: 28px 16px; color: var(--text-dim); line-height: 1.5; text-align: center; }
   .retry { margin: 12px auto 0; display: block; text-decoration: underline; }
   .load-more { display: block; padding: 12px; width: 100%; color: var(--text-dim); font-size: 12px; border-radius: 8px; }
   @media (hover: hover) and (pointer: fine) {
-    .notification-trigger:hover, .close-notifications:hover, .read-toggle:hover, .notification-filter:hover, .mark-all:not(:disabled):hover, .load-more:hover { background: var(--surface-hover); color: var(--text); }
+    .notification-trigger:hover, .close-notifications:hover, .read-toggle:hover, .notification-filter:hover, .mark-all:not(:disabled):hover, .load-more:hover, .clear-notifications:hover { background: var(--surface-hover); color: var(--text); }
     .notification-item:hover { background: var(--surface); }
     button:not(:disabled):active { transform: scale(.97); }
   }

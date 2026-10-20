@@ -125,6 +125,31 @@ export function cookingScenarios() {
         await dialog.locator(".notification-link").first().click();
         await page.waitForFunction(() => JSON.parse(localStorage.getItem("cockpit:kitchen-seen"))["fixture/cockpit#510:2026-07-15T09:30:00Z"] === true);
         await page.evaluate(() => { location.hash = "#/"; });
+        await page.getByRole("button", { name: /^Notifications/ }).click();
+        await dialog.getByRole("button", { name: "Clear notifications", exact: true }).click();
+        await dialog.getByText("No notifications.", { exact: true }).waitFor();
+        if (await dialog.locator(".notification-item").count()) throw new Error("Clear left notifications visible");
+        await page.reload();
+        await page.getByRole("button", { name: "Notifications", exact: true }).click();
+        await dialog.getByText("No notifications.", { exact: true }).waitFor();
+        // A later completion must still arrive after the saved clear watermark.
+        await page.route("**/api/kitchen-history?*", (route) => route.fulfill({ json: { hasMore: false, prs: [
+          { repo: "fixture/cockpit", number: 511, title: "A new completion", state: "MERGED", terminalAt: "2026-07-15T10:01:00Z" },
+          { repo: "fixture/cockpit", number: 510, title: "Improve workspace search", state: "MERGED", terminalAt: "2026-07-15T09:30:00Z" },
+        ] } }));
+        await page.reload();
+        await page.getByRole("button", { name: /^Notifications/ }).click();
+        await dialog.getByText("A new completion", { exact: true }).waitFor();
+        if (await dialog.locator(".notification-item").count() !== 1) throw new Error("Cleared history returned with a new completion");
+        await dialog.getByRole("button", { name: "Mark all read", exact: true }).click();
+        await page.reload();
+        await page.getByRole("button", { name: /^Notifications/ }).click();
+        if (await dialog.locator(".notification-item").count() !== 1) throw new Error("Mark all read lost the clear watermark");
+        await page.unroute("**/api/kitchen-history?*");
+        await page.route("**/api/kitchen-history?*", (route) => route.fulfill({ json: { hasMore: false, prs: [
+          { repo: "fixture/cockpit", number: 510, title: "Improve workspace search", author: "octocat", state: "MERGED", terminalAt: "2026-07-15T09:30:00Z" },
+          { repo: "fixture/cockpit", number: 509, title: "Fix export ordering", author: "octocat", state: "MERGED", terminalAt: "2026-07-14T09:30:00Z" },
+        ] } }));
         // Restore the mixed state for the review screenshot.
         await page.evaluate(() => { localStorage.setItem("cockpit:kitchen-seen", JSON.stringify({ "fixture/cockpit#509:2026-07-14T09:30:00Z": true })); });
         await page.reload();
