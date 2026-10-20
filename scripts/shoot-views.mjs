@@ -221,6 +221,47 @@ function setAsideScenario(roundtrip) {
 }
 
 const scenarios = [
+  ...[false, true].map((expanded) => ({
+    name: `inbox-filter-panel-${expanded ? "expanded" : "collapsed"}`,
+    route: "#/",
+    ready: ".view-options-toggle",
+    beforeGoto: async (page) => {
+      await page.addInitScript(() => localStorage.removeItem("cockpit:queue-time"));
+    },
+    prepare: async ({ baseURL }) => {
+      const previous = await requestJson(`${baseURL}/api/settings`);
+      const update = (value) => fetch(`${baseURL}/api/settings`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ queue_time_controls_enabled: value }) });
+      await update(true);
+      return () => update(previous.queue_time_controls_enabled);
+    },
+    interact: async (page) => {
+      const panel = page.getByRole("region", { name: "Filters and view options" });
+      const toggle = page.getByRole("button", { name: /^Filters/ });
+      if (await panel.isVisible()) throw new Error("Filters expanded on initial load");
+      await toggle.click();
+      await panel.waitFor();
+      await panel.getByLabel("Order", { exact: true }).selectOption("newest");
+      await panel.getByLabel("Opened", { exact: true }).selectOption("custom");
+      await page.getByRole("form", { name: "Custom opened range" }).waitFor();
+      await toggle.click();
+      if (await page.getByRole("form", { name: "Custom opened range" }).isVisible()) throw new Error("Custom range escaped the collapsed panel");
+      if (!await toggle.locator(".view-tab-count").count()) throw new Error("Changed options are hidden without an indicator");
+      await toggle.click();
+      if (await panel.getByLabel("Order", { exact: true }).inputValue() !== "newest") throw new Error("Collapsing reset the order");
+      await panel.getByLabel("Opened", { exact: true }).selectOption("all");
+      await page.keyboard.press("Escape");
+      if (await panel.isVisible()) throw new Error("Escape did not collapse filters");
+      await page.keyboard.press("r");
+      await page.getByRole("menu", { name: "Repository filters" }).waitFor();
+      await page.keyboard.press("Escape");
+      await panel.getByLabel("Order", { exact: true }).selectOption("queue");
+      await page.keyboard.press("Escape");
+      if (expanded) await toggle.click();
+    },
+    verify: async (page) => {
+      if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)) throw new Error("Filter controls overflow the viewport");
+    },
+  })),
   ...groupingScenarios(),
   ...cookingScenarios(),
   setAsideScenario(false),

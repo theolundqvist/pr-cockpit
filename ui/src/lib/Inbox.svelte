@@ -425,6 +425,14 @@
   let configuredRepos = $state(settingsSnapshot ? repoList(settingsSnapshot) : []);
   let selectedRepos = $state(storedRepositories());
   let repoPickerOpen = $state(false);
+  let viewOptionsOpen = $state(false);
+  let viewOptionsButton;
+  let activeViewOptions = $derived(selectedRepos.length > 0 ? 1 : 0);
+  let changedViewOptions = $derived(activeViewOptions + (prefs.queueTimeControlsEnabled ? Number(openedRange !== "all") + Number(timeOrder !== "queue") + Number(view === "open" && prefs.prGrouping.mode !== "status") : 0));
+  function toggleViewOptions() {
+    viewOptionsOpen = !viewOptionsOpen;
+    if (!viewOptionsOpen) repoPickerOpen = false;
+  }
   let pollIntervalS = $state(Number.isFinite(settingsSnapshot?.poll_interval_s) ? settingsSnapshot.poll_interval_s : 180);
   const inboxMountedAt = Date.now();
 
@@ -1503,6 +1511,12 @@
         return;
       }
       if (repoPickerOpen && e.key !== "r") return;
+      if (viewOptionsOpen && e.key === "Escape") {
+        viewOptionsOpen = false;
+        viewOptionsButton?.focus();
+        e.preventDefault();
+        return;
+      }
       if (e.metaKey && e.key === ",") {
         location.hash = "#/settings";
         e.preventDefault();
@@ -1534,6 +1548,7 @@
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (isTypingTarget(e.target)) return;
       if (e.key === "r") {
+        viewOptionsOpen = true;
         repoPickerOpen = !repoPickerOpen;
         e.preventDefault();
         return;
@@ -1680,25 +1695,29 @@
         {/if}
       </div>
       {#if view !== "whiteboard" && view !== "agents"}
-      <div class="queue-filters">
+      <button class="view-options-toggle" bind:this={viewOptionsButton} aria-expanded={viewOptionsOpen} aria-controls="queue-view-options" title="Filters and view options" onclick={toggleViewOptions}>
+        <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 5h14M5 10h10M8 15h4" /></svg>
+        Filters{#if changedViewOptions}<span class="view-tab-count">{changedViewOptions}</span>{/if}
+      </button>
+      <div class="queue-filters" id="queue-view-options" hidden={!viewOptionsOpen} role="region" aria-label="Filters and view options">
       {#if prefs.queueTimeControlsEnabled}
         <div class="time-controls">
           <label class="time-field">
             <span class="time-field-label">Opened</span>
-            <select class="time-select" value={openedChoice} onchange={(event) => chooseOpened(event.currentTarget.value)}>
+            <select aria-label="Opened" class="time-select" value={openedChoice} onchange={(event) => chooseOpened(event.currentTarget.value)}>
               {#each OPENED_RANGES as option (option.value)}<option value={option.value}>{option.label}</option>{/each}
             </select>
           </label>
           <label class="time-field">
             <span class="time-field-label">Order</span>
-            <select class="time-select" value={timeOrder} onchange={(event) => chooseOrder(event.currentTarget.value)}>
+            <select aria-label="Order" class="time-select" value={timeOrder} onchange={(event) => chooseOrder(event.currentTarget.value)}>
               {#each TIME_ORDERS as option (option.value)}<option value={option.value}>{option.label}</option>{/each}
             </select>
           </label>
           {#if view === "open"}
             <label class="time-field">
               <span class="time-field-label">Grouping</span>
-              <select class="time-select" value={prefs.prGrouping.mode} disabled={groupingSaving} onchange={(event) => chooseGrouping(event.currentTarget.value, event.currentTarget)}>
+              <select aria-label="Grouping" class="time-select" value={prefs.prGrouping.mode} disabled={groupingSaving} onchange={(event) => chooseGrouping(event.currentTarget.value, event.currentTarget)}>
                 <option value="status">Status</option>
                 <option value="feature">Feature area</option>
                 <option value="type">PR type</option>
@@ -1719,6 +1738,22 @@
           onchange={selectRepositories}
         />
       </div>
+    {#if prefs.queueTimeControlsEnabled && openedChoice === "custom"}
+      <form class="time-range-row" aria-label="Custom opened range" onsubmit={applyCustomRange}>
+        <label class="time-field">
+          <span class="time-field-label">From</span>
+          <input class="time-input" type="datetime-local" bind:value={customFrom} max={customTo || undefined} />
+        </label>
+        <label class="time-field">
+          <span class="time-field-label">To</span>
+          <input class="time-input" type="datetime-local" bind:value={customTo} min={customFrom || undefined} />
+        </label>
+        <button class="time-apply" type="submit" disabled={!customDraft.range}>Apply</button>
+        <span class="time-range-state" role="status">
+          {#if customApplied}Applied{:else}{customDraft.error && (customFrom || customTo) ? `${customDraft.error} ` : ""}Using {appliedRangeLabel}.{/if}
+        </span>
+      </form>
+    {/if}
       </div>
       {/if}
     </div>
@@ -1736,22 +1771,6 @@
         <div role="alert">Whiteboard could not load: {whiteboardLoadError} <button onclick={() => location.reload()}>Reload</button></div>
       {:else}<div role="status">Loading whiteboard…</div>{/if}
     {:else}
-    {#if prefs.queueTimeControlsEnabled && openedChoice === "custom"}
-      <form class="time-range-row" aria-label="Custom opened range" onsubmit={applyCustomRange}>
-        <label class="time-field">
-          <span class="time-field-label">From</span>
-          <input class="time-input" type="datetime-local" bind:value={customFrom} max={customTo || undefined} />
-        </label>
-        <label class="time-field">
-          <span class="time-field-label">To</span>
-          <input class="time-input" type="datetime-local" bind:value={customTo} min={customFrom || undefined} />
-        </label>
-        <button class="time-apply" type="submit" disabled={!customDraft.range}>Apply</button>
-        <span class="time-range-state" role="status">
-          {#if customApplied}Applied{:else}{customDraft.error && (customFrom || customTo) ? `${customDraft.error} ` : ""}Using {appliedRangeLabel}.{/if}
-        </span>
-      </form>
-    {/if}
     {#if view === "open" && (prefs.prGrouping.mode === "manual" || (!prefs.queueTimeControlsEnabled && prefs.prGrouping.mode !== "status"))}
       <div class="grouping-toolbar">
         {#if !prefs.queueTimeControlsEnabled}
@@ -2731,12 +2750,22 @@
   }
   .queue-toolbar {
     display: flex;
-    align-items: stretch;
-    flex-direction: column;
+    align-items: center;
+    flex-wrap: wrap;
     gap: 12px;
     margin-bottom: 16px;
   }
+  .view-options-toggle { margin-left: auto; display: inline-flex; align-items: center; gap: 7px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 7px; background: transparent; color: var(--text-dim); font: 12px var(--sans); cursor: pointer; }
+  .view-options-toggle:hover, .view-options-toggle[aria-expanded="true"] { background: var(--surface); color: var(--text); }
+  .view-options-toggle:focus-visible { outline: 2px solid var(--native-focus); outline-offset: 2px; }
+  .queue-filters[hidden] { display: none; }
   .queue-filters {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -2789,6 +2818,7 @@
   .time-input:invalid {
     border-color: var(--fail);
   }
+  .queue-filters .time-range-row { flex-basis: 100%; }
   .time-range-row {
     display: flex;
     flex-wrap: wrap;
