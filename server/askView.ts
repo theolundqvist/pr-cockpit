@@ -11,6 +11,7 @@ import {
   type Deadline,
   type DetectedKey,
   type QuickGenerateRoots,
+  type Vendor,
 } from "./quickGenerate.ts";
 
 // Bun.serve closes a connection idle for 30s; the whole ask (Jev passes plus every Qwen turn) must answer first.
@@ -25,6 +26,7 @@ const JEV_STATE_CHARS = 48_000;
 const JEV_STATE_ITEMS = 50;
 const RELEVANT = 0.5;
 const ITEM_CHARS = 12_000;
+const PAGE_SECTION_CHARS = 2_000;
 const TOTAL_ITEM_CHARS = 1_500_000;
 const LIST_BODY_CHARS = 1_200;
 const QWEN_ROWS = 400;
@@ -77,6 +79,7 @@ interface Generator {
 }
 
 interface AskContext {
+  jev: Vendor;
   jevSecret: string;
   generators: DetectedKey[];
   active: Generator | null;
@@ -218,7 +221,7 @@ export function prTitle(key: string, detail: unknown): string {
 export function prItems(detail: unknown, diff: string | null): Item[] {
   const items: Item[] = [];
   const body = cleanBody(text(field(detail, "body")));
-  items.push({ label: "Description", text: body || "(no description)" });
+  items.push(...splitText("Description", body || "(no description)"));
   for (const comment of nodes(field(detail, "comments"))) {
     const content = cleanBody(text(field(comment, "body")));
     if (content) items.push(...splitText(`Comment by @${login(comment)}`, content));
@@ -230,7 +233,7 @@ export function prItems(detail: unknown, diff: string | null): Item[] {
     if (content) items.push(...splitText(`Review by @${login(review)} (${state.toLowerCase().replaceAll("_", " ")})`, content));
     else if (state && state !== "COMMENTED") verdicts.push(`@${login(review)}: ${state}`);
   }
-  if (verdicts.length) items.push({ label: "Review verdicts", text: verdicts.join("\n") });
+  if (verdicts.length) items.push(...splitText("Review verdicts", verdicts.join("\n")));
   for (const thread of nodes(field(detail, "reviewThreads"))) {
     const comments = nodes(field(thread, "comments"));
     const first = comments[0];
@@ -252,13 +255,13 @@ export function prItems(detail: unknown, diff: string | null): Item[] {
     const entry = field(node, "commit");
     return `${text(field(entry, "abbreviatedOid"))} ${text(field(entry, "messageHeadline"))}`;
   });
-  if (commits.length) items.push({ label: "Commits", text: commits.join("\n") });
+  if (commits.length) items.push(...splitText("Commits", commits.join("\n")));
   if (diff) items.push(...diffFiles(diff));
   else {
     const files = nodes(field(detail, "files")).map((file) =>
       `${text(field(file, "path"))} (+${Number(field(file, "additions")) || 0} -${Number(field(file, "deletions")) || 0})`
     );
-    if (files.length) items.push({ label: "Changed files (diff not loaded)", text: files.join("\n") });
+    if (files.length) items.push(...splitText("Changed files (diff not loaded)", files.join("\n")));
   }
   return items;
 }
@@ -275,7 +278,7 @@ export function pageItems(page: string): Item[] {
   for (const line of page.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    if (current && current.length + trimmed.length > 2_000) flush();
+    if (current && current.length + trimmed.length > PAGE_SECTION_CHARS) flush();
     current += (current ? "\n" : "") + trimmed;
   }
   flush();
@@ -311,15 +314,10 @@ async function jevNouls<T>(
   const chunks = chunk(entries, (entry) => JSON.stringify(entry).length);
   const answers = await Promise.all(chunks.map((part) => limit(async () => {
     const questions = Object.fromEntries(part.map((_, index) => [`q${index}`, { type: "noul", instructions: instruction(index) }]));
-    const body = await vendorFetch(
-      { label: "TypeSafe", baseUrl: JEV_BASE_URL, headers: { authorization: `Bearer ${ctx.jevSecret}` } },
-      JEV_KEY,
-      ctx.jevSecret,
-      "/systemone",
-      { method: "POST", body: { model: JEV_MODEL, state: state(part), questions } },
-      ctx.deadline,
-      ctx.signal,
-    );
+    const body = await vendorFetch(ctx.jev, JEV_KEY, ctx.jevSecret, "/systemone", {
+      method: "POST",
+      body: { model: JEV_MODEL, state: state(part), questions },
+    }, ctx.deadline, ctx.signal);
     return part.map((_, index) => {
       const noul = field(field(field(body, "answers"), `q${index}`), "noul");
       if (typeof noul !== "number") throw new QuickGenerateError(502, "TypeSafe returned an incomplete answer.");
@@ -372,10 +370,13 @@ async function chat(ctx: AskContext, messages: ChatMessage[], tools?: { choice: 
   }
 }
 
-function prRow(pr: AskPr): string {
-  const state = pr.isDraft ? "draft" : pr.state.toLowerCase();
+function prStatus(pr: AskPr): string[] {
   const review = (pr.reviewDecision ?? "none").toLowerCase().replaceAll("_", " ");
-  return [pr.key, pr.title, `@${pr.author}`, state, `CI ${(pr.ciStatus ?? "none").toLowerCase()}`, `review ${review}`, pr.labels.join(", ") || "-", pr.section ?? "-", pr.updatedAt.slice(0, 10)].join(" | ");
+  return [pr.isDraft ? "draft" : pr.state.toLowerCase(), `CI ${(pr.ciStatus ?? "none").toLowerCase()}`, `review ${review}`];
+}
+
+function prRow(pr: AskPr): string {
+  return [pr.key, pr.title, `@${pr.author}`, ...prStatus(pr), pr.labels.join(", ") || "-", pr.section ?? "-", pr.updatedAt.slice(0, 10)].join(" | ");
 }
 
 function jevPr(pr: AskPr): Record<string, unknown> {
@@ -383,7 +384,7 @@ function jevPr(pr: AskPr): Record<string, unknown> {
     pr: pr.key,
     title: pr.title,
     author: pr.author,
-    status: prRow(pr).split(" | ").slice(3, 6).join(", "),
+    status: prStatus(pr).join(", "),
     labels: pr.labels,
     section: pr.section,
     opened: pr.createdAt.slice(0, 10),
@@ -445,7 +446,7 @@ async function askList(ctx: AskContext, question: string, view: { title: string;
   let matches: AskAnswer["matches"] = null;
   for (let round = 0; ; round++) {
     const reply = await chat(ctx, messages, { choice: round < TOOL_ROUNDS ? "auto" : "none", list: [FILTER_TOOL] });
-    if (!reply.tool_calls) {
+    if (!reply.tool_calls || round >= TOOL_ROUNDS) {
       return {
         answer: reply.content,
         filters,
@@ -495,7 +496,7 @@ async function askItems(ctx: AskContext, question: string, title: string, all: I
   let budget = QWEN_EXCERPT_CHARS;
   const excerpts = ranked.filter((item) => (budget -= item.text.length) >= 0 || item === ranked[0]);
   const context = excerpts.length
-    ? excerpts.map((item) => `### ${item.label}\n${item.text.slice(0, QWEN_EXCERPT_CHARS)}`).join("\n\n")
+    ? excerpts.map((item) => `### ${item.label}\n${item.text}`).join("\n\n")
     : "(No excerpt was judged relevant.)";
   const reply = await chat(ctx, [
     { role: "system", content: ITEMS_PROMPT },
@@ -525,19 +526,27 @@ export async function askView(
   roots: QuickGenerateRoots = systemRoots(),
 ): Promise<AskAnswer> {
   const keys = detectKeys(roots).keys;
+  const jev = jevSecret(roots);
+  const done = new AbortController();
   const ctx: AskContext = {
-    jevSecret: jevSecret(roots),
+    jev: { label: "TypeSafe", baseUrl: JEV_BASE_URL, headers: { authorization: `Bearer ${jev}` } },
+    jevSecret: jev,
     generators: (["cerebras", "groq"] as const).flatMap((provider) => keys.find((key) => key.provider === provider) ?? []),
     active: null,
     fallback: null,
     deadline: { signal: AbortSignal.timeout(ASK_TIMEOUT_MS), ms: ASK_TIMEOUT_MS },
-    signal,
+    // Ends background Jev passes (the unfiltered list pass, queued chunks) once the answer settles.
+    signal: signal ? AbortSignal.any([signal, done.signal]) : done.signal,
   };
   if (!ctx.generators.length) throw new QuickGenerateError(400, "Add CEREBRAS_API_KEY or GROQ_API_KEY to the key file.");
-  const result = view.kind === "list"
-    ? await askList(ctx, question, view)
-    : view.kind === "pr"
-      ? await askItems(ctx, question, prTitle(view.key, view.detail), prItems(view.detail, view.diff))
-      : await askItems(ctx, question, `PR Cockpit page: ${view.title}`, pageItems(view.text));
-  return { ...result, provider: ctx.active?.key.label ?? "", model: ctx.active?.model ?? "", fallback: ctx.fallback };
+  try {
+    const result = view.kind === "list"
+      ? await askList(ctx, question, view)
+      : view.kind === "pr"
+        ? await askItems(ctx, question, prTitle(view.key, view.detail), prItems(view.detail, view.diff))
+        : await askItems(ctx, question, `PR Cockpit page: ${view.title}`, pageItems(view.text));
+    return { ...result, provider: ctx.active?.key.label ?? "", model: ctx.active?.model ?? "", fallback: ctx.fallback };
+  } finally {
+    done.abort();
+  }
 }

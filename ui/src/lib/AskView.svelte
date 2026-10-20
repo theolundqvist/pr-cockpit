@@ -3,6 +3,7 @@
   import { askView, fetchPrDetails, fetchPrDetailSnapshot, fetchPrDiff } from "./api.js";
   import { listedPrs } from "./listedPrs.svelte.js";
   import { isRecordingShortcut } from "./shortcutCapture.js";
+  import { isPromptDialogOpen } from "./dom.js";
   import { renderMarkdown } from "./markdown.js";
   import Kbd from "./Kbd.svelte";
 
@@ -28,8 +29,6 @@
         : { kind: "page", label: PAGE_TITLES[route.name] ?? "This page" },
   );
 
-  const message = (e) => (e instanceof Error ? e.message : String(e));
-
   async function show() {
     open = true;
     await tick();
@@ -38,6 +37,7 @@
   }
 
   function close() {
+    request?.abort();
     open = false;
   }
 
@@ -104,7 +104,6 @@
 
   async function ask() {
     if (asking || !question.trim()) return;
-    request?.abort();
     const controller = new AbortController();
     request = controller;
     asking = true;
@@ -120,10 +119,10 @@
           : { kind: "page", title: label, text: pageText(document.querySelector(".app-main")) };
       if (!view) return;
       const answer = await askView({ question, view }, controller.signal);
-      const titles = Object.fromEntries(kind === "list" ? view.prs.map((pr) => [pr.key, pr.title]) : []);
+      const titles = new Map(kind === "list" ? view.prs.map((pr) => [pr.key, pr.title]) : []);
       if (!controller.signal.aborted) result = { ...answer, label, titles };
     } catch (e) {
-      if (!controller.signal.aborted) error = message(e);
+      if (!controller.signal.aborted) error = e instanceof Error ? e.message : String(e);
     } finally {
       if (request === controller) asking = false;
     }
@@ -141,6 +140,7 @@
     function onKey(e) {
       if (isRecordingShortcut()) return;
       if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.code === "KeyJ") {
+        if (!open && isPromptDialogOpen()) return;
         e.preventDefault();
         e.stopImmediatePropagation();
         show();
@@ -189,7 +189,7 @@
               {#each result.matches as match (match.key)}
                 <li>
                   <button type="button" class="match" onclick={() => openPr(match.key)}>
-                    <span class="match-title">{result.titles[match.key] ?? match.key}</span>
+                    <span class="match-title">{result.titles.get(match.key) ?? match.key}</span>
                     <span class="match-key">{match.key}</span>
                   </button>
                 </li>
