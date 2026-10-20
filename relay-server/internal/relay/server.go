@@ -261,10 +261,8 @@ func (s *Server) handleGitHub(response http.ResponseWriter, request *http.Reques
 		status = http.StatusAccepted
 		message = "no repository"
 	} else {
-		// Revoke before publishing so a recreated repository's push never reaches the old readers.
-		if event == "push" {
-			s.captureAnchor(request.Context(), body, receivedAt)
-		}
+		// Revoke before publishing so a recreated repository's event never reaches the old readers.
+		s.captureAnchor(request.Context(), event, body, receivedAt)
 		run, job := compactActions(event, payload)
 		marker := Marker{TS: receivedAt.UnixMilli(), Repo: payload.Repository.FullName, Number: pullNumber(payload), Event: event, Ref: pushRef(event, payload), Run: run, Job: job}
 		if _, err := s.publish(request.Context(), marker); err != nil {

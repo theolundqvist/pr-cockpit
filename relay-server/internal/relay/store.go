@@ -126,26 +126,31 @@ CREATE TABLE IF NOT EXISTS relay_anchors (
   prev_tree TEXT,
   prev_anchor_id TEXT,
   prev_proof TEXT,
-  prev_until_ms INTEGER
+  prev_until_ms INTEGER,
+  last_counted_after TEXT
 );
 `)
 	if err != nil {
 		return err
 	}
-	return addMarkerRefColumn(ctx, s.db)
+	// Databases created before push refs were relayed lack markers.ref; existing rows keep NULL,
+	// so their markers replay without a ref and old cursors stay valid. Anchors created before
+	// check_suite capture lack last_counted_after; NULL counts the next distinct head.
+	if err := addColumn(ctx, s.db, "markers", "ref", "TEXT"); err != nil {
+		return err
+	}
+	return addColumn(ctx, s.db, "relay_anchors", "last_counted_after", "TEXT")
 }
 
-// Databases created before push refs were relayed lack the column; existing rows keep NULL,
-// so their markers replay without a ref and old cursors stay valid.
-func addMarkerRefColumn(ctx context.Context, database *sql.DB) error {
+func addColumn(ctx context.Context, database *sql.DB, table, column, definition string) error {
 	var present int
-	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('markers') WHERE name = 'ref'`).Scan(&present); err != nil {
+	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&present); err != nil {
 		return err
 	}
 	if present > 0 {
 		return nil
 	}
-	_, err := database.ExecContext(ctx, `ALTER TABLE markers ADD COLUMN ref TEXT`)
+	_, err := database.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN `+column+` `+definition)
 	return err
 }
 
@@ -480,8 +485,9 @@ func (s *Store) Anchors(ctx context.Context, repos []string) (map[string]relayAn
 	return anchors, nil
 }
 
-// CaptureAnchor applies one default-branch push. Each step is a single conditional statement, so
-// concurrent deliveries cannot both rotate the same anchor.
+// CaptureAnchor applies one default-branch head. Each step is a single conditional statement, so
+// concurrent deliveries cannot both rotate the same anchor. Heads equal to the current or previous
+// anchor change nothing, and repeats of the last counted head (one check suite per app) count once.
 func (s *Store) CaptureAnchor(ctx context.Context, repo string, repoID int64, after, tree string, now time.Time) (anchorChange, bool, error) {
 	id, proof := anchorID(repo, repoID, after), anchorProof(repo, repoID, after, tree)
 	nowMS := now.UnixMilli()
@@ -490,10 +496,12 @@ func (s *Store) CaptureAnchor(ctx context.Context, repo string, repoID int64, af
 	err := s.db.QueryRowContext(ctx, `
 UPDATE relay_anchors SET
   prev_after = "after", prev_tree = tree, prev_anchor_id = anchor_id, prev_proof = proof, prev_until_ms = ?,
-  "after" = ?, tree = ?, anchor_id = ?, proof = ?, set_at_ms = ?, pushes_since = 0
-WHERE repo = ? AND repo_id = ? AND (set_at_ms <= ? OR pushes_since >= ?)
+  "after" = ?, tree = ?, anchor_id = ?, proof = ?, set_at_ms = ?, pushes_since = 0, last_counted_after = ?
+WHERE repo = ? AND repo_id = ? AND "after" != ? AND (prev_after IS NULL OR prev_after != ?)
+  AND (set_at_ms <= ? OR pushes_since >= ?)
 RETURNING prev_proof, prev_until_ms`,
-		now.Add(anchorGrace).UnixMilli(), after, tree, id, proof, nowMS, repo, repoID, now.Add(-anchorRotationAge).UnixMilli(), anchorRotationPushes,
+		now.Add(anchorGrace).UnixMilli(), after, tree, id, proof, nowMS, after,
+		repo, repoID, after, after, now.Add(-anchorRotationAge).UnixMilli(), anchorRotationPushes,
 	).Scan(&prevProof, &prevUntilMS)
 	if err == nil {
 		return anchorChange{proof: proof, prevProof: prevProof, prevUntil: time.UnixMilli(prevUntilMS)}, true, nil
@@ -501,22 +509,22 @@ RETURNING prev_proof, prev_until_ms`,
 	if !errors.Is(err, sql.ErrNoRows) {
 		return anchorChange{}, false, err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE relay_anchors SET pushes_since = pushes_since + 1 WHERE repo = ? AND repo_id = ?`, repo, repoID)
-	if err != nil {
-		return anchorChange{}, false, err
-	}
-	if counted, err := result.RowsAffected(); err != nil || counted > 0 {
+	if _, err := s.db.ExecContext(ctx, `
+UPDATE relay_anchors SET pushes_since = pushes_since + 1, last_counted_after = ?
+WHERE repo = ? AND repo_id = ? AND "after" != ? AND (prev_after IS NULL OR prev_after != ?)
+  AND (last_counted_after IS NULL OR last_counted_after != ?)`,
+		after, repo, repoID, after, after, after); err != nil {
 		return anchorChange{}, false, err
 	}
 	var stored int
 	err = s.db.QueryRowContext(ctx, `
-INSERT INTO relay_anchors(repo, repo_id, "after", tree, anchor_id, proof, set_at_ms, pushes_since) VALUES(?, ?, ?, ?, ?, ?, ?, 0)
+INSERT INTO relay_anchors(repo, repo_id, "after", tree, anchor_id, proof, set_at_ms, pushes_since, last_counted_after) VALUES(?, ?, ?, ?, ?, ?, ?, 0, ?)
 ON CONFLICT(repo) DO UPDATE SET
   repo_id = excluded.repo_id, "after" = excluded."after", tree = excluded.tree, anchor_id = excluded.anchor_id,
-  proof = excluded.proof, set_at_ms = excluded.set_at_ms, pushes_since = 0,
+  proof = excluded.proof, set_at_ms = excluded.set_at_ms, pushes_since = 0, last_counted_after = excluded.last_counted_after,
   prev_after = NULL, prev_tree = NULL, prev_anchor_id = NULL, prev_proof = NULL, prev_until_ms = NULL
 WHERE relay_anchors.repo_id != excluded.repo_id
-RETURNING 1`, repo, repoID, after, tree, id, proof, nowMS).Scan(&stored)
+RETURNING 1`, repo, repoID, after, tree, id, proof, nowMS, after).Scan(&stored)
 	if errors.Is(err, sql.ErrNoRows) {
 		return anchorChange{}, false, nil
 	}

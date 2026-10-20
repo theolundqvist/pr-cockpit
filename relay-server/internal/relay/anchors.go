@@ -19,7 +19,7 @@ const (
 	anchorRotationAge    = 24 * time.Hour
 	anchorRotationPushes = 80
 	anchorGrace          = time.Hour
-	anchorPushMaxAge     = 10 * time.Minute
+	anchorEventMaxAge    = 10 * time.Minute
 	anchorSessionTTL     = 24 * time.Hour
 	maxAnchorRepos       = 50
 	maxAnchorIDs         = 100
@@ -47,21 +47,43 @@ type anchorChange struct {
 	prevUntil time.Time
 }
 
+type anchorRepository struct {
+	ID            int64  `json:"id"`
+	FullName      string `json:"full_name"`
+	DefaultBranch string `json:"default_branch"`
+	// Push payloads carry Unix seconds; other events use RFC3339 strings.
+	PushedAt json.RawMessage `json:"pushed_at"`
+}
+
+type anchorCommit struct {
+	ID     string `json:"id"`
+	TreeID string `json:"tree_id"`
+}
+
 type pushPayload struct {
-	Ref        string `json:"ref"`
-	After      string `json:"after"`
-	Deleted    bool   `json:"deleted"`
-	HeadCommit *struct {
-		ID     string `json:"id"`
-		TreeID string `json:"tree_id"`
-	} `json:"head_commit"`
-	Repository *struct {
-		ID            int64  `json:"id"`
-		FullName      string `json:"full_name"`
-		DefaultBranch string `json:"default_branch"`
-		// Push payloads carry Unix seconds; other events use RFC3339 strings.
-		PushedAt json.RawMessage `json:"pushed_at"`
-	} `json:"repository"`
+	Ref        string            `json:"ref"`
+	After      string            `json:"after"`
+	Deleted    bool              `json:"deleted"`
+	HeadCommit *anchorCommit     `json:"head_commit"`
+	Repository *anchorRepository `json:"repository"`
+}
+
+type checkSuitePayload struct {
+	CheckSuite *struct {
+		HeadBranch string        `json:"head_branch"`
+		HeadSHA    string        `json:"head_sha"`
+		HeadCommit *anchorCommit `json:"head_commit"`
+		UpdatedAt  string        `json:"updated_at"`
+	} `json:"check_suite"`
+	Repository *anchorRepository `json:"repository"`
+}
+
+// anchorCandidate is a default-branch head observed in a fresh webhook delivery.
+type anchorCandidate struct {
+	repo   string
+	repoID int64
+	after  string
+	tree   string
 }
 
 type anchorsRequest struct {
@@ -149,29 +171,59 @@ func pushedAt(raw json.RawMessage) (time.Time, bool) {
 	return parsed, err == nil
 }
 
-func (s *Server) captureAnchor(ctx context.Context, body []byte, receivedAt time.Time) {
+// pushCandidate and checkSuiteCandidate accept only fresh default-branch heads with a tree.
+func pushCandidate(body []byte, receivedAt time.Time) (anchorCandidate, bool) {
 	var push pushPayload
-	if err := json.Unmarshal(body, &push); err != nil || push.Repository == nil || push.HeadCommit == nil {
+	if err := json.Unmarshal(body, &push); err != nil || push.Repository == nil || push.HeadCommit == nil || push.Deleted ||
+		push.Ref != "refs/heads/"+push.Repository.DefaultBranch || push.HeadCommit.ID != push.After {
+		return anchorCandidate{}, false
+	}
+	at, ok := pushedAt(push.Repository.PushedAt)
+	return newAnchorCandidate(push.Repository, *push.HeadCommit, at, ok, receivedAt)
+}
+
+func checkSuiteCandidate(body []byte, receivedAt time.Time) (anchorCandidate, bool) {
+	var event checkSuitePayload
+	if err := json.Unmarshal(body, &event); err != nil || event.Repository == nil || event.CheckSuite == nil {
+		return anchorCandidate{}, false
+	}
+	suite := event.CheckSuite
+	if suite.HeadCommit == nil || suite.HeadBranch != event.Repository.DefaultBranch || suite.HeadCommit.ID != suite.HeadSHA {
+		return anchorCandidate{}, false
+	}
+	at, err := time.Parse(time.RFC3339, suite.UpdatedAt)
+	return newAnchorCandidate(event.Repository, *suite.HeadCommit, at, err == nil, receivedAt)
+}
+
+func newAnchorCandidate(repository *anchorRepository, commit anchorCommit, at time.Time, dated bool, receivedAt time.Time) (anchorCandidate, bool) {
+	if repository.ID <= 0 || repository.DefaultBranch == "" || !validSHA.MatchString(commit.ID) || !validSHA.MatchString(commit.TreeID) ||
+		!dated || at.Before(receivedAt.Add(-anchorEventMaxAge)) {
+		return anchorCandidate{}, false
+	}
+	return anchorCandidate{repo: repository.FullName, repoID: repository.ID, after: commit.ID, tree: commit.TreeID}, true
+}
+
+func (s *Server) captureAnchor(ctx context.Context, event string, body []byte, receivedAt time.Time) {
+	var candidate anchorCandidate
+	var ok bool
+	switch event {
+	case "push":
+		candidate, ok = pushCandidate(body, receivedAt)
+	case "check_suite":
+		candidate, ok = checkSuiteCandidate(body, receivedAt)
+	}
+	if !ok {
 		return
 	}
-	repository := push.Repository
-	if push.Deleted || repository.ID <= 0 || push.Ref != "refs/heads/"+repository.DefaultBranch || push.HeadCommit.ID != push.After ||
-		!validSHA.MatchString(push.After) || !validSHA.MatchString(push.HeadCommit.TreeID) {
-		return
-	}
-	if at, ok := pushedAt(repository.PushedAt); !ok || at.Before(receivedAt.Add(-anchorPushMaxAge)) {
-		return
-	}
-	key := anchorKey(repository.FullName)
 	s.publishMu.Lock()
 	defer s.publishMu.Unlock()
-	change, changed, err := s.store.CaptureAnchor(ctx, key, repository.ID, push.After, push.HeadCommit.TreeID, receivedAt)
+	change, changed, err := s.store.CaptureAnchor(ctx, anchorKey(candidate.repo), candidate.repoID, candidate.after, candidate.tree, receivedAt)
 	if err != nil {
 		s.logger.Warn("relay anchor capture failed", "error", err)
 		return
 	}
 	if changed {
-		s.revokeAnchorLocked(repository.FullName, change, receivedAt)
+		s.revokeAnchorLocked(candidate.repo, change, receivedAt)
 	}
 }
 

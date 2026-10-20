@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -518,5 +520,136 @@ func TestInstallationRemovalDeletesAnchors(t *testing.T) {
 	deliver(t, server, "installation", map[string]any{"action": "deleted", "installation": installation})
 	if matched := lookupAnchors(t, server, ids()); matched["owner/two"] != nil || matched["other/three"] == nil {
 		t.Fatalf("after installation deletion = %#v", matched)
+	}
+}
+
+func checkSuiteEvent(repo, branch, headSHA, tree string, updatedAt time.Time) map[string]any {
+	return map[string]any{
+		"action": "completed",
+		"check_suite": map[string]any{
+			"head_branch": branch, "head_sha": headSHA, "updated_at": updatedAt.UTC().Format(time.RFC3339),
+			"head_commit": map[string]any{"id": headSHA, "tree_id": tree},
+		},
+		"repository": map[string]any{"id": testRepoID, "full_name": repo, "default_branch": "main"},
+	}
+}
+
+func suiteAnchor(t *testing.T, server *Server, clock *testClock, after, tree string) {
+	t.Helper()
+	deliver(t, server, "check_suite", checkSuiteEvent("owner/repo", "main", after, tree, clock.now()))
+}
+
+func anchorState(t *testing.T, store *Store) (after string, pushes int) {
+	t.Helper()
+	if err := store.db.QueryRow(`SELECT "after", pushes_since FROM relay_anchors WHERE repo = 'owner/repo'`).Scan(&after, &pushes); err != nil {
+		t.Fatal(err)
+	}
+	return after, pushes
+}
+
+func TestDefaultBranchCheckSuiteAnchorsProofSession(t *testing.T) {
+	server, _, clock := newAnchorRelay(t)
+	suiteAnchor(t, server, clock, sha("a"), sha("b"))
+	id := specAnchorID("owner/repo", testRepoID, sha("a"))
+	if matched := lookupAnchors(t, server, map[string][]string{"owner/repo": {id}})["owner/repo"]; matched == nil || *matched != id {
+		t.Fatalf("check suite anchor = %v, want %s", matched, id)
+	}
+	if session := openProofSession(t, server, map[string]any{"proofs": map[string]string{"owner/repo": specProof("owner/repo", testRepoID, sha("a"), sha("b"))}}); session.status != http.StatusOK {
+		t.Fatalf("check suite proof session status = %d", session.status)
+	}
+}
+
+func TestCheckSuitesThatCannotAnchorAreIgnored(t *testing.T) {
+	after, tree := sha("a"), sha("b")
+	for name, mutate := range map[string]func(map[string]any){
+		"non-default branch": func(event map[string]any) { event["check_suite"].(map[string]any)["head_branch"] = "feature" },
+		"head commit mismatch": func(event map[string]any) {
+			event["check_suite"].(map[string]any)["head_commit"] = map[string]any{"id": sha("c"), "tree_id": tree}
+		},
+		"stale updated_at": func(event map[string]any) {
+			event["check_suite"].(map[string]any)["updated_at"] = time.Now().Add(-11 * time.Minute).UTC().Format(time.RFC3339)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server, _, clock := newAnchorRelay(t)
+			event := checkSuiteEvent("owner/repo", "main", after, tree, clock.now())
+			mutate(event)
+			deliver(t, server, "check_suite", event)
+			if matched := lookupAnchors(t, server, map[string][]string{"owner/repo": {specAnchorID("owner/repo", testRepoID, after)}})["owner/repo"]; matched != nil {
+				t.Fatalf("ignored check suite created anchor %s", *matched)
+			}
+		})
+	}
+}
+
+func TestRepeatedCheckSuitesCountOnceAndNeverRotate(t *testing.T) {
+	server, store, clock := newAnchorRelay(t)
+	suiteAnchor(t, server, clock, sha("a"), sha("b"))
+	for range anchorRotationPushes + 5 {
+		suiteAnchor(t, server, clock, sha("a"), sha("b"))
+		suiteAnchor(t, server, clock, sha("c"), sha("d"))
+	}
+	if after, pushes := anchorState(t, store); after != sha("a") || pushes != 1 {
+		t.Fatalf("after repeated suites anchor = %s, pushes_since = %d, want %s and 1", after, pushes, sha("a"))
+	}
+}
+
+func TestCheckSuiteRotationAfterDayKeepsGrace(t *testing.T) {
+	server, store, clock := newAnchorRelay(t)
+	start := clock.now()
+	suiteAnchor(t, server, clock, sha("a"), sha("b"))
+	oldProof := specProof("owner/repo", testRepoID, sha("a"), sha("b"))
+
+	clock.set(start.Add(24 * time.Hour))
+	for range 3 {
+		suiteAnchor(t, server, clock, sha("c"), sha("d"))
+	}
+	suiteAnchor(t, server, clock, sha("a"), sha("b"))
+	if after, pushes := anchorState(t, store); after != sha("c") || pushes != 0 {
+		t.Fatalf("after rotation anchor = %s, pushes_since = %d, want %s and 0", after, pushes, sha("c"))
+	}
+	prevUntil := clock.now().Add(time.Hour)
+	grace := openProofSession(t, server, map[string]any{"proofs": map[string]string{"owner/repo": oldProof}})
+	if grace.status != http.StatusOK || grace.ExpiresAt != prevUntil.UnixMilli() {
+		t.Fatalf("grace session = %#v, want expiry %d", grace, prevUntil.UnixMilli())
+	}
+
+	clock.set(prevUntil.Add(time.Second))
+	if expired := openProofSession(t, server, map[string]any{"proofs": map[string]string{"owner/repo": oldProof}}); expired.status != http.StatusForbidden {
+		t.Fatalf("previous proof after grace status = %d, want 403", expired.status)
+	}
+	if current := openProofSession(t, server, map[string]any{"proofs": map[string]string{"owner/repo": specProof("owner/repo", testRepoID, sha("c"), sha("d"))}}); current.status != http.StatusOK {
+		t.Fatalf("current proof status = %d", current.status)
+	}
+}
+
+func TestAnchorSchemaUpgradeAddsLastCountedAfter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relay.db")
+	legacy, err := sql.Open("sqlite3", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Exec(`CREATE TABLE relay_anchors (
+  repo TEXT PRIMARY KEY, repo_id INTEGER NOT NULL, "after" TEXT NOT NULL, tree TEXT NOT NULL,
+  anchor_id TEXT NOT NULL, proof TEXT NOT NULL, set_at_ms INTEGER NOT NULL, pushes_since INTEGER NOT NULL,
+  prev_after TEXT, prev_tree TEXT, prev_anchor_id TEXT, prev_proof TEXT, prev_until_ms INTEGER
+)`); err != nil {
+		t.Fatal(err)
+	}
+	legacy.Close()
+	store, err := OpenStore(path, 7*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	now := time.Now()
+	for _, after := range []string{sha("a"), sha("c"), sha("c")} {
+		if _, _, err := store.CaptureAnchor(ctx, "owner/repo", testRepoID, after, sha("b"), now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if after, pushes := anchorState(t, store); after != sha("a") || pushes != 1 {
+		t.Fatalf("upgraded anchor = %s, pushes_since = %d", after, pushes)
 	}
 }
