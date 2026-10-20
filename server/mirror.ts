@@ -33,8 +33,13 @@ function ensureAskpass(): void {
 async function git(
   args: string[],
   priorityCommand: string[] = [],
+  input?: string,
 ): Promise<{ ok: boolean; exitCode: number; stdout: string; stderr: string }> {
-  const proc = Bun.spawn([...priorityCommand, "git", ...args], { stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawn([...priorityCommand, "git", ...args], {
+    stdin: input === undefined ? "ignore" : new Blob([input]),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   const [stdout, stderr] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
@@ -773,6 +778,52 @@ export async function commitsFromMirror(
     const dir = mirrorDir(repo);
     if (!(await Bun.file(`${dir}/HEAD`).exists())) return { status: "no-mirror" };
     return commitsFromGitDir(dir, base, head);
+  });
+}
+
+export type DeployedCommit = { sha: string; firstParent: string | null; subject: string };
+
+export type MirrorDeployedCommitsResult =
+  | { status: "ok"; commits: DeployedCommit[]; missingEarlierHeads: number }
+  | { status: "no-mirror" }
+  | { status: "missing-commit" }
+  | { status: "list-failed" };
+
+// Commits a deploy of `head` shipped beyond earlier deploys: reachable from head and from none of
+// the earlier heads, committed after `sinceMs` so a first deploy never walks the whole history.
+// An earlier head the mirror lacks bounds nothing, so callers learn how many.
+export async function deployedCommitsFromMirror(
+  repo: string,
+  head: string,
+  earlierHeads: string[],
+  sinceMs: number,
+): Promise<MirrorDeployedCommitsResult> {
+  return withMirrorOperation(repo, async () => {
+    const dir = mirrorDir(repo);
+    if (!(await Bun.file(`${dir}/HEAD`).exists())) return { status: "no-mirror" };
+    if (!(await commitExists(dir, head))) return { status: "missing-commit" };
+    let present: string[] = [];
+    if (earlierHeads.length > 0) {
+      const check = await git(["--git-dir", dir, "cat-file", "--batch-check"], [], `${earlierHeads.join("\n")}\n`);
+      if (!check.ok) return { status: "list-failed" };
+      present = check.stdout.split("\n").flatMap((line) => {
+        const [sha, type] = line.split(" ");
+        return sha && type === "commit" ? [sha] : [];
+      });
+    }
+    const result = await git(
+      ["--git-dir", dir, "log", "--stdin", `--since=@${Math.floor(sinceMs / 1000)}`, "--format=%H%x00%P%x00%s%x00"],
+      [],
+      [head, ...present.map((sha) => `^${sha}`)].join("\n") + "\n",
+    );
+    if (!result.ok) return { status: "list-failed" };
+    const fields = result.stdout.split("\0");
+    const commits: DeployedCommit[] = [];
+    for (let index = 0; index + 2 < fields.length; index += 3) {
+      const sha = fields[index]!.trimStart();
+      if (sha !== "") commits.push({ sha, firstParent: fields[index + 1]!.split(" ")[0] || null, subject: fields[index + 2]! });
+    }
+    return { status: "ok", commits, missingEarlierHeads: earlierHeads.length - present.length };
   });
 }
 

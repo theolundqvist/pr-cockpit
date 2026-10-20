@@ -1,4 +1,4 @@
-import { db, getSetting, type PrRow } from "./db.ts";
+import { db, getSetting, type PrRow, type WorkflowRunRow } from "./db.ts";
 import { invalidateNotifications, invalidateNotificationSettings } from "./rendererInvalidation.ts";
 import { reviewBots } from "./reviewScore.ts";
 import {
@@ -212,7 +212,11 @@ function bounded(value: string, max: number): string {
 }
 
 function desktopNotification(event: NotificationEvent): DesktopNotification {
-  const labels: Record<NotificationEventType, string> = {
+  if (event.type === "deployed") {
+    const body = event.workflow ? `#${event.number} ${event.title} · ${event.workflow}` : `#${event.number} ${event.title}`;
+    return { id: event.id, title: bounded(`Deployed to ${event.branch ?? "branch"}`, 120), body: bounded(body, 240), repo: event.repo, number: event.number };
+  }
+  const labels: Record<Exclude<NotificationEventType, "deployed">, string> = {
     comment: "New comment",
     review: "New review",
     review_requested: "Review requested",
@@ -233,6 +237,51 @@ const insertNotificationStmt = db.prepare(`
   INSERT OR IGNORE INTO desktop_notifications (id, event_json, title, body, repo, number, created_at, claimed_at)
   VALUES ($id, $event_json, $title, $body, $repo, $number, $created_at, NULL)
 `);
+
+function insertMatchingNotifications(settings: NotificationSettings, events: NotificationEvent[]): void {
+  let inserted = false;
+  for (const event of events) {
+    if (matchingNotificationRules(settings, event).length === 0) continue;
+    const notification = desktopNotification(event);
+    const result = insertNotificationStmt.run({
+      $id: notification.id,
+      $event_json: JSON.stringify(event),
+      $title: notification.title,
+      $body: notification.body,
+      $repo: notification.repo,
+      $number: notification.number,
+      $created_at: event.occurredAt,
+    });
+    inserted ||= result.changes > 0;
+  }
+  if (inserted) invalidateNotifications();
+}
+
+export interface DeployedPr {
+  number: number;
+  // PR detail as cached, or the fields Cockpit's PR index knows when no detail was fetched.
+  detail: JsonRecord;
+}
+
+// One identity per PR, workflow, and branch: a re-run or later deploy of the same PR reuses it,
+// so INSERT OR IGNORE keeps the first notification even if detection runs again.
+export function notifyDeployedPrs(
+  run: Pick<WorkflowRunRow, "repo" | "workflow_name" | "head_branch" | "actor_login">,
+  occurredAt: string,
+  prs: DeployedPr[],
+): void {
+  const settings = storedNotificationSettings();
+  if (!settings.enabled) return;
+  const runActor = actor({ login: run.actor_login });
+  insertMatchingNotifications(settings, prs.map((pr) => ({
+    ...eventBase(
+      `deployed:${run.repo}#${pr.number}:${run.workflow_name}:${run.head_branch}`,
+      "deployed", run.repo, pr.number, pr.detail, runActor, null, occurredAt,
+    ),
+    workflow: run.workflow_name,
+    branch: run.head_branch,
+  })));
+}
 
 export function observePrNotifications(previous: DetailRow | null, next: NextDetailRow): void {
   const settings = storedNotificationSettings();
@@ -261,22 +310,7 @@ export function observePrNotifications(previous: DetailRow | null, next: NextDet
   if (previousFetchedAt !== null && previousFetchedAt >= enabledAtMs) {
     events.push(...transitionEvents(previousDetail, nextDetail, next.repo, next.number, previous.fetched_at, next.fetched_at));
   }
-  let inserted = false;
-  for (const event of events) {
-    if (matchingNotificationRules(settings, event).length === 0) continue;
-    const notification = desktopNotification(event);
-    const result = insertNotificationStmt.run({
-      $id: notification.id,
-      $event_json: JSON.stringify(event),
-      $title: notification.title,
-      $body: notification.body,
-      $repo: notification.repo,
-      $number: notification.number,
-      $created_at: event.occurredAt,
-    });
-    inserted ||= result.changes > 0;
-  }
-  if (inserted) invalidateNotifications();
+  insertMatchingNotifications(settings, events);
 }
 
 type PendingNotificationRow = DesktopNotification & { event_json: string };

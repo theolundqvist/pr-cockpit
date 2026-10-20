@@ -23,12 +23,18 @@ describe("notification rule editor", () => {
   });
 
   test("examples serialize into settings the server accepts, with the master switch untouched", () => {
+    const fill = (rule) => ({ ...rule, conditions: rule.conditions.map((condition) => condition.value ? condition : { ...condition, value: condition.field === "branch" ? "main" : "Deploy" }) });
     const rules = NOTIFICATION_EXAMPLES.map((example) => example.build("octocat"));
-    expect(notificationRuleIssues(rules).size).toBe(0);
-    const parsed = parseNotificationSettings(serializeNotificationSettings({ enabled: false, rules }));
+    expect([...notificationRuleIssues(rules).keys()]).toEqual([rules[2].id]);
+    const parsed = parseNotificationSettings(serializeNotificationSettings({ enabled: false, rules: rules.map(fill) }));
     expect(parsed.enabled).toBe(false);
-    expect(parsed.rules.map((rule) => rule.events)).toEqual([["comment"], ["review_requested"]]);
+    expect(parsed.rules.map((rule) => rule.events)).toEqual([["comment"], ["review_requested"], ["deployed"]]);
     expect(parsed.rules[0].conditions).toContainEqual({ field: "body", operator: "contains", value: "@octocat" });
+    expect(parsed.rules[2].conditions).toEqual([
+      { field: "participation", operator: "is", value: "author" },
+      { field: "workflow", operator: "is", value: "Deploy" },
+      { field: "branch", operator: "is", value: "main" },
+    ]);
   });
 
   test("the mention example needs a login before it can be saved", () => {

@@ -40,6 +40,7 @@ import {
   fetchWorkflowRunsForWorkflow,
 } from "./github.ts";
 import { fileFromMirror, type MirrorFileResult } from "./mirror.ts";
+import { deployCheckWanted, queueDeployCheck } from "./deployNotifications.ts";
 import { webhookCoverageSince } from "./webhookCoverage.ts";
 import { GRAPHQL_BACKGROUND_RESERVE } from "../ui/src/lib/quotaImpact.js";
 
@@ -455,7 +456,8 @@ export function compactActionsPayload(event: string, payload: any): { run?: Comp
 }
 
 function storeRun(repo: string, number: number | null, run: CompactRun): boolean {
-  return upsertWorkflowRun({
+  const deployCheck = deployCheckWanted(repo, run);
+  const stored = upsertWorkflowRun({
     repo, run_id: run.id, run_attempt: run.attempt, pr_number: number ?? run.prNumber,
     head_sha: run.headSha, head_branch: run.headBranch, workflow_name: run.workflowName,
     workflow_path: run.workflowPath ?? "", display_title: run.displayTitle, event: run.event,
@@ -463,6 +465,8 @@ function storeRun(repo: string, number: number | null, run: CompactRun): boolean
     event_at: run.eventAt, created_at: run.createdAt, updated_at: run.updatedAt,
     run_started_at: run.runStartedAt, run_number: run.runNumber, html_url: run.htmlUrl,
   });
+  if (stored && deployCheck) void queueDeployCheck(repo, run.id, run.attempt);
+  return stored;
 }
 export async function refreshRecentActions(
   repo: string,

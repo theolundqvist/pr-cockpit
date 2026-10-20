@@ -2088,6 +2088,8 @@ type PrDetailShape<Rx> = {
   number: number;
   state: PrState;
   mergedAt: string | null;
+  // absent in snapshots cached before it was fetched; null until merged
+  mergeCommit?: { oid: string } | null;
   closedAt: string | null;
   isDraft: boolean;
   author: Author | null;
@@ -2198,6 +2200,7 @@ type RestPullRequest = {
   number: number;
   state: "open" | "closed";
   merged_at: string | null;
+  merge_commit_sha?: string | null;
   closed_at: string | null;
   draft: boolean;
   user: RestUser | null;
@@ -2229,6 +2232,8 @@ export function mapRestPrDetailBase(pullRequest: RestPullRequest, files: RestPul
     number: pullRequest.number,
     state: pullRequest.merged_at ? "MERGED" : pullRequest.state.toUpperCase() as PrState,
     mergedAt: pullRequest.merged_at,
+    // Before a merge, REST names the test-merge commit here; only a merged PR has a real one.
+    mergeCommit: pullRequest.merged_at && pullRequest.merge_commit_sha ? { oid: pullRequest.merge_commit_sha } : null,
     closedAt: pullRequest.closed_at,
     isDraft: pullRequest.draft,
     author: pullRequest.user ? { ...(pullRequest.user.type ? { __typename: pullRequest.user.type } : {}), login: pullRequest.user.login, avatarUrl: pullRequest.user.avatar_url } : null,
@@ -2303,6 +2308,7 @@ query($owner: String!, $name: String!, $number: Int!) {
       number
       state
       mergedAt
+      mergeCommit { oid }
       closedAt
       isDraft
       author { __typename login avatarUrl }

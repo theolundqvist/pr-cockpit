@@ -697,6 +697,12 @@ export async function fetchQuota() {
   return await res.json();
 }
 
+export async function fetchNotificationWorkflows() {
+  const res = await fetch("/api/notifications/workflows");
+  if (!res.ok) throw new Error(`notification workflows ${res.status}`);
+  return (await res.json()).workflows;
+}
+
 export async function fetchGithubUsage() {
   const res = await fetch("/api/github-usage");
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `github usage ${res.status}`);

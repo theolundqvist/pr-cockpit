@@ -7,6 +7,7 @@ export const NOTIFICATION_EVENTS = [
   { id: "closed", label: "Pull request closed" },
   { id: "reopened", label: "Pull request reopened" },
   { id: "ready_for_review", label: "Ready for review" },
+  { id: "deployed", label: "Pull request deployed" },
 ] as const;
 
 export const NOTIFICATION_FIELDS = {
@@ -19,6 +20,8 @@ export const NOTIFICATION_FIELDS = {
   participation: { label: "My relationship to the PR", operators: ["is", "isNot"], options: ["author", "assignee", "reviewer"] },
   reviewState: { label: "Review outcome", operators: ["is", "isNot"], options: ["approved", "changes_requested", "commented", "dismissed"] },
   isDraft: { label: "Draft PR", operators: ["is", "isNot"], options: ["true", "false"] },
+  workflow: { label: "Deploy workflow", operators: ["is", "isNot", "contains", "notContains"], options: [] },
+  branch: { label: "Deployed branch", operators: ["is", "isNot"], options: [] },
 } as const;
 
 export type NotificationEventType = typeof NOTIFICATION_EVENTS[number]["id"];
@@ -57,6 +60,9 @@ export interface NotificationEvent {
   reviewState: string | null;
   isDraft: boolean;
   occurredAt: string;
+  // Set only on deployed events: the deploying run's workflow name and branch.
+  workflow?: string | null;
+  branch?: string | null;
 }
 
 export function defaultNotificationSettings(): NotificationSettings {
@@ -116,6 +122,8 @@ function conditionMatches(condition: NotificationCondition, event: NotificationE
     case "body": actual = event.body; break;
     case "reviewState": actual = event.reviewState; break;
     case "isDraft": actual = String(event.isDraft); break;
+    case "workflow": actual = event.workflow ?? null; break;
+    case "branch": actual = event.branch ?? null; break;
     case "participation": {
       const related = condition.value === "author" ? event.viewerIsAuthor
         : condition.value === "assignee" ? event.viewerIsAssignee : event.viewerReviewRequested;
@@ -147,4 +155,18 @@ export function notificationRuleMatches(rule: NotificationRule, event: Notificat
 
 export function matchingNotificationRules(settings: NotificationSettings, event: NotificationEvent): NotificationRule[] {
   return settings.enabled ? settings.rules.filter((rule) => notificationRuleMatches(rule, event)) : [];
+}
+
+// Deploy detection walks git history, so a run no enabled `deployed` rule can match by its
+// workflow and branch alone is dismissed before any pull request is considered.
+export function deployRunMayMatch(settings: NotificationSettings, workflow: string, branch: string): boolean {
+  if (!settings.enabled) return false;
+  const probe = { workflow, branch } as NotificationEvent;
+  const holds = (condition: NotificationCondition) =>
+    (condition.field !== "workflow" && condition.field !== "branch") || conditionMatches(condition, probe);
+  return settings.rules.some((rule) => {
+    if (!rule.enabled || !rule.events.includes("deployed")) return false;
+    if (rule.conditions.length === 0) return true;
+    return rule.match === "all" ? rule.conditions.every(holds) : rule.conditions.some(holds);
+  });
 }

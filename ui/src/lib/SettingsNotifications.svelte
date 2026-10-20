@@ -5,6 +5,7 @@
   import { NOTIFICATION_DRAIN_EVENT, notificationPermission } from "./desktopNotifications.js";
   import { notificationDelivery } from "./notificationDelivery.svelte.js";
   import { viewer } from "./viewer.svelte.js";
+  import { fetchNotificationWorkflows } from "./api.js";
 
   let { settings = $bindable(), issues = new Map() } = $props();
 
@@ -17,16 +18,26 @@
     reviewState: { approved: "approved", changes_requested: "changes requested", commented: "commented", dismissed: "dismissed" },
     isDraft: { true: "yes", false: "no" },
   };
-  const PLACEHOLDERS = { actor: "login or $me", prAuthor: "login or $me", repository: "owner/name", title: "text in the title", body: "text in the comment" };
+  const PLACEHOLDERS = { actor: "login or $me", prAuthor: "login or $me", repository: "owner/name", title: "text in the title", body: "text in the comment", workflow: "workflow name", branch: "branch name" };
 
   let permission = $state(notificationPermission());
   let requesting = $state(false);
+  let workflows = $state([]);
 
   onMount(() => {
     const refreshPermission = () => { permission = notificationPermission(); };
     window.addEventListener("focus", refreshPermission);
+    fetchNotificationWorkflows().then((list) => { workflows = list; }).catch(() => {});
     return () => window.removeEventListener("focus", refreshPermission);
   });
+
+  // Suggestions follow the rule's "Repository is" condition when it names one.
+  function workflowNames(rule) {
+    const repos = rule.conditions
+      .filter((condition) => condition.field === "repository" && condition.operator === "is" && condition.value.trim())
+      .map((condition) => condition.value.trim().toLowerCase());
+    return [...new Set(workflows.filter((workflow) => repos.length === 0 || repos.includes(workflow.repo.toLowerCase())).map((workflow) => workflow.name))];
+  }
 
   function requestDrain() {
     window.dispatchEvent(new Event(NOTIFICATION_DRAIN_EVENT));
@@ -141,13 +152,22 @@
               {/each}
             </select>
           {:else}
-            <input class="input condition-value" class:invalid={!condition.value.trim()} bind:value={condition.value} placeholder={PLACEHOLDERS[condition.field]} aria-label="Condition value" aria-invalid={!condition.value.trim()} spellcheck="false" autocomplete="off" />
+            <input class="input condition-value" class:invalid={!condition.value.trim()} bind:value={condition.value} placeholder={PLACEHOLDERS[condition.field]} aria-label="Condition value" aria-invalid={!condition.value.trim()} spellcheck="false" autocomplete="off" list={condition.field === "workflow" ? `workflows-${rule.id}-${index}` : undefined} />
+            {#if condition.field === "workflow"}
+              <datalist id={`workflows-${rule.id}-${index}`}>
+                {#each workflowNames(rule) as name}<option value={name}></option>{/each}
+              </datalist>
+            {/if}
           {/if}
           <button class="reset-link remove-condition" type="button" onclick={() => (rule.conditions = rule.conditions.filter((_, i) => i !== index))}>Remove</button>
           {#if condition.field === "actor" || condition.field === "prAuthor"}
             <span class="hint condition-hint"><code>$me</code> = {viewer.login || "your login"}</span>
           {:else if condition.field === "body"}
             <span class="hint condition-hint">Comments and reviews only.</span>
+          {:else if condition.field === "workflow"}
+            <span class="hint condition-hint">Deploys only: the workflow whose successful run shipped the PR.</span>
+          {:else if condition.field === "branch"}
+            <span class="hint condition-hint">Deploys only: the branch that run deployed, which is also the PR's base.</span>
           {/if}
         </div>
       {/each}

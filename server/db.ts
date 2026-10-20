@@ -1342,6 +1342,14 @@ export function listActionWorkflows(repos: string[]): ActionWorkflowRow[] {
   ).all(...repos);
 }
 
+// The rule builder offers each repository's workflow catalog: run names can carry a per-run
+// `run-name`, while the catalog holds the stable names deploy workflows report.
+export function listWorkflowNames(): Array<{ repo: string; name: string }> {
+  return db.query<{ repo: string; name: string }, []>(
+    "SELECT DISTINCT repo, name FROM action_workflows ORDER BY repo, name COLLATE NOCASE",
+  ).all();
+}
+
 export function listRunJobsForRun(repo: string, runId: number, runAttempt: number): RunJobRow[] {
   return db.query<RunJobRow, [string, number, number]>(
     `SELECT repo, job_id, run_id, run_attempt, head_sha, head_branch, workflow_name, name,

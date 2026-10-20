@@ -47,6 +47,21 @@ export const NOTIFICATION_EXAMPLES = [
       conditions: [{ field: "isDraft", operator: "is", value: "false" }],
     }),
   },
+  {
+    id: "my-deploys",
+    label: "My PRs deployed",
+    hint: "Your merged pull requests once a successful run of your deploy workflow ships them. Name the workflow and branch.",
+    build: () => newNotificationRule({
+      name: "My PRs deployed",
+      events: ["deployed"],
+      match: "all",
+      conditions: [
+        { field: "participation", operator: "is", value: "author" },
+        { field: "workflow", operator: "is", value: "" },
+        { field: "branch", operator: "is", value: "" },
+      ],
+    }),
+  },
 ];
 
 export function notificationRuleIssues(rules) {

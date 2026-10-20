@@ -29,6 +29,7 @@ import {
   listPrIndex,
   prIndexCreatedAt,
   listActionWorkflows,
+  listWorkflowNames,
   latestWorkflowRunAttempt,
   listPrs,
   listRunJobs,
@@ -3530,6 +3531,9 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     }
     if (req.method === "GET" && url.pathname === "/api/actions/graph") {
       return handleRepoActionGraph(url);
+    }
+    if (req.method === "GET" && url.pathname === "/api/notifications/workflows") {
+      return json({ workflows: listWorkflowNames() });
     }
     if (
       req.method === "POST" &&

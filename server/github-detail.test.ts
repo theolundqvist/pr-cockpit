@@ -27,6 +27,7 @@ const restPullRequest = {
   number: 42,
   state: "closed" as const,
   merged_at: "2026-08-27T10:00:00Z",
+  merge_commit_sha: "merge-sha",
   closed_at: "2026-08-27T10:00:00Z",
   draft: false,
   user: { node_id: "U_node", login: "octocat", avatar_url: "https://avatars.example/octocat", type: "User" },
@@ -86,6 +87,7 @@ describe("REST PR detail parity", () => {
       number: 42,
       state: "MERGED",
       mergedAt: "2026-08-27T10:00:00Z",
+      mergeCommit: { oid: "merge-sha" },
       closedAt: "2026-08-27T10:00:00Z",
       isDraft: false,
       author: { __typename: "User", login: "octocat", avatarUrl: "https://avatars.example/octocat" },
@@ -150,6 +152,7 @@ describe("REST PR detail parity", () => {
       user: null,
     }, [])).toMatchObject({
       state: "OPEN",
+      mergeCommit: null,
       body: "",
       mergeable: "UNKNOWN",
       mergeStateStatus: "UNKNOWN",
