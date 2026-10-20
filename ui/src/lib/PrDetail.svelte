@@ -35,7 +35,7 @@
   import { anchorThreads, fileDiffFingerprint } from "./diff.js";
   import { loadDiffDocument } from "./diffDocument.js";
   import { imageFallback, renderMarkdown } from "./markdown.js";
-  import { botCommentLinks } from "./commentLinks.js";
+  import { botCommentLinks, previewCommentLinks } from "./commentLinks.js";
   import { setTaskByKey, taskMarkers } from "../../../shared/taskList.js";
   import { presentMutationError } from "./mutationError.js";
   import { isCodeScanningThread } from "../../../shared/codeScanning.js";
@@ -2106,6 +2106,8 @@
   let prIsGreen = $derived(mergeGate.action === "merge" && unresolvedTotal === 0);
   let autofixDef = $derived(keybindAgents.find((a) => a.id === "autofix"));
   let commentLinks = $derived(botCommentLinks(pr?.comments.nodes ?? []));
+  let previewLinks = $derived(previewCommentLinks(pr?.comments.nodes ?? []));
+  let otherCommentLinks = $derived(commentLinks.filter((link) => !previewLinks.some((preview) => preview.url === link.url)));
   let fixShortcutTarget = $derived.by(() => {
     if (!autofixDef || agent?.state === "running" || mergedState) return null;
     if (failingChecks.length && !ciFixBusy) return "ci";
@@ -3568,10 +3570,32 @@
               {#if quickActionError}<span class="mut-error">{quickActionError}</span>{/if}
             </div>
           {/if}
-          {#if prefs.commentLinksEnabled && commentLinks.length}
+          {#if previewLinks.length}
+            <div class="side-block preview-block">
+              <h3 class="side-title">Preview</h3>
+              <div class="actions">
+                {#each previewLinks as link (link.url)}
+                  <a class="preview-launch" href={link.url} target="_blank" rel="noreferrer" title={link.url}>
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      {#if link.kind === "desktop"}
+                        <rect x="3" y="4" width="18" height="12" rx="2" />
+                        <path d="M12 16v4m-4 0h8" />
+                      {:else}
+                        <rect x="3" y="4" width="18" height="16" rx="2" />
+                        <path d="M3 9h18M6 6.5h1m2 0h1" />
+                      {/if}
+                    </svg>
+                    <span>Open {link.kind === "desktop" ? "desktop app" : "web app"}</span>
+                    <span aria-hidden="true">↗</span>
+                  </a>
+                {/each}
+              </div>
+            </div>
+          {/if}
+          {#if prefs.commentLinksEnabled && otherCommentLinks.length}
             <div class="side-block">
               <h3 class="side-title">Links</h3>
-              {#each commentLinks as link (link.url)}
+              {#each otherCommentLinks as link (link.url)}
                 <a class="check" href={link.url} target="_blank" rel="noreferrer" title={link.url}>
                   <span class="check-name">{link.label}</span>
                 </a>
@@ -6521,6 +6545,39 @@
   }
   .side-block + .side-block {
     padding-top: 14px;
+  }
+  .preview-block {
+    border: 1px solid color-mix(in srgb, var(--text) 20%, var(--border));
+  }
+  .preview-launch {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--panel-raised);
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 500;
+    text-decoration: none;
+  }
+  .preview-launch:hover {
+    background: var(--surface-hover);
+  }
+  .preview-launch:focus-visible {
+    outline: 2px solid var(--text);
+    outline-offset: 2px;
+  }
+  .preview-launch svg {
+    width: 20px;
+    height: 20px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+  }
+  .preview-launch span:first-of-type {
+    flex: 1;
   }
   .block-title,
   .side-title {

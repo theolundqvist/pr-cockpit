@@ -501,6 +501,38 @@ const scenarios = [
     },
   },
   {
+    ...detail("detail-preview-absent", 101, "No preview section without published launch links."),
+    verify: async (page) => {
+      if (await page.locator(".preview-block").count()) throw new Error("Preview section shown without links");
+    },
+  },
+  {
+    ...detail("detail-preview-links", 101, "Published web and desktop previews in the PR sidebar."),
+    verify: async (page) => {
+      const preview = page.locator(".preview-block");
+      await preview.waitFor();
+      const web = preview.getByRole("link", { name: "Open web app" });
+      const desktop = preview.getByRole("link", { name: "Open desktop app" });
+      if (await web.getAttribute("href") !== "https://preview.example.com/101/" || await desktop.getAttribute("href") !== "https://preview.example.com/open-desktop?pr=101") throw new Error("Preview launch URL changed");
+      if (!await preview.evaluate((node) => node.previousElementSibling?.textContent.includes("Quick actions"))) throw new Error("Preview must follow Quick actions");
+      await desktop.focus();
+      if (!await desktop.evaluate((node) => node === document.activeElement)) throw new Error("Desktop launch is not keyboard focusable");
+    },
+    beforeGoto: async (page) => {
+      await page.route("**/api/settings", async (route) => {
+        const response = await route.fetch();
+        await route.fulfill({ response, json: { ...await response.json(), comment_links_enabled: false, personal_quick_actions: JSON.stringify({ quickActions: [{ label: "Build preview", comment: "@preview" }] }) } });
+      });
+      await page.route("https://example.com/*.svg", (route) => route.fulfill({ contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="24"><text x="4" y="16">Preview</text></svg>' }));
+      await page.route((url) => url.pathname === `/api/pr/${REPO}/101`, async (route) => {
+      const response = await route.fetch();
+      const pr = await response.json();
+      pr.comments.nodes.push({ id: "preview-bot", author: { __typename: "Bot", login: "preview-bot" }, createdAt: "2026-07-15T09:00:00Z", body: "Preview is live\n[![Open preview](https://example.com/web.svg)](https://preview.example.com/101/) [![Desktop](https://example.com/desktop.svg)](https://preview.example.com/open-desktop?pr=101)" });
+      await route.fulfill({ response, json: pr });
+      });
+    },
+  },
+  {
     ...detail("detail-conversation", 101, "Green PR conversation with approvals, threads, comments, and successful checks."),
     verify: async (page) => {
       await page.locator(".approval-summary.approved").getByText("Approved by reviewer-one", { exact: true }).waitFor();
