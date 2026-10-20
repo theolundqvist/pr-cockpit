@@ -371,6 +371,7 @@ export interface Settings {
   description_unread_dots: boolean;
   inbox_labels: InboxLabels;
   whiteboard_enabled: boolean;
+  comment_links_enabled: boolean;
   safe_merge_approval_enabled: boolean;
   group_drag_enabled: boolean;
   queue_time_controls_enabled: boolean;
@@ -428,6 +429,7 @@ export function readSettings(): Settings {
     description_unread_dots: onUnlessOff("description_unread_dots"),
     inbox_labels: normalizeInboxLabels(getSetting("inbox_labels")),
     whiteboard_enabled: getSetting("whiteboard_enabled") === "true",
+    comment_links_enabled: getSetting("comment_links_enabled") === "true",
     safe_merge_approval_enabled: safeMergeApprovalEnabled(),
     group_drag_enabled: onUnlessOff("group_drag_enabled"),
     cooking_section_enabled: cookingSectionEnabled(),
@@ -482,6 +484,7 @@ export function writeSettings(
     description_unread_dots: boolean;
     inbox_labels: string;
     whiteboard_enabled: boolean;
+    comment_links_enabled: boolean;
     safe_merge_approval_enabled: boolean;
     group_drag_enabled: boolean;
     queue_time_controls_enabled: boolean;
@@ -558,6 +561,13 @@ export function writeSettings(
     const enabled = patch.whiteboard_enabled === true ? "true" : "false";
     if (getSetting("whiteboard_enabled") !== enabled) {
       setSetting("whiteboard_enabled", enabled);
+      invalidateSettings();
+    }
+  }
+  if (patch.comment_links_enabled !== undefined) {
+    const enabled = patch.comment_links_enabled === true ? "true" : "false";
+    if (getSetting("comment_links_enabled") !== enabled) {
+      setSetting("comment_links_enabled", enabled);
       invalidateSettings();
     }
   }

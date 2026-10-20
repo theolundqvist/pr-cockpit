@@ -45,6 +45,7 @@
   let descriptionUnreadDots = $state(false);
   let inboxLabels = $state("off");
   let whiteboardEnabled = $state(false);
+  let commentLinksEnabled = $state(false);
   let restFallbackEnabled = $state(true);
   let safeMergeApprovalEnabled = $state(false);
   let agentConversationsEnabled = $state(false);
@@ -191,6 +192,7 @@
     descriptionUnreadDots = s.description_unread_dots === true;
     inboxLabels = s.inbox_labels ?? "off";
     whiteboardEnabled = s.whiteboard_enabled === true;
+    commentLinksEnabled = s.comment_links_enabled === true;
     safeMergeApprovalEnabled = s.safe_merge_approval_enabled === true;
     savedSafeMergeApproval = safeMergeApprovalEnabled;
     groupDragEnabled = s.group_drag_enabled === true;
@@ -400,6 +402,7 @@
         description_unread_dots: descriptionUnreadDots,
         inbox_labels: inboxLabels,
         whiteboard_enabled: whiteboardEnabled,
+        comment_links_enabled: commentLinksEnabled,
         ...(safeMergeApprovalEnabled !== savedSafeMergeApproval ? { safe_merge_approval_enabled: safeMergeApprovalEnabled } : {}),
         group_drag_enabled: groupDragEnabled,
         cooking_section_enabled: cookingSectionEnabled,
@@ -587,6 +590,14 @@
             <span class="check-text">
               <span class="check-label">Whiteboard <span class="hint">Experimental</span></span>
               <span class="hint">A personal canvas for PRs, notes and drawings. Turning it off keeps your board. Never changes GitHub or queue order.</span>
+            </span>
+          </label>
+
+          <label class="check-field settings-option field-wide">
+            <input class="check" type="checkbox" bind:checked={commentLinksEnabled} />
+            <span class="check-text">
+              <span class="check-label">Links from bot comments</span>
+              <span class="hint">Lists the buttons bots post in PR comments, such as preview links, in the PR sidebar.</span>
             </span>
           </label>
 

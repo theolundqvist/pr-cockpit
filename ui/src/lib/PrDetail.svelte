@@ -35,6 +35,7 @@
   import { anchorThreads, fileDiffFingerprint } from "./diff.js";
   import { loadDiffDocument } from "./diffDocument.js";
   import { imageFallback, renderMarkdown } from "./markdown.js";
+  import { botCommentLinks } from "./commentLinks.js";
   import { setTaskByKey, taskMarkers } from "../../../shared/taskList.js";
   import { presentMutationError } from "./mutationError.js";
   import { isCodeScanningThread } from "../../../shared/codeScanning.js";
@@ -2104,6 +2105,7 @@
   let unresolvedTotal = $derived(publishedThreads.filter((t) => !t.isResolved).length);
   let prIsGreen = $derived(mergeGate.action === "merge" && unresolvedTotal === 0);
   let autofixDef = $derived(keybindAgents.find((a) => a.id === "autofix"));
+  let commentLinks = $derived(botCommentLinks(pr?.comments.nodes ?? []));
   let fixShortcutTarget = $derived.by(() => {
     if (!autofixDef || agent?.state === "running" || mergedState) return null;
     if (failingChecks.length && !ciFixBusy) return "ci";
@@ -3566,17 +3568,19 @@
               {#if quickActionError}<span class="mut-error">{quickActionError}</span>{/if}
             </div>
           {/if}
-          {#if agentRuns.length || (!prIsGreen && !mergedState)}
+          {#if prefs.commentLinksEnabled && commentLinks.length}
+            <div class="side-block">
+              <h3 class="side-title">Links</h3>
+              {#each commentLinks as link (link.url)}
+                <a class="check" href={link.url} target="_blank" rel="noreferrer" title={link.url}>
+                  <span class="check-name">{link.label}</span>
+                </a>
+              {/each}
+            </div>
+          {/if}
+          {#if agentRuns.length || autofixError || customError}
             <div class="side-block">
               <h3 class="side-title">Agents</h3>
-              {#if !prIsGreen && !mergedState}
-                <button class="btn wide shortcut-action" disabled={autofixBusy || agent?.state === "running"} onclick={requestAutofix}>
-                  {autofixBusy ? "Starting…" : "Auto-fix"}
-                  {#if fixShortcutTarget === "autofix"}
-                    <Kbd keys={autofixDef.keybind} />
-                  {/if}
-                </button>
-              {/if}
               {#if autofixError}<span class="mut-error">{autofixError}</span>{/if}
               {#if customError}<span class="mut-error">{customError}</span>{/if}
               {#if agentRuns.length}
