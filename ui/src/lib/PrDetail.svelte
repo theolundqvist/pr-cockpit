@@ -208,6 +208,8 @@
     quotaMergeModal = false;
     forceMergeConfirm = false;
     confirmAction = null;
+    cancelOrderError = "";
+    cancelOrderBusy = false;
     resolveError = "";
     mergeMenuOpen = false;
     reviewMenuOpen = false;
@@ -963,6 +965,7 @@
 
   async function runQuickAction(action) {
     if (quickActionBusy || action.done) return;
+    if (action.kind === "label" && action.value === "order" && (cancelOrderBusy || cancelOrderPending)) return;
     quickActionBusy = action.id;
     quickActionError = "";
     try {
@@ -2001,6 +2004,36 @@
   let repoLabels = $state([]);
   let labelsByServer = $derived(new Set((pr?.labels.nodes ?? []).map((l) => l.name)));
   let appliedLabels = $derived(labelsAfterMutations(labelsByServer, mutations));
+  let cancelOrderBusy = $state(false);
+  let cancelOrderError = $state("");
+  let cancelOrderMutation = $derived(mutations.find((m) => m.kind === "remove-labels" && m.payload.labels.includes("order") && m.payload.labels.includes("rush")));
+  let cancelOrderPending = $derived(cancelOrderMutation?.state === "pending" || cancelOrderMutation?.state === "refreshing");
+  let kitchenOrder = $derived(liveState && (appliedLabels.has("order") || cancelOrderMutation) &&
+    (prefs.cookingSectionEnabled || [...labelsByServer].some((name) => name.startsWith("kitchen:"))));
+  let kitchenServing = $derived(labelsByServer.has("kitchen: serving"));
+
+  function requestCancelOrder() {
+    const targetRepo = repo;
+    const targetNumber = number;
+    confirmAction = {
+      title: `Cancel Kitchen order for #${number}?`,
+      message: "Removes order and rush from this PR. Kitchen picks up the cancellation on its next cycle; other ordered PRs in the stack may regroup.",
+      confirmLabel: "Cancel order",
+      danger: true,
+      run: async () => {
+        cancelOrderBusy = true;
+        cancelOrderError = "";
+        try {
+          await enqueueMutation(targetRepo, targetNumber, { kind: "remove-labels", labels: ["order", "rush"] });
+          if (repo === targetRepo && number === targetNumber) await refreshMutations();
+        } catch (error) {
+          if (repo === targetRepo && number === targetNumber) cancelOrderError = presentMutationError("cancel Kitchen order", error).message;
+        } finally {
+          if (repo === targetRepo && number === targetNumber) cancelOrderBusy = false;
+        }
+      },
+    };
+  }
 
   let repoLabelsState = $state("idle");
   let repoLabelsRequest = 0;
@@ -3550,7 +3583,7 @@
               </div>
             </div>
           {/if}
-          {#if quickActions.length || resolvedQuickActions.errors.length}
+          {#if quickActions.length || resolvedQuickActions.errors.length || kitchenOrder}
             <div class="side-block">
               <h3 class="side-title">Quick actions</h3>
               <div class="actions">
@@ -3558,16 +3591,34 @@
                   <button
                     class="btn wide shortcut-action"
                     title={action.kind === "label" ? `Add label “${action.value}”` : `Comment “${action.value}”`}
-                    disabled={quickActionBusy !== null || action.done}
+                    disabled={quickActionBusy !== null || action.done || (action.kind === "label" && action.value === "order" && (cancelOrderBusy || cancelOrderPending))}
                     onclick={() => runQuickAction(action)}
                   >
                     {quickActionBusy === action.id ? "Applying…" : action.label}
                     {#if action.keybind && !action.done}<Kbd keys={action.keyLabel} />{/if}
                   </button>
                 {/each}
+                {#if kitchenOrder}
+                  {#if cancelOrderMutation?.state === "failed"}
+                    <MutationFailure
+                      action="cancel Kitchen order"
+                      error={cancelOrderMutation.error}
+                      onRetry={() => handleRetry(cancelOrderMutation.id)}
+                      onDiscard={() => handleDiscard(cancelOrderMutation.id)}
+                    />
+                  {:else}
+                    <button
+                      class="merge-btn fail"
+                      disabled={kitchenServing || cancelOrderBusy || cancelOrderPending}
+                      title={kitchenServing ? "Kitchen is already merging this order." : "Remove this PR’s order and rush labels"}
+                      onclick={requestCancelOrder}
+                    >{cancelOrderBusy || cancelOrderPending ? "Cancelling order…" : "Cancel Kitchen order"}</button>
+                  {/if}
+                {/if}
               </div>
               {#if resolvedQuickActions.errors.includes("committed")}<span class="mut-error">{QUICK_ACTIONS_PATH} on the default branch is not valid JSON.</span>{/if}
               {#if quickActionError}<span class="mut-error">{quickActionError}</span>{/if}
+              {#if cancelOrderError}<span class="mut-error">{cancelOrderError}</span>{/if}
             </div>
           {/if}
           {#if previewLinks.length}

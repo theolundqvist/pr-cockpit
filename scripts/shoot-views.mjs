@@ -1,3 +1,4 @@
+import { kitchenCancelScenarios } from "./kitchen-cancel-scenarios.mjs";
 import { cookingScenarios } from "./cooking-scenarios.mjs";
 import { groupingScenarios } from "./grouping-scenarios.mjs";
 import { createServer } from "node:net";
@@ -264,6 +265,7 @@ const scenarios = [
   })),
   ...groupingScenarios(),
   ...cookingScenarios(),
+  ...kitchenCancelScenarios(),
   setAsideScenario(false),
   setAsideScenario(true),
   repositoryPickerScenario(false),
@@ -506,8 +508,8 @@ const scenarios = [
       if (await page.locator(".preview-block").count()) throw new Error("Preview section shown without links");
     },
   },
-  {
-    ...detail("detail-preview-links", 101, "Published web and desktop previews in the PR sidebar."),
+  ...["badges", "plain", "bare"].map((format) => ({
+    ...detail(`detail-preview-links-${format}`, 101, "Published web and desktop previews in the PR sidebar."),
     verify: async (page) => {
       const preview = page.locator(".preview-block");
       await preview.waitFor();
@@ -527,11 +529,11 @@ const scenarios = [
       await page.route((url) => url.pathname === `/api/pr/${REPO}/101`, async (route) => {
       const response = await route.fetch();
       const pr = await response.json();
-      pr.comments.nodes.push({ id: "preview-bot", author: { __typename: "Bot", login: "preview-bot" }, createdAt: "2026-07-15T09:00:00Z", body: "Preview is live\n[![Open preview](https://example.com/web.svg)](https://preview.example.com/101/) [![Desktop](https://example.com/desktop.svg)](https://preview.example.com/open-desktop?pr=101)" });
+      pr.comments.nodes.push({ id: "preview-bot", author: { __typename: "Bot", login: "preview-bot" }, createdAt: "2026-07-15T09:00:00Z", body: format !== "badges" ? `Preview is live\nWeb: ${format === "bare" ? "https://preview.example.com/101/" : "[https://preview.example.com/101/](https://preview.example.com/101/)"}, Desktop: [1.2.3](https://preview.example.com/download/1.2.3.zip), [Open in Example Preview](https://preview.example.com/open-desktop?pr=101)` : "Preview is live\n[![Open preview](https://example.com/web.svg)](https://preview.example.com/101/) [![Desktop](https://example.com/desktop.svg)](https://preview.example.com/open-desktop?pr=101)" });
       await route.fulfill({ response, json: pr });
       });
     },
-  },
+  })),
   {
     ...detail("detail-conversation", 101, "Green PR conversation with approvals, threads, comments, and successful checks."),
     verify: async (page) => {
