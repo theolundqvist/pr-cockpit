@@ -372,6 +372,8 @@
 
 <style>
   .page {
+    height: 100%;
+    overflow-y: auto;
     padding: 18px 32px 96px;
     min-width: 0;
   }
