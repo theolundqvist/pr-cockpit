@@ -251,6 +251,13 @@ export async function fetchConflictFiles(repo, number) {
   return body.files;
 }
 
+export async function fetchConflictMerge(repo, number) {
+  const res = await fetch(`/api/pr/${repo}/${number}/conflict-merge`);
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.error || `conflict merge ${res.status}`);
+  return body;
+}
+
 export async function fetchMutations(repo, number) {
   const res = await fetch(`/api/mutations?repo=${encodeURIComponent(repo)}&number=${number}`);
   if (!res.ok) throw new Error(`mutations ${res.status}`);
@@ -293,6 +300,23 @@ export async function commitPrFileEdit(repo, number, path, expectedHeadOid, cont
   const body = await res.json().catch(() => null);
   if (!res.ok) {
     const error = new Error(body?.error || `pr-file-edit ${res.status}`);
+    error.code = body?.code;
+    error.auth = body?.auth;
+    error.status = res.status;
+    throw error;
+  }
+  return body;
+}
+
+export async function commitConflictMerge(repo, number, expectedHeadOid, baseOid, files) {
+  const res = await fetch("/api/pr-conflict-merge", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ repo, number, expectedHeadOid, baseOid, files }),
+  });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    const error = new Error(body?.error || `pr-conflict-merge ${res.status}`);
     error.code = body?.code;
     error.auth = body?.auth;
     error.status = res.status;

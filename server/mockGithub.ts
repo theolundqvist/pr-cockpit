@@ -604,6 +604,11 @@ function requireMockPendingReview(repo: string, number: number, reviewId: number
   return review;
 }
 
+// Built from parts so this source never reads as an unresolved conflict to git tooling.
+const CURRENT_MARKER = `${"<".repeat(7)} fixture/pr-103`;
+const SPLIT_MARKER = "=".repeat(7);
+const INCOMING_MARKER = `${">".repeat(7)} main`;
+
 // PR 103's files as merging main into its head writes them; the card lists these paths in this order.
 const CONFLICT_FIXTURES: Record<string, string> = isMockGithub ? {
   "ui/navigation.ts": `import { writable } from "svelte/store";
@@ -616,26 +621,26 @@ export function isTab(value: unknown): value is Tab {
   return value === "conversation" || value === "files" || value === "agents" || value === "actions";
 }
 
-<<<<<<< fixture/pr-103
+${CURRENT_MARKER}
 export function tabFromHash(hash: string): Tab {
   const [, , , , tab] = hash.split("/");
   return isTab(tab) ? tab : DEFAULT_TAB;
 }
-=======
+${SPLIT_MARKER}
 export function tabFromHash(hash: string, fallback: Tab = DEFAULT_TAB): Tab {
   const tab = new URLSearchParams(hash.split("?")[1] ?? "").get("tab");
   return isTab(tab) ? tab : fallback;
 }
->>>>>>> main
+${INCOMING_MARKER}
 
 export const activeTab = writable<Tab>(DEFAULT_TAB);
 
 export function rememberTab(repo: string, number: number, tab: Tab): void {
-<<<<<<< fixture/pr-103
+${CURRENT_MARKER}
   sessionStorage.setItem(\`tab:\${repo}#\${number}\`, tab);
-=======
+${SPLIT_MARKER}
   localStorage.setItem(\`pr-cockpit:tab:\${repo}#\${number}\`, tab);
->>>>>>> main
+${INCOMING_MARKER}
   activeTab.set(tab);
 }
 
@@ -655,24 +660,24 @@ export interface RouteState {
 export function parseRoute(hash: string): RouteState | null {
   const match = /^#\\/pr\\/([^/]+\\/[^/]+)\\/(\\d+)/.exec(hash);
   if (!match) return null;
-<<<<<<< fixture/pr-103
+${CURRENT_MARKER}
   const tab = tabFromHash(hash);
   activeTab.set(tab);
   return { repo: match[1]!, number: Number(match[2]), tab };
-=======
+${SPLIT_MARKER}
   return { repo: match[1]!, number: Number(match[2]), tab: tabFromHash(hash, "files") };
->>>>>>> main
+${INCOMING_MARKER}
 }
 `,
   "server/navigation.ts": `export const TAB_QUERY = "tab";
 
 export function detailUrl(repo: string, number: number, tab?: string): string {
-<<<<<<< fixture/pr-103
+${CURRENT_MARKER}
   return \`/#/pr/\${repo}/\${number}\${tab ? \`/\${tab}\` : ""}\`;
-=======
+${SPLIT_MARKER}
   const query = tab ? \`?\${TAB_QUERY}=\${encodeURIComponent(tab)}\` : "";
   return \`/#/pr/\${repo}/\${number}\${query}\`;
->>>>>>> main
+${INCOMING_MARKER}
 }
 `,
 } : {};

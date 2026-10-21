@@ -18,6 +18,8 @@
     rowOffset = 0,
     layout = "unified",
     onFinish = null,
+    extensions = [],
+    view = $bindable(null),
   } = $props();
   let host;
   let editor;
@@ -188,6 +190,7 @@
           }),
           languageForPath(path),
           shikiCompartment.of(shikiHighlighting(path, shikiTheme)),
+          untrack(() => extensions),
         ],
       }),
       parent: host,
@@ -211,10 +214,12 @@
         view.contentDOM.focus({ preventScroll: true });
       },
     });
+    view = editor;
 
     return () => {
       editor.destroy();
       editor = undefined;
+      view = null;
     };
   });
 

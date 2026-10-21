@@ -19,6 +19,7 @@ export const prefs = $state({
   inboxLabels: "off",
   whiteboardEnabled: false,
   commentLinksEnabled: false,
+  conflictEditorEnabled: false,
   safeMergeApprovalEnabled: false,
   groupDragEnabled: true,
   queueTimeControlsEnabled: true,
@@ -53,6 +54,7 @@ export function setPrefs(settings) {
   prefs.inboxLabels = settings.inbox_labels === "dot" || settings.inbox_labels === "name" ? settings.inbox_labels : "off";
   prefs.whiteboardEnabled = settings.whiteboard_enabled === true;
   prefs.commentLinksEnabled = settings.comment_links_enabled === true;
+  prefs.conflictEditorEnabled = settings.conflict_editor_enabled === true;
   prefs.safeMergeApprovalEnabled = settings.safe_merge_approval_enabled === true;
   prefs.groupDragEnabled = settings.group_drag_enabled === true;
   prefs.cookingSectionEnabled = settings.cooking_section_enabled === true;

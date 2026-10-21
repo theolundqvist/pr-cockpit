@@ -57,6 +57,7 @@
   let queueTimeControlsEnabled = $state(false);
   let reviewFileMenuEnabled = $state(false);
   let fileFinderEnabled = $state(false);
+  let conflictEditorEnabled = $state(false);
   let hiddenReviewPaths = $state({});
   let savedHiddenReviewPaths = "{}";
   let testPathRegex = $state("");
@@ -203,6 +204,7 @@
     queueTimeControlsEnabled = s.queue_time_controls_enabled === true;
     reviewFileMenuEnabled = s.review_file_menu_enabled === true;
     fileFinderEnabled = s.file_finder_enabled === true;
+    conflictEditorEnabled = s.conflict_editor_enabled === true;
     hiddenReviewPaths = s.hidden_review_paths ?? {};
     savedHiddenReviewPaths = JSON.stringify(hiddenReviewPaths);
     restFallbackEnabled = s.rest_fallback_enabled !== false;
@@ -414,6 +416,7 @@
         queue_time_controls_enabled: queueTimeControlsEnabled,
         review_file_menu_enabled: reviewFileMenuEnabled,
         file_finder_enabled: fileFinderEnabled,
+        conflict_editor_enabled: conflictEditorEnabled,
         // Sent only when edited here, so saving other settings never undoes a file hidden from a PR meanwhile.
         ...(JSON.stringify(hiddenReviewPaths) !== savedHiddenReviewPaths ? { hidden_review_paths: hiddenReviewPaths } : {}),
         rest_fallback_enabled: restFallbackEnabled,
@@ -1085,6 +1088,14 @@
           <span class="check-text">
             <span class="check-label">File tree actions</span>
             <span class="hint">Right-click a file or folder to mark it generated in the PR's .gitattributes, or to hide it in Cockpit alongside tests.</span>
+          </span>
+        </label>
+
+        <label class="check-field settings-option">
+          <input class="check" type="checkbox" bind:checked={conflictEditorEnabled} />
+          <span class="check-text">
+            <span class="check-label">Resolve merge conflicts in Cockpit</span>
+            <span class="hint">Click a conflicting file on a PR to edit its conflicts and commit the merge of the base branch to the PR head.</span>
           </span>
         </label>
         {#if Object.keys(hiddenReviewPaths).length}

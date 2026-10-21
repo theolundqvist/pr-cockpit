@@ -11,6 +11,7 @@
   import { theme } from "./theme.svelte.js";
   import { buildGapPage, buildWholeFile, fileUsesSplitLayout, hunkOldOffset, revertChange, revertFile, splitDiffRows } from "./diff.js";
   import { fetchFileContents } from "./api.js";
+  import { normalizeFileEndings } from "./fileEndings.js";
   import { whenIdle } from "./preload.js";
   import { shouldToggleHoveredViewed } from "./dom.js";
   import { columnWithin, createDefinitionHover, tokenAtPoint } from "./wordAtPoint.js";
@@ -984,12 +985,6 @@
       newEndsWithNewline,
       newlineChanged,
     };
-  }
-
-  function normalizeFileEndings(content) {
-    if (!content.includes("\r")) return { content, eol: "\n" };
-    if (/\r(?!\n)/.test(content) || content.replace(/\r\n/g, "").includes("\n")) return null;
-    return { content: content.replace(/\r\n/g, "\n"), eol: "\r\n" };
   }
 
   function fileEditError(error, fallback) {

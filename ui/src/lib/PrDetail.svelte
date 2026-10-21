@@ -72,6 +72,7 @@
   import DiffView from "./DiffView.svelte";
   import FileHistory from "./FileHistory.svelte";
   import Telescope from "./Telescope.svelte";
+  import ConflictEditor from "./ConflictEditor.svelte";
   import RangePicker from "./RangePicker.svelte";
   import FileTree from "./FileTree.svelte";
   import Kbd from "./Kbd.svelte";
@@ -140,6 +141,7 @@
   let commitLineCounts = $state({});
   let loadedCommitStatsKey = "";
   let loadedConflictKey = "";
+  let conflictEditorPath = $state(null);
 
   const TREE_WIDTH_KEY = "pr-cockpit:file-tree-width";
   const VIEWED_FILES_KEY_PREFIX = "pr-cockpit:viewed-files:";
@@ -222,6 +224,7 @@
     conflictFilesState = "idle";
     conflictFilesError = null;
     loadedConflictKey = "";
+    conflictEditorPath = null;
     sinceAnchor = readLastViewed(repo, number);
     if (untrack(() => pickerMode) === "labels") loadRepoLabels();
     fetchRepoUsers(repo)
@@ -675,7 +678,7 @@
         applyAsyncPrDetail(detail, pending);
       },
       () => {
-        if (token === activeFetch && pending === pendingCommit) showFlash("File committed, but the PR refresh failed.");
+        if (token === activeFetch && pending === pendingCommit) showFlash("Committed, but the PR refresh failed.");
       },
     );
   }
@@ -687,6 +690,15 @@
     if (token !== activeFetch || !pr) return result;
     adoptHeadCommit(token, expectedHeadOid, result.commitOid);
     return result;
+  }
+
+  function finishConflictMerge(expectedHeadOid, commitOid) {
+    conflictEditorPath = null;
+    if (!pr) return;
+    adoptHeadCommit(activeFetch, expectedHeadOid, commitOid);
+    // GitHub recomputes mergeability after a push; the conflicting verdict belongs to the old head.
+    pr = { ...pr, mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN" };
+    showFlash(`Merged ${pr.baseRefName} into ${pr.headRefName}.`);
   }
 
   $effect(() => {
@@ -3097,7 +3109,11 @@
               {#if conflictFiles.length}
                 <ul class="conflict-file-list mono" aria-label="Conflicting files">
                   {#each conflictFiles as path (path)}
-                    <li title={path}>{path}</li>
+                    {#if prefs.conflictEditorEnabled}
+                      <li><button type="button" class="conflict-file-open" title={`Resolve conflicts in ${path}`} onclick={() => (conflictEditorPath = path)}>{path}</button></li>
+                    {:else}
+                      <li title={path}>{path}</li>
+                    {/if}
                   {/each}
                 </ul>
               {/if}
@@ -4085,6 +4101,16 @@
       layout={prefs.diffLayout}
       onClose={closeFileHistory}
     />
+    {#if conflictEditorPath && prefs.conflictEditorEnabled}
+      <ConflictEditor
+        {repo}
+        {number}
+        initialPath={conflictEditorPath}
+        headOid={pr.headRefOid}
+        onClose={() => (conflictEditorPath = null)}
+        onCommitted={finishConflictMerge}
+      />
+    {/if}
   {:else if showLoading}
     <div class="detail-frame loading-frame" class:conversation-tab={tab === "conversation"} class:files-tab={tab === "files"} aria-busy="true">
       <div class="detail loading-detail" style="--tree-width: {treeWidth}px">
@@ -6022,6 +6048,26 @@
     font-size: 9.5px;
     line-height: 1.2;
     overflow-wrap: anywhere;
+  }
+  .conflict-file-list li:has(> .conflict-file-open) {
+    padding: 0;
+  }
+  .conflict-file-open {
+    padding: 2px 6px;
+    border: 0;
+    border-radius: 4px;
+    background: none;
+    color: var(--link);
+    font: inherit;
+    line-height: inherit;
+    text-align: left;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .conflict-file-open:hover {
+      text-decoration: underline;
+    }
   }
   .conflict-alert-note,
   .conflict-alert-error {

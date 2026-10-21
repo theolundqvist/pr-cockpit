@@ -372,6 +372,7 @@ export interface Settings {
   inbox_labels: InboxLabels;
   whiteboard_enabled: boolean;
   comment_links_enabled: boolean;
+  conflict_editor_enabled: boolean;
   safe_merge_approval_enabled: boolean;
   group_drag_enabled: boolean;
   queue_time_controls_enabled: boolean;
@@ -432,6 +433,7 @@ export function readSettings(): Settings {
     inbox_labels: normalizeInboxLabels(getSetting("inbox_labels")),
     whiteboard_enabled: getSetting("whiteboard_enabled") === "true",
     comment_links_enabled: getSetting("comment_links_enabled") === "true",
+    conflict_editor_enabled: getSetting("conflict_editor_enabled") === "true",
     safe_merge_approval_enabled: safeMergeApprovalEnabled(),
     group_drag_enabled: onUnlessOff("group_drag_enabled"),
     cooking_section_enabled: cookingSectionEnabled(),
@@ -489,6 +491,7 @@ export function writeSettings(
     inbox_labels: string;
     whiteboard_enabled: boolean;
     comment_links_enabled: boolean;
+    conflict_editor_enabled: boolean;
     safe_merge_approval_enabled: boolean;
     group_drag_enabled: boolean;
     queue_time_controls_enabled: boolean;
@@ -574,6 +577,13 @@ export function writeSettings(
     const enabled = patch.comment_links_enabled === true ? "true" : "false";
     if (getSetting("comment_links_enabled") !== enabled) {
       setSetting("comment_links_enabled", enabled);
+      invalidateSettings();
+    }
+  }
+  if (patch.conflict_editor_enabled !== undefined) {
+    const enabled = patch.conflict_editor_enabled === true ? "true" : "false";
+    if (getSetting("conflict_editor_enabled") !== enabled) {
+      setSetting("conflict_editor_enabled", enabled);
       invalidateSettings();
     }
   }

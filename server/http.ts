@@ -3207,6 +3207,7 @@ async function handlePutSettings(req: Request, runtime: HttpRuntime): Promise<Re
     inbox_labels: string;
     whiteboard_enabled: boolean;
     comment_links_enabled: boolean;
+    conflict_editor_enabled: boolean;
     safe_merge_approval_enabled: boolean;
     group_drag_enabled: boolean;
     queue_time_controls_enabled: boolean;
