@@ -55,6 +55,8 @@ PR images are prefetched into each machine's persistent cache, including SSH rep
 
 When the review needs a change, stay in context: <kbd>e</kbd> edits the open file and commits the patch to the PR; <kbd>p</kbd> opens the PR in your configured coding agent with review context. You can also revert a focused hunk or press <kbd>h</kbd> to inspect file history. A failed merge immediately requests fresh PR details to reveal conflicts or other blockers, while keeping the original error available to retry or dismiss.
 
+Enable **Full-file finder** in **Settings → Review preferences** to read whole files from <kbd>⌘P</kbd> (files) and <kbd>⌘⇧F</kbd> (code search); use <kbd>Ctrl</kbd> on Linux. Results highlight the matched characters. Enter opens the whole file with syntax highlighting, at the matching line for a search hit, and <kbd>⌘F</kbd> finds within it. From the PR list, the same shortcuts first ask for a tracked repository and then a branch, default branch first, and search that branch's latest mirrored commit. Escape steps back one level at a time.
+
 Reviewer badges show scores explicitly posted in reviews or comments, parsed without launching a scoring agent.
 
 Enable **Pending reviews** in **Settings → Workspace** to save inline comments as a native GitHub draft and submit them together as one review. Drafts survive reloads and remain editable; if the PR head changes, submission stops until the stale draft is discarded. **Comment now** still posts a single comment immediately.
