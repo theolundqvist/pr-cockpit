@@ -907,3 +907,38 @@ export async function fileFromMirror(repo: string, sha: string, path: string): P
     return fileFromGitDir(dir, sha, path);
   });
 }
+
+export type MirrorBranch = { name: string; sha: string; default: boolean };
+
+export type MirrorBranchesResult =
+  | { status: "ok"; branches: MirrorBranch[] }
+  | { status: "no-mirror" }
+  | { status: "list-failed" };
+
+// A bare clone's HEAD names the default branch it was cloned from. The default branch comes first,
+// then the others by newest commit.
+export async function branchesFromGitDir(gitDir: string): Promise<Exclude<MirrorBranchesResult, { status: "no-mirror" }>> {
+  const [head, refs] = await Promise.all([
+    git(["--git-dir", gitDir, "symbolic-ref", "-q", "HEAD"]),
+    git(["--git-dir", gitDir, "for-each-ref", "--sort=-committerdate", "--format=%(objectname) %(refname)", "refs/heads/"]),
+  ]);
+  if (!refs.ok) return { status: "list-failed" };
+  const defaultRef = head.ok ? head.stdout.trim() : "";
+  const branches: MirrorBranch[] = [];
+  for (const line of refs.stdout.split("\n")) {
+    const space = line.indexOf(" ");
+    if (space === -1) continue;
+    const ref = line.slice(space + 1);
+    branches.push({ name: ref.slice("refs/heads/".length), sha: line.slice(0, space), default: ref === defaultRef });
+  }
+  branches.sort((left, right) => Number(right.default) - Number(left.default));
+  return { status: "ok", branches };
+}
+
+export async function branchesFromMirror(repo: string): Promise<MirrorBranchesResult> {
+  return withMirrorOperation(repo, async () => {
+    const dir = mirrorDir(repo);
+    if (!(await Bun.file(`${dir}/HEAD`).exists())) return { status: "no-mirror" };
+    return branchesFromGitDir(dir);
+  });
+}

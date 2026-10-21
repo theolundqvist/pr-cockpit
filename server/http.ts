@@ -112,7 +112,7 @@ import { tailscaleServeStatus } from "./tailscaleServe.ts";
 import { runtimeSupervisor } from "./supervisor.ts";
 import { withGithubUsageSource, type GithubUsageSource } from "./githubUsage.ts";
 import type { GithubAuthStatus } from "./githubAuth.ts";
-import { commitsFromMirror, commitStatsFromMirror, conflictFilesFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError, summarizeCommitStats, type MirrorDiffResult, type PullRequestCommit } from "./mirror.ts";
+import { branchesFromMirror, commitsFromMirror, commitStatsFromMirror, conflictFilesFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError, summarizeCommitStats, type MirrorDiffResult, type PullRequestCommit } from "./mirror.ts";
 import { cachedGeneratedPathsFromMirror, generatedFilesFromMirror, generatedPathsForCommitsFromMirror } from "./generatedFiles.ts";
 import { checkState, currentChecks, type CheckState } from "./checkState.ts";
 import { currentBaseRef, discardMutation, enqueueMutation, isTaskIntent, mutationsForPr, retryMutation, type MutationPayload } from "./mutations.ts";
@@ -2847,6 +2847,26 @@ async function handleRepoFile(url: URL): Promise<Response> {
   });
 }
 
+// Branch tips for browsing a tracked repository outside a PR. The fetch keeps tips current; when GitHub is
+// unreachable the mirror's last fetched refs still list.
+async function handleRepoBranches(url: URL): Promise<Response> {
+  if (!readSettings().file_finder_enabled) return json({ error: "not found" }, 404);
+  const repo = url.searchParams.get("repo") ?? "";
+  if (!REPO_RE.test(repo)) return json({ error: "invalid repo" }, 400);
+  let fetchFailed = false;
+  try {
+    await fetchMirror(repo, INCREMENTAL_FETCH_TIMEOUT_MS);
+  } catch (error) {
+    if (!(error instanceof MirrorFetchError && error.kind === "deadline")) {
+      fetchFailed = true;
+      console.warn(`mirror fetch before listing branches failed for ${repo}:`, error);
+    }
+  }
+  const result = await branchesFromMirror(repo);
+  if (result.status === "no-mirror") return json({ status: fetchFailed ? "fetch-failed" : "fetching" });
+  return json(result);
+}
+
 // Quick actions are repository configuration: always the default branch in the local mirror, never a PR's copy.
 async function handleRepoQuickActions(url: URL): Promise<Response> {
   const repo = url.searchParams.get("repo") ?? "";
@@ -3079,6 +3099,7 @@ async function handlePutSettings(req: Request, runtime: HttpRuntime): Promise<Re
     cooking_section_enabled: boolean;
     merged_by_me_notifications_enabled: boolean;
     review_file_menu_enabled: boolean;
+    file_finder_enabled: boolean;
     hidden_review_paths: Settings["hidden_review_paths"];
     agent_conversations_enabled: boolean;
     rest_fallback_enabled: boolean;
@@ -3670,6 +3691,9 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     }
     if (req.method === "GET" && url.pathname === "/api/repo-file") {
       return handleRepoFile(url);
+    }
+    if (req.method === "GET" && url.pathname === "/api/repo-branches") {
+      return handleRepoBranches(url);
     }
     if (req.method === "GET" && url.pathname === "/api/image") {
       return handleImage(url, req.headers.get("range"));

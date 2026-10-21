@@ -378,6 +378,7 @@ export interface Settings {
   cooking_section_enabled: boolean;
   merged_by_me_notifications_enabled: boolean;
   review_file_menu_enabled: boolean;
+  file_finder_enabled: boolean;
   hidden_review_paths: HiddenReviewPaths;
   agent_conversations_enabled: boolean;
   rest_fallback_enabled: boolean;
@@ -437,6 +438,7 @@ export function readSettings(): Settings {
     merged_by_me_notifications_enabled: getSetting("merged_by_me_notifications_enabled") === "true",
     queue_time_controls_enabled: onUnlessOff("queue_time_controls_enabled"),
     review_file_menu_enabled: onUnlessOff("review_file_menu_enabled"),
+    file_finder_enabled: getSetting("file_finder_enabled") === "true",
     hidden_review_paths: readHiddenReviewPaths(),
     agent_conversations_enabled: onUnlessOff("agent_conversations_enabled"),
     rest_fallback_enabled: restFallbackEnabled(),
@@ -493,6 +495,7 @@ export function writeSettings(
     cooking_section_enabled: boolean;
     merged_by_me_notifications_enabled: boolean;
     review_file_menu_enabled: boolean;
+    file_finder_enabled: boolean;
     hidden_review_paths: HiddenReviewPaths;
     agent_conversations_enabled: boolean;
     rest_fallback_enabled: boolean;
@@ -616,6 +619,13 @@ export function writeSettings(
     const enabled = patch.review_file_menu_enabled === true ? "true" : "false";
     if (getSetting("review_file_menu_enabled") !== enabled) {
       setSetting("review_file_menu_enabled", enabled);
+      invalidateSettings();
+    }
+  }
+  if (patch.file_finder_enabled !== undefined) {
+    const enabled = patch.file_finder_enabled === true ? "true" : "false";
+    if (getSetting("file_finder_enabled") !== enabled) {
+      setSetting("file_finder_enabled", enabled);
       invalidateSettings();
     }
   }

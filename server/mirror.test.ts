@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { commitsFromGitDir, commitStatsFromGitDir, conflictFilesFromGitDir, diffFromGitDir, fileFromGitDir, summarizeCommitStats } from "./mirror.ts";
+import { branchesFromGitDir, commitsFromGitDir, commitStatsFromGitDir, conflictFilesFromGitDir, diffFromGitDir, fileFromGitDir, summarizeCommitStats } from "./mirror.ts";
 
 const cleanup: string[] = [];
 afterEach(() => {
@@ -148,6 +148,41 @@ describe("fileFromGitDir", () => {
     });
     expect(await fileFromGitDir(join(root, ".git"), "HEAD", "missing.ts")).toEqual({
       status: "not-found",
+    });
+  });
+});
+
+describe("branchesFromGitDir", () => {
+  test("lists the bare clone's default branch first, then the others by newest commit", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pr-cockpit-branches-"));
+    cleanup.push(root);
+    const source = join(root, "source");
+    mkdirSync(source);
+    git(source, "init", "-b", "trunk");
+    git(source, "config", "user.name", "PR Cockpit Test");
+    git(source, "config", "user.email", "pr-cockpit@example.test");
+    const commit = (branch: string, at: number) => {
+      git(source, "checkout", "-q", "-B", branch);
+      const committed = Bun.spawnSync(["git", "-C", source, "commit", "--allow-empty", "-m", branch], {
+        env: { ...process.env, GIT_COMMITTER_DATE: `${at} +0000`, GIT_AUTHOR_DATE: `${at} +0000` },
+        stderr: "pipe",
+      });
+      if (!committed.success) throw new Error(committed.stderr.toString());
+    };
+    commit("trunk", 1_700_000_000);
+    commit("feature/older", 1_700_000_100);
+    commit("feature/newer", 1_700_000_200);
+    git(source, "checkout", "-q", "trunk");
+    git(root, "clone", "-q", "--bare", source, "mirror.git");
+    const tip = (branch: string) => Bun.spawnSync(["git", "-C", source, "rev-parse", branch]).stdout.toString().trim();
+
+    expect(await branchesFromGitDir(join(root, "mirror.git"))).toEqual({
+      status: "ok",
+      branches: [
+        { name: "trunk", sha: tip("trunk"), default: true },
+        { name: "feature/newer", sha: tip("feature/newer"), default: false },
+        { name: "feature/older", sha: tip("feature/older"), default: false },
+      ],
     });
   });
 });
