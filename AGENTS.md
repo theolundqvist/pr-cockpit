@@ -61,7 +61,7 @@ COCKPIT_PROXY_PORT=4820                            # Cockpit port on that SSH ho
 
 `COCKPIT_MANAGED=1` is exported by `scripts/cockpit` and read by the Electron shell, not the server. It marks the installed instance so a dev launch stays isolated from it.
 
-Replica mode keeps the Bun server, SQLite cache, UI, Electron shell, and image fetches on the Mac. `scripts/cockpit --use-as-proxy HOST` and `pr-cockpit --use-as-proxy HOST ...` tunnel the remote Cockpit API, replicate its inbox state, and disable local GitHub API access. A replica outage must surface as an outage, never fall back to local polling, and local install or quit paths must never shut down the remote server.
+Direct remote URLs keep image requests and caches on that backend. SSH replica mode instead keeps the Bun server, SQLite cache, UI, Electron shell, and image fetches on the Mac. `scripts/cockpit --use-as-proxy HOST` and `pr-cockpit --use-as-proxy HOST ...` tunnel the remote Cockpit API, replicate its inbox state, and disable local GitHub API access. A replica outage must surface as an outage, never fall back to local polling, and local install or quit paths must never shut down the remote server.
 Before pushing replica or server-topology changes, verify the installed Electron app, image rendering, and CLI against the intended backend.
 
 Runbook:
