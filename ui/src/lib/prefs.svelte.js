@@ -25,6 +25,7 @@ export const prefs = $state({
   cookingSectionEnabled: false,
   mergedByMeNotificationsEnabled: false,
   reviewFileMenuEnabled: true,
+  fileFinderEnabled: false,
   hiddenReviewPaths: {},
   restFallbackEnabled: true,
   quickGenerateEnabled: false,
@@ -58,6 +59,7 @@ export function setPrefs(settings) {
   prefs.mergedByMeNotificationsEnabled = settings.merged_by_me_notifications_enabled === true;
   prefs.queueTimeControlsEnabled = settings.queue_time_controls_enabled === true;
   prefs.reviewFileMenuEnabled = settings.review_file_menu_enabled === true;
+  prefs.fileFinderEnabled = settings.file_finder_enabled === true;
   prefs.hiddenReviewPaths = settings.hidden_review_paths ?? {};
   prefs.restFallbackEnabled = settings.rest_fallback_enabled !== false;
   prefs.quickGenerateEnabled = settings.quick_generate_enabled === true;

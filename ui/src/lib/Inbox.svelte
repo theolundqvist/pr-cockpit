@@ -39,6 +39,7 @@
   import { presentMutationError } from "./mutationError.js";
   import { recordUndo } from "./undo.js";
   import MultiSelectDropdown from "./MultiSelectDropdown.svelte";
+  import InboxFinder from "./InboxFinder.svelte";
   import { committedQuickActionsCache, resolveQuickActions, quickActionMutation } from "./quickActions.js";
   import { labelsAfterMutations } from "./appliedLabels.js";
   import { listedPrs } from "./listedPrs.svelte.js";
@@ -2141,6 +2142,7 @@
   </div>
 </div>
 <RowMediaOverlay list={queueList} prFor={prForMedia} />
+{#if prefs.fileFinderEnabled}<InboxFinder repos={configuredRepos} {active} />{/if}
 {#if contextMenu}
   <div
     class="pr-context-menu"

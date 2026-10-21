@@ -56,6 +56,7 @@
   let mergedByMeNotificationsEnabled = $state(false);
   let queueTimeControlsEnabled = $state(false);
   let reviewFileMenuEnabled = $state(false);
+  let fileFinderEnabled = $state(false);
   let hiddenReviewPaths = $state({});
   let savedHiddenReviewPaths = "{}";
   let testPathRegex = $state("");
@@ -201,6 +202,7 @@
     mergedByMeNotificationsEnabled = s.merged_by_me_notifications_enabled === true;
     queueTimeControlsEnabled = s.queue_time_controls_enabled === true;
     reviewFileMenuEnabled = s.review_file_menu_enabled === true;
+    fileFinderEnabled = s.file_finder_enabled === true;
     hiddenReviewPaths = s.hidden_review_paths ?? {};
     savedHiddenReviewPaths = JSON.stringify(hiddenReviewPaths);
     restFallbackEnabled = s.rest_fallback_enabled !== false;
@@ -411,6 +413,7 @@
         merged_by_me_notifications_enabled: mergedByMeNotificationsEnabled,
         queue_time_controls_enabled: queueTimeControlsEnabled,
         review_file_menu_enabled: reviewFileMenuEnabled,
+        file_finder_enabled: fileFinderEnabled,
         // Sent only when edited here, so saving other settings never undoes a file hidden from a PR meanwhile.
         ...(JSON.stringify(hiddenReviewPaths) !== savedHiddenReviewPaths ? { hidden_review_paths: hiddenReviewPaths } : {}),
         rest_fallback_enabled: restFallbackEnabled,
@@ -1106,6 +1109,13 @@
             {/each}
           </div>
         {/if}
+        <label class="check-field settings-option">
+          <input class="check" type="checkbox" bind:checked={fileFinderEnabled} />
+          <span class="check-text">
+            <span class="check-label">Full-file finder</span>
+            <span class="hint">Cmd+P and Cmd+Shift+F highlight matches and open the whole file, with Cmd+F to find in it. From the PR list they first ask for a repository and branch.</span>
+          </span>
+        </label>
         <details class="disclosure">
           <summary>Test file detection</summary>
           <div class="disclosure-body">

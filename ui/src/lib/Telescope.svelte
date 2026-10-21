@@ -11,9 +11,12 @@
   import { excludedPath } from "../../../shared/reviewFiles.js";
   import { prefs } from "./prefs.svelte.js";
   import Kbd from "./Kbd.svelte";
+  import FileFind from "./FileFind.svelte";
+  import { matchRuns, positionRanges, queryRanges } from "./matchRuns.js";
   import { columnWithin, createDefinitionHover, tokenAtPoint, wordAtPoint } from "./wordAtPoint.js";
 
-  let { repo, headSha, headRef, excludedFilesHidden = false, changedFiles = [], onOpenChangedFile, onOpenHistory, open = $bindable(false) } = $props();
+  // With `hotkeys` off, Cmd+P and Cmd+Shift+F only switch modes once open; the owner opens it through `activate`.
+  let { repo, headSha, headRef, context = "", excludedFilesHidden = false, changedFiles = [], onOpenChangedFile, onOpenHistory = null, onBack = null, hotkeys = true, open = $bindable(false) } = $props();
 
   const definitionHover = createDefinitionHover(() => view);
   $effect(() => () => definitionHover.destroy());
@@ -21,6 +24,7 @@
   let mode = $state("search");
   let query = $state("");
   let matches = $state([]);
+  let matchedQuery = $state("");
   let filePaths = $state([]);
   let generatedPaths = $state(new Set());
   let filesStatus = $state("loading");
@@ -42,6 +46,9 @@
   let view = $state(null); // { path, line } shown in the editor
   let hist = $state([]);
   let histIndex = $state(-1);
+  let fileOpen = $state(false); // the shown file fills the browser
+  let fileFind = $state(null);
+  let findOpen = $state(false);
 
   let defCandidates = $state([]);
   let defsSymbol = $state("");
@@ -52,9 +59,21 @@
   const PREVIEW_MAX_HIGHLIGHT_LINES = 5000;
   const MAX_FETCH_RETRIES = 15;
   const MIN_SEARCH_QUERY = 2;
+  // a snippet row shows about this many characters; a match beyond them leads with an ellipsis
+  const SNIPPET_VISIBLE_CHARS = 32;
+  const SNIPPET_LEAD_CHARS = 10;
 
   let testPattern = $derived(testMatcher(prefs.testPathRegex, prefs.hiddenReviewPaths[repo]));
   let shownPath = $derived(excludedFilesHidden ? (path) => !excludedPath(path, testPattern, generatedPaths) : null);
+
+  // Snippets drop their indentation, and a match past the visible width pulls the snippet's start forward.
+  function snippetRuns(item, tokens) {
+    const ranges = queryRanges(item.text, matchedQuery);
+    const indent = item.text.length - item.text.trimStart().length;
+    const clipped = ranges.length > 0 && ranges[0][1] - indent > SNIPPET_VISIBLE_CHARS;
+    const runs = matchRuns(tokens ?? [{ content: item.text }], ranges, clipped ? ranges[0][0] - SNIPPET_LEAD_CHARS : indent);
+    return clipped ? [{ content: "…", hit: false }, ...runs] : runs;
+  }
 
   let results = $derived.by(() => {
     if (mode === "defs") return defCandidates.map((c) => ({ path: c.path, line: c.line, text: c.text }));
@@ -75,7 +94,7 @@
           ...[...priority].map((path) => ({ path, priority: true })),
           ...paths.filter((path) => !priority.has(path)).map((path) => ({ path, priority: false })),
         ];
-    return ranked.slice(0, MAX_RESULTS).map((r) => ({ path: r.path, line: null, changed: r.priority }));
+    return ranked.slice(0, MAX_RESULTS).map((r) => ({ path: r.path, line: null, changed: r.priority, positions: r.positions ?? null }));
   });
   let groups = $derived.by(() => {
     const out = [];
@@ -167,7 +186,8 @@
     searchStatus = "ok";
   }
 
-  async function activate(nextMode) {
+  export async function activate(nextMode) {
+    fileOpen = false;
     if (!open) {
       open = true;
       resetList(nextMode);
@@ -186,6 +206,22 @@
 
   function close() {
     open = false;
+    fileOpen = false;
+  }
+
+  async function openFile() {
+    fileOpen = true;
+    findOpen = false;
+    await tick();
+    editorEl?.focus({ preventScroll: true });
+  }
+
+  // back to the results, previewing the selected one again
+  async function closeFile() {
+    fileOpen = false;
+    previewedSelectionKey = null;
+    await tick();
+    inputEl?.focus();
   }
 
   let filesToken;
@@ -233,6 +269,7 @@
         if (searchToken !== token) return;
         if (res.status === "ok") {
           matches = res.matches;
+          matchedQuery = q;
           searchStatus = "ok";
           selected = 0;
         } else if (res.status === "fetching" && attempt < MAX_FETCH_RETRIES) {
@@ -296,7 +333,7 @@
   // sidebar selection previews in the editor without touching history
   $effect(() => {
     const c = current;
-    if (!open || !c) return;
+    if (!open || !c || fileOpen) return;
     const key = `${headSha}\n${mode}\n${selected}\n${c.path}\n${c.line ?? ""}`;
     untrack(() => {
       if (key === previewedSelectionKey) return;
@@ -317,8 +354,9 @@
     if (!open || !editorEl || !v || !p || p.status !== "ready") return;
     if (scrolled.editor === editorEl && scrolled.view === v && scrolled.lines === p.lines) return;
     scrolled = { editor: editorEl, view: v, lines: p.lines };
+    const editor = editorEl;
     requestAnimationFrame(() => {
-      const target = v.line != null ? editorEl.querySelector(".pl.hit") : editorEl.querySelector(".pl");
+      const target = v.line != null ? editor.querySelector(".pl.hit") : editor.querySelector(".pl");
       target?.scrollIntoView({ block: v.line != null ? "center" : "start" });
     });
   });
@@ -361,6 +399,7 @@
       return;
     }
     navigateTo({ path: r.path, line: r.line ?? null });
+    if (prefs.fileFinderEnabled) openFile();
   }
 
   let defToken;
@@ -415,7 +454,7 @@
   }
 
   function onEditorContext(e) {
-    if (!view) return;
+    if (!view || !onOpenHistory) return;
     const word = wordAtPoint(e.clientX, e.clientY);
     if (!word) return;
     e.preventDefault();
@@ -423,32 +462,55 @@
     onOpenHistory(view.path, word);
   }
 
+  function scrollFile(key) {
+    const page = editorEl.clientHeight * 0.9;
+    if (key === "Home" || key === "End") editorEl.scrollTo({ top: key === "Home" ? 0 : editorEl.scrollHeight });
+    else if (key === "PageDown" || key === "PageUp") editorEl.scrollBy({ top: key === "PageDown" ? page : -page });
+    else if (key === "ArrowLeft" || key === "ArrowRight") editorEl.scrollBy({ left: key === "ArrowRight" ? 40 : -40 });
+    else editorEl.scrollBy({ top: key === "ArrowDown" || key === "j" ? 40 : -40 });
+  }
+  const FILE_SCROLL_KEYS = new Set(["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "j", "k", "PageDown", "PageUp", "Home", "End"]);
+
   $effect(() => {
     function onKey(e) {
       if (isPromptDialogOpen()) return;
       const meta = e.metaKey || e.ctrlKey;
-      if (meta && e.shiftKey && e.key.toLowerCase() === "f") {
+      const key = e.key.toLowerCase();
+      if ((open || hotkeys) && meta && e.shiftKey && key === "f") {
         e.preventDefault();
         e.stopImmediatePropagation();
         activate("search");
         return;
       }
-      if (meta && !e.shiftKey && e.key.toLowerCase() === "p") {
+      if ((open || hotkeys) && meta && !e.shiftKey && key === "p") {
         e.preventDefault();
         e.stopImmediatePropagation();
         activate("files");
         return;
       }
       if (!open) return;
-      if (e.key === "Escape") close();
-      else if (meta && e.key === "[") goBack();
+      if (fileOpen && e.target.closest?.(".file-find")) return; // its field handles Enter and Escape
+      if (fileOpen && meta && !e.shiftKey && key === "f") fileFind?.show();
+      else if (fileOpen && e.key === "Escape") findOpen ? fileFind?.hide() : closeFile();
+      else if (fileOpen && !meta && !e.altKey && FILE_SCROLL_KEYS.has(e.key)) scrollFile(e.key);
+      else if (e.key === "Escape") {
+        close();
+        onBack?.();
+      } else if (meta && e.key === "[") goBack();
       else if (meta && e.key === "]") goForward();
-      else if (e.key === "ArrowDown") move(1);
+      else if (fileOpen) {
+        // the browser covers the page, whose single-key shortcuts must not act beneath it
+        if (!meta && !e.altKey) e.stopImmediatePropagation();
+        return;
+      } else if (e.key === "ArrowDown") move(1);
       else if (e.key === "ArrowUp") move(-1);
       else if (e.key === "j" && e.target !== inputEl) move(1);
       else if (e.key === "k" && e.target !== inputEl) move(-1);
       else if (e.key === "Enter") openCurrent();
-      else return;
+      else {
+        if (prefs.fileFinderEnabled && !meta && !e.altKey) e.stopImmediatePropagation();
+        return;
+      }
       e.preventDefault();
       e.stopImmediatePropagation();
     }
@@ -459,8 +521,10 @@
   const tail = (p) => p.slice(p.lastIndexOf("/") + 1);
 </script>
 
+{#snippet marked(text, ranges)}{#each matchRuns([{ content: text }], ranges) as run}{#if run.hit}<mark class="ts-hl">{run.content}</mark>{:else}{run.content}{/if}{/each}{/snippet}
+
 {#if open}
-  <div class="ts-root" role="dialog" aria-label="code browser">
+  <div class="ts-root" class:full={fileOpen} role="dialog" aria-label="code browser">
     <div class="ts-side">
       <div class="ts-tabs">
         <button class="ts-tab" class:on={mode === "search"} onclick={() => activate("search")}>
@@ -472,6 +536,7 @@
         {#if mode === "defs"}
           <span class="ts-tab on ts-tab-defs" title="definitions of {defsSymbol}">defs: {defsSymbol}</span>
         {/if}
+        {#if context}<span class="ts-context mono" title={context}>{context}</span>{/if}
       </div>
       {#if mode === "defs"}
         <div class="ts-defbar mono">
@@ -500,7 +565,9 @@
       <div class="ts-list" onmousemove={trackMouse}>
         {#each groups as group (group.path)}
           <div class="ts-group-head mono" title={group.path}>
-            <span class="ts-name">{tail(group.path)}</span>
+            <span class="ts-name"
+              >{#if prefs.fileFinderEnabled && group.items[0].positions}{@render marked(tail(group.path), positionRanges(group.items[0].positions, group.path.lastIndexOf("/") + 1))}{:else}{tail(group.path)}{/if}</span
+            >
             <span class="ts-dir">{group.path}</span>
             {#if mode !== "files"}<span class="ts-gc">{group.items.length}</span>{/if}
           </div>
@@ -515,10 +582,10 @@
               {#if item.line != null}
                 <span class="ts-ln">{item.line}</span>
                 <span class="ts-snip"
-                  >{#if toks}{#each toks as t}<span style="color:{t.color}">{t.content}</span>{/each}{:else}{item.text}{/if}</span
+                  >{#if prefs.fileFinderEnabled && mode === "search"}{#each snippetRuns(item, toks) as run}<span class:ts-hit={run.hit} style:color={run.color}>{run.content}</span>{/each}{:else if toks}{#each toks as t}<span style="color:{t.color}">{t.content}</span>{/each}{:else}{item.text}{/if}</span
                 >
               {:else}
-                <span class="ts-path">{group.path}</span>
+                <span class="ts-path">{#if prefs.fileFinderEnabled && item.positions}{@render marked(group.path, positionRanges(item.positions))}{:else}{group.path}{/if}</span>
                 {#if item.changed}<span class="ts-diff badge review">diff</span>{/if}
               {/if}
               {#if item.index === selected}<Kbd keys="enter" />{/if}
@@ -540,14 +607,20 @@
         <span class="ts-loc" title={view?.path}>
           {#if view}{view.path}{#if view.line != null}:{view.line}{/if}{:else}no file{/if}
         </span>
-        <span class="ts-hint">ctrl+click → definition · right-click → mention history</span>
-        <button class="ts-nav shortcut" onclick={close} title="Close" aria-label="Close">
+        {#if !(fileOpen && findOpen)}
+          <span class="ts-hint">ctrl+click → definition{onOpenHistory ? " · right-click → mention history" : ""}</span>
+        {/if}
+        {#if fileOpen}
+          <FileFind bind:this={fileFind} bind:open={findOpen} root={editorEl} lines={preview?.status === "ready" ? preview.lines : []} revision={preview} />
+        {/if}
+        <button class="ts-nav shortcut" onclick={fileOpen ? closeFile : close} title={fileOpen ? "Back to results" : "Close"} aria-label={fileOpen ? "Back to results" : "Close"}>
           <span aria-hidden="true">✕</span>
           <Kbd keys="esc" />
         </button>
       </div>
       <div
         class="ts-editor mono"
+        tabindex="-1"
         bind:this={editorEl}
         onmousemove={(e) => definitionHover.onMouseMove(e, e.target.closest(".ts-editor"))}
         onmouseleave={definitionHover.onMouseLeave}
@@ -584,6 +657,16 @@
     display: grid;
     grid-template-columns: clamp(300px, 32vw, 440px) minmax(0, 1fr);
   }
+  .ts-root.full {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+  .ts-root.full .ts-side {
+    display: none;
+  }
+  :global(.app-shell.shell) .ts-root.full .ts-bar {
+    padding-left: 84px;
+  }
   .ts-side {
     display: flex;
     flex-direction: column;
@@ -600,6 +683,24 @@
   }
   :global(.app-shell.shell) .ts-tabs {
     padding-left: 84px;
+  }
+  .ts-context {
+    margin-left: auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11.5px;
+    color: var(--text-dim);
+  }
+  .ts-hl {
+    background: none;
+    color: var(--link);
+    font-weight: 600;
+  }
+  .ts-hit {
+    background: color-mix(in srgb, var(--review) 30%, transparent);
+    border-radius: 2px;
   }
   .ts-tab {
     display: inline-flex;
@@ -830,6 +931,9 @@
     font-size: 12.5px;
     line-height: 1.55;
     padding: 6px 0;
+  }
+  .ts-editor:focus {
+    outline: none;
   }
   .ts-empty {
     padding: 24px;

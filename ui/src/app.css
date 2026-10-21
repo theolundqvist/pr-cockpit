@@ -475,10 +475,12 @@ kbd {
   font-family: var(--mono);
 }
 
-::highlight(find-match) {
+::highlight(find-match),
+::highlight(file-find-match) {
   background: var(--review-bg);
 }
-::highlight(find-current) {
+::highlight(find-current),
+::highlight(file-find-current) {
   background: var(--review);
   color: var(--bg);
 }

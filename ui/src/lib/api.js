@@ -388,6 +388,12 @@ export async function repoFile(repo, sha, headRef, path) {
   return res.json();
 }
 
+export async function repoBranches(repo, signal) {
+  const res = await fetch(`/api/repo-branches?${new URLSearchParams({ repo })}`, { signal });
+  if (!res.ok) throw new Error(`repo-branches ${res.status}`);
+  return res.json();
+}
+
 export async function repoQuickActions(repo) {
   const res = await fetch(`/api/repo-quick-actions?${new URLSearchParams({ repo })}`);
   if (!res.ok) throw new Error(`repo-quick-actions ${res.status}`);
