@@ -386,7 +386,7 @@ test("a description checkbox applies to the current GitHub description, not the 
     const db = await import(${url("./db.ts")});
     const { seedMockDatabase } = await import(${url("./mockGithub.ts")});
     const { finalizeMutation, processMutation } = await import(${url("./mutations.ts")});
-    const { setTaskByKey, taskMarkers } = await import(${url("../shared/taskList.js")});
+    const { setTasksByKey, taskMarkers } = await import(${url("../shared/taskList.js")});
     const repo = "fixture/cockpit";
     seedMockDatabase(db.db, ${JSON.stringify(dataDir)});
     const setBody = (number, body) => {
@@ -397,7 +397,7 @@ test("a description checkbox applies to the current GitHub description, not the 
     const tick = async (number, rendered, regenerated, index) => {
       setBody(number, rendered);
       const { key } = taskMarkers(rendered)[index];
-      const payload = { kind: "edit-body", body: setTaskByKey(rendered, key, true), tasks: [{ key, checked: true }] };
+      const payload = { kind: "edit-body", body: setTasksByKey(rendered, [{ key, checked: true }]).body, tasks: [{ key, checked: true }] };
       const id = db.insertMutation({ repo, number, kind: "edit-body", payload_json: JSON.stringify(payload), created_at: new Date().toISOString() });
       setBody(number, regenerated);
       await processMutation(db.listMutationsForPr(repo, number).find((row) => row.id === id));
@@ -406,7 +406,7 @@ test("a description checkbox applies to the current GitHub description, not the 
     // GitHub accepted a tick, then the assessment republished with a new cache before the refresh.
     const republished = async (number, published) => {
       const key = "pr:101";
-      const payload = { kind: "edit-body", body: setTaskByKey(rendered, key, true), tasks: [{ key, checked: true }] };
+      const payload = { kind: "edit-body", body: setTasksByKey(rendered, [{ key, checked: true }]).body, tasks: [{ key, checked: true }] };
       const id = db.insertMutation({ repo, number, kind: "edit-body", payload_json: JSON.stringify(payload), created_at: new Date().toISOString() });
       const row = db.listMutationsForPr(repo, number).find((candidate) => candidate.id === id);
       db.setMutationRefreshing(id, row.payload_json);

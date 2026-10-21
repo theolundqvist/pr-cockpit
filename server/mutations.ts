@@ -1,5 +1,5 @@
 import { codeScanningAlertNumber, isCodeScanningThread, validateCodeScanningDismissal } from "../shared/codeScanning.js";
-import { setTaskByKey } from "../shared/taskList.js";
+import { setTasksByKey } from "../shared/taskList.js";
 import {
   deleteMutation,
   deleteSupersededFailedMerges,
@@ -382,12 +382,8 @@ async function executeMutation(row: MutationRow): Promise<boolean> {
         queued.push({ id: other.id, state: other.state, tasks: otherPayload.tasks });
       }
       const writes = [...payload.tasks, ...queued.filter((other) => other.state === "pending").flatMap((other) => other.tasks)];
-      let body = current;
-      for (const task of writes) {
-        const next = setTaskByKey(body, task.key, task.checked);
-        if (next === null) throw new Error("Checklist changed on GitHub; discard and reload before ticking again");
-        body = next;
-      }
+      const { body, missing } = setTasksByKey(current, writes);
+      if (missing.length) throw new Error("Checklist changed on GitHub; discard and reload before ticking again");
       if (body !== current) await updatePullRequestBody(row.repo, row.number, body);
       const confirmed = [...queued.filter((other) => other.state === "refreshing").flatMap((other) => other.tasks), ...writes];
       row.payload_json = JSON.stringify({ ...payload, body, tasks: [...new Map(confirmed.map((task) => [task.key, task])).values()] });
@@ -481,9 +477,9 @@ function mutationReflected(row: Pick<MutationRow, "repo" | "number" | "payload_j
   const detail = JSON.parse(snapshot.detail_json) as PrDetail;
   // A republished description may legitimately differ, so a task edit confirms by its tasks' states.
   if (payload.kind === "edit-body") {
-    return payload.tasks
-      ? payload.tasks.every((task) => setTaskByKey(detail.body, task.key, task.checked) === detail.body)
-      : sameGithubText(detail.body, payload.body);
+    if (!payload.tasks) return sameGithubText(detail.body, payload.body);
+    const { body, missing } = setTasksByKey(detail.body, payload.tasks);
+    return !missing.length && body === detail.body;
   }
   if (!payload.commentNodeId) return false;
   return detail.comments.nodes.some((comment) => comment.id === payload.commentNodeId);

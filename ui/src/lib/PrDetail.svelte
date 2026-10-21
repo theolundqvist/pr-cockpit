@@ -37,7 +37,7 @@
   import { loadDiffDocument } from "./diffDocument.js";
   import { imageFallback, renderMarkdown } from "./markdown.js";
   import { botCommentLinks, previewCommentLinks } from "./commentLinks.js";
-  import { setTaskByKey, taskMarkers } from "../../../shared/taskList.js";
+  import { setTasksByKey, taskMarkers } from "../../../shared/taskList.js";
   import { presentMutationError } from "./mutationError.js";
   import { isCodeScanningThread } from "../../../shared/codeScanning.js";
   import { loadPrIndex, prSummary } from "./prIndex.svelte.js";
@@ -1096,7 +1096,7 @@
   let displayBody = $derived(
     bodyRewrite
       ? bodyRewrite.payload.body
-      : [...editBodyMutations.flatMap((m) => m.payload.tasks), ...unsentTasks].reduce((body, task) => (body && setTaskByKey(body, task.key, task.checked)) ?? body, pr?.body),
+      : pr?.body && setTasksByKey(pr.body, [...editBodyMutations.flatMap((m) => m.payload.tasks), ...unsentTasks]).body,
   );
 
   function startEditBody() {
@@ -1120,6 +1120,7 @@
   let descriptionEl = $state(null);
   let descriptionHtml = $derived(renderMarkdown(displayBody));
   let tasksEnabled = $derived(!editingBody && !bodyRewrite);
+  let displayTasks = $derived(tasksEnabled ? taskMarkers(displayBody) : []);
   let taskSends = Promise.resolve();
 
   $effect(() => {
@@ -1132,8 +1133,8 @@
     const input = e.target;
     if (!input.matches?.("input[data-task]")) return;
     const checked = input.checked;
-    const marker = tasksEnabled ? taskMarkers(displayBody)[Number(input.dataset.task)] : null;
-    if (marker?.checked !== !checked || setTaskByKey(displayBody, marker.key, checked) === null) {
+    const marker = displayTasks[Number(input.dataset.task)];
+    if (marker?.checked !== !checked || displayTasks.filter((other) => other?.key === marker.key).length !== 1) {
       input.checked = !checked;
       showFlash("This checkbox no longer matches the description; reload the PR and try again.");
       return;

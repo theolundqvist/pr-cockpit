@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { setTaskByKey, taskMarkers } from "./taskList.js";
+import { setTasksByKey, taskMarkers } from "./taskList.js";
 
 const report = [
   "## Production risk on staging",
@@ -14,7 +14,7 @@ const report = [
   "",
   '<input type="checkbox"> raw HTML',
   "",
-  '<!-- risk-cache: {"items":["- [ ] #10"],"note":"ünïcødé 🚀"} -->',
+  '<!-- risk-cache: {"items":["- [ ] **[FIX]** #10 (@author-one), *Add billing retry* ✅ ![shot](https://example.com/a.png)"],"note":"ünïcødé 🚀"} -->',
   "",
   "- [ ] **[FIX]** #10 (@author-one), *Add billing retry* ✅ ![shot](https://example.com/a.png)",
   "  - [x] nested child",
@@ -28,8 +28,8 @@ const report = [
 function tick(source: string, index: number, checked: boolean): string {
   const marker = taskMarkers(source)[index];
   if (!marker) throw new Error(`no marker for task ${index}`);
-  const next = setTaskByKey(source, marker.key, checked);
-  if (next === null) throw new Error(`task ${index} did not apply`);
+  const { body: next, missing } = setTasksByKey(source, [{ key: marker.key, checked }]);
+  if (missing.length) throw new Error(`task ${index} did not apply`);
   expect(next.length).toBe(source.length);
   const changed = Array.from({ length: next.length }, (_, i) => i).filter((i) => next[i] !== source[i]);
   expect(changed).toEqual([marker.offset]);
@@ -54,13 +54,13 @@ describe("description task checkboxes", () => {
   });
 
   test("round-trips to the original bytes", () => {
-    const checked = setTaskByKey(report, "pr:10", true)!;
-    expect(setTaskByKey(checked, "pr:10", false)).toBe(report);
+    const checked = setTasksByKey(report, [{ key: "pr:10", checked: true }]).body;
+    expect(setTasksByKey(checked, [{ key: "pr:10", checked: false }]).body).toBe(report);
   });
 
   test("refuse missing or ambiguous tasks", () => {
-    expect(setTaskByKey(report, "pr:12", true)).toBeNull();
-    expect(setTaskByKey("- [ ] same\n- [x] same\n", "text:same", true)).toBeNull();
+    expect(setTasksByKey(report, [{ key: "pr:12", checked: true }]).missing).toHaveLength(1);
+    expect(setTasksByKey("- [ ] same\n- [x] same\n", [{ key: "text:same", checked: true }]).missing).toHaveLength(1);
     expect(taskMarkers("```\n- [ ] only code\n```")).toEqual([]);
   });
 });
