@@ -1698,6 +1698,7 @@
 
   let hasFailing = $derived((checkCounts.failing ?? 0) > 0);
   let showSuccessful = $state(false);
+  let showSkipped = $state(false);
 
   let ci = $derived.by(() => {
     const s = rollup?.state;
@@ -1714,7 +1715,9 @@
     const pending = (checkCounts.queued ?? 0) + (checkCounts.expected ?? 0) + (checkCounts.in_progress ?? 0);
     if (rollup?.state === "SUCCESS") return total ? `${total} check${total === 1 ? "" : "s"}` : "Complete";
     if (rollup?.state === "FAILURE" || rollup?.state === "ERROR") {
-      return `${failing || 1} failing${passed ? ` · ${passed} passed` : ""}`;
+      const cancelled = checkCounts.cancelled ?? 0;
+      const verdict = failing || !cancelled ? `${failing || 1} failing` : `${cancelled} cancelled`;
+      return `${verdict}${passed ? ` · ${passed} passed` : ""}`;
     }
     if (rollup?.state === "PENDING") return `${pending || total} check${(pending || total) === 1 ? "" : "s"} remaining`;
     return "No checks have been reported";
@@ -3943,11 +3946,12 @@
                 <div class="check-summary">{checkSummary}</div>
               {/if}
               {#each checkSections as { section, rows }}
-                {@const collapsible = section === "successful" && hasFailing}
-                {@const collapsed = collapsible && !showSuccessful}
+                {@const collapsible = section === "skipped" || (section === "successful" && hasFailing)}
+                {@const expanded = section === "skipped" ? showSkipped : showSuccessful}
+                {@const collapsed = collapsible && !expanded}
                 {#if collapsible}
-                  <button class="check-sec-head" onclick={() => (showSuccessful = !showSuccessful)}>
-                    <Chevron direction={showSuccessful ? "down" : "right"} size={12} />{rows.length} {section}
+                  <button class="check-sec-head" onclick={() => (section === "skipped" ? (showSkipped = !showSkipped) : (showSuccessful = !showSuccessful))}>
+                    <Chevron direction={expanded ? "down" : "right"} size={12} />{rows.length} {section}
                   </button>
                 {:else}
                   <div class="check-sec-head static">{rows.length} {section}</div>

@@ -20,6 +20,7 @@ describe("checkBucket", () => {
     expect(checkBucket({ __typename: "CheckRun", status: "COMPLETED", conclusion: "NEUTRAL" })).toBe("neutral");
     expect(checkBucket({ __typename: "CheckRun", status: "COMPLETED", conclusion: "STALE" })).toBe("neutral");
     expect(checkBucket({ __typename: "CheckRun", status: "COMPLETED", conclusion: "FAILURE" })).toBe("failing");
+    expect(checkBucket({ __typename: "CheckRun", status: "COMPLETED", conclusion: "CANCELLED" })).toBe("cancelled");
   });
 
   test("StatusContext by state", () => {
@@ -111,6 +112,12 @@ describe("aggregation", () => {
     const sections = sectionizeChecks(buildChecks(rollup));
     expect(sections.map((s) => s.section)).toEqual(["failing", "pending", "successful"]);
     expect(sections[2].rows.map((r) => r.name)).toEqual(["test", "vercel"]);
+  });
+
+  test("sections run failing, running, successful, cancelled, then skipped", () => {
+    const run = (name, status, conclusion) => ({ __typename: "CheckRun", name, status, conclusion });
+    const mixed = { contexts: { nodes: [run("a", "COMPLETED", "SKIPPED"), run("b", "COMPLETED", "CANCELLED"), run("c", "COMPLETED", "SUCCESS"), run("d", "QUEUED"), run("e", "IN_PROGRESS"), run("f", "COMPLETED", "FAILURE")] } };
+    expect(sectionizeChecks(buildChecks(mixed)).map((s) => s.section)).toEqual(["failing", "in progress", "pending", "successful", "cancelled", "skipped"]);
   });
 
   test("a failing check is dropped once the same job is queued again — the old verdict is stale", () => {

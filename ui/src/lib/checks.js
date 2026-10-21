@@ -2,15 +2,16 @@ import { relativeTime } from "./time.js";
 
 export const CHECK_BUCKETS = {
   failing: { section: "failing", summary: "failing", icon: { status: "completed", conclusion: "failure" } },
+  in_progress: { section: "in progress", summary: "in progress", icon: { status: "in_progress", conclusion: null } },
   queued: { section: "pending", summary: "queued", icon: { status: "queued", conclusion: null } },
   expected: { section: "pending", summary: "expected", icon: { status: "pending", conclusion: null } },
-  in_progress: { section: "in progress", summary: "in progress", icon: { status: "in_progress", conclusion: null } },
+  success: { section: "successful", summary: "successful", icon: { status: "completed", conclusion: "success" } },
+  cancelled: { section: "cancelled", summary: "cancelled", icon: { status: "completed", conclusion: "cancelled" } },
   neutral: { section: "skipped", summary: "neutral", icon: { status: "completed", conclusion: "neutral" } },
   skipped: { section: "skipped", summary: "skipped", icon: { status: "completed", conclusion: "skipped" } },
-  success: { section: "successful", summary: "successful", icon: { status: "completed", conclusion: "success" } },
 };
 
-export const CHECK_SECTIONS = ["failing", "pending", "in progress", "skipped", "successful"];
+export const CHECK_SECTIONS = ["failing", "in progress", "pending", "successful", "cancelled", "skipped"];
 
 export function checkBucket(c) {
   if (c.__typename === "CheckRun") {
@@ -19,6 +20,7 @@ export function checkBucket(c) {
     const conclusion = (c.conclusion ?? "").toUpperCase();
     if (conclusion === "SUCCESS") return "success";
     if (conclusion === "SKIPPED") return "skipped";
+    if (conclusion === "CANCELLED") return "cancelled";
     if (conclusion === "NEUTRAL" || conclusion === "STALE") return "neutral";
     return "failing";
   }
@@ -49,6 +51,7 @@ export function checkStatus(bucket, startedAt, completedAt) {
   const dur = checkDuration(startedAt, completedAt);
   if (bucket === "failing") return dur ? `Failing after ${dur}` : "Failing";
   if (bucket === "success") return dur ? `Successful in ${dur}` : "Successful";
+  if (bucket === "cancelled") return dur ? `Cancelled after ${dur}` : "Cancelled";
   if (bucket === "in_progress") {
     if (!startedAt) return "In progress";
     const rt = relativeTime(startedAt);
@@ -91,7 +94,7 @@ export function buildChecks(rollup) {
         status: checkStatus(bucket, startedAt, completedAt),
       };
     })
-    .filter((check) => check.bucket !== "failing" || !live.has(check.name));
+    .filter((check) => (check.bucket !== "failing" && check.bucket !== "cancelled") || !live.has(check.name));
 }
 
 export function countChecks(checks) {
