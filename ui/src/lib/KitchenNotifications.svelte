@@ -1,6 +1,7 @@
 <script>
   import { tick, untrack } from "svelte";
   import { prKey } from "./prKey.js";
+  import { prefs } from "./prefs.svelte.js";
 
   let { active = true, refreshRevision = 0, pollCompletedAt = null } = $props();
   let items = $state([]);
@@ -11,7 +12,7 @@
   let panel = $state();
   let trigger = $state();
   let open = $state(false);
-  let unreadOnly = $state(false);
+  let filter = $state("all");
   let sequence = 0;
   let instant = $state(false);
   const storageKey = "cockpit:kitchen-seen";
@@ -26,7 +27,10 @@
   const isUnread = (pr) => seen[eventKey(pr)] === false || (!seen[eventKey(pr)] && Date.parse(pr.terminalAt) > Number(seen.readThrough ?? 0));
   let remaining = $derived(items.filter((pr) => Date.parse(pr.terminalAt) > Number(seen.clearedThrough ?? 0)));
   let unreadCount = $derived(remaining.filter(isUnread).length);
-  let visible = $derived(unreadOnly ? remaining.filter(isUnread) : remaining);
+  // Rows carry mergedByMe only while the setting is on; turning it off falls back to All.
+  let shownFilter = $derived(filter === "mine" && !prefs.mergedByMeNotificationsEnabled ? "all" : filter);
+  let mine = $derived(remaining.filter((pr) => pr.mergedByMe === true));
+  let visible = $derived(shownFilter === "unread" ? remaining.filter(isUnread) : shownFilter === "mine" ? mine : remaining);
   let moreUncleared = $derived(hasMore && (!items.length || Date.parse(items.at(-1).terminalAt) > Number(seen.clearedThrough ?? 0)));
   function clearNotifications() {
     // Keep the source history intact and dismiss older, unloaded pages as well.
@@ -42,7 +46,7 @@
     else next[eventKey(pr)] = false;
     localStorage.setItem(storageKey, JSON.stringify(next));
     seen = next;
-    if (unreadOnly && read) tick().then(() => panel?.querySelector(".notification-link, .notification-filter")?.focus());
+    if (shownFilter === "unread" && read) tick().then(() => panel?.querySelector(".notification-link, .notification-filter")?.focus());
   }
   function markAllRead() {
     const next = { ...readSeen() };
@@ -96,6 +100,7 @@
     if (!active) { panel?.hidePopover(); return; }
     refreshRevision;
     pollCompletedAt;
+    prefs.mergedByMeNotificationsEnabled;
     untrack(() => load());
     return () => { sequence++; };
   });
@@ -141,15 +146,18 @@
   <div class="notification-head"><strong>Notifications</strong><button class="close-notifications" aria-label="Close notifications" onclick={(event) => close(event.detail === 0)}><svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg></button></div>
   <div class="notification-toolbar">
     <div class="notification-filters">
-      <button class="notification-filter" class:chosen={!unreadOnly} aria-pressed={!unreadOnly} onclick={() => unreadOnly = false}>All <span class="filter-count">{remaining.length > 99 ? "99+" : remaining.length}</span></button>
-      <button class="notification-filter" class:chosen={unreadOnly} aria-pressed={unreadOnly} onclick={() => unreadOnly = true}>Unread <span class="filter-count">{unreadCount > 99 ? "99+" : unreadCount}</span></button>
+      <button class="notification-filter" class:chosen={shownFilter === "all"} aria-pressed={shownFilter === "all"} onclick={() => filter = "all"}>All <span class="filter-count">{remaining.length > 99 ? "99+" : remaining.length}</span></button>
+      <button class="notification-filter" class:chosen={shownFilter === "unread"} aria-pressed={shownFilter === "unread"} onclick={() => filter = "unread"}>Unread <span class="filter-count">{unreadCount > 99 ? "99+" : unreadCount}</span></button>
+      {#if prefs.mergedByMeNotificationsEnabled}
+        <button class="notification-filter" class:chosen={shownFilter === "mine"} aria-pressed={shownFilter === "mine"} onclick={() => filter = "mine"}>Merged by me <span class="filter-count">{mine.length > 99 ? "99+" : mine.length}</span></button>
+      {/if}
     </div>
     <button class="mark-all" disabled={!unreadCount} onclick={markAllRead}>Mark all read</button>
   </div>
   <div class="notification-list">
     {#if error}<div class="notification-empty" role="alert">{error}<button class="retry" onclick={() => load()}>Retry</button></div>
     {:else if !loaded}<div class="notification-empty" role="status">Loading notifications…</div>
-    {:else if !visible.length}<div class="notification-empty">{unreadOnly ? "You're all caught up." : "No notifications."}</div>{/if}
+    {:else if !visible.length}<div class="notification-empty">{shownFilter === "unread" ? "You're all caught up." : shownFilter === "mine" ? "No PRs merged by you." : "No notifications."}</div>{/if}
     {#each visible as pr (prKey(pr))}
       <div class="notification-item" class:unread={isUnread(pr)}>
         <a class="notification-link" href={`#/pr/${pr.repo}/${pr.number}`} onclick={() => { setRead(pr, true); panel.hidePopover(); }}>

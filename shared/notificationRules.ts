@@ -17,7 +17,7 @@ export const NOTIFICATION_FIELDS = {
   prAuthor: { label: "PR author", operators: ["is", "isNot"], options: [] },
   title: { label: "PR title", operators: ["is", "isNot", "contains", "notContains"], options: [] },
   body: { label: "Comment or review text", operators: ["is", "isNot", "contains", "notContains"], options: [] },
-  participation: { label: "My relationship to the PR", operators: ["is", "isNot"], options: ["author", "assignee", "reviewer"] },
+  participation: { label: "My relationship to the PR", operators: ["is", "isNot"], options: ["author", "assignee", "reviewer", "merger"] },
   reviewState: { label: "Review outcome", operators: ["is", "isNot"], options: ["approved", "changes_requested", "commented", "dismissed"] },
   isDraft: { label: "Draft PR", operators: ["is", "isNot"], options: ["true", "false"] },
   workflow: { label: "Deploy workflow", operators: ["is", "isNot", "contains", "notContains"], options: [] },
@@ -57,6 +57,8 @@ export interface NotificationEvent {
   viewerIsAuthor: boolean;
   viewerIsAssignee: boolean;
   viewerReviewRequested: boolean;
+  // Absent on events recorded before merge attribution existed.
+  viewerMerged?: boolean;
   reviewState: string | null;
   isDraft: boolean;
   occurredAt: string;
@@ -126,7 +128,8 @@ function conditionMatches(condition: NotificationCondition, event: NotificationE
     case "branch": actual = event.branch ?? null; break;
     case "participation": {
       const related = condition.value === "author" ? event.viewerIsAuthor
-        : condition.value === "assignee" ? event.viewerIsAssignee : event.viewerReviewRequested;
+        : condition.value === "assignee" ? event.viewerIsAssignee
+        : condition.value === "merger" ? event.viewerMerged === true : event.viewerReviewRequested;
       return condition.operator === "is" ? related : !related;
     }
   }

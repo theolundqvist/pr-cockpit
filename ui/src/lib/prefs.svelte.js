@@ -23,6 +23,7 @@ export const prefs = $state({
   groupDragEnabled: true,
   queueTimeControlsEnabled: true,
   cookingSectionEnabled: false,
+  mergedByMeNotificationsEnabled: false,
   reviewFileMenuEnabled: true,
   hiddenReviewPaths: {},
   restFallbackEnabled: true,
@@ -54,6 +55,7 @@ export function setPrefs(settings) {
   prefs.safeMergeApprovalEnabled = settings.safe_merge_approval_enabled === true;
   prefs.groupDragEnabled = settings.group_drag_enabled === true;
   prefs.cookingSectionEnabled = settings.cooking_section_enabled === true;
+  prefs.mergedByMeNotificationsEnabled = settings.merged_by_me_notifications_enabled === true;
   prefs.queueTimeControlsEnabled = settings.queue_time_controls_enabled === true;
   prefs.reviewFileMenuEnabled = settings.review_file_menu_enabled === true;
   prefs.hiddenReviewPaths = settings.hidden_review_paths ?? {};

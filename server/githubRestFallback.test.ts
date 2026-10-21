@@ -205,6 +205,17 @@ test("an exhausted GraphQL pool reads PRs over REST unless the fallback is turne
       const detail = await github.fetchPrDetail("acme/app", 7, "app detail", previous);
       const hits = await github.searchOpenPrs(["acme/app"]);
       const rollup = detail.lastCommit.nodes[0].commit.statusCheckRollup;
+      Object.assign(pull, { state: "closed", merged_at: "2026-09-01T11:00:00Z", merged_by: user("queue[bot]", "Bot"), labels: [{ name: "order" }] });
+      routes["/repos/acme/app/issues/7/events"] = [
+        { event: "labeled", actor: user("viewer"), label: { name: "order" } },
+        { event: "labeled", actor: user("queue[bot]", "Bot"), label: { name: "kitchen: oven" } },
+        { event: "labeled", actor: user("alice"), label: { name: "Order" } },
+      ];
+      paths.length = 0;
+      const unattributed = await github.fetchPrDetail("acme/app", 7);
+      const eventReadsUnwanted = paths.filter((path) => path.endsWith("/events")).length;
+      writeSettings({ merged_by_me_notifications_enabled: true });
+      const attributed = await github.fetchPrDetail("acme/app", 7);
       console.log(JSON.stringify({
         defaultOn,
         disabled: { kind: disabled?.kind, resource: disabled?.resource },
@@ -217,6 +228,8 @@ test("an exhausted GraphQL pool reads PRs over REST unless the fallback is turne
         thread: { id: detail.reviewThreads.nodes[0].id, isResolved: detail.reviewThreads.nodes[0].isResolved, author: detail.reviewThreads.nodes[0].comments.nodes[0].author.login },
         commit: detail.commitList.nodes[0].commit.statusCheckRollup,
         hits,
+        unattributed: { mergedBy: unattributed.mergedBy, orderedBy: unattributed.orderedBy ?? "absent", eventReadsUnwanted },
+        attributed: { mergedBy: attributed.mergedBy, orderedBy: attributed.orderedBy },
       }));
     `;
     const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
@@ -242,6 +255,8 @@ test("an exhausted GraphQL pool reads PRs over REST unless the fallback is turne
       thread: { id: "PRRT_known", isResolved: true, author: "greptile-apps" },
       commit: { state: "FAILURE" },
       hits: [{ repo: "acme/app", number: 7, title: "Fallback", updatedAt: "2026-09-01T10:00:00Z", headRefOid: "a".repeat(40), ciState: "FAILURE" }],
+      unattributed: { mergedBy: { __typename: "Bot", login: "queue[bot]" }, orderedBy: "absent", eventReadsUnwanted: 0 },
+      attributed: { mergedBy: { __typename: "Bot", login: "queue[bot]" }, orderedBy: { login: "alice" } },
     });
   } finally {
     rmSync(dataDir, { recursive: true, force: true });

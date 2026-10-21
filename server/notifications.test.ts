@@ -287,3 +287,54 @@ test("replica inbox import observes local notification rules without replicating
   expect(result.snapshotHasSettings).toBe(false);
   expect(result.snapshotHasQueue).toBe(false);
 });
+
+test("an I-merged-it rule fires for the viewer's own merges and queue-bot merges the viewer ordered", async () => {
+  const notificationsUrl = new URL("./notifications.ts", import.meta.url).href;
+  const settingsUrl = new URL("./settings.ts", import.meta.url).href;
+  const dbUrl = new URL("./db.ts", import.meta.url).href;
+  const result = await runScenario(`
+    const { db, setSetting } = await import(${JSON.stringify(dbUrl)});
+    const { observePrNotifications, claimNotifications, mergeAttributionWanted } = await import(${JSON.stringify(notificationsUrl)});
+    const { writeSettings } = await import(${JSON.stringify(settingsUrl)});
+    const iso = (day) => \`2032-04-\${String(day).padStart(2, "0")}T00:00:00Z\`;
+    const detail = (overrides = {}) => ({
+      title: "Merge me", state: "OPEN", isDraft: false, author: { __typename: "User", login: "author" },
+      viewerLogin: "Viewer", viewerIsAuthor: false, viewerReviewRequested: false, assignees: { nodes: [] },
+      comments: { nodes: [] }, reviews: { nodes: [] }, reviewThreads: { nodes: [] },
+      lastCommit: { nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS" } } }] }, updatedAt: iso(5), ...overrides,
+    });
+    const bot = { __typename: "Bot", login: "queue-bot" };
+    const merges = {
+      1: { mergedBy: { __typename: "User", login: "viewer" } },
+      2: { mergedBy: bot, orderedBy: { login: "VIEWER" } },
+      3: { mergedBy: { __typename: "User", login: "someone" } },
+      4: { mergedBy: bot, orderedBy: { login: "someone" } },
+      5: { mergedBy: { __typename: "User", login: "someone" }, orderedBy: { login: "viewer" } },
+      6: {},
+    };
+    const observe = () => {
+      for (const [number, merge] of Object.entries(merges)) {
+        observePrNotifications(
+          { detail_json: JSON.stringify(detail()), fetched_at: iso(3) },
+          { repo: "acme/app", number: Number(number), detail_json: JSON.stringify(detail({ state: "MERGED", ...merge })), fetched_at: iso(5) },
+        );
+      }
+    };
+    const wantedBefore = mergeAttributionWanted();
+    const rule = { id: "my-merges", name: "PRs I merge", enabled: true, events: ["merged"], match: "all", conditions: [{ field: "participation", operator: "is", value: "merger" }] };
+    writeSettings({ notifications: { enabled: true, rules: [rule] } });
+    setSetting("notifications_enabled_at", iso(2));
+    const wantedByRule = mergeAttributionWanted();
+    observe();
+    const fired = claimNotifications().map((item) => item.number);
+    writeSettings({ notifications: { enabled: true, rules: [{ ...rule, enabled: false }] }, merged_by_me_notifications_enabled: true });
+    const wantedBySetting = mergeAttributionWanted();
+    console.log(JSON.stringify({ wantedBefore, wantedByRule, wantedBySetting, fired }));
+    db.close();
+  `);
+
+  expect(result.wantedBefore).toBe(false);
+  expect(result.wantedByRule).toBe(true);
+  expect(result.wantedBySetting).toBe(true);
+  expect(result.fired).toEqual([1, 2]);
+});

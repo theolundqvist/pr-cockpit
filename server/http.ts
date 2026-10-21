@@ -26,6 +26,7 @@ import {
   listFailedMergeKeys,
   listClosedPrs,
   listKitchenHistory,
+  type KitchenHistoryRow,
   listPrIndex,
   prIndexCreatedAt,
   listActionWorkflows,
@@ -161,7 +162,7 @@ import type { TmuxFocusHandler } from "./tmuxFocus.ts";
 import { needsMeRank } from "./rank.ts";
 import { invalidateInbox, invalidatePr } from "./rendererInvalidation.ts";
 import { actionJobLog, actionWorkflowGraphs, activateActionsLease, cacheActionsRun, cacheGithubActionsForCommit, cacheRepoActionsRunJobs, cachedJobLogs, formatJobLogs, formatRunJobs, reconciliationError, refreshWorkflowRuns, repoActionWorkflowGraphs, storedActionWorkflowGraphs, type CompactStep } from "./runLogs.ts";
-import { claimNotifications } from "./notifications.ts";
+import { claimNotifications, viewerMergedPr } from "./notifications.ts";
 import type { NotificationSettings } from "../shared/notificationRules.ts";
 const cockpitRoot = process.cwd();
 
@@ -384,9 +385,11 @@ function handleClosed(url: URL): Response {
     : 100;
   const media = listBodyMedia();
   const kitchen = url.pathname === "/api/kitchen-history";
-  if (kitchen && !readSettings().cooking_section_enabled) return json({ prs: [], hasMore: false });
+  const settings = kitchen ? readSettings() : null;
+  if (settings && !settings.cooking_section_enabled) return json({ prs: [], hasMore: false });
+  const attributed = settings?.merged_by_me_notifications_enabled === true;
   const offset = Math.max(0, Math.min(Number(url.searchParams.get("offset")) || 0, 1000000));
-  const rows = kitchen ? listKitchenHistory(limit + 1, Math.floor(offset)) : listClosedPrs(limit);
+  const rows = kitchen ? listKitchenHistory(limit + 1, Math.floor(offset), attributed) : listClosedPrs(limit);
   const prs = rows.slice(0, limit).map((pr) => ({
     repo: pr.repo,
     number: pr.number,
@@ -400,8 +403,15 @@ function handleClosed(url: URL): Response {
     closedAt: pr.closed_at,
     terminalAt: pr.merged_at ?? pr.closed_at ?? pr.updated_at,
     ...(media.has(prKey(pr)) ? mediaFields(media.get(prKey(pr))) : {}),
+    ...(attributed ? { mergedByMe: mergedByMe((pr as KitchenHistoryRow).merge_attribution) } : {}),
   }));
   return json({ prs, ...(kitchen ? { hasMore: rows.length > limit } : {}) });
+}
+
+function mergedByMe(attribution: string | null | undefined): boolean {
+  if (!attribution) return false;
+  const [viewerLogin, mergedBy, orderedBy] = JSON.parse(attribution) as unknown[];
+  return viewerMergedPr({ viewerLogin, mergedBy, orderedBy });
 }
 
 function inboxRows(prs: PrRow[]) {
@@ -3052,6 +3062,7 @@ async function handlePutSettings(req: Request, runtime: HttpRuntime): Promise<Re
     group_drag_enabled: boolean;
     queue_time_controls_enabled: boolean;
     cooking_section_enabled: boolean;
+    merged_by_me_notifications_enabled: boolean;
     review_file_menu_enabled: boolean;
     hidden_review_paths: Settings["hidden_review_paths"];
     agent_conversations_enabled: boolean;

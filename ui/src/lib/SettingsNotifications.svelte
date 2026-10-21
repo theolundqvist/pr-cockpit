@@ -7,14 +7,14 @@
   import { viewer } from "./viewer.svelte.js";
   import { fetchNotificationWorkflows } from "./api.js";
 
-  let { settings = $bindable(), issues = new Map() } = $props();
+  let { settings = $bindable(), mergedByMeEnabled = $bindable(false), issues = new Map() } = $props();
 
   const isShell = navigator.userAgent.includes("Electron");
   const FIELD_IDS = Object.keys(NOTIFICATION_FIELDS);
   const OPERATOR_LABELS = { is: "is", isNot: "is not", contains: "contains", notContains: "doesn't contain" };
   const OPTION_LABELS = {
     actorType: { human: "a person", bot: "a bot" },
-    participation: { author: "I opened it", assignee: "I'm assigned", reviewer: "my review is requested" },
+    participation: { author: "I opened it", assignee: "I'm assigned", reviewer: "my review is requested", merger: "I merged it" },
     reviewState: { approved: "approved", changes_requested: "changes requested", commented: "commented", dismissed: "dismissed" },
     isDraft: { true: "yes", false: "no" },
   };
@@ -72,6 +72,14 @@
   }
 </script>
 
+
+<label class="check-field settings-option">
+  <input class="check" type="checkbox" bind:checked={mergedByMeEnabled} />
+  <span class="check-text">
+    <span class="check-label">PRs I merge</span>
+    <span class="hint">Adds a Merged by me filter to Notifications: PRs you merged, or that the Kitchen merged after you added their “order” label.</span>
+  </span>
+</label>
 
 <label class="check-field settings-option">
   <input class="check" type="checkbox" bind:checked={settings.enabled} />
@@ -166,6 +174,8 @@
             <span class="hint condition-hint">Comments and reviews only.</span>
           {:else if condition.field === "workflow"}
             <span class="hint condition-hint">Deploys only: the workflow whose successful run shipped the PR.</span>
+          {:else if condition.field === "participation" && condition.value === "merger"}
+            <span class="hint condition-hint">A merge by a queue bot counts as yours when you last added the PR's “order” label.</span>
           {:else if condition.field === "branch"}
             <span class="hint condition-hint">Deploys only: the branch that run deployed, which is also the PR's base.</span>
           {/if}

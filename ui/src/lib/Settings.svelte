@@ -53,6 +53,7 @@
   let savedSafeMergeApproval = false;
   let groupDragEnabled = $state(false);
   let cookingSectionEnabled = $state(false);
+  let mergedByMeNotificationsEnabled = $state(false);
   let queueTimeControlsEnabled = $state(false);
   let reviewFileMenuEnabled = $state(false);
   let hiddenReviewPaths = $state({});
@@ -197,6 +198,7 @@
     savedSafeMergeApproval = safeMergeApprovalEnabled;
     groupDragEnabled = s.group_drag_enabled === true;
     cookingSectionEnabled = s.cooking_section_enabled === true;
+    mergedByMeNotificationsEnabled = s.merged_by_me_notifications_enabled === true;
     queueTimeControlsEnabled = s.queue_time_controls_enabled === true;
     reviewFileMenuEnabled = s.review_file_menu_enabled === true;
     hiddenReviewPaths = s.hidden_review_paths ?? {};
@@ -406,6 +408,7 @@
         ...(safeMergeApprovalEnabled !== savedSafeMergeApproval ? { safe_merge_approval_enabled: safeMergeApprovalEnabled } : {}),
         group_drag_enabled: groupDragEnabled,
         cooking_section_enabled: cookingSectionEnabled,
+        merged_by_me_notifications_enabled: mergedByMeNotificationsEnabled,
         queue_time_controls_enabled: queueTimeControlsEnabled,
         review_file_menu_enabled: reviewFileMenuEnabled,
         // Sent only when edited here, so saving other settings never undoes a file hidden from a PR meanwhile.
@@ -1135,7 +1138,7 @@
       {/if}
 
       {#if activeTab === "notifications"}
-        <SettingsNotifications bind:settings={notifications} issues={notificationIssues} />
+        <SettingsNotifications bind:settings={notifications} bind:mergedByMeEnabled={mergedByMeNotificationsEnabled} issues={notificationIssues} />
       {/if}
 
       {#if activeTab === "analytics"}

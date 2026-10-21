@@ -25,6 +25,7 @@ import {
   type GithubUsageSource,
 } from "./githubUsage.ts";
 import { readSettings, restFallbackEnabled, restUsageEnabled } from "./settings.ts";
+import { mergeAttributionWanted } from "./notifications.ts";
 import { createConcurrencyLimit } from "./concurrency.ts";
 import { GRAPHQL_BACKGROUND_RESERVE } from "../ui/src/lib/quotaImpact.js";
 import type { PrCheck } from "./checkState.ts";
@@ -2106,6 +2107,10 @@ type PrDetailShape<Rx> = {
   mergedAt: string | null;
   // absent in snapshots cached before it was fetched; null until merged
   mergeCommit?: { oid: string } | null;
+  // absent in snapshots cached before it was fetched; null until merged
+  mergedBy?: { __typename?: string; login: string } | null;
+  // Who last added the merge queue's `order` label; read only for bot merges while merge attribution is on.
+  orderedBy?: { login: string } | null;
   closedAt: string | null;
   isDraft: boolean;
   author: Author | null;
@@ -2220,6 +2225,7 @@ type RestPullRequest = {
   closed_at: string | null;
   draft: boolean;
   user: RestUser | null;
+  merged_by?: RestUser | null;
   base: { ref: string; sha: string };
   head: { ref: string; sha: string; repo?: { full_name: string } | null };
   body: string | null;
@@ -2250,6 +2256,7 @@ export function mapRestPrDetailBase(pullRequest: RestPullRequest, files: RestPul
     mergedAt: pullRequest.merged_at,
     // Before a merge, REST names the test-merge commit here; only a merged PR has a real one.
     mergeCommit: pullRequest.merged_at && pullRequest.merge_commit_sha ? { oid: pullRequest.merge_commit_sha } : null,
+    mergedBy: pullRequest.merged_by ? { ...(pullRequest.merged_by.type ? { __typename: pullRequest.merged_by.type } : {}), login: pullRequest.merged_by.login } : null,
     closedAt: pullRequest.closed_at,
     isDraft: pullRequest.draft,
     author: pullRequest.user ? { ...(pullRequest.user.type ? { __typename: pullRequest.user.type } : {}), login: pullRequest.user.login, avatarUrl: pullRequest.user.avatar_url } : null,
@@ -2325,6 +2332,7 @@ query($owner: String!, $name: String!, $number: Int!) {
       state
       mergedAt
       mergeCommit { oid }
+      mergedBy { __typename login }
       closedAt
       isDraft
       author { __typename login avatarUrl }
@@ -2386,6 +2394,42 @@ async function fetchPrDetailMetadata(
   if (!base) throw new GithubRequestError(`${repo}#${number} was not found`, 404);
   cachedViewerLogin = data.viewer.login;
   return { base, viewerLogin: data.viewer.login };
+}
+
+// The label a person adds to hand a PR to the Kitchen merge queue, whose bot then merges it.
+const ORDER_LABEL = "order";
+
+const ORDER_LABEL_EVENTS_QUERY = `
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      timelineItems(itemTypes: [LABELED_EVENT], last: 100) {
+        nodes { ... on LabeledEvent { actor { login } label { name } } }
+      }
+    }
+  }
+}`;
+
+type OrderLabelEvent = { actor?: { login: string } | null; label?: { name: string } | null };
+
+// A bot merge belongs to whoever last ordered it. Only bot merges pay for this read, and only
+// while merge attribution is consumed; later reads of the events list are ETag-cached.
+async function withOrderedBy(base: PrDetailBase, repo: string, number: number, source: GithubUsageSource): Promise<PrDetailBase> {
+  if (base.mergedBy?.__typename !== "Bot" || !mergeAttributionWanted()) return base;
+  let events: OrderLabelEvent[];
+  try {
+    events = (await restList<OrderLabelEvent & { event: string }>(`/repos/${repo}/issues/${number}/events`))
+      .filter((event) => event.event === "labeled");
+  } catch (error) {
+    if (!coreQuotaExhausted(error)) throw error;
+    const [owner, name] = repo.split("/");
+    const data = await graphql<{
+      repository: { pullRequest: { timelineItems: { nodes: OrderLabelEvent[] } } | null } | null;
+    }>(ORDER_LABEL_EVENTS_QUERY, { owner, name, number }, source, "PR order label");
+    events = data.repository?.pullRequest?.timelineItems.nodes ?? [];
+  }
+  const login = events.findLast((event) => event.label?.name.trim().toLowerCase() === ORDER_LABEL)?.actor?.login;
+  return { ...base, orderedBy: login ? { login } : null };
 }
 
 export type PrDetail = PrDetailShape<{ reactions: Reaction[] }> & {
@@ -2822,7 +2866,8 @@ export async function fetchPrDetail(
     const [checks, review, { base, viewerLogin }] = await Promise.all([
       fetchDetailChecks(owner, name, number, previous, source),
       fetchDetailReview(owner, name, number, source, previous?.reviewThreads?.nodes.length ?? 0),
-      fetchPrDetailMetadata(repo, owner, name, number, source),
+      fetchPrDetailMetadata(repo, owner, name, number, source)
+        .then(async (metadata) => ({ ...metadata, base: await withOrderedBy(metadata.base, repo, number, source) })),
     ]);
     if (!checks || !review) throw new GithubRequestError(`${repo}#${number} was not found`, 404);
     return {
@@ -2831,7 +2876,7 @@ export async function fetchPrDetail(
       viewerLogin,
       ...normalizeReviewDetail(review, viewerLogin, review.author, base.reviewRequests),
     };
-  }, () => fetchRestPrDetail(repo, number, previous));
+  }, () => fetchRestPrDetail(repo, number, previous, source));
 }
 
 // The whole detail over REST. Every list goes through the ETag cache, so rereading an
@@ -2840,10 +2885,11 @@ async function fetchRestPrDetail(
   repo: string,
   number: number,
   previous: Pick<PrDetail, "commitList" | "reviewThreads"> | null,
+  source: GithubUsageSource,
 ): Promise<PrDetail> {
   const base = fetchRestPrDetailBase(repo, number);
   const [rest, viewerLogin, issue, repository, commits, reviews, comments, reviewComments, checks, rules] = await Promise.all([
-    base,
+    base.then((pull) => withOrderedBy(pull, repo, number, source)),
     getViewerLogin(),
     restJson<{ reactions?: RestReactions }>(`/repos/${repo}/issues/${number}`),
     restJson<{ permissions?: { admin?: boolean } }>(`/repos/${repo}`),
@@ -2933,7 +2979,7 @@ export async function fetchPrDetailPart(
   return readWithRestFallback<PrDetail>(
     source,
     () => fetchPrDetailPartGraphql(repo, owner, name, number, current, scope, source),
-    () => scope === "checks" ? fetchRestPrChecks(repo, current) : fetchRestPrDetail(repo, number, current),
+    () => scope === "checks" ? fetchRestPrChecks(repo, current) : fetchRestPrDetail(repo, number, current, source),
   );
 }
 

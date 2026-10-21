@@ -84,6 +84,25 @@ function viewerRequested(detail: JsonRecord): boolean {
   return boolean(detail.viewerReviewRequested);
 }
 
+// Something consumes merge attribution: the in-app "Merged by me" filter or an enabled
+// "I merged it" rule. Otherwise bot merges never pay for reading who ordered them.
+export function mergeAttributionWanted(): boolean {
+  if (getSetting("merged_by_me_notifications_enabled") === "true") return true;
+  const settings = storedNotificationSettings();
+  return settings.enabled && settings.rules.some((rule) => rule.enabled
+    && rule.conditions.some((condition) => condition.field === "participation" && condition.value === "merger"));
+}
+
+// The viewer merged the PR, or a merge-queue bot merged it after the viewer last ordered it.
+export function viewerMergedPr(detail: JsonRecord): boolean {
+  const viewer = string(detail.viewerLogin)?.toLowerCase();
+  const mergedBy = record(detail.mergedBy);
+  const merger = string(mergedBy?.login)?.toLowerCase();
+  if (!viewer || !merger) return false;
+  if (merger === viewer) return true;
+  return string(mergedBy?.__typename) === "Bot" && string(record(detail.orderedBy)?.login)?.toLowerCase() === viewer;
+}
+
 function eventBase(
   id: string,
   type: NotificationEventType,
@@ -109,6 +128,7 @@ function eventBase(
     viewerIsAssignee: viewerLogin.length > 0 && nodes(detail.assignees).some((assignee) => string(assignee.login)?.toLowerCase() === viewerLogin.toLowerCase()),
     viewerIsAuthor: boolean(detail.viewerIsAuthor),
     viewerReviewRequested: viewerRequested(detail),
+    viewerMerged: viewerMergedPr(detail),
     reviewState,
     isDraft: boolean(detail.isDraft),
     occurredAt,
