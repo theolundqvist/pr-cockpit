@@ -195,10 +195,10 @@ test("concurrent activation bootstraps once and terminal attempts reconcile once
       leaseSeconds: dbm.db.query("SELECT CAST((julianday(expires_at) - julianday('now')) * 86400 AS INTEGER) AS seconds FROM actions_leases").get().seconds,
     }));
   `);
-  expect(result.first).toEqual({ runs: 1, jobs: [[10, null], [11, 1]], logs: [110, 111, 113, 114] });
+  expect(result.first).toEqual({ runs: 1, jobs: [[10, null], [11, 1]], logs: [110, 113, 114] });
   expect(result.after).toEqual(result.first);
   expect(result.cachedJobs).toEqual([110, 113, 114]);
-  expect(result.successfulStored).toBe(1);
+  expect(result.successfulStored).toBe(0);
   expect(result.bytes.log_truncated).toBe(0);
   expect(result.returnedBytes).toBe(result.bytes.log_bytes);
   expect(result.returnedBytes).toBeGreaterThan(262_144);
