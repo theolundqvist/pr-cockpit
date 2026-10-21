@@ -2673,7 +2673,7 @@ describe("Actions viewer API", () => {
         { method: "POST", headers: { "X-PR-Cockpit-CLI": "1" } },
       ));
       expect(response.status).toBe(200);
-      expect(requested).toEqual([repo, number, head, "feature", 987]);
+      expect(requested).toEqual([repo, number, head, "feature", null, 987]);
       expect(await response.text()).toContain("Actions run 987: fetched");
     } finally {
       db.run("DELETE FROM prs WHERE repo = ? AND number = ?", [repo, number]);
@@ -2686,7 +2686,7 @@ describe("Actions viewer API", () => {
     const number = 96135;
     const head = "a".repeat(40);
     const row = trackedPrRow({ repo, number, fetchedAt: new Date().toISOString() });
-    upsertPr({ ...row, head_sha: head });
+    upsertPr({ ...row, head_sha: head, detail_json: JSON.stringify({ ...JSON.parse(row.detail_json), mergeCommit: { oid: "f".repeat(40) } }) });
     const now = new Date().toISOString();
     const runs = [
       { id: 70, attempt: 1, owner: number, sha: "b".repeat(40), branch: "feature", status: "completed" },
@@ -2696,6 +2696,7 @@ describe("Actions viewer API", () => {
       { id: 74, attempt: 1, owner: number, sha: head, branch: "feature", status: "completed" },
       { id: 74, attempt: 2, owner: number, sha: head, branch: "feature", status: "in_progress" },
       { id: 75, attempt: 1, owner: number, sha: "c".repeat(40), branch: "feature", status: "completed" },
+      { id: 76, attempt: 1, owner: null, sha: "f".repeat(40), branch: "production", status: "in_progress" },
     ];
     for (const run of runs) {
       upsertWorkflowRun({
@@ -2801,6 +2802,11 @@ describe("Actions viewer API", () => {
       expect(stale.status).toBe(200);
       expect(await stale.json()).toMatchObject({ selectedRun: { id: 75 } });
       expect(rejected.status).toBe(404);
+      const mergeRun = await fetchHandler(new Request(
+        `http://127.0.0.1:4820/api/agent/pr/http-actions/branch-jobs/${number}/jobs?format=json&runId=76`,
+      ));
+      expect(mergeRun.status).toBe(200);
+      expect(await mergeRun.json()).toMatchObject({ selectedRun: { id: 76, status: "in_progress" }, jobs: [{ id: 761 }] });
     } finally {
       db.run("DELETE FROM run_jobs WHERE repo = ?", [repo]);
       db.run("DELETE FROM workflow_runs WHERE repo = ?", [repo]);

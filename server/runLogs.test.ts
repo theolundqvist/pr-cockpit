@@ -239,26 +239,35 @@ test("an explicit run request accepts a historical SHA on the PR branch and reje
       fetchJobLog: async () => { logFetches++; return "failure evidence"; },
       restRemaining: async () => 5000,
     };
-    const first = await actions.cacheActionsRun("acme/app", 7, head, "feature", 55, fetchers);
-    const second = await actions.cacheActionsRun("acme/app", 7, head, "feature", 55, fetchers);
-    const mismatch = await actions.cacheActionsRun("acme/app", 7, head, "feature", 56, {
+    const first = await actions.cacheActionsRun("acme/app", 7, head, "feature", null, 55, fetchers);
+    const second = await actions.cacheActionsRun("acme/app", 7, head, "feature", null, 55, fetchers);
+    const mismatch = await actions.cacheActionsRun("acme/app", 7, head, "feature", null, 56, {
       ...fetchers,
       fetchWorkflowRun: async () => ({ ...rawRun, id: 56, head_branch: "other" }),
     });
-    const otherOwner = await actions.cacheActionsRun("acme/app", 7, head, "feature", 57, {
+    const otherOwner = await actions.cacheActionsRun("acme/app", 7, head, "feature", null, 57, {
       ...fetchers,
       fetchWorkflowRun: async () => ({ ...rawRun, id: 57, pull_requests: [{ number: 8 }] }),
     });
-    const emptyBranch = await actions.cacheActionsRun("acme/app", 7, head, "feature", 58, {
+    const emptyBranch = await actions.cacheActionsRun("acme/app", 7, head, "feature", null, 58, {
       ...fetchers,
       fetchWorkflowRun: async () => ({ ...rawRun, id: 58, head_branch: "" }),
     });
+    const mergeFetchers = {
+      ...fetchers,
+      fetchWorkflowRun: async () => ({ ...rawRun, id: 59, head_sha: "c".repeat(40), head_branch: "production", event: "push" }),
+      fetchRunJobs: async () => [],
+    };
+    const otherMerge = await actions.cacheActionsRun("acme/app", 7, head, "feature", "d".repeat(40), 59, mergeFetchers);
+    const merge = await actions.cacheActionsRun("acme/app", 7, head, "feature", "c".repeat(40), 59, mergeFetchers);
     console.log(JSON.stringify({
       first,
       second,
       mismatch,
       otherOwner,
       emptyBranch,
+      otherMerge,
+      merge,
       runFetches,
       jobFetches,
       logFetches,
@@ -274,10 +283,15 @@ test("an explicit run request accepts a historical SHA on the PR branch and reje
     mismatch: "ownership-mismatch",
     otherOwner: "ownership-mismatch",
     emptyBranch: "ownership-mismatch",
+    otherMerge: "ownership-mismatch",
+    merge: "fetched",
     runFetches: 2,
     jobFetches: 1,
     logFetches: 1,
-    runs: [{ run_id: 55, pr_number: 7, head_sha: "b".repeat(40), reconciled: 1 }],
+    runs: [
+      { run_id: 55, pr_number: 7, head_sha: "b".repeat(40), reconciled: 1 },
+      { run_id: 59, pr_number: null, head_sha: "c".repeat(40), reconciled: 1 },
+    ],
     jobs: [{ job_id: 551, logged: 1 }],
     lease: { head_sha: "a".repeat(40) },
   });
@@ -296,7 +310,7 @@ test("requested run ownership validates and claims every attempt atomically", as
     };
     dbm.upsertWorkflowRun({ ...stored, run_attempt: 1, pr_number: 8 });
     dbm.upsertWorkflowRun({ ...stored, run_attempt: 2, pr_number: null });
-    const mismatch = await actions.cacheActionsRun("acme/app", 7, head, "feature", 60, {
+    const mismatch = await actions.cacheActionsRun("acme/app", 7, head, "feature", null, 60, {
       fetchWorkflowRun: async () => ({
         id: 60, run_attempt: 2, head_sha: head, head_branch: "feature", name: "Dispatch",
         path: ".github/workflows/dispatch.yml", event: "workflow_dispatch",
@@ -373,8 +387,8 @@ test("a repeated explicit cache discovers and reconciles the latest retry attemp
       fetchJobLog: async () => { throw new Error("skipped jobs have no log"); },
       restRemaining: async () => 5000,
     };
-    const first = await actions.cacheActionsRun("acme/app", 7, head, "feature", 61, fetchers);
-    const second = await actions.cacheActionsRun("acme/app", 7, head, "feature", 61, fetchers);
+    const first = await actions.cacheActionsRun("acme/app", 7, head, "feature", null, 61, fetchers);
+    const second = await actions.cacheActionsRun("acme/app", 7, head, "feature", null, 61, fetchers);
     console.log(JSON.stringify({
       first,
       second,
@@ -406,7 +420,7 @@ test("an explicit terminal cache fails when final reconciliation is incomplete",
     dbm.saveRunJobLog("acme/app", 642, 64, 1, head, Bun.gzipSync("cached evidence"), 15);
     let error = "";
     try {
-      await actions.cacheActionsRun("acme/app", 7, head, "feature", 64, {
+      await actions.cacheActionsRun("acme/app", 7, head, "feature", null, 64, {
         fetchWorkflowRun: async () => ({
           id: 64, run_attempt: 1, head_sha: head, head_branch: "feature", name: "Dispatch",
           path: ".github/workflows/dispatch.yml", event: "workflow_dispatch",

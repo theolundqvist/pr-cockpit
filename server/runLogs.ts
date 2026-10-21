@@ -626,26 +626,32 @@ export async function cacheActionsRun(
   number: number,
   headSha: string,
   headBranch: string,
+  mergeSha: string | null,
   runId: number,
   fetchers: RequestedRunFetchers = liveRequestedRunFetchers,
 ): Promise<"cached" | "fetched" | "ownership-mismatch"> {
   const run = compactRun(await fetchers.fetchWorkflowRun(repo, runId));
-  if (
-    !run.headBranch
-    || run.headBranch !== headBranch
-    || (run.prNumber !== null && run.prNumber !== number)
-    || !claimWorkflowRunForPr(repo, runId, number, headBranch)
-  ) {
-    return "ownership-mismatch";
-  }
-
-  storeRun(repo, number, run);
-  if (!claimWorkflowRunForPr(repo, runId, number, headBranch)) {
-    return "ownership-mismatch";
+  // Runs the merge commit triggers (deploys, releases) belong to the merged PR but stay unclaimed.
+  const mergeRun = mergeSha !== null && run.headSha === mergeSha;
+  if (mergeRun) {
+    storeRun(repo, null, run);
+  } else {
+    if (
+      !run.headBranch
+      || run.headBranch !== headBranch
+      || (run.prNumber !== null && run.prNumber !== number)
+      || !claimWorkflowRunForPr(repo, runId, number, headBranch)
+    ) {
+      return "ownership-mismatch";
+    }
+    storeRun(repo, number, run);
+    if (!claimWorkflowRunForPr(repo, runId, number, headBranch)) {
+      return "ownership-mismatch";
+    }
   }
   const latest = latestWorkflowRunAttempt(repo, runId);
   if (!latest) throw new Error("Actions run disappeared while caching");
-  renewActionsLease(repo, number, headSha);
+  if (!mergeRun) renewActionsLease(repo, number, headSha);
   if (latest.status === "completed" && latest.reconciled_at !== null) {
     return "cached";
   }

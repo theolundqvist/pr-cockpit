@@ -1888,6 +1888,7 @@ type CachedActionsContext = {
   headSha: string;
   currentHeadSha: string;
   headBranch: string;
+  mergeSha: string | null;
   baseSha: string | null;
   commits: PullRequestCommit[];
 };
@@ -1909,6 +1910,7 @@ function cachedActionsContext(owner: string, repo: string, number: string, prefe
     num,
     headSha: detail.headRefOid,
     headBranch: detail.headRefName,
+    mergeSha: detail.mergeCommit?.oid ?? null,
     currentHeadSha: detail.headRefOid,
     baseSha: detail.baseRefOid ?? null,
     commits,
@@ -2362,8 +2364,9 @@ function selectedActionsRun(context: CachedActionsContext, url: URL): WorkflowRu
   const run = attempt === null
     ? latestWorkflowRunAttempt(context.repoName, runId)
     : workflowRunAttempt(context.repoName, runId, attempt);
-  return (run?.head_branch === context.headBranch && (run.pr_number === null || run.pr_number === context.num) ? run : null)
-    ?? json({ error: "Actions run or attempt is not cached for this PR branch" }, 404);
+  const owned = run !== null && ((run.head_branch === context.headBranch && (run.pr_number === null || run.pr_number === context.num))
+    || run.head_sha === context.mergeSha);
+  return owned ? run : json({ error: "Actions run or attempt is not cached for this PR branch or merge commit" }, 404);
 }
 
 function handleAgentPrJobs(owner: string, repo: string, number: string, url: URL): Response {
@@ -2408,13 +2411,13 @@ async function handleAgentCacheRun(
       context.num,
       context.headSha,
       context.headBranch,
+      context.mergeSha,
       id,
     );
     if (result === "ownership-mismatch") {
-      return json({ error: "Actions run does not belong to this PR branch" }, 409);
+      return json({ error: "Actions run belongs neither to this PR branch nor to its merge commit" }, 409);
     }
-    const selected = workflowRunsForPrBranch(context.repoName, context.num, context.headBranch)
-      .find((run) => run.run_id === id) ?? null;
+    const selected = latestWorkflowRunAttempt(context.repoName, id);
     const jobs = selected
       ? listRunJobsForRun(context.repoName, id, selected.run_attempt)
       : [];
