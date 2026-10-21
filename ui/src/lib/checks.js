@@ -1,13 +1,13 @@
 import { relativeTime } from "./time.js";
 
 export const CHECK_BUCKETS = {
-  failing: { section: "failing", summary: "failing", dot: "bad" },
-  queued: { section: "pending", summary: "queued", dot: "neutral" },
-  expected: { section: "pending", summary: "expected", dot: "neutral" },
-  in_progress: { section: "in progress", summary: "in progress", dot: "run" },
-  neutral: { section: "skipped", summary: "neutral", dot: "neutral" },
-  skipped: { section: "skipped", summary: "skipped", dot: "neutral" },
-  success: { section: "successful", summary: "successful", dot: "ok" },
+  failing: { section: "failing", summary: "failing", icon: { status: "completed", conclusion: "failure" } },
+  queued: { section: "pending", summary: "queued", icon: { status: "queued", conclusion: null } },
+  expected: { section: "pending", summary: "expected", icon: { status: "pending", conclusion: null } },
+  in_progress: { section: "in progress", summary: "in progress", icon: { status: "in_progress", conclusion: null } },
+  neutral: { section: "skipped", summary: "neutral", icon: { status: "completed", conclusion: "neutral" } },
+  skipped: { section: "skipped", summary: "skipped", icon: { status: "completed", conclusion: "skipped" } },
+  success: { section: "successful", summary: "successful", icon: { status: "completed", conclusion: "success" } },
 };
 
 export const CHECK_SECTIONS = ["failing", "pending", "in progress", "skipped", "successful"];
@@ -87,7 +87,7 @@ export function buildChecks(rollup) {
           : null,
         required: c.isRequired ?? false,
         bucket,
-        dot: CHECK_BUCKETS[bucket].dot,
+        icon: CHECK_BUCKETS[bucket].icon,
         status: checkStatus(bucket, startedAt, completedAt),
       };
     })

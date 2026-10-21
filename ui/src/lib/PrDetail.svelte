@@ -32,6 +32,7 @@
   } from "./api.js";
   import { QUICK_ACTIONS_PATH, committedQuickActionsCache, resolveQuickActions, quickActionMutation } from "./quickActions.js";
   import { labelsAfterMutations } from "./appliedLabels.js";
+  import { cockpitActionsHref } from "./githubLinks.js";
   import { anchorThreads, fileDiffFingerprint } from "./diff.js";
   import { loadDiffDocument } from "./diffDocument.js";
   import { imageFallback, renderMarkdown } from "./markdown.js";
@@ -63,6 +64,7 @@
   import { quota } from "./quota.svelte.js";
   import { quotaImpact } from "./quotaImpact.js";
   import ActionsView from "./ActionsView.svelte";
+  import ActionStatusIcon from "./ActionStatusIcon.svelte";
   import QuotaMergeModal from "./QuotaMergeModal.svelte";
   import MergeDecisionDialog from "./MergeDecisionDialog.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
@@ -3647,7 +3649,8 @@
             <div class="side-block">
               <h3 class="side-title">Links</h3>
               {#each otherCommentLinks as link (link.url)}
-                <a class="check" href={link.url} target="_blank" rel="noreferrer" title={link.url}>
+                {@const internal = cockpitActionsHref(link.url)}
+                <a class="check" href={internal ?? link.url} target={internal ? undefined : "_blank"} rel={internal ? undefined : "noreferrer"} title={link.url}>
                   <span class="check-name">{link.label}</span>
                 </a>
               {/each}
@@ -3951,15 +3954,17 @@
                 {/if}
                 {#if !collapsed}
                   {#each rows as check}
+                    {@const runHref = check.url && cockpitActionsHref(check.url)}
+                    {@const internal = runHref && (check.jobId ? `#/pr/${repo}/${number}/actions?job=${check.jobId}` : runHref)}
                     <svelte:element
                       this={check.url ? "a" : "div"}
-                      href={check.url}
-                      target="_blank"
-                      rel="noreferrer"
+                      href={internal || check.url}
+                      target={internal ? undefined : "_blank"}
+                      rel={internal ? undefined : "noreferrer"}
                       class="check"
                     >
                       <span class="check-row">
-                        <span class="check-dot {check.dot}"></span>
+                        <ActionStatusIcon status={check.icon.status} conclusion={check.icon.conclusion} />
                         <span class="check-name">{check.name}</span>
                         {#if check.required}<span class="check-req">required</span>{/if}
                       </span>
@@ -5196,28 +5201,12 @@
     padding: 0 4px;
   }
   .check-status {
-    margin-left: 15px;
+    margin-left: 24px;
     font-size: 11px;
     color: var(--text-faint);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .check-dot {
-    flex: none;
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--wait);
-  }
-  .check-dot.ok {
-    background: var(--ready);
-  }
-  .check-dot.bad {
-    background: var(--fail);
-  }
-  .check-dot.run {
-    background: var(--review);
   }
   .side-empty {
     color: var(--text-faint);

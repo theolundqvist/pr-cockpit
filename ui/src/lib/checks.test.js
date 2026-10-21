@@ -88,11 +88,11 @@ describe("aggregation", () => {
     },
   };
 
-  test("buildChecks maps name, url, required, bucket, dot", () => {
+  test("buildChecks maps name, url, required, bucket, icon", () => {
     const checks = buildChecks(rollup);
     expect(checks).toHaveLength(4);
-    expect(checks[0]).toMatchObject({ name: "build", url: "https://github.com/example/web/actions/runs/12/job/34", jobId: 34, required: true, bucket: "failing", dot: "bad" });
-    expect(checks[2]).toMatchObject({ name: "vercel", url: "u2", required: false, bucket: "success", dot: "ok" });
+    expect(checks[0]).toMatchObject({ name: "build", url: "https://github.com/example/web/actions/runs/12/job/34", jobId: 34, required: true, bucket: "failing", icon: { conclusion: "failure" } });
+    expect(checks[2]).toMatchObject({ name: "vercel", url: "u2", required: false, bucket: "success", icon: { conclusion: "success" } });
   });
 
   test("buildChecks tolerates missing rollup", () => {

@@ -1,3 +1,5 @@
+import { cockpitActionsHref } from "./githubLinks.js";
+
 const CONTROL_RE = /^##\[([^\] ]+)(?: ([^\]]*))?\](.*)$/;
 const WORKFLOW_COMMAND_RE = /^::(error|warning|notice)(?: (.*?))?::(.*)$/;
 const COMMAND_RE = /^\[command\](.*)$/;
@@ -59,6 +61,8 @@ function trimUrlPunctuation(value) {
 }
 
 function actionUrlTarget(value) {
+  const actions = cockpitActionsHref(value);
+  if (actions) return actions;
   let url;
   try {
     url = new URL(value);
@@ -67,9 +71,6 @@ function actionUrlTarget(value) {
   }
   if (url.hostname.toLowerCase() !== "github.com") return value;
   const parts = url.pathname.split("/").filter(Boolean);
-  if (parts.length >= 5 && parts[2] === "actions" && parts[3] === "runs" && /^\d+$/.test(parts[4])) {
-    return `#/actions/run/${parts[0]}/${parts[1]}/${parts[4]}`;
-  }
   if (parts.length >= 4 && parts[2] === "pull" && /^\d+$/.test(parts[3])) {
     return `#/pr/${parts[0]}/${parts[1]}/${parts[3]}`;
   }

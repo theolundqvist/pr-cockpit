@@ -2,6 +2,7 @@ import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { prIndexRevision, prTitle } from "./prIndex.svelte.js";
 import { linkifyBareRefs } from "./prRefs.js";
+import { cockpitActionsHref } from "./githubLinks.js";
 import { theme } from "./theme.svelte.js";
 import { viewer } from "./viewer.svelte.js";
 import { HIGHLIGHT_PENDING, codeHl, highlightFencedCode } from "./codeHighlight.svelte.js";
@@ -39,7 +40,13 @@ function indexTasks(doc) {
 }
 
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {
-  if (node.tagName === "A" && /^https?:/i.test(node.getAttribute("href") ?? "")) {
+  if (node.tagName !== "A") return;
+  const href = node.getAttribute("href") ?? "";
+  const actions = cockpitActionsHref(href);
+  if (actions) {
+    node.setAttribute("href", actions);
+    node.removeAttribute("target");
+  } else if (/^https?:/i.test(href)) {
     node.setAttribute("target", "_blank");
     node.setAttribute("rel", "noopener");
   }
