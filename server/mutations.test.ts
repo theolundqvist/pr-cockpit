@@ -78,6 +78,10 @@ test("applied mutations remain pending through refresh without becoming retryabl
     const unconfirmedEditRow = insert(106, { kind: "edit-body", body: "new body" });
     await processMutation(unconfirmedEditRow, dependencies(async () => {}));
     const unconfirmedEdit = db.listMutationsForPr(repo, 106)[0];
+    cache(112, { body: "body", comments: { nodes: [] }, reviewThreads: { nodes: [{ id: "thread-1", isResolved: false }] } });
+    const unconfirmedResolveRow = insert(112);
+    await processMutation(unconfirmedResolveRow, dependencies(async () => {}));
+    const unconfirmedResolve = db.listMutationsForPr(repo, 112)[0];
     db.db.query(\`INSERT INTO prs (
       repo, number, state, is_draft, title, author, base_ref, head_ref, head_sha,
       updated_at, additions, deletions, changed_files, commit_count, mergeable,
@@ -135,6 +139,7 @@ test("applied mutations remain pending through refresh without becoming retryabl
       scheduledRetryId: scheduledRetry.id,
       refreshFailure: { state: refreshFailure?.state, error: refreshFailure?.error },
       unconfirmedEdit: { state: unconfirmedEdit?.state, error: unconfirmedEdit?.error },
+      unconfirmedResolve: { state: unconfirmedResolve?.state, error: unconfirmedResolve?.error },
       confirmedCommentCount,
       freshEditCount, publishedBody,
       duplicateComment: {
@@ -171,6 +176,7 @@ test("applied mutations remain pending through refresh without becoming retryabl
     expect(result.scheduledRetryId).toBeGreaterThan(0);
     expect(result.refreshFailure).toEqual({ state: "refreshing", error: "GitHub accepted resolve-thread, but cache refresh failed: refresh unavailable" });
     expect(result.unconfirmedEdit).toEqual({ state: "refreshing", error: "GitHub accepted edit-body, but cache refresh failed: refreshed cache does not contain the accepted change" });
+    expect(result.unconfirmedResolve).toEqual({ state: "refreshing", error: "GitHub accepted resolve-thread, but cache refresh failed: refreshed cache does not contain the accepted change" });
     expect(result.confirmedCommentCount).toBe(0);
     expect(result.freshEditCount).toBe(0);
     expect(result.publishedBody).toBe("published image");
@@ -181,7 +187,7 @@ test("applied mutations remain pending through refresh without becoming retryabl
       error: "GitHub accepted comment, but cache refresh failed: refreshed cache does not contain the accepted change",
       commentNodeId: "mock-comment",
     });
-    expect(result.recovered).toEqual([103, 106, 108, 104, 109]);
+    expect(result.recovered).toEqual([103, 106, 112, 108, 104, 109]);
     expect(result.unconfirmedAfterRecovery).toBe(1);
     expect(result.interruptedPending).toEqual({ state: "failed", error: "interrupted" });
   } finally {

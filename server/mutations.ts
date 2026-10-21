@@ -469,12 +469,16 @@ function sameGithubText(left: string, right: string): boolean {
 function mutationReflected(row: Pick<MutationRow, "repo" | "number" | "payload_json">): boolean {
   const payload: unknown = JSON.parse(row.payload_json);
   assertMutationPayload(payload);
-  if (payload.kind !== "comment" && payload.kind !== "edit-body") return true;
+  if (payload.kind !== "comment" && payload.kind !== "edit-body" && payload.kind !== "resolve-thread") return true;
   const tracked = getPr(row.repo, row.number);
   const cached = getCachedPrDetail(row.repo, row.number);
   const snapshot = !tracked ? cached : cached && cached.fetched_at > tracked.fetched_at ? cached : tracked;
-  if (!snapshot) return false;
+  if (!snapshot) return payload.kind === "resolve-thread";
   const detail = JSON.parse(snapshot.detail_json) as PrDetail;
+  if (payload.kind === "resolve-thread") {
+    const thread = detail.reviewThreads?.nodes.find((candidate) => candidate.id === payload.threadId);
+    return !thread || thread.isResolved === payload.resolved;
+  }
   // A republished description may legitimately differ, so a task edit confirms by its tasks' states.
   if (payload.kind === "edit-body") {
     if (!payload.tasks) return sameGithubText(detail.body, payload.body);

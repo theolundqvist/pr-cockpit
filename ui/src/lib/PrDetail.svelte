@@ -700,7 +700,7 @@
       return;
     }
     if (token !== activeFetch) return;
-    applyAsyncPrDetail(detail, pending);
+    if (applyAsyncPrDetail(detail, pending)) cacheDetail(prKeyOf(repo, number), detail);
   }
 
   // Shows a commit Cockpit just pushed to the PR head without waiting for the next poll.

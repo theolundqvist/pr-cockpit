@@ -12,7 +12,7 @@ test("alert links require the security bot and the same repository", () => {
   expect(codeScanningAlertNumber(thread("github-advanced-security", link), "fixture/other")).toBeNull();
 });
 
-test("CodeQL uses PR-scoped pagination and GitHub dismissal reasons; permission errors propagate", async () => {
+test("CodeQL uses PR-scoped pagination and GitHub dismissal reasons, skips alerts already in the target state; permission errors propagate", async () => {
   const dir = mkdtempSync(join(tmpdir(), "cockpit-codeql-"));
   const gh = join(dir, "gh");
   writeFileSync(gh, "#!/bin/sh\nprintf 'fixture-token\\n'\n");
@@ -22,23 +22,33 @@ test("CodeQL uses PR-scoped pagination and GitHub dismissal reasons; permission 
       const { findCodeScanningAlert, setCodeScanningAlertResolved } = await import(${JSON.stringify(new URL("./github.ts", import.meta.url).href)});
       const requests = [];
       let denied = false;
+      let alertState = "open";
       globalThis.fetch = async (input, init) => {
         const url = new URL(String(input));
         requests.push({ path: url.pathname, query: url.search, method: init.method, body: init.body ? JSON.parse(init.body) : null });
         if (denied) return Response.json({ message: "Resource not accessible by integration" }, { status: 403 });
-        if (init.method === "PATCH") return Response.json({});
+        if (init.method === "PATCH") {
+          alertState = JSON.parse(init.body).state;
+          return Response.json({});
+        }
+        if (url.pathname.endsWith("/code-scanning/alerts/42")) return Response.json({ state: alertState });
         if (!url.searchParams.has("page")) return Response.json([], { headers: { link: '<https://api.github.com/repos/fixture/cockpit/code-scanning/alerts?page=2>; rel="next"' } });
         return Response.json([{ number: 42, most_recent_instance: { location: { path: "src/main.ts", start_line: 8, end_line: 10 } } }]);
       };
       const alert = await findCodeScanningAlert("fixture/cockpit", 103, "src/main.ts", 9);
       await setCodeScanningAlertResolved("fixture/cockpit", alert, true, { reason: "false positive", comment: "Input is validated upstream" });
       await setCodeScanningAlertResolved("fixture/cockpit", alert, false);
+      await setCodeScanningAlertResolved("fixture/cockpit", alert, false);
+      alertState = "dismissed";
+      await setCodeScanningAlertResolved("fixture/cockpit", alert, true, { reason: "false positive" });
+      alertState = "fixed";
+      await setCodeScanningAlertResolved("fixture/cockpit", alert, true, { reason: "false positive" });
       let missing = false;
       try { await findCodeScanningAlert("fixture/cockpit", 103, "other.ts", 9); } catch { missing = true; }
       denied = true;
       let permissionError = false;
       try { await setCodeScanningAlertResolved("fixture/cockpit", alert, true, { reason: "mitigated" }); } catch { permissionError = true; }
-      console.log(JSON.stringify({ alert, requests, missing, permissionError }));
+      console.log(JSON.stringify({ alert, requests, patches: requests.filter((request) => request.method === "PATCH").map((request) => request.body), missing, permissionError }));
     `;
     const child = Bun.spawn([Bun.which("bun")!, "-e", script], {
       env: { ...Bun.env, COCKPIT_GH_BIN: gh, COCKPIT_DATA_DIR: dir, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "" }, stdout: "pipe", stderr: "pipe",
@@ -48,8 +58,10 @@ test("CodeQL uses PR-scoped pagination and GitHub dismissal reasons; permission 
     const result = JSON.parse(stdout.trim());
     expect(result.alert).toBe(42);
     expect(new URLSearchParams(result.requests[0].query).get("ref")).toBe("refs/pull/103/merge");
-    expect(result.requests[2].body).toEqual({ state: "dismissed", dismissed_reason: "false positive", dismissed_comment: "Input is validated upstream" });
-    expect(result.requests[3].body).toEqual({ state: "open" });
+    expect(result.patches).toEqual([
+      { state: "dismissed", dismissed_reason: "false positive", dismissed_comment: "Input is validated upstream" },
+      { state: "open" },
+    ]);
     expect(result.missing).toBe(true);
     expect(result.permissionError).toBe(true);
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -65,7 +77,12 @@ test("CodeQL resolution validates every entry path before writes and never resol
     const { mock } = await import("bun:test");
     const pollerUrl = ${JSON.stringify(new URL("./poller.ts", import.meta.url).href)};
     const poller = await import(pollerUrl);
-    mock.module(pollerUrl, () => ({ ...poller, refreshPr: async () => {}, pollOnce: async () => {} }));
+    const resolvedOnGithub = new Map();
+    mock.module(pollerUrl, () => ({ ...poller, pollOnce: async () => {}, refreshPr: async (repo, number) => {
+      const current = JSON.parse(db.getCachedPrDetail(repo, number).detail_json);
+      for (const node of current.reviewThreads.nodes) node.isResolved = resolvedOnGithub.get(node.id) ?? node.isResolved;
+      db.upsertCachedPrDetail({ repo, number, head_sha: "a".repeat(40), detail_json: JSON.stringify(current), fetched_at: new Date().toISOString() });
+    } }));
     const db = await import(${JSON.stringify(new URL("./db.ts", import.meta.url).href)});
     const { processMutation, enqueueMutation } = await import(${JSON.stringify(new URL("./mutations.ts", import.meta.url).href)});
     const { buildFetchHandler, normalizeAgentMutation, reviewThreadHandle } = await import(${JSON.stringify(new URL("./http.ts", import.meta.url).href)});
@@ -76,10 +93,14 @@ test("CodeQL resolution validates every entry path before writes and never resol
     db.upsertCachedPrDetail({ repo, number: 103, head_sha: "a".repeat(40), detail_json: JSON.stringify(detail), fetched_at: new Date().toISOString() });
     let writes = [];
     let denied = false;
+    let alertState = "open";
     globalThis.fetch = async (input, init) => {
+      if (denied) return Response.json({ message: "Forbidden" }, { status: 403 });
+      if (init.method === "GET") return Response.json({ state: alertState });
       const body = JSON.parse(init.body);
       writes.push({ path: new URL(String(input)).pathname, body });
-      if (denied) return Response.json({ message: "Forbidden" }, { status: 403 });
+      if (body.state) alertState = body.state;
+      if (body.variables?.threadId) resolvedOnGithub.set(body.variables.threadId, !body.query.includes("unresolveReviewThread"));
       return Response.json({ data: { resolveReviewThread: { thread: { id: "security" } }, unresolveReviewThread: { thread: { id: "security" } } } });
     };
     const payload = (choice, id = "security", resolved = true) => ({ kind: "resolve-thread", threadId: id, resolved, ...(choice === undefined ? {} : { codeScanningDismissal: choice }) });
@@ -131,7 +152,7 @@ test("CodeQL resolution validates every entry path before writes and never resol
     expect(result.accepted.writes.map((write: { path: string }) => write.path)).toEqual(["/repos/fixture/cockpit/code-scanning/alerts/42", "/graphql"]);
     expect(result.accepted.writes[0].body).toEqual({ state: "dismissed", dismissed_reason: "used in tests", dismissed_comment: "x".repeat(280) });
     expect(result.failure.state).toBe("failed");
-    expect(result.failure.writes.map((write: { path: string }) => write.path)).toEqual(["/repos/fixture/cockpit/code-scanning/alerts/42"]);
+    expect(result.failure.writes).toEqual([]);
     expect(result.ordinary.state).toBe("completed");
     expect(result.ordinary.writes.map((write: { path: string }) => write.path)).toEqual(["/graphql"]);
     expect(result.misleading).toEqual({ writes: [], state: "failed" });

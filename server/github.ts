@@ -4077,9 +4077,15 @@ export async function findCodeScanningAlert(repo: string, number: number, path: 
   return matches[0]!.number;
 }
 
+// GitHub rejects dismissing a dismissed alert, so an alert already in the target state is done.
 export async function setCodeScanningAlertResolved(repo: string, alertNumber: number, resolved: boolean, dismissal?: { reason: string; comment?: string }): Promise<void> {
   const choice = resolved ? validateCodeScanningDismissal(dismissal) : undefined;
-  await restRequest("PATCH", `/repos/${encodedRepo(repo)}/code-scanning/alerts/${alertNumber}`,
+  const path = `/repos/${encodedRepo(repo)}/code-scanning/alerts/${alertNumber}`;
+  if (!mockGithub) {
+    const { state } = await restJson<{ state: string }>(path);
+    if (state !== (resolved ? "open" : "dismissed")) return;
+  }
+  await restRequest("PATCH", path,
     choice ? { state: "dismissed", dismissed_reason: choice.reason, ...(choice.comment !== undefined ? { dismissed_comment: choice.comment } : {}) } : { state: "open" });
 }
 
