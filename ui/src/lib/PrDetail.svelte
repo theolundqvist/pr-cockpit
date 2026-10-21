@@ -38,6 +38,7 @@
   import { imageFallback, renderMarkdown } from "./markdown.js";
   import { botCommentLinks, previewCommentLinks } from "./commentLinks.js";
   import { setTasksByKey, taskMarkers } from "../../../shared/taskList.js";
+  import { rememberScroll, rememberedScroll } from "./history.svelte.js";
   import { presentMutationError } from "./mutationError.js";
   import { isCodeScanningThread } from "../../../shared/codeScanning.js";
   import { loadPrIndex, prSummary } from "./prIndex.svelte.js";
@@ -166,8 +167,12 @@
     if (key === loadedKey) return;
     loadedKey = key;
     // The page element outlives a PR-to-PR navigation; a cached PR would open at the old offset.
+    // Back/forward returns to where this history entry was left, re-applied while content loads.
     const scroller = document.querySelector(".page");
     if (scroller) scroller.scrollTop = 0;
+    const savedTop = rememberedScroll();
+    if (scroller && savedTop) restoreScroll(scroller, savedTop);
+    else scrollRestore = null;
     const token = {};
     activeFetch = token;
     const cachedDetail = getDetail(key);
@@ -261,6 +266,38 @@
       .catch(() => {});
     return () => {
       if (loadingTimer) clearTimeout(loadingTimer);
+    };
+  });
+
+  const SCROLL_RESTORE_MS = 10_000;
+  let scrollRestore = null;
+
+  function restoreScroll(page, top) {
+    const restore = { top, until: performance.now() + SCROLL_RESTORE_MS };
+    scrollRestore = restore;
+    const step = () => {
+      if (scrollRestore !== restore) return;
+      page.scrollTop = top;
+      if (Math.abs(page.scrollTop - top) <= 2 || performance.now() > restore.until) scrollRestore = null;
+      else requestAnimationFrame(step);
+    };
+    step();
+  }
+
+  $effect(() => {
+    const page = document.querySelector(".page");
+    if (!page) return;
+    const onScroll = () => {
+      if (!scrollRestore) rememberScroll(page.scrollTop);
+    };
+    const stopRestore = () => (scrollRestore = null);
+    page.addEventListener("scroll", onScroll, { passive: true });
+    for (const type of ["wheel", "touchstart", "pointerdown"]) page.addEventListener(type, stopRestore, { passive: true });
+    window.addEventListener("keydown", stopRestore, true);
+    return () => {
+      page.removeEventListener("scroll", onScroll);
+      for (const type of ["wheel", "touchstart", "pointerdown"]) page.removeEventListener(type, stopRestore);
+      window.removeEventListener("keydown", stopRestore, true);
     };
   });
 

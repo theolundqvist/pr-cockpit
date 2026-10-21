@@ -16,6 +16,21 @@ export function goBackOrFallback(fallback) {
   else if (action === "fallback") location.hash = fallback;
 }
 
+const scrollByEntry = new Map();
+
+function entryKey() {
+  return window.navigation?.currentEntry?.key ?? window.history.state?.navId;
+}
+
+export function rememberScroll(top) {
+  const key = entryKey();
+  if (key !== undefined) scrollByEntry.set(key, top);
+}
+
+export function rememberedScroll() {
+  return scrollByEntry.get(entryKey());
+}
+
 export function initHistory() {
   const nav = window.navigation;
   if (nav) {
