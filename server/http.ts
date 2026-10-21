@@ -63,7 +63,9 @@ import { isTransportFailure, lastPollAt, pollOnce, prRowFromDetail, refreshPr, t
 import { createConcurrencyLimit } from "./concurrency.ts";
 import {
   commitPrFileEdit,
+  commitPrMerge,
   markPrPathGenerated,
+  prHeadPushAccess,
   compactReviewHunks,
   fetchDiff,
   fetchFileContents,
@@ -112,7 +114,7 @@ import { tailscaleServeStatus } from "./tailscaleServe.ts";
 import { runtimeSupervisor } from "./supervisor.ts";
 import { withGithubUsageSource, type GithubUsageSource } from "./githubUsage.ts";
 import type { GithubAuthStatus } from "./githubAuth.ts";
-import { branchesFromMirror, commitsFromMirror, commitStatsFromMirror, conflictFilesFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError, summarizeCommitStats, type MirrorDiffResult, type PullRequestCommit } from "./mirror.ts";
+import { branchesFromMirror, commitsFromMirror, commitStatsFromMirror, conflictFilesFromMirror, conflictMergeFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError, resolvedMergeFromMirror, summarizeCommitStats, type MirrorDiffResult, type PullRequestCommit } from "./mirror.ts";
 import { cachedGeneratedPathsFromMirror, generatedFilesFromMirror, generatedPathsForCommitsFromMirror } from "./generatedFiles.ts";
 import { checkState, currentChecks, type CheckState } from "./checkState.ts";
 import { currentBaseRef, discardMutation, enqueueMutation, isTaskIntent, mutationsForPr, retryMutation, type MutationPayload } from "./mutations.ts";
@@ -573,6 +575,8 @@ type HttpDependencies = {
   fetchPendingReview: typeof fetchPendingReview;
   lookupPrIndexes: typeof lookupPrIndexes;
   commitPrFileEdit: typeof commitPrFileEdit;
+  commitPrMerge: typeof commitPrMerge;
+  prHeadPushAccess: typeof prHeadPushAccess;
   markPrPathGenerated: typeof markPrPathGenerated;
   githubAuthStatus: typeof githubAuthStatus;
   startGithubSetup: typeof startGithubSetup;
@@ -607,6 +611,8 @@ const defaultHttpDependencies: HttpDependencies = {
   fetchPendingReview,
   lookupPrIndexes,
   commitPrFileEdit,
+  commitPrMerge,
+  prHeadPushAccess,
   markPrPathGenerated,
   githubAuthStatus,
   startGithubSetup,
@@ -1695,11 +1701,16 @@ async function handleResolveReviewThread(
 
 const FULL_SHA_RE = /^[0-9a-f]{40}$/i;
 
-function resolvePrContext(repoName: string, num: number): { headSha: string; baseRef: string; baseSha: string | null } | null {
+function resolvePrContext(repoName: string, num: number): { headSha: string; headRef: string; baseRef: string; baseSha: string | null } | null {
   const stored = cachedPrSnapshot(repoName, num)?.row;
   if (!stored) return null;
-  const detail = JSON.parse(stored.detail_json) as { baseRefName: string; baseRefOid?: string };
-  return { headSha: stored.head_sha, baseRef: "base_ref" in stored ? stored.base_ref : detail.baseRefName, baseSha: detail.baseRefOid ?? null };
+  const detail = JSON.parse(stored.detail_json) as { headRefName: string; baseRefName: string; baseRefOid?: string };
+  return {
+    headSha: stored.head_sha,
+    headRef: detail.headRefName,
+    baseRef: "base_ref" in stored ? stored.base_ref : detail.baseRefName,
+    baseSha: detail.baseRefOid ?? null,
+  };
 }
 
 async function handlePrConflicts(owner: string, repo: string, number: string): Promise<Response> {
@@ -1723,6 +1734,38 @@ async function handlePrConflicts(owner: string, repo: string, number: string): P
     return json({ error: `Couldn't determine conflicting files: ${result.error}` }, 503);
   }
   return json({ error: "Couldn't determine conflicting files" }, 503);
+}
+
+// The conflict editor's starting point: the latest base branch merged into the cached head, with every
+// conflicted file's text and whether the viewer may push the resolution.
+async function handlePrConflictMerge(owner: string, repo: string, number: string, runtime: HttpRuntime): Promise<Response> {
+  if (!validPrReference(owner, repo, number)) return json({ error: "invalid PR reference" }, 400);
+  const repoName = `${owner}/${repo}`;
+  const num = Number(number);
+  const ctx = resolvePrContext(repoName, num);
+  if (!ctx) return json({ error: "PR is not cached yet" }, 404);
+  if (isMockGithub) {
+    const merge = mockGithub!.conflictMerge(repoName, num);
+    return merge ? json(merge) : json({ error: "No conflicts found against the latest base branch" }, 409);
+  }
+
+  try {
+    await fetchMirror(repoName, INCREMENTAL_FETCH_TIMEOUT_MS);
+  } catch (err) {
+    return mirrorErrorResponse(repoName, err);
+  }
+  const result = await conflictMergeFromMirror(repoName, `refs/heads/${ctx.baseRef}`, ctx.headSha, { head: ctx.headRef, base: ctx.baseRef });
+  if (result.status === "clean") return json({ error: "No conflicts found against the latest base branch" }, 409);
+  if (result.status === "merge-failed") {
+    console.error(`conflict merge-tree failed for ${repoName}#${num}: ${result.error}`);
+    return json({ error: `Couldn't merge the base branch: ${result.error}` }, 503);
+  }
+  if (result.status !== "conflicts") return json({ error: "Couldn't merge the base branch" }, 503);
+  const push = await runtime.prHeadPushAccess(repoName, num).catch((error) => {
+    console.error(`push access lookup failed for ${repoName}#${num}:`, error);
+    return { allowed: true, reason: null };
+  });
+  return json({ headSha: result.headSha, baseSha: result.baseSha, headRef: ctx.headRef, baseRef: ctx.baseRef, files: result.files, push });
 }
 
 // Per-commit counts for the timeline. Aggregate mirror file lists here so large histories never
@@ -2663,6 +2706,77 @@ async function handleMarkGenerated(req: Request, runtime: HttpRuntime): Promise<
   }
 }
 
+function conflictResolutions(value: unknown): Array<{ path: string; content: string }> | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const resolutions: Array<{ path: string; content: string }> = [];
+  const paths = new Set<string>();
+  for (const file of value) {
+    if (!file || typeof file !== "object") return null;
+    const { path, content } = file as Record<string, unknown>;
+    if (!isRepoFilePath(path) || paths.has(path) || typeof content !== "string" || !content.isWellFormed()) return null;
+    paths.add(path);
+    resolutions.push({ path, content });
+  }
+  return resolutions;
+}
+
+const CONFLICTS_CHANGED = "The conflicts changed; reload before committing";
+
+async function handlePrConflictMergeCommit(req: Request, runtime: HttpRuntime): Promise<Response> {
+  const body: unknown = await req.json().catch(() => null);
+  if (!body || typeof body !== "object" || Array.isArray(body)) return json({ error: "invalid merge request" }, 400);
+  const { repo, number, expectedHeadOid, baseOid, files } = body as Record<string, unknown>;
+  const resolutions = conflictResolutions(files);
+  if (
+    typeof repo !== "string" || !CANONICAL_REPO_RE.test(repo)
+    || typeof number !== "number" || !Number.isSafeInteger(number) || number <= 0
+    || typeof expectedHeadOid !== "string" || !FULL_SHA_RE.test(expectedHeadOid)
+    || typeof baseOid !== "string" || !FULL_SHA_RE.test(baseOid)
+    || !resolutions
+  ) {
+    return json({ error: "invalid merge request" }, 400);
+  }
+  const headSha = expectedHeadOid.toLowerCase();
+  const baseSha = baseOid.toLowerCase();
+  if (isMockGithub) {
+    const result = await mockGithub!.commitConflictMerge(repo, number, headSha, baseSha, resolutions.map(({ path }) => path));
+    if (result.status === "ok") return json({ ok: true, commitOid: result.commitOid });
+    return json({ error: result.status === "stale-head" ? new StalePrHeadError().message : CONFLICTS_CHANGED, code: "stale-head" }, 409);
+  }
+
+  let built = await resolvedMergeFromMirror(repo, baseSha, headSha, resolutions);
+  if (built.status === "no-mirror" || built.status === "missing-commit") {
+    try {
+      await fetchMirror(repo, INCREMENTAL_FETCH_TIMEOUT_MS);
+    } catch (err) {
+      return mirrorErrorResponse(repo, err);
+    }
+    built = await resolvedMergeFromMirror(repo, baseSha, headSha, resolutions);
+  }
+  if (built.status === "conflicts-changed") return json({ error: CONFLICTS_CHANGED, code: "stale-head" }, 409);
+  if (built.status !== "ok") {
+    if (built.status === "merge-failed") console.error(`conflict merge failed for ${repo}#${number}: ${built.error}`);
+    return json({ error: "Couldn't build the merge commit" }, 503);
+  }
+
+  const { merge } = built;
+  try {
+    const { commitOid } = await runtime.commitPrMerge({ repo, number, expectedHeadOid: headSha, baseOid: baseSha, ...merge });
+    void runtime.refreshPr(repo, number, "user action").catch((error) => console.error(`PR detail refresh failed after merge commit for ${repo}#${number}:`, error));
+    return json({ ok: true, commitOid });
+  } catch (error) {
+    if (error instanceof StalePrHeadError) return json({ error: error.message, code: "stale-head" }, 409);
+    const workflowScopeMissing = merge.entries.some(({ path }) => isWorkflowScopeError(path, error));
+    let auth = await runtime.githubAuthStatus(workflowScopeMissing ? ["repo", "workflow"] : ["repo"]);
+    if (workflowScopeMissing && auth.ok) {
+      auth = { ...auth, ok: false, state: "missing-scopes", error: "Allow workflow access.", missingScopes: ["workflow"] };
+    }
+    if (!auth.ok) return githubSetupResponse(auth, 403);
+    console.error(`merge commit failed for ${repo}#${number}:`, error);
+    return json({ error: "GitHub commit failed" }, 502);
+  }
+}
+
 async function handleCommitMessage(req: Request, runtime: HttpRuntime): Promise<Response> {
   let body: unknown;
   try {
@@ -3501,6 +3615,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       let allowed = (req.method === "POST" && url.pathname === "/api/archive")
         || (req.method === "POST" && url.pathname === "/api/inbox/reorder")
         || (req.method === "POST" && url.pathname === "/api/commit-message")
+        || (req.method === "POST" && url.pathname === "/api/pr-conflict-merge")
         || (req.method === "POST" && url.pathname === "/api/quick-generate")
         || (req.method === "POST" && url.pathname === "/api/ask")
         || (req.method === "POST" && url.pathname === "/api/auth/setup")
@@ -3664,6 +3779,9 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     }
     if (req.method === "POST" && url.pathname === "/api/pr-file-edit") {
       return handlePrFileEdit(req, runtime);
+    }
+    if (req.method === "POST" && url.pathname === "/api/pr-conflict-merge") {
+      return handlePrConflictMergeCommit(req, runtime);
     }
     if (req.method === "POST" && url.pathname === "/api/pr-generated") {
       return handleMarkGenerated(req, runtime);
@@ -3898,6 +4016,15 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       parts.length === 6 &&
       parts[0] === "api" &&
       parts[1] === "pr" &&
+      parts[5] === "conflict-merge"
+    ) {
+      return handlePrConflictMerge(parts[2]!, parts[3]!, parts[4]!, runtime);
+    }
+    if (
+      req.method === "GET" &&
+      parts.length === 6 &&
+      parts[0] === "api" &&
+      parts[1] === "pr" &&
       parts[5] === "commit-stats"
     ) {
       return handlePrCommitStats(parts[2]!, parts[3]!, parts[4]!, url, req.signal);
@@ -4065,6 +4192,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     if (pathname.startsWith("/api/agent/")) return method === "GET" ? "agent read" : "user action";
     if (pathname.startsWith("/api/pr/")) return "app detail";
     if (pathname === "/api/pr-file-edit") return "file edit";
+    if (pathname === "/api/pr-conflict-merge") return "user action";
     return null;
   };
   return async function fetchHandler(req: Request): Promise<Response> {

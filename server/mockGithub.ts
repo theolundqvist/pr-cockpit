@@ -604,6 +604,83 @@ function requireMockPendingReview(repo: string, number: number, reviewId: number
   return review;
 }
 
+// PR 103's files as merging main into its head writes them; the card lists these paths in this order.
+const CONFLICT_FIXTURES: Record<string, string> = isMockGithub ? {
+  "ui/navigation.ts": `import { writable } from "svelte/store";
+
+export type Tab = "conversation" | "files" | "agents" | "actions";
+
+export const DEFAULT_TAB: Tab = "conversation";
+
+export function isTab(value: unknown): value is Tab {
+  return value === "conversation" || value === "files" || value === "agents" || value === "actions";
+}
+
+<<<<<<< fixture/pr-103
+export function tabFromHash(hash: string): Tab {
+  const [, , , , tab] = hash.split("/");
+  return isTab(tab) ? tab : DEFAULT_TAB;
+}
+=======
+export function tabFromHash(hash: string, fallback: Tab = DEFAULT_TAB): Tab {
+  const tab = new URLSearchParams(hash.split("?")[1] ?? "").get("tab");
+  return isTab(tab) ? tab : fallback;
+}
+>>>>>>> main
+
+export const activeTab = writable<Tab>(DEFAULT_TAB);
+
+export function rememberTab(repo: string, number: number, tab: Tab): void {
+<<<<<<< fixture/pr-103
+  sessionStorage.setItem(\`tab:\${repo}#\${number}\`, tab);
+=======
+  localStorage.setItem(\`pr-cockpit:tab:\${repo}#\${number}\`, tab);
+>>>>>>> main
+  activeTab.set(tab);
+}
+
+export function restoreTab(repo: string, number: number): Tab {
+  const stored = localStorage.getItem(\`pr-cockpit:tab:\${repo}#\${number}\`);
+  return isTab(stored) ? stored : DEFAULT_TAB;
+}
+`,
+  "ui/src/lib/router/state.ts": `import { activeTab, tabFromHash, type Tab } from "../../../navigation";
+
+export interface RouteState {
+  repo: string;
+  number: number;
+  tab: Tab;
+}
+
+export function parseRoute(hash: string): RouteState | null {
+  const match = /^#\\/pr\\/([^/]+\\/[^/]+)\\/(\\d+)/.exec(hash);
+  if (!match) return null;
+<<<<<<< fixture/pr-103
+  const tab = tabFromHash(hash);
+  activeTab.set(tab);
+  return { repo: match[1]!, number: Number(match[2]), tab };
+=======
+  return { repo: match[1]!, number: Number(match[2]), tab: tabFromHash(hash, "files") };
+>>>>>>> main
+}
+`,
+  "server/navigation.ts": `export const TAB_QUERY = "tab";
+
+export function detailUrl(repo: string, number: number, tab?: string): string {
+<<<<<<< fixture/pr-103
+  return \`/#/pr/\${repo}/\${number}\${tab ? \`/\${tab}\` : ""}\`;
+=======
+  const query = tab ? \`?\${TAB_QUERY}=\${encodeURIComponent(tab)}\` : "";
+  return \`/#/pr/\${repo}/\${number}\${query}\`;
+>>>>>>> main
+}
+`,
+} : {};
+
+function conflictedFixture(repo: string, number: number): PrDetail | null {
+  const detail = details[`${repo}#${number}`];
+  return !capturedRepo && number === 103 && detail?.mergeable === "CONFLICTING" ? detail : null;
+}
 
 export const mockGithub = isMockGithub ? {
   viewerLogin: snapshot?.viewer ?? VIEWER,
@@ -749,9 +826,46 @@ export const mockGithub = isMockGithub ? {
       number,
     );
   },
-  conflictFiles: (_repo: string, number: number): string[] => !capturedRepo && number === 103
-    ? ["ui/navigation.ts", "ui/src/lib/router/state.ts", "server/navigation.ts"]
-    : [],
+  conflictFiles: (repo: string, number: number): string[] => conflictedFixture(repo, number) ? Object.keys(CONFLICT_FIXTURES) : [],
+  conflictMerge: (repo: string, number: number) => {
+    const detail = conflictedFixture(repo, number);
+    if (!detail) return null;
+    return {
+      headSha: detail.headRefOid,
+      baseSha: detail.baseRefOid,
+      headRef: detail.headRefName,
+      baseRef: detail.baseRefName,
+      files: Object.entries(CONFLICT_FIXTURES).map(([path, content]) => ({ path, content })),
+      push: { allowed: true, reason: null },
+    };
+  },
+  // Lands the merge commit on the fixture and its seeded row, which GitHub then reports mergeable.
+  commitConflictMerge: async (
+    repo: string,
+    number: number,
+    expectedHeadOid: string,
+    baseOid: string,
+    paths: string[],
+  ): Promise<{ status: "ok"; commitOid: string } | { status: "stale-head" | "conflicts-changed" }> => {
+    await Bun.sleep(400);
+    const detail = details[`${repo}#${number}`];
+    if (!detail || !fixtureDb) throw new Error(`no mock fixture for ${repo}#${number}`);
+    if (detail.headRefOid !== expectedHeadOid) return { status: "stale-head" };
+    const conflicted = conflictedFixture(repo, number) ? Object.keys(CONFLICT_FIXTURES) : [];
+    if (baseOid !== detail.baseRefOid || paths.length !== conflicted.length || conflicted.some((path) => !paths.includes(path))) {
+      return { status: "conflicts-changed" };
+    }
+    const commitOid = sha(number, 50);
+    detail.commitList.nodes.push({ commit: { oid: commitOid, abbreviatedOid: commitOid.slice(0, 7), messageHeadline: `Merge branch '${detail.baseRefName}' into ${detail.headRefName}`, committedDate: MOCK_FIXTURE_CLOCK, additions: 0, deletions: 0, author: { name: "Theodor", user: author(VIEWER) }, parents: { nodes: [{ oid: expectedHeadOid }, { oid: baseOid }] } } });
+    detail.commitCount = { totalCount: detail.commitCount.totalCount + 1 };
+    detail.headRefOid = commitOid;
+    detail.mergeable = "MERGEABLE";
+    detail.mergeStateStatus = "BLOCKED";
+    fixtureDb.prepare("UPDATE prs SET head_sha = ?, mergeable = ?, merge_state_status = ?, commit_count = ?, detail_json = ? WHERE repo = ? AND number = ?")
+      .run(commitOid, detail.mergeable, detail.mergeStateStatus, detail.commitCount.totalCount, JSON.stringify(detail), repo, number);
+    fixtureDb.prepare("INSERT OR REPLACE INTO diffs (head_sha, patch, fetched_at) VALUES (?, ?, datetime('now'))").run(commitOid, prPatch(number));
+    return { status: "ok", commitOid };
+  },
   diff: (repo: string, number: number): string => {
     fixtureDetail(repo, number);
     return prPatch(number);

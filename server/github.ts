@@ -1,5 +1,6 @@
 import { validateCodeScanningDismissal } from "../shared/codeScanning.js";
 import type { MergeMethod } from "./mergeMethod.ts";
+import type { ResolvedMerge } from "./mirror.ts";
 import { mockGithub, MOCK_FIXTURE_CLOCK } from "./mockGithub.ts";
 import {
   githubAuthStatus as liveGithubAuthStatus,
@@ -3468,13 +3469,17 @@ export type PrFileEdit = {
   message: string;
 };
 
+type RestPullRepo = { full_name: string; permissions?: { push?: boolean } };
+
 type RestPull = {
   state: string;
+  maintainer_can_modify?: boolean;
   head: {
     sha: string;
     ref: string;
-    repo: { full_name: string } | null;
+    repo: RestPullRepo | null;
   };
+  base: { ref: string; repo: RestPullRepo };
 };
 
 type RestTreeEntry = {
@@ -3656,6 +3661,69 @@ export async function markPrPathGenerated(repo: string, number: number, pattern:
     },
   });
   return { commitOid };
+}
+
+export type PrHeadPushAccess = { allowed: boolean; reason: string | null };
+
+/** Whether the viewer can push to the PR's head branch. Permissions GitHub leaves out defer to the push itself. */
+export async function prHeadPushAccess(repo: string, number: number): Promise<PrHeadPushAccess> {
+  if (mockGithub) return { allowed: true, reason: null };
+  const pullRequest = await githubRestJson<RestPull>("GET", `/repos/${encodedRepo(repo)}/pulls/${number}`);
+  if (pullRequest.state !== "open") return { allowed: false, reason: "This pull request is not open." };
+  const head = pullRequest.head.repo;
+  if (!head) return { allowed: false, reason: "The head repository was deleted." };
+  if (head.permissions?.push !== false) return { allowed: true, reason: null };
+  if (head.full_name === pullRequest.base.repo.full_name) return { allowed: false, reason: `You can't push to ${head.full_name}.` };
+  // A fork's head branch takes pushes from base-repository writers only while it allows maintainer edits.
+  if (!pullRequest.maintainer_can_modify) return { allowed: false, reason: `${head.full_name} doesn't allow edits from maintainers.` };
+  if (pullRequest.base.repo.permissions?.push === false) return { allowed: false, reason: `You can't push to ${head.full_name}.` };
+  return { allowed: true, reason: null };
+}
+
+export type PrMergeCommit = ResolvedMerge & {
+  repo: string;
+  number: number;
+  expectedHeadOid: string;
+  baseOid: string;
+};
+
+/** Commits `baseOid` merged into the PR head with GitHub's default merge message, as its conflict editor does. */
+export async function commitPrMerge(input: PrMergeCommit): Promise<{ commitOid: string }> {
+  const pullRequest = await githubRestJson<RestPull>("GET", `/repos/${encodedRepo(input.repo)}/pulls/${input.number}`);
+  if (pullRequest.state !== "open") throw new StalePrHeadError("PR is no longer open");
+  if (!pullRequest.head?.ref || !pullRequest.head.repo?.full_name) throw new StalePrHeadError("PR head is unavailable");
+  if (pullRequest.head.sha.toLowerCase() !== input.expectedHeadOid) throw new StalePrHeadError();
+
+  const headRepo = encodedRepo(pullRequest.head.repo.full_name);
+  for (const entry of input.entries) {
+    if (!entry.content) continue;
+    const blob = await githubRestJson<{ sha: string }>("POST", `/repos/${headRepo}/git/blobs`, {
+      content: Buffer.from(entry.content).toString("base64"),
+      encoding: "base64",
+    });
+    if (blob.sha !== entry.sha) throw new Error(`GitHub stored ${entry.path} as ${blob.sha}, expected ${entry.sha}`);
+  }
+  const tree = input.entries.length === 0
+    ? input.baseTree
+    : (await githubRestJson<{ sha: string }>("POST", `/repos/${headRepo}/git/trees`, {
+      base_tree: input.baseTree,
+      tree: input.entries.map(({ path, mode, type, sha }) => ({ path, mode, type, sha })),
+    })).sha;
+  // Any other tree would commit something other than the merge the user resolved.
+  if (tree !== input.tree) throw new Error(`GitHub built merge tree ${tree}, expected ${input.tree}`);
+  const commit = await githubRestJson<{ sha: string }>("POST", `/repos/${headRepo}/git/commits`, {
+    message: `Merge branch '${pullRequest.base.ref}' into ${pullRequest.head.ref}`,
+    tree,
+    parents: [input.expectedHeadOid, input.baseOid],
+  });
+  const encodedRef = pullRequest.head.ref.split("/").map(encodeURIComponent).join("/");
+  try {
+    await githubRestJson("PATCH", `/repos/${headRepo}/git/refs/heads/${encodedRef}`, { sha: commit.sha, force: false });
+  } catch (error) {
+    if (isRefUpdateRace(error)) throw new StalePrHeadError();
+    throw error;
+  }
+  return { commitOid: commit.sha };
 }
 
 export class RestRequestError extends GithubRequestError {

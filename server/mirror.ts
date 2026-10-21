@@ -1,6 +1,8 @@
 import type { Stats } from "node:fs";
 import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs";
-import { lstat, readdir, rm, stat } from "node:fs/promises";
+import { lstat, mkdtemp, readdir, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ghToken } from "./github.ts";
 import { excludedPath } from "../shared/reviewFiles.js";
 
@@ -34,11 +36,13 @@ async function git(
   args: string[],
   priorityCommand: string[] = [],
   input?: string,
+  env?: Record<string, string>,
 ): Promise<{ ok: boolean; exitCode: number; stdout: string; stderr: string }> {
   const proc = Bun.spawn([...priorityCommand, "git", ...args], {
     stdin: input === undefined ? "ignore" : new Blob([input]),
     stdout: "pipe",
     stderr: "pipe",
+    env: env === undefined ? undefined : { ...Bun.env, ...env },
   });
   const [stdout, stderr] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -713,6 +717,238 @@ export async function conflictFilesFromMirror(
     if (!(await Bun.file(`${dir}/HEAD`).exists())) return { status: "no-mirror" };
     if (!(await commitExists(dir, base)) || !(await commitExists(dir, head))) return { status: "missing-commit" };
     return conflictFilesFromGitDir(dir, base, head);
+  });
+}
+
+export type MergeLabels = { head: string; base: string };
+
+export type MergeConflictFile = { path: string; content: string } | { path: string; unsupported: string };
+
+export type MirrorConflictMergeResult =
+  | { status: "conflicts"; headSha: string; baseSha: string; files: MergeConflictFile[] }
+  | { status: "clean" }
+  | { status: "no-mirror" }
+  | { status: "missing-commit" }
+  | { status: "merge-failed"; error: string };
+
+type ConflictStages = Partial<Record<"1" | "2" | "3", { mode: string; oid: string }>>;
+
+type BaseIntoHeadMerge =
+  | { status: "clean"; tree: string }
+  | { status: "conflicts"; tree: string; stages: Map<string, ConflictStages> }
+  | { status: "merge-failed"; error: string };
+
+// Head is "ours", so every conflict shows the PR's side first as GitHub's conflict editor does. The
+// pinned style keeps a user's diff3/zdiff3 config out of the markers.
+async function mergeBaseIntoHead(gitDir: string, headSha: string, baseSha: string): Promise<BaseIntoHeadMerge> {
+  const result = await git([
+    "--git-dir",
+    gitDir,
+    "-c",
+    "merge.conflictStyle=merge",
+    "merge-tree",
+    "--write-tree",
+    "--no-messages",
+    "-z",
+    headSha,
+    baseSha,
+  ]);
+  if (result.exitCode !== 0 && result.exitCode !== 1) return { status: "merge-failed", error: await mergeTreeFailure(result.stderr) };
+  const [tree = "", ...entries] = result.stdout.split("\0");
+  if (result.exitCode === 0) return { status: "clean", tree };
+  const stages = new Map<string, ConflictStages>();
+  for (const entry of entries) {
+    const tab = entry.indexOf("\t");
+    if (tab < 0) continue;
+    const [mode = "", oid = "", stage = ""] = entry.slice(0, tab).split(" ");
+    const path = entry.slice(tab + 1);
+    const byStage = stages.get(path) ?? {};
+    byStage[stage as "1" | "2" | "3"] = { mode, oid };
+    stages.set(path, byStage);
+  }
+  return { status: "conflicts", tree, stages };
+}
+
+const EDITABLE_MODES: Record<string, true> = { "100644": true, "100755": true };
+
+function textConflict(stages: ConflictStages): boolean {
+  return !!stages["2"] && !!stages["3"] && EDITABLE_MODES[stages["2"].mode] === true && EDITABLE_MODES[stages["3"].mode] === true;
+}
+
+const MAX_CONFLICT_EDIT_BYTES = 1024 * 1024;
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
+
+async function gitBlobBytes(gitDir: string, object: string): Promise<Uint8Array | null> {
+  const proc = Bun.spawn(["git", "--git-dir", gitDir, "cat-file", "blob", object], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+  const [bytes, exitCode] = await Promise.all([new Response(proc.stdout).arrayBuffer(), proc.exited]);
+  return exitCode === 0 ? new Uint8Array(bytes) : null;
+}
+
+async function conflictFileFromMerge(
+  gitDir: string,
+  merge: Extract<BaseIntoHeadMerge, { status: "conflicts" }>,
+  path: string,
+  revisions: { headSha: string; baseSha: string },
+  labels: MergeLabels,
+): Promise<MergeConflictFile> {
+  const stages = merge.stages.get(path)!;
+  if (!stages["2"]) return { path, unsupported: `Deleted in ${labels.head} and changed in ${labels.base}` };
+  if (!stages["3"]) return { path, unsupported: `Deleted in ${labels.base} and changed in ${labels.head}` };
+  if (!textConflict(stages)) return { path, unsupported: "Symlink or submodule conflict" };
+  const bytes = await gitBlobBytes(gitDir, `${merge.tree}:${path}`);
+  if (!bytes) return { path, unsupported: "Git wrote no merged file at this path" };
+  if (bytes.length > MAX_CONFLICT_EDIT_BYTES) return { path, unsupported: "Too large to resolve here" };
+  let text: string;
+  try {
+    text = strictUtf8.decode(bytes);
+  } catch {
+    return { path, unsupported: "Binary file" };
+  }
+  // A content conflict without markers is one Git declined to merge as text (binary or a merge attribute).
+  if (text.includes("\0") || !/^<{7,}(?: |\r?$)/m.test(text)) return { path, unsupported: "Git couldn't merge this file as text" };
+  // merge-tree labels each side with the revision it was given; the editor names the branches.
+  const content = text
+    .replace(new RegExp(`^(<{7,}) ${revisions.headSha}(?=:|\\r?$)`, "gm"), (_, marker: string) => `${marker} ${labels.head}`)
+    .replace(new RegExp(`^(>{7,}) ${revisions.baseSha}(?=:|\\r?$)`, "gm"), (_, marker: string) => `${marker} ${labels.base}`);
+  return { path, content };
+}
+
+async function commitSha(gitDir: string, revision: string): Promise<string | null> {
+  const result = await git(["--git-dir", gitDir, "rev-parse", "--verify", "--quiet", "--end-of-options", `${revision}^{commit}`]);
+  return result.ok ? result.stdout.trim() : null;
+}
+
+/** The merge of `base` into `head` with each conflicted file as Git wrote it, markers labelled with branch names. */
+export async function conflictMergeFromGitDir(
+  gitDir: string,
+  base: string,
+  head: string,
+  labels: MergeLabels,
+): Promise<Exclude<MirrorConflictMergeResult, { status: "no-mirror" }>> {
+  const [baseSha, headSha] = await Promise.all([commitSha(gitDir, base), commitSha(gitDir, head)]);
+  if (!baseSha || !headSha) return { status: "missing-commit" };
+  const merge = await mergeBaseIntoHead(gitDir, headSha, baseSha);
+  if (merge.status === "clean") return { status: "clean" };
+  if (merge.status === "merge-failed") return merge;
+  const files = await Promise.all([...merge.stages.keys()].map((path) => conflictFileFromMerge(gitDir, merge, path, { headSha, baseSha }, labels)));
+  return { status: "conflicts", headSha, baseSha, files };
+}
+
+export async function conflictMergeFromMirror(
+  repo: string,
+  base: string,
+  head: string,
+  labels: MergeLabels,
+): Promise<MirrorConflictMergeResult> {
+  return withMirrorOperation(repo, async () => {
+    const dir = mirrorDir(repo);
+    if (!(await Bun.file(`${dir}/HEAD`).exists())) return { status: "no-mirror" };
+    return conflictMergeFromGitDir(dir, base, head, labels);
+  });
+}
+
+export type MergeTreeEntry = {
+  path: string;
+  mode: string;
+  type: "blob" | "commit";
+  // null deletes the path.
+  sha: string | null;
+  // The blob's bytes when the head's tree lacks it, so GitHub may not hold it yet.
+  content?: Uint8Array;
+};
+
+export type ResolvedMerge = { tree: string; baseTree: string; entries: MergeTreeEntry[] };
+
+export type MirrorResolvedMergeResult =
+  | { status: "ok"; merge: ResolvedMerge }
+  | { status: "conflicts-changed" }
+  | { status: "no-mirror" }
+  | { status: "missing-commit" }
+  | { status: "merge-failed"; error: string };
+
+/**
+ * Merges `baseSha` into `headSha` with every conflicted path replaced by its resolution, in a throwaway
+ * index. `entries` turn the base commit's tree into the result; GitHub rebuilds the same tree from them.
+ */
+export async function resolvedMergeFromGitDir(
+  gitDir: string,
+  baseSha: string,
+  headSha: string,
+  resolutions: ReadonlyArray<{ path: string; content: string }>,
+): Promise<Exclude<MirrorResolvedMergeResult, { status: "no-mirror" }>> {
+  if (!(await commitExists(gitDir, baseSha)) || !(await commitExists(gitDir, headSha))) return { status: "missing-commit" };
+  const merge = await mergeBaseIntoHead(gitDir, headSha, baseSha);
+  if (merge.status === "merge-failed") return merge;
+  const conflicted = merge.status === "conflicts" ? merge.stages : new Map<string, ConflictStages>();
+  const resolvedPaths = new Set(resolutions.map(({ path }) => path));
+  if (
+    resolvedPaths.size !== resolutions.length
+    || conflicted.size !== resolvedPaths.size
+    || [...conflicted].some(([path, stages]) => !resolvedPaths.has(path) || !textConflict(stages))
+  ) {
+    return { status: "conflicts-changed" };
+  }
+
+  const scratch = await mkdtemp(join(tmpdir(), "pr-cockpit-merge-"));
+  const index = { GIT_INDEX_FILE: join(scratch, "index") };
+  const failed = (step: string, result: { stderr: string }) => ({ status: "merge-failed" as const, error: result.stderr.trim() || `git ${step} failed` });
+  try {
+    const read = await git(["--git-dir", gitDir, "read-tree", merge.tree], [], undefined, index);
+    if (!read.ok) return failed("read-tree", read);
+    const listed = await git(["--git-dir", gitDir, "--literal-pathspecs", "ls-tree", "-r", "-z", merge.tree, "--", ...resolvedPaths]);
+    if (!listed.ok) return failed("ls-tree", listed);
+    const modes = new Map(listed.stdout.split("\0").filter(Boolean).map((entry) => [entry.slice(entry.indexOf("\t") + 1), entry.slice(0, entry.indexOf(" "))]));
+    let indexInfo = "";
+    for (const { path, content } of resolutions) {
+      const blob = await git(["--git-dir", gitDir, "hash-object", "-w", "--stdin", "--no-filters"], [], content);
+      if (!blob.ok) return failed("hash-object", blob);
+      indexInfo += `${modes.get(path) ?? "100644"} ${blob.stdout.trim()}\t${path}\0`;
+    }
+    const updated = await git(["--git-dir", gitDir, "update-index", "-z", "--index-info"], [], indexInfo, index);
+    if (!updated.ok) return failed("update-index", updated);
+    const written = await git(["--git-dir", gitDir, "write-tree"], [], undefined, index);
+    if (!written.ok) return failed("write-tree", written);
+    const tree = written.stdout.trim();
+
+    const baseTree = await git(["--git-dir", gitDir, "rev-parse", `${baseSha}^{tree}`]);
+    if (!baseTree.ok) return failed("rev-parse", baseTree);
+    const [fromBase, fromHead] = await Promise.all([
+      git(["--git-dir", gitDir, "diff-tree", "-r", "-z", "--no-renames", baseSha, tree]),
+      git(["--git-dir", gitDir, "diff-tree", "-r", "-z", "--no-renames", "--name-only", headSha, tree]),
+    ]);
+    if (!fromBase.ok) return failed("diff-tree", fromBase);
+    if (!fromHead.ok) return failed("diff-tree", fromHead);
+    const unlikeHead = new Set(fromHead.stdout.split("\0").filter(Boolean));
+    const fields = fromBase.stdout.split("\0");
+    const entries: MergeTreeEntry[] = [];
+    for (let field = 0; field + 1 < fields.length; field += 2) {
+      const [oldMode = "", newMode = "", , newSha = "", status = ""] = fields[field]!.slice(1).split(" ");
+      const path = fields[field + 1]!;
+      const mode = status === "D" ? oldMode : newMode;
+      const entry: MergeTreeEntry = { path, mode, type: mode === "160000" ? "commit" : "blob", sha: status === "D" ? null : newSha };
+      if (entry.sha !== null && entry.type === "blob" && unlikeHead.has(path)) {
+        const bytes = await gitBlobBytes(gitDir, entry.sha);
+        if (!bytes) return { status: "merge-failed", error: `git cat-file failed for ${path}` };
+        entry.content = bytes;
+      }
+      entries.push(entry);
+    }
+    return { status: "ok", merge: { tree, baseTree: baseTree.stdout.trim(), entries } };
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+}
+
+export async function resolvedMergeFromMirror(
+  repo: string,
+  baseSha: string,
+  headSha: string,
+  resolutions: ReadonlyArray<{ path: string; content: string }>,
+): Promise<MirrorResolvedMergeResult> {
+  return withMirrorOperation(repo, async () => {
+    const dir = mirrorDir(repo);
+    if (!(await Bun.file(`${dir}/HEAD`).exists())) return { status: "no-mirror" };
+    return resolvedMergeFromGitDir(dir, baseSha, headSha, resolutions);
   });
 }
 
