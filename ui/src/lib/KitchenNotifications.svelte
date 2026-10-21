@@ -154,6 +154,7 @@
       <div class="notification-item" class:unread={isUnread(pr)}>
         <a class="notification-link" href={`#/pr/${pr.repo}/${pr.number}`} onclick={() => { setRead(pr, true); panel.hidePopover(); }}>
           <span class="notification-title" title={pr.title}>{pr.title}</span>
+          {#if pr.author}<span class="notification-author">Author @{pr.author}</span>{/if}
           <span class="notification-meta"><span><span class="merged">Merged</span> · {pr.repo.split("/").at(-1)} #{pr.number}</span><time datetime={pr.terminalAt}>{time(pr.terminalAt)}</time></span>
         </a>
         <button class="read-toggle" aria-label={`${isUnread(pr) ? "Mark as read" : "Mark as unread"}: ${pr.title}`} title={isUnread(pr) ? "Mark as read" : "Mark as unread"} onclick={() => setRead(pr, isUnread(pr))}><span class:filled={isUnread(pr)}></span></button>
@@ -196,6 +197,7 @@
   .notification-link { flex: 1; min-width: 0; padding: 12px 0 12px 12px; color: inherit; text-decoration: none; display: flex; flex-direction: column; gap: 6px; border-radius: 8px; }
   .notification-title { line-height: 1.45; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .unread .notification-title { font-weight: 600; }
+  .notification-author { color: var(--text-dim); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
   .notification-meta { display: flex; flex-wrap: wrap; gap: 4px 8px; color: var(--text-faint); font-size: 10px; line-height: 1.5; }
   .merged { color: var(--text-dim); }
   .read-toggle { display: grid; place-items: center; width: 30px; height: 30px; flex: none; padding: 0; margin: 0 8px; border-radius: 50%; }

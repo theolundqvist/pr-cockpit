@@ -81,6 +81,8 @@ export function cookingScenarios() {
     verify: async (page) => {
       if (mode === "history") {
         const dialog = page.getByRole("dialog", { name: "Notifications" });
+        const authors = await dialog.locator(".notification-author").allTextContents();
+        if (authors.length !== 2 || authors.some((author) => author !== "Author @octocat")) throw new Error(`Missing notification authors: ${authors}`);
         const bell = page.getByRole("button", { name: /^Notifications/ });
         const badge = await page.locator(".notification-count").boundingBox();
         if (Math.abs(badge.width - badge.height) > 1) throw new Error("Single-digit count is not circular");
