@@ -1005,6 +1005,9 @@ describe("agent PR summary", () => {
     const threadId = "PRRT_test_thread";
     const cachedDetail = {
       headRefOid: "a".repeat(40),
+      body: "",
+      comments: { nodes: [] },
+      reviews: { nodes: [] },
       reviewThreads: {
         nodes: [{ id: threadId, isResolved: false, isOutdated: false, path: "src/value.ts", line: 7, comments: { nodes: [] } }],
       },
@@ -1722,9 +1725,11 @@ describe("PR detail refresh", () => {
       headRefName: "feature",
       headRefOid: "a".repeat(40),
       baseRefName: "main",
+      body: "",
       reviews: { nodes: [] },
       reviewRequests: { nodes: [] },
       comments: { nodes: [] },
+      reviewThreads: { nodes: [] },
     };
     let releaseRefresh!: () => void;
     let markRefreshFinished!: () => void;

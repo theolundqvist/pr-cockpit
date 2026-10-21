@@ -9,7 +9,10 @@ test("an untracked refresh publishes before the Actions catalog and honours the 
   const number = 4242;
   const oldHead = "a".repeat(40);
   const newHead = "b".repeat(40);
-  const stored = { headRefOid: oldHead, title: "stored" } as unknown as PrDetail;
+  const stored = {
+    headRefOid: oldHead, title: "stored", body: "",
+    comments: { nodes: [] }, reviews: { nodes: [] }, reviewThreads: { nodes: [] },
+  } as unknown as PrDetail;
   upsertCachedPrDetail({ repo, number, head_sha: oldHead, detail_json: JSON.stringify(stored), fetched_at: "2026-09-01T00:00:00.000Z" });
   const log: string[] = [];
   setRendererInvalidationPublisher((event: RendererInvalidation) => {

@@ -131,7 +131,7 @@ import {
 } from "./systemIssues.ts";
 import { testMatcher } from "../ui/src/lib/testPath.js";
 import { excludedPath, isReviewPathPattern } from "../shared/reviewFiles.js";
-import { handleImage, handleMockImage } from "./imageproxy.ts";
+import { handleImage, handleMockImage, prefetchDetailImages } from "./imageproxy.ts";
 import {
   agentLogTail,
   agentRunDetail,
@@ -999,6 +999,7 @@ async function handlePrDetail(
       detail_json: JSON.stringify(detail),
       fetched_at: snapshotCutoffAt,
     });
+    prefetchDetailImages(detail);
     const stored = cachedPrSnapshot(repoName, num)!.row;
     const response = withBaseBranchPr(repoName, num, JSON.parse(stored.detail_json));
     return json(agentRead ? { ...response, agentSnapshot: snapshotStatus(stored.fetched_at, lastWebhookAtForPr(repoName, num)) } : response);

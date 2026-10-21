@@ -1,6 +1,7 @@
 import { getCachedPrDetail, upsertCachedPrDetail } from "./db.ts";
 import { fetchPrDetail, fetchPrDetailPart, type PrDetail, type PrDetailScope } from "./github.ts";
 import { withGithubUsageSource, type GithubUsageSource } from "./githubUsage.ts";
+import { prefetchDetailImages } from "./imageproxy.ts";
 import { invalidatePr } from "./rendererInvalidation.ts";
 import { cacheGithubActionsForCommit } from "./runLogs.ts";
 
@@ -39,6 +40,7 @@ export function refreshCachedPrDetail(
       fetched_at: snapshotCutoffAt,
     });
     invalidatePr(repo, number);
+    prefetchDetailImages(detail);
     if (scope === "review") return;
     await cacheGithubActionsForCommit(repo, number, detail.headRefOid, undefined, true)
       .catch((error) => console.error(`Actions coverage refresh failed for ${repo}#${number}:`, error));

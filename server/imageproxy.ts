@@ -1,7 +1,7 @@
 import { accessSync, constants, mkdirSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { mockGithub } from "./mockGithub.ts";
 import { mockScreenshotSvg } from "./mockImages.ts";
-import { GITHUB_MEDIA_HOSTS } from "./githubMedia.ts";
+import { extractGithubMedia, GITHUB_MEDIA_HOSTS } from "./githubMedia.ts";
 import { createConcurrencyLimit } from "./concurrency.ts";
 import { ghToken } from "./github.ts";
 
@@ -332,11 +332,43 @@ export async function handleMockImage(url: URL, range: string | null = null): Pr
   return converted ? serveResult(await converted, range) : serveBody(body, range);
 }
 
+function mediaNodes(connection: unknown): unknown[] {
+  if (connection && typeof connection === "object" && "nodes" in connection && Array.isArray(connection.nodes)) return connection.nodes;
+  throw new Error("PR detail media connection has no nodes");
+}
+
+function addBodyMedia(urls: Set<string>, item: unknown): void {
+  if (!item || typeof item !== "object") throw new Error("PR detail media item is not an object");
+  if (!("body" in item) || typeof item.body !== "string") return;
+  for (const url of extractGithubMedia(item.body, { videos: false })) urls.add(url);
+}
+
+// Replicas pass detail JSON straight from the source, so only the media-bearing fields read here are checked.
+export function prefetchDetailImages(detail: unknown): void {
+  if (!detail || typeof detail !== "object" || !("reviews" in detail) || !("comments" in detail) || !("reviewThreads" in detail)) {
+    throw new Error("PR detail has no media connections");
+  }
+  const urls = new Set<string>();
+  addBodyMedia(urls, detail);
+  for (const review of mediaNodes(detail.reviews)) addBodyMedia(urls, review);
+  for (const comment of mediaNodes(detail.comments)) addBodyMedia(urls, comment);
+  for (const thread of mediaNodes(detail.reviewThreads)) {
+    for (const comment of mediaNodes(thread && typeof thread === "object" && "comments" in thread ? thread.comments : null)) addBodyMedia(urls, comment);
+  }
+  if (urls.size === 0) return;
+  void prefetchImages([...urls]);
+}
+
+const prefetchSlots = createConcurrencyLimit(3);
+const imagePrefetches = new Map<string, Promise<ImageResult>>();
+
 export async function prefetchImages(urls: string[]): Promise<void> {
   if (mockGithub) return;
-  let cursor = 0;
-  const worker = async () => {
-    while (cursor < urls.length) await getImage(urls[cursor++]!).catch(() => {});
-  };
-  await Promise.allSettled([worker(), worker(), worker()]);
+  await Promise.allSettled(urls.map((raw) => {
+    const pending = imagePrefetches.get(raw);
+    if (pending) return pending;
+    const request = prefetchSlots(() => getImage(raw)).finally(() => imagePrefetches.delete(raw));
+    imagePrefetches.set(raw, request);
+    return request;
+  }));
 }

@@ -5,6 +5,7 @@ import {
   evictReposNotIn,
   evictStalePrs,
   getPr,
+  listPrs,
   listWebhookRegistrations,
   setAutoMergeArmed,
   setSafeMergeApproval,
@@ -15,8 +16,7 @@ import {
 } from "./db.ts";
 import { reconcileForwarders } from "./forwarders.ts";
 import { prKeyOf } from "./prKey.ts";
-import { prefetchImages } from "./imageproxy.ts";
-import { extractGithubMedia } from "./githubMedia.ts";
+import { prefetchDetailImages } from "./imageproxy.ts";
 import { fetchMirror, pruneMirrors } from "./mirror.ts";
 import { needsMeRank } from "./rank.ts";
 import { refreshRepoUsers } from "./repoUsers.ts";
@@ -120,16 +120,6 @@ export function greptileReviewedSha(detail: GreptileComments): string | null {
 
 export function greptileUnresolvedCount(detail: GreptileThreads): number {
   return detail.reviewThreads.nodes.filter((t) => !t.isResolved && !t.isOutdated && t.comments.nodes[0]?.author?.login === GREPTILE_LOGIN).length;
-}
-
-function prefetchDetailImages(detail: PrDetail): void {
-  const bodies = [detail.body];
-  for (const review of detail.reviews.nodes) bodies.push(review.body);
-  for (const comment of detail.comments.nodes) bodies.push(comment.body);
-  for (const thread of detail.reviewThreads.nodes) for (const comment of thread.comments.nodes) bodies.push(comment.body);
-  const urls = [...new Set(bodies.flatMap((body) => extractGithubMedia(body, { videos: false })))];
-  if (urls.length === 0) return;
-  prefetchImages(urls).catch((err) => console.error(`image prefetch failed for ${detail.url}:`, err));
 }
 
 export function prRowFromDetail(repo: string, number: number, detail: PrDetail, fetchedAt: string): PrRow {
@@ -531,6 +521,8 @@ export function startPoller(): void {
       tick();
     }
   });
+
+  for (const row of listPrs()) prefetchDetailImages(JSON.parse(row.detail_json));
 
   // Keep the first assignee/reviewer picker from opening on a cold cache.
   trackedRepos()

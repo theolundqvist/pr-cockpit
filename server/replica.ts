@@ -1,5 +1,6 @@
 import type { Subprocess } from "bun";
-import { getPr, getSetting, listFailedMergeKeys, readInboxReplica, replaceInboxReplica, setSetting, type InboxReplica, type PrRow } from "./db.ts";
+import { getPr, getSetting, listFailedMergeKeys, listPrs, readInboxReplica, replaceInboxReplica, setSetting, type InboxReplica, type PrRow } from "./db.ts";
+import { prefetchDetailImages } from "./imageproxy.ts";
 import { observePrNotifications } from "./notifications.ts";
 import { setLastPollAt, lastPollAt } from "./poller.ts";
 import { invalidateInbox, publishPollCompleted } from "./rendererInvalidation.ts";
@@ -9,6 +10,7 @@ const SOURCE_PORT = Number(Bun.env.COCKPIT_PROXY_PORT ?? 4820);
 const TUNNEL_PORT = Number(Bun.env.COCKPIT_REPLICA_LOCAL_PORT ?? 48203);
 const SYNC_INTERVAL_MS = 5_000;
 const PENDING_REVIEW_PATH_RE = /^\/api\/pr\/[^/]+\/[^/]+\/[1-9][0-9]*\/pending-review$/;
+const PR_DETAIL_PATH_RE = /^\/api\/pr\/[^/]+\/[^/]+\/[1-9][0-9]*$/;
 // Rows render media from the replicated PR table, so their viewer reads the same copy.
 const PR_MEDIA_PATH_RE = /^\/api\/pr\/[^/]+\/[^/]+\/[1-9][0-9]*\/media$/;
 const PENDING_MUTATION_KINDS: Record<string, true> = {
@@ -189,7 +191,10 @@ export function importInboxReplica(tables: InboxReplica): void {
   for (const row of tables.prs) {
     if (typeof row.repo !== "string" || typeof row.number !== "number") continue;
     const next = getPr(row.repo, row.number);
-    if (next) observePrNotifications(previousPrs.get(`${row.repo}\0${row.number}`) ?? null, next);
+    if (!next) continue;
+    const previous = previousPrs.get(`${row.repo}\0${row.number}`) ?? null;
+    observePrNotifications(previous, next);
+    if (previous?.detail_json !== next.detail_json) prefetchDetailImages(JSON.parse(next.detail_json));
   }
 }
 
@@ -265,6 +270,7 @@ export async function setSourceSafeMergeApproval(enabled: boolean): Promise<void
 export async function startReplicaSync(): Promise<() => void> {
   const host = replicaSshHost();
   state = { ...state, host };
+  for (const row of listPrs()) prefetchDetailImages(JSON.parse(row.detail_json));
   await syncReplica();
   syncTimer = setInterval(() => void syncReplica(), SYNC_INTERVAL_MS);
   return () => {
@@ -349,6 +355,10 @@ export async function proxyReplicaRequest(request: Request, url: URL): Promise<R
       redirect: "manual",
       signal: AbortSignal.timeout(60_000),
     });
+    if (upstream.ok && request.method === "GET" && PR_DETAIL_PATH_RE.test(url.pathname)) {
+      upstream.clone().json().then(prefetchDetailImages)
+        .catch((error) => console.error(`replica image prefetch failed for ${url.pathname}:`, error));
+    }
     const response = new Response(upstream.body, { status: upstream.status, headers: upstream.headers });
     if (upstream.ok && request.method !== "GET" && request.method !== "HEAD") void syncReplica();
     return response;

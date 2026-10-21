@@ -162,7 +162,7 @@ test("a replica mirrors the source's failed merges without touching its local mu
     ) VALUES (?, 301, 'OPEN', 0, 'open PR', 'author', 'main', 'feature', ?, ?, 0, 0, 0, 1,
       'MERGEABLE', 'SUCCESS', 0, 0, ?, ?)\`).run(
       repo, "a".repeat(40), "2026-09-21T20:00:00Z",
-      JSON.stringify({ body: "", comments: { nodes: [] } }), "2026-09-21T20:00:00Z",
+      JSON.stringify({ body: "", comments: { nodes: [] }, reviews: { nodes: [] }, reviewThreads: { nodes: [] } }), "2026-09-21T20:00:00Z",
     );
     const tables = db.readInboxReplica();
     const localId = db.insertMutation({
@@ -250,7 +250,7 @@ test("a replica mirrors its source's merge-approval flag and rows, and toggles o
     ) VALUES (?, 301, 'OPEN', 0, 'open PR', 'author', 'main', 'feature', ?, ?, 0, 0, 0, 1,
       'MERGEABLE', 'SUCCESS', 0, 0, ?, ?)\`).run(
       repo, "a".repeat(40), "2026-09-21T20:00:00Z",
-      JSON.stringify({ state: "OPEN", body: "", comments: { nodes: [] } }), "2026-09-21T20:00:00Z",
+      JSON.stringify({ state: "OPEN", body: "", comments: { nodes: [] }, reviews: { nodes: [] }, reviewThreads: { nodes: [] } }), "2026-09-21T20:00:00Z",
     );
     const { pr_merge_approvals: _, ...legacyTables } = db.readInboxReplica();
     const source = { legacy: true, confirms: true, enabled: false, approvals: [], settingsBodies: [] };
@@ -415,7 +415,7 @@ test("a mirrorless replica's inbox counts converge to its source's generated-fil
       fetchedAt,
       additions: nodes.reduce((sum, file) => sum + file.additions, 0),
       deletions: nodes.reduce((sum, file) => sum + file.deletions, 0),
-      detail: { baseRefOid: baseOid, files: { totalCount: nodes.length, nodes }, body: "", comments: { nodes: [] } },
+      detail: { baseRefOid: baseOid, files: { totalCount: nodes.length, nodes }, body: "", comments: { nodes: [] }, reviews: { nodes: [] }, reviewThreads: { nodes: [] } },
     };
   };
   const states = {

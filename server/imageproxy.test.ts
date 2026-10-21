@@ -95,6 +95,52 @@ test("native image prefetch works without gh-img", async () => {
   expect(result).toEqual({ prefetched: 1, status: 200, bytes: Array.from(png) });
 });
 
+test("replica imports warm description and discussion images before their first local request", async () => {
+  const result = await imageScenario(`
+    const { readInboxReplica } = await import(${JSON.stringify(new URL("./db.ts", import.meta.url).href)});
+    const { importInboxReplica } = await import(${JSON.stringify(new URL("./replica.ts", import.meta.url).href)});
+    const urls = [raw, raw + "?comment", raw + "?review", raw + "?thread"];
+    const detail = {
+      title: "Image cache", body: "![](" + urls[0] + ")", state: "OPEN", isDraft: false,
+      author: { login: "owner" }, viewerLogin: "viewer", viewerIsAuthor: false,
+      comments: { nodes: [{ body: "![](" + urls[1] + ")" }] },
+      reviews: { nodes: [{ body: "![](" + urls[2] + ")" }] },
+      reviewThreads: { nodes: [{ comments: { nodes: [{ body: "![](" + urls[3] + ") ![](" + raw + ")" }] } }] },
+    };
+    const row = {
+      repo: "acme/app", number: 42, state: "OPEN", is_draft: 0, title: detail.title, author: "owner",
+      base_ref: "main", head_ref: "images", head_sha: "a".repeat(40), updated_at: "2030-01-01T00:00:00Z",
+      additions: 1, deletions: 0, changed_files: 1, commit_count: 1, mergeable: "MERGEABLE", merge_state_status: "CLEAN",
+      auto_merge_enabled: 0, viewer_is_author: 0, viewer_review_requested: 0, viewer_review_state: null,
+      ci_status: "SUCCESS", review_decision: null, unresolved_count: 0, needs_me_rank: 0,
+      greptile_confidence: null, greptile_reviewed_sha: null, greptile_unresolved_count: 0,
+      detail_json: JSON.stringify(detail), fetched_at: "2030-01-01T00:00:00Z",
+    };
+    let fetches = 0;
+    const downloadsStarted = Promise.withResolvers();
+    globalThis.fetch = async () => {
+      fetches++;
+      if (fetches === urls.length) downloadsStarted.resolve();
+      return new Response(png);
+    };
+    const snapshot = readInboxReplica();
+    snapshot.prs = [row];
+    importInboxReplica(snapshot);
+    await downloadsStarted.promise;
+    await prefetchImages(urls);
+    globalThis.fetch = async () => { fetches++; throw new Error("network unavailable after import"); };
+    const responses = await Promise.all(urls.map((raw) => handleImage(new URL("http://localhost/api/image?url=" + encodeURIComponent(raw)))));
+    const bodies = await Promise.all(responses.map(async (response) => Array.from(new Uint8Array(await response.arrayBuffer()))));
+    importInboxReplica(snapshot);
+    console.log(JSON.stringify({ fetches, statuses: responses.map((r) => r.status), bodies }));
+  `);
+  expect(result).toEqual({
+    fetches: 4,
+    statuses: [200, 200, 200, 200],
+    bodies: Array.from({ length: 4 }, () => Array.from(png)),
+  });
+});
+
 test("failed image requests do not poison subsequent downloads", async () => {
   const result = await imageScenario(`
     globalThis.fetch = async () => new Response(null, { status: 404 });
