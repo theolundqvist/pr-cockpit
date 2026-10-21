@@ -1315,16 +1315,23 @@ describe("agent PR summary", () => {
         headSha: newHead, snapshot: { freshness: "recent", newerActivityAt: null },
       });
       expect(calls).toBe(1);
+      let commentFetches = 0;
       const racingHandler = buildFetchHandler(4820, {
         fetchGithubQuota: async () => quota,
         fetchPrDetail: async () => {
           recordPrWebhookActivity(repo, number, new Date(Date.now() + 1000).toISOString());
           return { ...detail, headRefOid: newHead };
         },
+        fetchPrCommentsSince: async () => {
+          commentFetches++;
+          return [];
+        },
       });
       recordPrWebhookActivity(repo, number, new Date(Date.now() + 1).toISOString());
-      const racing = await racingHandler(new Request(`${url}&fresh=1`));
+      const racing = await racingHandler(new Request(`${url}&fresh=1&since=${encodeURIComponent(fetchedAt)}`));
       expect(racing.status).toBe(409);
+      // Listen retries a rejected read every second; each retry must not spend REST on comments.
+      expect(commentFetches).toBe(0);
     } finally {
       release();
       for (const table of ["pr_detail_cache", "pr_webhook_activity"]) db.query(`DELETE FROM ${table} WHERE repo = ?`).run(repo);

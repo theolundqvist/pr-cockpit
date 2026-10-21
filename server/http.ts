@@ -1375,15 +1375,6 @@ async function handleAgentPr(
     newCommentsSince = new Date(sinceMs).toISOString();
   }
 
-  let commentsSince: PrCommentSince[] = [];
-  if (includeComments && newCommentsSince !== null) {
-    try {
-      commentsSince = await runtime.fetchPrCommentsSince(`${owner}/${repo}`, Number(number), newCommentsSince);
-    } catch (err) {
-      console.error(`GitHub comments fetch failed for ${owner}/${repo}#${number}:`, err);
-      return githubErrorResponse(err, "GitHub comments fetch failed");
-    }
-  }
   let quota: GithubQuota | null = null;
   try {
     quota = await runtime.fetchGithubQuota();
@@ -1397,6 +1388,15 @@ async function handleAgentPr(
   // A webhook may arrive during revalidation. Listen retries rather than emitting that snapshot.
   if (url.searchParams.get("fresh") === "1" && detail.agentSnapshot?.newerActivityAt) {
     return json({ error: "PR snapshot predates known activity" }, 409);
+  }
+  let commentsSince: PrCommentSince[] = [];
+  if (includeComments && newCommentsSince !== null) {
+    try {
+      commentsSince = await runtime.fetchPrCommentsSince(`${owner}/${repo}`, Number(number), newCommentsSince);
+    } catch (err) {
+      console.error(`GitHub comments fetch failed for ${owner}/${repo}#${number}:`, err);
+      return githubErrorResponse(err, "GitHub comments fetch failed");
+    }
   }
   const summary = buildPrAgentSummary(`${owner}/${repo}#${number}`, detail, quota, newCommentsSince, commentsSince);
   if (format === "json") return json(summary);
