@@ -2,7 +2,6 @@
 .gitignore
 Dockerfile
 compose.yaml
-Caddyfile
 deploy
 data
 *.db

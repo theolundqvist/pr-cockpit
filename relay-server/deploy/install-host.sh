@@ -6,9 +6,6 @@ ACCOUNT=cockpit
 APP_DIR=/opt/pr-cockpit-relay
 STATE_DIR=/var/lib/pr-cockpit-relay
 RELAY_DATA_DIR=$STATE_DIR/relay
-CADDY_STATE_DIR=$STATE_DIR/caddy
-CADDY_DATA_DIR=$CADDY_STATE_DIR/data
-CADDY_CONFIG_DIR=$CADDY_STATE_DIR/config
 CONFIG_DIR=/etc/pr-cockpit-relay
 SECRET_FILE=$CONFIG_DIR/relay.env
 COMPOSE_ENV_FILE=$CONFIG_DIR/compose.env
@@ -25,6 +22,7 @@ fail() {
 [ "$(id -u)" -eq 0 ] || fail "run as root"
 [ -x /usr/bin/docker ] || fail "Docker Engine must be installed at /usr/bin/docker"
 [ -x /usr/bin/systemctl ] || fail "systemd is required"
+/usr/bin/docker image inspect pr-cockpit-relay:local >/dev/null 2>&1 || fail "load the pr-cockpit-relay:local image first; deploy/deploy.sh builds and loads it"
 
 set --
 if ! /usr/bin/docker compose version >/dev/null 2>&1; then
@@ -61,12 +59,9 @@ COCKPIT_UID=$(id -u "$ACCOUNT")
 COCKPIT_GID=$(id -g "$ACCOUNT")
 install -d -o root -g root -m 0755 "$APP_DIR"
 install -d -o root -g root -m 0755 "$STATE_DIR"
-install -d -o root -g root -m 0755 "$CADDY_STATE_DIR"
 install -d -o "$COCKPIT_UID" -g "$COCKPIT_GID" -m 0700 "$RELAY_DATA_DIR"
-install -d -o "$COCKPIT_UID" -g "$COCKPIT_GID" -m 0700 "$CADDY_DATA_DIR"
-install -d -o "$COCKPIT_UID" -g "$COCKPIT_GID" -m 0700 "$CADDY_CONFIG_DIR"
 install -d -o root -g root -m 0700 "$CONFIG_DIR"
-[ -f "$COMPOSE_ENV_FILE" ] || fail "provision $COMPOSE_ENV_FILE as root-owned mode 0600 with RELAY_DOMAIN before rerunning"
+[ -f "$COMPOSE_ENV_FILE" ] || fail "provision $COMPOSE_ENV_FILE as root-owned mode 0600 before rerunning"
 [ ! -L "$COMPOSE_ENV_FILE" ] || fail "$COMPOSE_ENV_FILE must not be a symbolic link"
 [ "$(stat -c '%u' "$COMPOSE_ENV_FILE")" = 0 ] || fail "$COMPOSE_ENV_FILE must be owned by root"
 COMPOSE_ENV_MODE=$(stat -c '%a' "$COMPOSE_ENV_FILE")
@@ -74,7 +69,6 @@ case "$COMPOSE_ENV_MODE" in
   400|600) ;;
   *) fail "$COMPOSE_ENV_FILE must have mode 0400 or 0600" ;;
 esac
-grep -q '^RELAY_DOMAIN=.' "$COMPOSE_ENV_FILE" || fail "$COMPOSE_ENV_FILE must define a non-empty RELAY_DOMAIN"
 
 [ -f "$SECRET_FILE" ] || fail "provision $SECRET_FILE as root-owned mode 0600 with WEBHOOK_SECRET before rerunning"
 [ ! -L "$SECRET_FILE" ] || fail "$SECRET_FILE must not be a symbolic link"
@@ -122,8 +116,7 @@ done <"$COMPOSE_ENV_FILE"
 
 printf '%s\n' \
   "Installed $SERVICE_NAME with container UID:GID $COCKPIT_UID:$COCKPIT_GID." \
-  "Caddy publishes TLS traffic on TCP 443 and ACME HTTP challenges on TCP 80." \
-  "Relay port 4821 is also available on host loopback only; it is never published publicly." \
+  "Relay port 4821 listens on host loopback only; a reverse proxy on the host terminates TLS in front of it." \
   "Usage is available on host loopback only at http://127.0.0.1:4822/usage."
 printf 'Webhook forwarding is %s; leave RELAY_FORWARD_WEBHOOK_URL unset or empty in %s to disable it.\n' \
   "$FORWARDING_STATUS" "$COMPOSE_ENV_FILE"
