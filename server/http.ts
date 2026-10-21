@@ -60,6 +60,7 @@ import {
 import { localCheckoutBranchFor, localCheckoutPathFor, setLocalCheckoutBranch, worktreePathFor, worktreeWindowIdFor } from "./worktreeScan.ts";
 import { prKey } from "./prKey.ts";
 import { isTransportFailure, lastPollAt, pollOnce, prRowFromDetail, refreshPr, trackedRepos } from "./poller.ts";
+import { createConcurrencyLimit } from "./concurrency.ts";
 import {
   commitPrFileEdit,
   markPrPathGenerated,
@@ -378,7 +379,7 @@ function handlePrMedia(owner: string, repo: string, number: string): Response {
   return media ? json({ media }) : json({ error: "PR is not cached yet" }, 404);
 }
 
-function handleClosed(url: URL): Response {
+function handleClosed(url: URL, runtime: HttpRuntime): Response {
   const requestedLimit = Number(url.searchParams.get("limit"));
   const limit = Number.isSafeInteger(requestedLimit) && requestedLimit > 0
     ? Math.min(requestedLimit, 200)
@@ -403,14 +404,28 @@ function handleClosed(url: URL): Response {
     closedAt: pr.closed_at,
     terminalAt: pr.merged_at ?? pr.closed_at ?? pr.updated_at,
     ...(media.has(prKey(pr)) ? mediaFields(media.get(prKey(pr))) : {}),
-    ...(attributed ? { mergedByMe: mergedByMe((pr as KitchenHistoryRow).merge_attribution) } : {}),
+    ...(attributed ? { mergedByMe: attributeMerge(runtime, pr as KitchenHistoryRow) } : {}),
   }));
   return json({ prs, ...(kitchen ? { hasMore: rows.length > limit } : {}) });
 }
 
-function mergedByMe(attribution: string | null | undefined): boolean {
-  if (!attribution) return false;
-  const [viewerLogin, mergedBy, orderedBy] = JSON.parse(attribution) as unknown[];
+// Details cached before merge attribution existed, or fetched while it was off, lack the merger
+// or a bot merge's orderer. Only the page being served refetches them, a couple at a time.
+const mergeBackfillLimit = createConcurrencyLimit(2);
+const mergeBackfills = new Set<string>();
+
+function attributeMerge(runtime: HttpRuntime, row: KitchenHistoryRow): boolean {
+  const [viewerLogin, mergedBy, orderedBy, hasMergedBy, hasOrderedBy] = row.merge_attribution ? JSON.parse(row.merge_attribution) as unknown[] : [];
+  const botMerge = (mergedBy as { __typename?: unknown } | null)?.__typename === "Bot";
+  const key = prKey(row);
+  if ((!hasMergedBy || (botMerge && !hasOrderedBy)) && !mergeBackfills.has(key)) {
+    mergeBackfills.add(key);
+    const revalidate = getPr(row.repo, row.number) ? runtime.revalidateTrackedPr : runtime.revalidateCachedPrDetail;
+    // The revalidator reports failures; the next history read retries.
+    void mergeBackfillLimit(() => revalidate(row.repo, row.number, "background poll"))
+      .catch(() => {})
+      .finally(() => mergeBackfills.delete(key));
+  }
   return viewerMergedPr({ viewerLogin, mergedBy, orderedBy });
 }
 
@@ -3579,7 +3594,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       return handleAllPrs(url, runtime);
     }
     if (req.method === "GET" && (url.pathname === "/api/closed" || url.pathname === "/api/kitchen-history")) {
-      return handleClosed(url);
+      return handleClosed(url, runtime);
     }
     if (req.method === "GET" && url.pathname === "/api/auth/status") {
       const scopes = requestedAuthScopes(url.searchParams.get("scopes")?.split(","));

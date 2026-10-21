@@ -202,6 +202,7 @@ if (isMockGithub) addDetail(REPO, baseDetail(105, {
 if (isMockGithub) addDetail(REPO, baseDetail(106, {
   title: "Retire the legacy polling path after webhook rollout",
   state: "MERGED",
+  mergedBy: { __typename: "User", login: VIEWER },
   mergeable: "UNKNOWN",
   mergeStateStatus: "UNKNOWN",
   updatedAt: at(90),

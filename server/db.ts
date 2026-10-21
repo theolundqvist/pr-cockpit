@@ -691,7 +691,8 @@ function rememberKitchenPr(row: { repo: string; number: number; detail_json: str
 }
 
 let kitchenHistorySeeded = false;
-// merge_attribution is a JSON array of the cached detail's viewer login, merger, and orderer.
+// merge_attribution is a JSON array of the cached detail's viewer login, merger, and orderer, then
+// whether the merger and orderer keys are present at all; NULL when no detail is cached.
 export type KitchenHistoryRow = PrIndexRow & { merge_attribution?: string | null };
 export function listKitchenHistory(limit: number, offset: number, withMergeAttribution = false): KitchenHistoryRow[] {
   // Recover pre-existing history from details already on disk; never fetch GitHub here.
@@ -702,9 +703,11 @@ export function listKitchenHistory(limit: number, offset: number, withMergeAttri
       SELECT 1 FROM json_each(detail_json, '$.labels.nodes') WHERE lower(trim(json_extract(value, '$.name'))) LIKE 'kitchen:%'
     )`);
   kitchenHistorySeeded = true;
+  const fields = `json_array(json_extract(d.detail_json, '$.viewerLogin'), json_extract(d.detail_json, '$.mergedBy'),
+    json_extract(d.detail_json, '$.orderedBy'), json_type(d.detail_json, '$.mergedBy') IS NOT NULL, json_type(d.detail_json, '$.orderedBy') IS NOT NULL)`;
   const attribution = withMergeAttribution ? `, COALESCE(
-      (SELECT json_extract(d.detail_json, '$.viewerLogin', '$.mergedBy', '$.orderedBy') FROM prs d WHERE d.repo = p.repo AND d.number = p.number),
-      (SELECT json_extract(d.detail_json, '$.viewerLogin', '$.mergedBy', '$.orderedBy') FROM pr_detail_cache d WHERE d.repo = p.repo AND d.number = p.number)
+      (SELECT ${fields} FROM prs d WHERE d.repo = p.repo AND d.number = p.number),
+      (SELECT ${fields} FROM pr_detail_cache d WHERE d.repo = p.repo AND d.number = p.number)
     ) AS merge_attribution` : "";
   return db.query<KitchenHistoryRow, [number, number]>(`SELECT p.*${attribution} FROM pr_index p
     JOIN kitchen_prs k ON k.repo = p.repo AND k.number = p.number
