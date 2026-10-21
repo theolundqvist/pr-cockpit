@@ -62,17 +62,6 @@ export const NOTIFICATION_EXAMPLES = [
       ],
     }),
   },
-  {
-    id: "my-merges",
-    label: "PRs I merge",
-    hint: "Pull requests you merged, or that a queue bot merged after you added their “order” label, once they land.",
-    build: () => newNotificationRule({
-      name: "PRs I merge",
-      events: ["merged"],
-      match: "all",
-      conditions: [{ field: "participation", operator: "is", value: "merger" }],
-    }),
-  },
 ];
 
 export function notificationRuleIssues(rules) {

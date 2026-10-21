@@ -179,13 +179,13 @@
   // permission granted, re-checked live per claim and per show: when the opt-in loads or flips on,
   // on every queue insert, after a (re)connect, and when Settings grants permission or retries.
   function drainPending() {
-    drainNotifications({ eligible: () => canDeliverNotifications(prefs.notificationsEnabled) }).then(
+    drainNotifications({ eligible: () => canDeliverNotifications(prefs.notificationsEnabled || prefs.mergedByMeNotificationsEnabled) }).then(
       () => (notificationDelivery.error = null),
       (error) => (notificationDelivery.error = error instanceof Error ? error.message : String(error)),
     );
   }
   $effect(() => {
-    if (prefs.notificationsEnabled) drainPending();
+    if (prefs.notificationsEnabled || prefs.mergedByMeNotificationsEnabled) drainPending();
   });
   $effect(() => {
     window.addEventListener(NOTIFICATION_DRAIN_EVENT, drainPending);

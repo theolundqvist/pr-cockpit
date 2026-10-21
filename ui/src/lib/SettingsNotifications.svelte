@@ -77,7 +77,7 @@
   <input class="check" type="checkbox" bind:checked={mergedByMeEnabled} />
   <span class="check-text">
     <span class="check-label">PRs I merge</span>
-    <span class="hint">Adds a “Merged by me” filter: PRs you merged, or that Kitchen merged after you added “order”.</span>
+    <span class="hint">Sends a desktop notification and adds a “Merged by me” filter: PRs you merged, or that Kitchen merged after you added “order”.</span>
   </span>
 </label>
 

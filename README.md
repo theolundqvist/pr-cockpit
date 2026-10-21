@@ -75,7 +75,7 @@ Press **⌘Z** (Ctrl+Z on Windows/Linux) to undo a title change from Rename or a
 
 Desktop notifications are off by default. In **Settings → Notifications**, choose events and combine rules for human or bot authors, comment text, repositories, and review requests. GitHub bot accounts and configured review bots count as bots; unknown authors match neither human nor bot filters.
 
-Turn on **PRs I merge** in **Settings → Notifications** to add a **Merged by me** filter to the Kitchen Notifications list, and add the **PRs I merge** example rule for a desktop notification when one lands. A PR counts as yours when you merged it, or when a merge-queue bot merged it after you last added its `order` label. Bot merges read that label history from GitHub only while the setting or such a rule is on.
+Turn on **PRs I merge** in **Settings -> Notifications** to get a desktop notification when a PR you merged lands and a **Merged by me** filter in the Kitchen Notifications list; it works whether or not the custom rules are on. A PR counts as yours when you merged it, or when a merge-queue bot merged it after you last added its `order` label. Bot merges read that label history from GitHub only while the setting or an **I merged it** rule is on.
 
 Repositories can add **quick actions** to the PR sidebar and the PR-row **Quick actions** submenu by committing `.github/pr-cockpit.json`. Each action posts a fixed comment or adds a label. Cockpit reads it from the repository's default branch and shows the actions on every open PR there:
 

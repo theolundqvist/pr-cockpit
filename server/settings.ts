@@ -204,6 +204,9 @@ export function seedSettings(): void {
   } else if (notificationSettings().enabled && getSetting("notifications_enabled_at") === null) {
     setSetting("notifications_enabled_at", new Date().toISOString());
   }
+  if (getSetting("merged_by_me_notifications_enabled") === "true" && getSetting("merged_by_me_notifications_enabled_at") === null) {
+    setSetting("merged_by_me_notifications_enabled_at", new Date().toISOString());
+  }
   // first launch prefers omp when it is installed - see harness.ts
   if (getSetting("agent_harness") === null) setSetting("agent_harness", detectHarness());
 }
@@ -615,6 +618,7 @@ export function writeSettings(
     const enabled = patch.merged_by_me_notifications_enabled === true ? "true" : "false";
     if (getSetting("merged_by_me_notifications_enabled") !== enabled) {
       setSetting("merged_by_me_notifications_enabled", enabled);
+      if (enabled === "true") setSetting("merged_by_me_notifications_enabled_at", new Date().toISOString());
       invalidateSettings();
     }
   }

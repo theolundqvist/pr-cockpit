@@ -7,6 +7,7 @@ import {
   parseNotificationSettings,
   type NotificationEvent,
   type NotificationEventType,
+  type NotificationRule,
   type NotificationSettings,
 } from "../shared/notificationRules.ts";
 
@@ -303,12 +304,31 @@ export function notifyDeployedPrs(
   })));
 }
 
+// "PRs I merge" delivers this rule on its own, whether or not the custom rules are switched on.
+const MERGED_BY_ME_RULE: NotificationRule = {
+  id: "merged-by-me",
+  name: "PRs I merge",
+  enabled: true,
+  events: ["merged"],
+  match: "all",
+  conditions: [{ field: "participation", operator: "is", value: "merger" }],
+};
+
+// Each source only sees activity after it was switched on, so enabling one never replays history.
+function deliverySources(): Array<{ settings: NotificationSettings; enabledAtMs: number | null }> {
+  const sources: Array<{ settings: NotificationSettings; enabledAtMs: number | null }> = [];
+  const stored = storedNotificationSettings();
+  if (stored.enabled) sources.push({ settings: stored, enabledAtMs: parseTime(getSetting("notifications_enabled_at")) });
+  if (getSetting("merged_by_me_notifications_enabled") === "true") {
+    sources.push({ settings: { enabled: true, rules: [MERGED_BY_ME_RULE] }, enabledAtMs: parseTime(getSetting("merged_by_me_notifications_enabled_at")) });
+  }
+  return sources;
+}
+
 export function observePrNotifications(previous: DetailRow | null, next: NextDetailRow): void {
-  const settings = storedNotificationSettings();
-  if (!settings.enabled || !settings.rules.some((rule) => rule.enabled)) return;
-  const enabledAt = getSetting("notifications_enabled_at");
-  const enabledAtMs = parseTime(enabledAt);
-  if (enabledAtMs === null || previous === null) return;
+  const sources = deliverySources().flatMap(({ settings, enabledAtMs }) =>
+    enabledAtMs !== null && settings.rules.some((rule) => rule.enabled) ? [{ settings, enabledAtMs }] : []);
+  if (sources.length === 0 || previous === null) return;
   const previousFetchedAt = parseTime(previous.fetched_at);
   const nextFetchedAt = parseTime(next.fetched_at);
   if (previousFetchedAt !== null && nextFetchedAt !== null && nextFetchedAt < previousFetchedAt) return;
@@ -323,19 +343,21 @@ export function observePrNotifications(previous: DetailRow | null, next: NextDet
   }
   if (!previousDetail || !nextDetail) return;
 
-  const events = [
-    ...commentEvents(previousDetail, nextDetail, next.repo, next.number, enabledAtMs),
-    ...reviewEvents(previousDetail, nextDetail, next.repo, next.number, enabledAtMs),
-  ];
-  if (previousFetchedAt !== null && previousFetchedAt >= enabledAtMs) {
-    events.push(...transitionEvents(previousDetail, nextDetail, next.repo, next.number, previous.fetched_at, next.fetched_at));
+  for (const { settings, enabledAtMs } of sources) {
+    const events = [
+      ...commentEvents(previousDetail, nextDetail, next.repo, next.number, enabledAtMs),
+      ...reviewEvents(previousDetail, nextDetail, next.repo, next.number, enabledAtMs),
+    ];
+    if (previousFetchedAt !== null && previousFetchedAt >= enabledAtMs) {
+      events.push(...transitionEvents(previousDetail, nextDetail, next.repo, next.number, previous.fetched_at, next.fetched_at));
+    }
+    insertMatchingNotifications(settings, events);
   }
-  insertMatchingNotifications(settings, events);
 }
 
 type PendingNotificationRow = DesktopNotification & { event_json: string };
 
-const claimNotificationsTxn = db.transaction((settings: NotificationSettings): DesktopNotification[] => {
+const claimNotificationsTxn = db.transaction((sources: NotificationSettings[]): DesktopNotification[] => {
   const selectPending = db.query<PendingNotificationRow, []>(`
     SELECT id, event_json, title, body, repo, number
     FROM desktop_notifications
@@ -353,7 +375,7 @@ const claimNotificationsTxn = db.transaction((settings: NotificationSettings): D
       let eligible = false;
       try {
         const event = JSON.parse(row.event_json) as NotificationEvent;
-        eligible = matchingNotificationRules(settings, event).length > 0;
+        eligible = sources.some((settings) => matchingNotificationRules(settings, event).length > 0);
       } catch {}
       if (markHandled.run(claimedAt, row.id).changes === 0) continue;
       if (eligible) claimed.push({ id: row.id, title: row.title, body: row.body, repo: row.repo, number: row.number });
@@ -364,9 +386,9 @@ const claimNotificationsTxn = db.transaction((settings: NotificationSettings): D
 });
 
 export function claimNotifications(): DesktopNotification[] {
-  const settings = storedNotificationSettings();
-  if (!settings.enabled) return [];
-  return claimNotificationsTxn(settings);
+  const sources = deliverySources().map(({ settings }) => settings);
+  if (sources.length === 0) return [];
+  return claimNotificationsTxn(sources);
 }
 
 export function notificationSettingsChanged(): void {

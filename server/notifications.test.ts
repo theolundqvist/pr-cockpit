@@ -338,3 +338,39 @@ test("an I-merged-it rule fires for the viewer's own merges and queue-bot merges
   expect(result.wantedBySetting).toBe(true);
   expect(result.fired).toEqual([1, 2]);
 });
+
+test("PRs I merge delivers desktop notifications without custom rules, only for merges seen after it was turned on", async () => {
+  const notificationsUrl = new URL("./notifications.ts", import.meta.url).href;
+  const settingsUrl = new URL("./settings.ts", import.meta.url).href;
+  const dbUrl = new URL("./db.ts", import.meta.url).href;
+  const result = await runScenario(`
+    const { db, setSetting } = await import(${JSON.stringify(dbUrl)});
+    const { observePrNotifications, claimNotifications } = await import(${JSON.stringify(notificationsUrl)});
+    const { writeSettings } = await import(${JSON.stringify(settingsUrl)});
+    const iso = (day) => \`2032-04-\${String(day).padStart(2, "0")}T00:00:00Z\`;
+    const detail = (overrides = {}) => ({
+      title: "Merge me", state: "OPEN", isDraft: false, author: { __typename: "User", login: "author" },
+      viewerLogin: "viewer", viewerIsAuthor: false, viewerReviewRequested: false, assignees: { nodes: [] },
+      comments: { nodes: [] }, reviews: { nodes: [] }, reviewThreads: { nodes: [] },
+      lastCommit: { nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS" } } }] }, updatedAt: iso(5), ...overrides,
+    });
+    const merge = (number, mergedBy, previousFetchedAt) => observePrNotifications(
+      { detail_json: JSON.stringify(detail({ comments: { nodes: [] } })), fetched_at: previousFetchedAt },
+      { repo: "acme/app", number, detail_json: JSON.stringify(detail({ state: "MERGED", mergedBy, comments: { nodes: [{ id: \`c\${number}\`, createdAt: iso(4), author: { login: "someone" }, body: "hi" }] } })), fetched_at: iso(5) },
+    );
+    writeSettings({ notifications: { enabled: false, rules: [] }, merged_by_me_notifications_enabled: true });
+    setSetting("merged_by_me_notifications_enabled_at", iso(2));
+    merge(1, { __typename: "User", login: "viewer" }, iso(3));
+    merge(2, { __typename: "User", login: "someone" }, iso(3));
+    merge(3, { __typename: "User", login: "viewer" }, iso(1));
+    const delivered = claimNotifications().map((item) => ({ number: item.number, title: item.title }));
+    merge(4, { __typename: "User", login: "viewer" }, iso(3));
+    writeSettings({ merged_by_me_notifications_enabled: false });
+    const afterOff = claimNotifications().map((item) => item.number);
+    console.log(JSON.stringify({ delivered, afterOff }));
+    db.close();
+  `);
+
+  expect(result.delivered).toEqual([{ number: 1, title: "Pull request merged: Merge me" }]);
+  expect(result.afterOff).toEqual([]);
+});
