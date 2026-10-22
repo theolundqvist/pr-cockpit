@@ -215,7 +215,15 @@
     const dismiss = () => (contextMenu = null);
     const outside = (event) => { if (!contextMenuNode?.contains(event.target)) dismiss(); };
     window.addEventListener("pointerdown", outside, true);
-    const scroll = (event) => { if (!contextMenuNode?.contains(event.target)) dismiss(); };
+    // Right-clicking a scrolled row can deliver an already-queued scroll event after the menu opens.
+    // Dismiss only when an ancestor actually moves from the menu's opening position.
+    const scrollPositions = contextMenu.scrollPositions;
+    const scroll = (event) => {
+      if (contextMenuNode?.contains(event.target)) return;
+      const node = event.target === document ? document.scrollingElement : event.target;
+      const position = scrollPositions.get(node);
+      if (!position || node.scrollLeft !== position[0] || node.scrollTop !== position[1]) dismiss();
+    };
     window.addEventListener("scroll", scroll, true);
     window.addEventListener("resize", dismiss);
     return () => {
@@ -229,7 +237,11 @@
   async function openContextMenu(event, pr) {
     event.preventDefault();
     const request = ++contextMenuRequest;
-    contextMenu = { pr, x: 0, y: 0 };
+    const scrollPositions = new Map();
+    for (let node = event.currentTarget; node; node = node.parentElement) {
+      scrollPositions.set(node, [node.scrollLeft, node.scrollTop]);
+    }
+    contextMenu = { pr, x: 0, y: 0, scrollPositions };
     cancelQuickSubmenuClose();
     quickSubmenu = null;
     menuQuickActions = [];
@@ -237,7 +249,7 @@
     menuQuickActionsLoading = pr.state === "OPEN";
     await positionContextMenu(event.clientX, event.clientY);
     if (!contextMenu || request !== contextMenuRequest) return;
-    contextMenuNode.querySelector("button")?.focus();
+    contextMenuNode.querySelector("button")?.focus({ preventScroll: true });
     if (menuQuickActionsLoading) void loadContextActions(pr, request);
   }
 
@@ -1093,8 +1105,8 @@
     return prefs.safeMergeApprovalEnabled && pr.approvedForSafeMerge === true;
   }
 
-  // Tracked drafts carry state "draft"; the server still rejects anything GitHub no longer has open.
-  function approvable(pr) {
+  // Tracked drafts carry state "draft" even though the pull request is still open.
+  function isOpenPr(pr) {
     return pr.state === "OPEN" || pr.state === "draft";
   }
 
@@ -1263,7 +1275,7 @@
       approved: isApproved(pr),
       approvalEnabled: prefs.safeMergeApprovalEnabled,
     });
-    if (!plan || (plan.approve && !approvable(pr)) || (plan.title && retitles[key])) return null;
+    if (!plan || (plan.approve && !isOpenPr(pr)) || (plan.title && retitles[key])) return null;
     return plan;
   }
 
@@ -1645,7 +1657,7 @@
       } else if (e.key === "o") {
         if (pr) openGithub(pr);
       } else if (view === "open" && e.key === "s") {
-        if (pr && !isArchived(pr) && pr.state === "OPEN") togglePinned(pr);
+        if (pr && !isArchived(pr) && isOpenPr(pr)) togglePinned(pr);
       } else if (view === "open" && keybindAgents.some((a) => a.id !== "fixer" && a.keybind === e.key)) {
         const def = keybindAgents.find((a) => a.id !== "fixer" && a.keybind === e.key);
         if (def.id === "autofix") openAutofixConfirm();
@@ -2211,11 +2223,11 @@
       {#if prefs.groupDragEnabled}
         <button role="menuitem" disabled={!!titleEditor?.saving || !!retitles[prKey(contextMenu.pr)]} onclick={() => startRename(contextMenu.pr)}>Rename</button>
       {/if}
-    {#if view === "open" && !isArchived(contextMenu.pr) && contextMenu.pr.state === "OPEN"}
+    {#if view === "open" && !isArchived(contextMenu.pr) && isOpenPr(contextMenu.pr)}
       <button role="menuitem" onclick={() => { togglePinned(contextMenu.pr); contextMenu = null; }}>{contextMenu.pr.rank == null ? "Pin" : "Unpin"}</button>
     {/if}
     <!-- Revoking consent never waits on grant eligibility: drafts and archived rows can still withdraw it. -->
-    {#if view === "open" && (isApproved(contextMenu.pr) || (prefs.safeMergeApprovalEnabled && !isArchived(contextMenu.pr) && approvable(contextMenu.pr)))}
+    {#if view === "open" && (isApproved(contextMenu.pr) || (prefs.safeMergeApprovalEnabled && !isArchived(contextMenu.pr) && isOpenPr(contextMenu.pr)))}
       {@const approved = isApproved(contextMenu.pr)}
       <button role="menuitem" onclick={() => { applyGroupMove(contextMenu.pr, { approve: !approved }); contextMenu = null; }}>{approved ? "Revoke safe-merge approval" : "Approve for safe merge"}</button>
     {/if}

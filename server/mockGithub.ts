@@ -957,7 +957,8 @@ export function seedMockDatabase(db: Database, dataDir: string): void {
       insertPr.run({
         $repo: repo,
         $number: detail.number,
-        $state: detail.state,
+        // Match the tracked row written by the poller, including its draft state.
+        $state: detail.isDraft ? "draft" : detail.state,
         $is_draft: detail.isDraft ? 1 : 0,
         $title: detail.title,
         $author: detail.author?.login ?? "unknown",

@@ -312,6 +312,63 @@ const scenarios = [
       if (await open.locator(".row-draft").count()) throw new Error("Non-draft PR was marked Draft");
     },
   },
+  ...[105, 104].map((number) => ({
+    name: `inbox-pin-${number === 105 ? "draft" : "open"}`,
+    route: "#/",
+    description: "Pin and unpin through the menu and keyboard, persisting through reloads without merge approval.",
+    ready: ".inbox-layout .queue-group",
+    prepare: async ({ baseURL }) => {
+      const inbox = await requestJson(`${baseURL}/api/inbox`);
+      const pr = inbox.prs.find((pr) => pr.number === number);
+      if (pr.state !== (number === 105 ? "draft" : "OPEN")) throw new Error("Pin fixture does not match the tracked inbox state");
+      if (pr.rank !== null) throw new Error("Pin fixture must start unpinned");
+      return () => requestJson(`${baseURL}/api/inbox/reorder`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ repo: REPO, number, position: null }),
+      });
+    },
+    interact: async (page) => {
+      const row = page.locator(`a.row[href="#/pr/${REPO}/${number}"]`);
+      const menu = page.getByRole("menu", { name: `Actions for #${number}` });
+      const pinned = row.locator(".pinned-mark");
+      const mutate = async (action, expectedPinned) => {
+        const response = page.waitForResponse((response) => response.url().endsWith("/api/inbox/reorder") && response.request().method() === "POST");
+        await action();
+        const result = await response;
+        if (!result.ok()) throw new Error(`Pin request failed: ${result.status()}`);
+        await pinned.waitFor({ state: expectedPinned ? "visible" : "hidden" });
+        const inbox = await page.request.get(new URL("/api/inbox", page.url()).href).then((response) => response.json());
+        const pr = inbox.prs.find((pr) => pr.number === number);
+        if ((pr.rank !== null) !== expectedPinned || pr.approvedForSafeMerge) throw new Error("Pin persistence or merge-approval independence failed");
+      };
+      await row.click({ button: "right" });
+      await menu.waitFor();
+      await page.locator(".inbox-cache .page").evaluate((node) => node.scrollBy(0, node.scrollTop > 0 ? -10 : 10));
+      await menu.waitFor({ state: "hidden" });
+      await row.click({ button: "right" });
+      await mutate(() => menu.getByRole("menuitem", { name: "Pin", exact: true }).click(), true);
+      await page.reload();
+      await pinned.waitFor();
+      await row.click({ button: "right" });
+      await mutate(() => menu.getByRole("menuitem", { name: "Unpin", exact: true }).click(), false);
+      await row.hover();
+      await mutate(() => page.keyboard.press("s"), true);
+      await page.reload();
+      await pinned.waitFor();
+      await row.hover();
+      await mutate(() => page.keyboard.press("s"), false);
+      await page.reload();
+      await row.waitFor();
+      if (await pinned.count()) throw new Error("Unpin did not survive reload");
+      await row.hover();
+      await mutate(() => page.keyboard.press("s"), true);
+    },
+    verify: async (page) => {
+      const row = page.locator(`a.row[href="#/pr/${REPO}/${number}"]`);
+      await row.locator(".pinned-mark").waitFor();
+      if (!await row.evaluate((node) => node.closest(".queue-group")?.textContent.includes("Pinned"))) throw new Error("Pinned PR did not move into the Pinned section");
+    },
+  })),
   {
     name: "inbox-all-prs",
     route: "#/",
