@@ -50,7 +50,8 @@ const deps: PollDeps = {
     return before - registrations.length;
   },
   reconcileForwarders: () => {},
-  evictStalePrs: () => {},
+  evictStalePrs: () => [],
+  refreshCachedPrDetail: async () => {},
   evictReposNotIn: () => {},
   pruneMirrors: async () => {},
   upsertPrIndex: () => {},

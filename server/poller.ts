@@ -15,6 +15,7 @@ import {
   type WebhookRegistrationRow,
 } from "./db.ts";
 import { reconcileForwarders } from "./forwarders.ts";
+import { refreshCachedPrDetail } from "./cachedPrDetail.ts";
 import { prKeyOf } from "./prKey.ts";
 import { prefetchDetailImages } from "./imageproxy.ts";
 import { fetchMirror, pruneMirrors } from "./mirror.ts";
@@ -245,6 +246,7 @@ export interface PollDeps {
   deleteWebhookRegistrationsForPr: typeof deleteWebhookRegistrationsForPr;
   reconcileForwarders: typeof reconcileForwarders;
   evictStalePrs: typeof evictStalePrs;
+  refreshCachedPrDetail: typeof refreshCachedPrDetail;
   evictReposNotIn: typeof evictReposNotIn;
   pruneMirrors: typeof pruneMirrors;
   upsertPrIndex: typeof upsertPrIndex;
@@ -353,7 +355,12 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
 
     for (const repo of repos) {
       const keepNumbers = hits.filter((hit) => hit.repo === repo).map((hit) => hit.number);
-      deps.evictStalePrs(repo, keepNumbers);
+      // A PR leaves the open search when it merges or closes; a merge event that was lost, or read
+      // GitHub before the merge showed, would otherwise leave its stored snapshot open until reloaded.
+      for (const number of deps.evictStalePrs(repo, keepNumbers)) {
+        void deps.refreshCachedPrDetail(repo, number, "background poll")
+          .catch((error) => console.error(`refresh of ${repo}#${number} after it left the inbox failed:`, error));
+      }
     }
 
     // The index sweep (~1-2.5s of searches every 30 minutes) feeds only All PRs and titles,
@@ -455,6 +462,7 @@ export const pollOnce = createPollOnce({
   deleteWebhookRegistrationsForPr,
   reconcileForwarders,
   evictStalePrs,
+  refreshCachedPrDetail,
   evictReposNotIn,
   pruneMirrors,
   upsertPrIndex,

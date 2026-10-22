@@ -1681,19 +1681,23 @@ export function distinctPrRepos(): string[] {
   return distinctPrReposStmt.all().map((row) => row.repo);
 }
 
-const evictStalePrsTxn = db.transaction((repo: string, keepNumbers: number[]) => {
+const evictStalePrsTxn = db.transaction((repo: string, keepNumbers: number[]): number[] => {
   const params: Array<string | number> = [repo, ...keepNumbers];
   const whereSql = keepNumbers.length === 0
     ? "repo = ?"
     : `repo = ? AND number NOT IN (${keepNumbers.map(() => "?").join(",")})`;
+  const leftOpen = db.prepare<{ number: number }, Array<string | number>>(`SELECT number FROM prs WHERE ${whereSql} AND state = 'OPEN'`)
+    .all(...params).map((row) => row.number);
   preservePrDetails(whereSql, params);
   db.prepare(`DELETE FROM pr_rank WHERE ${whereSql}`).run(...params);
   db.prepare(`DELETE FROM pr_merge_approvals WHERE ${whereSql}`).run(...params);
   db.prepare(`DELETE FROM prs WHERE ${whereSql}`).run(...params);
+  return leftOpen;
 });
 
-export function evictStalePrs(repo: string, keepNumbers: number[]): void {
-  evictStalePrsTxn(repo, keepNumbers);
+// Returns the evicted PRs whose last snapshot still says open.
+export function evictStalePrs(repo: string, keepNumbers: number[]): number[] {
+  return evictStalePrsTxn(repo, keepNumbers);
 }
 
 const setArchivedStmt = db.prepare(`

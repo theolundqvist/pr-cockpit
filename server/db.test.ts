@@ -71,10 +71,18 @@ test("eviction preserves the newest tracked detail and its observed freshness", 
       "2026-07-24T18:00:00.000Z", 1, 0, 1, 1, "MERGEABLE", "passing", 0, 0,
       trackedDetail, observedAt,
     );
-    evictStalePrs(repo, []);
+    db.query(\`
+      INSERT INTO prs (
+        repo, number, state, is_draft, title, author, base_ref, head_ref, head_sha,
+        updated_at, additions, deletions, changed_files, commit_count, mergeable,
+        ci_status, unresolved_count, needs_me_rank, detail_json, fetched_at
+      ) VALUES (?, ?, 'OPEN', 0, 'left open', 'theo', 'main', 'other', 'open-head', ?, 1, 0, 1, 1, 'MERGEABLE', 'passing', 0, 0, '{"state":"OPEN"}', ?)
+    \`).run(repo, number + 1, "2026-07-24T18:00:00.000Z", observedAt);
+    const leftOpen = evictStalePrs(repo, []);
     const cached = getCachedPrDetail(repo, number);
     console.log(JSON.stringify({
       prMissing: getPr(repo, number) === null,
+      leftOpen,
       headSha: cached?.head_sha,
       detailJson: cached?.detail_json,
       fetchedAt: cached?.fetched_at,
@@ -97,6 +105,7 @@ test("eviction preserves the newest tracked detail and its observed freshness", 
     if (exitCode !== 0) throw new Error(stderr);
     const result = JSON.parse(stdout);
     expect(result.prMissing).toBe(true);
+    expect(result.leftOpen).toEqual([987655]);
     expect(result.headSha).toBe("new-head");
     expect(result.detailJson).toBe(JSON.stringify({ title: "new tracked detail", state: "MERGED" }));
     expect(result.fetchedAt).toBe(result.observedAt);
