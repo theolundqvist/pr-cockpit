@@ -1108,6 +1108,7 @@ export interface PrAgentSummary {
   draft: boolean;
   merge: string;
   approvedForSafeMerge: boolean;
+  labels: string[];
   review: string;
   updatedAt: string;
   snapshot: AgentSnapshotStatus | null;
@@ -1228,6 +1229,7 @@ export function buildPrAgentSummary(
     draft: detail.isDraft === true,
     merge: String(detail.mergeStateStatus ?? detail.mergeable ?? "UNKNOWN"),
     approvedForSafeMerge: approvedForSafeMerge(repo, number, String(detail.state ?? "UNKNOWN")),
+    labels: (detail.labels?.nodes ?? []).map((label) => label.name),
     review: String(detail.reviewDecision ?? "NONE"),
     updatedAt: String(detail.updatedAt ?? ""),
     snapshot: detail.agentSnapshot ?? null,
@@ -1324,6 +1326,7 @@ export function formatPrAgentSummary(summary: PrAgentSummary, options: AgentSumm
     `Head SHA: ${summary.headSha}`,
     `Merge state: ${summary.merge}`,
     mergeApprovalLine(summary),
+    `Labels: ${summary.labels.length ? summary.labels.join(", ") : "none"}`,
     `Created: ${summary.createdAt}`,
     `Updated: ${summary.updatedAt}`,
     `URL: ${summary.url}`,
