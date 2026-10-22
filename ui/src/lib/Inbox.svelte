@@ -32,6 +32,7 @@
   import { timedFlag } from "./timedFlag.svelte.js";
   import { prKey } from "./prKey.js";
   import { availableRepositories, filterByRepositories } from "./repoFilter.js";
+  import { availableAuthors, filterByAuthorAndDraft } from "./authorFilter.js";
   import { showFlash } from "./flash.svelte.js";
   import Kbd from "./Kbd.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
@@ -425,11 +426,33 @@
   let savedViews = $state(settingsSnapshot ? cachedSavedViews(settingsSnapshot) : []);
   let configuredRepos = $state(settingsSnapshot ? repoList(settingsSnapshot) : []);
   let selectedRepos = $state(storedRepositories());
+  const peopleSnapshot = storedPeopleFilter();
+  let authorFilter = $state(peopleSnapshot.author);
+  let hideDrafts = $state(peopleSnapshot.hideDrafts);
+  // The Whiteboard hides the Filters panel, so it keeps every author and draft.
+  let peopleFilter = $derived(view === "whiteboard" ? { author: "all", hideDrafts: false } : { author: authorFilter, hideDrafts });
+  let peopleFilterActive = $derived(authorFilter !== "all" || hideDrafts);
   let repoPickerOpen = $state(false);
   let viewOptionsOpen = $state(false);
   let viewOptionsButton;
-  let activeViewOptions = $derived(selectedRepos.length > 0 ? 1 : 0);
+  let activeViewOptions = $derived(Number(selectedRepos.length > 0) + Number(authorFilter !== "all") + Number(hideDrafts));
   let changedViewOptions = $derived(activeViewOptions + (prefs.queueTimeControlsEnabled ? Number(openedRange !== "all") + Number(timeOrder !== "queue") + Number(view === "open" && prefs.prGrouping.mode !== "status") : 0));
+  function storedPeopleFilter() {
+    try {
+      const stored = JSON.parse(localStorage.getItem("cockpit:queue-people") ?? "{}");
+      return { author: typeof stored?.author === "string" && stored.author ? stored.author : "all", hideDrafts: stored?.hideDrafts === true };
+    } catch {
+      return { author: "all", hideDrafts: false };
+    }
+  }
+  function setPeopleFilter(next) {
+    if (next.author !== undefined) authorFilter = next.author;
+    if (next.hideDrafts !== undefined) hideDrafts = next.hideDrafts;
+    if (authorFilter === "all" && !hideDrafts) localStorage.removeItem("cockpit:queue-people");
+    else localStorage.setItem("cockpit:queue-people", JSON.stringify({ author: authorFilter, hideDrafts }));
+    selected = 0;
+    multiAnchor = null;
+  }
   function toggleViewOptions() {
     viewOptionsOpen = !viewOptionsOpen;
     if (!viewOptionsOpen) repoPickerOpen = false;
@@ -843,9 +866,10 @@
   let historyActive = $derived(wantsHistory(filterQuery) && historyQuery === filterQuery.trim() && !historyLoading);
   let queryFilteredPrs = $derived(wantsHistory(filterQuery) ? (historyQuery === filterQuery.trim() ? historyPrs : []) : filterPrs(prs, filterQuery, showArchived));
   let availableRepos = $derived(availableRepositories(view === "all" ? [...configuredRepos, ...allPrsRepos, ...selectedRepos] : configuredRepos, prs, archivedPrs, closedPrs));
-  let scopedPrs = $derived(filterByRepositories(queryFilteredPrs.filter((pr) => !isSetAside(pr)), selectedRepos));
+  let scopedPrs = $derived(filterByAuthorAndDraft(filterByRepositories(queryFilteredPrs.filter((pr) => !isSetAside(pr)), selectedRepos), peopleFilter, viewerLogin));
   let filteredPrs = $derived(filterByOpened(scopedPrs, openedFilter));
-  let scopedClosedPrs = $derived(filterByRepositories(closedPrs.filter((pr) => !isSetAside(pr)), selectedRepos));
+  let scopedClosedPrs = $derived(filterByAuthorAndDraft(filterByRepositories(closedPrs.filter((pr) => !isSetAside(pr)), selectedRepos), peopleFilter, viewerLogin));
+  let authorOptions = $derived(availableAuthors(view === "all" ? allPrs : view === "closed" ? closedPrs : prs, authorFilter === "all" || authorFilter === "me" ? [] : [{ author: authorFilter }]));
   let filteredClosedPrs = $derived(sortByTime(orderQueueUnits(filterByOpened(scopedClosedPrs, openedFilter)), listOrder));
   let actionsHref = $derived.by(() => {
     const params = new URLSearchParams();
@@ -1366,9 +1390,9 @@
     const pr = prs.find((p) => prKey(p) === dragKey);
     return pr ? groupId(pr) : null;
   });
-  let scopedAllPrs = $derived(allPrs.filter((pr) => !isSetAside(pr)));
+  let scopedAllPrs = $derived(filterByAuthorAndDraft(allPrs.filter((pr) => !isSetAside(pr)), peopleFilter, viewerLogin));
   let visibleAllPrs = $derived(sortByTime(orderQueueUnits(filterByOpened(scopedAllPrs, openedFilter)), listOrder));
-  let scopedArchivedPrs = $derived(archivedPrs.filter((pr) => !isSetAside(pr)));
+  let scopedArchivedPrs = $derived(filterByAuthorAndDraft(archivedPrs.filter((pr) => !isSetAside(pr)), peopleFilter, viewerLogin));
   let visibleArchivedPrs = $derived(sortByTime(filterByOpened(scopedArchivedPrs, openedFilter), listOrder));
   let ordered = $derived(view === "all" ? visibleAllPrs : view === "closed" ? filteredClosedPrs : showArchived ? [...openOrdered, ...visibleArchivedPrs] : openOrdered);
   let archivedSet = $derived(new Set(archivedPrs.map((pr) => prKey(pr))));
@@ -1548,6 +1572,12 @@
       }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (isTypingTarget(e.target)) return;
+      if (e.key === "d" && view !== "whiteboard" && view !== "agents") {
+        setPeopleFilter({ hideDrafts: !hideDrafts });
+        showFlash(hideDrafts ? "Hiding drafts." : "Showing drafts.");
+        e.preventDefault();
+        return;
+      }
       if (e.key === "r") {
         viewOptionsOpen = true;
         repoPickerOpen = !repoPickerOpen;
@@ -1678,7 +1708,7 @@
       <div class="view-tabs" role="tablist" aria-label="List view">
         <button class="view-tab" role="tab" title="Pull requests involving you" aria-selected={view === "open"} class:active={view === "open"} onclick={() => showView("open")}>
           Your queue
-          <span class="view-tab-count">{filterByRepositories(prs.filter((pr) => !isSetAside(pr)), selectedRepos).length}</span>
+          <span class="view-tab-count">{filterByAuthorAndDraft(filterByRepositories(prs.filter((pr) => !isSetAside(pr)), selectedRepos), peopleFilter, viewerLogin).length}</span>
           {#if view === "closed"}<Kbd keys="tab" />{/if}
         </button>
         <button class="view-tab" role="tab" title="Every open pull request in tracked repositories" aria-selected={view === "all"} class:active={view === "all"} onclick={() => showView("all")}>
@@ -1728,6 +1758,21 @@
           {/if}
         </div>
       {/if}
+      <div class="time-controls people-controls">
+        <label class="time-field">
+          <span class="time-field-label">Author</span>
+          <select aria-label="Author" class="time-select" value={authorFilter} onchange={(event) => setPeopleFilter({ author: event.currentTarget.value })}>
+            <option value="all">All authors</option>
+            <option value="me">Only me</option>
+            <optgroup label="Person">
+              {#each authorOptions as login (login)}<option value={login}>{login}</option>{/each}
+            </optgroup>
+          </select>
+        </label>
+        <button class="time-apply drafts-toggle" type="button" aria-pressed={hideDrafts} title="Show or hide draft pull requests" onclick={() => setPeopleFilter({ hideDrafts: !hideDrafts })}>
+          {hideDrafts ? "Drafts hidden" : "Drafts shown"}<Kbd keys="d" />
+        </button>
+      </div>
       <div class="repo-filter">
         <MultiSelectDropdown
           label="Repository"
@@ -1990,6 +2035,8 @@
             <div class="empty" role="status">Loading all PRs…</div>
           {:else if visibleAllPrs.length === 0 && openedFilter && scopedAllPrs.length > 0}
             <div class="empty">No PRs match this time range</div>
+          {:else if visibleAllPrs.length === 0 && peopleFilterActive}
+            <div class="empty">No pull requests match the author and draft filters.</div>
           {:else if visibleAllPrs.length === 0}
             <div class="empty">No open pull requests in {selectedRepos.length ? "the selected" : "tracked"} repositories</div>
           {:else}
@@ -2005,7 +2052,7 @@
           {:else if closedPrs.length === 0}
             <div class="empty">Nothing merged or closed yet</div>
           {:else if scopedClosedPrs.length === 0}
-            <div class="empty">Nothing merged or closed in the selected repositories</div>
+            <div class="empty">{peopleFilterActive ? "Nothing merged or closed matches the current filters" : "Nothing merged or closed in the selected repositories"}</div>
           {:else if filteredClosedPrs.length === 0}
             <div class="empty">No PRs match this time range</div>
           {/if}
@@ -2025,6 +2072,8 @@
             <div class="empty">You’re all caught up here. Your set-aside PRs are in the tray.</div>
           {:else if selectedRepos.length && scopedPrs.length === 0}
             <div class="empty">No pull requests involving you in the selected repositories. Use All PRs to see every open pull request.</div>
+          {:else if peopleFilterActive && scopedPrs.length === 0}
+            <div class="empty">No pull requests match the author and draft filters.</div>
           {:else if wantsHistory(filterQuery) && !historyActive}
             <div class="empty">Searching history…</div>
           {:else if filterQuery && scopedPrs.length === 0}
@@ -2820,6 +2869,8 @@
   .time-input:invalid {
     border-color: var(--fail);
   }
+  .drafts-toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+  .drafts-toggle[aria-pressed="true"] { border-color: var(--link); }
   .queue-filters .time-range-row { flex-basis: 100%; }
   .time-range-row {
     display: flex;
