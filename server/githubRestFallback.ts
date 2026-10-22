@@ -211,6 +211,7 @@ export function restReviews(reviews: RestReview[]): RawPrDetail["reviews"] {
     pageInfo: NO_MORE_PAGES,
     nodes: reviews.map((review) => ({
       id: review.node_id,
+      databaseId: review.id,
       author: restAuthor(review.user),
       state: review.state,
       body: review.body ?? "",
@@ -225,6 +226,7 @@ export function restIssueComments(comments: RestIssueComment[]): RawPrDetail["co
     pageInfo: NO_MORE_PAGES,
     nodes: comments.slice(-100).map((comment) => ({
       id: comment.node_id,
+      databaseId: comment.id,
       author: restAuthor(comment.user),
       body: comment.body ?? "",
       createdAt: comment.created_at,
