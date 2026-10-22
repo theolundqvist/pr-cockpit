@@ -31,6 +31,7 @@
   import { isRecordingShortcut } from "./lib/shortcutCapture.js";
   import { isPromptDialogOpen } from "./lib/dom.js";
   import { SETTINGS_SECTION_KEY, SETTINGS_SECTIONS, normalizeSettingsSection, settingsSectionHref } from "./lib/settingsSections.js";
+  import { parseCommentTarget, prLinkHash } from "./lib/commentTarget.js";
 
   window.cockpitFlash = showFlash;
 
@@ -40,7 +41,7 @@
   const isShell = navigator.userAgent.includes("Electron");
 
   function parseRoute(hash) {
-    const match = hash.match(/^#\/pr\/([^/]+)\/([^/]+)\/(\d+)(?:\/(files|agents)|\/(actions)(?:\?([^#]+))?|\/history\/([^/?]+)(?:\?symbol=([^&]+))?)?$/i);
+    const match = hash.match(/^#\/pr\/([^/]+)\/([^/]+)\/(\d+)(?:\/(files|agents)|\/(actions)(?:\?([^#]+))?|\/history\/([^/?]+)(?:\?symbol=([^&]+))?)?(?:\?comment=([^&#]+))?$/i);
     if (match) {
       let historyPath = null;
       let historySymbol = null;
@@ -64,6 +65,8 @@
         actionJob: actionJobText === null ? null : Number(actionJobText),
         historyPath,
         historySymbol,
+        // A fresh object per parse: PrDetail reveals the comment once per navigation that names it.
+        commentTarget: parseCommentTarget(match[9]),
       };
     }
     const actionsRunMatch = hash.match(/^#\/actions\/run\/([^/]+)\/([^/]+)\/(\d+)$/);
@@ -238,18 +241,23 @@
       disconnect();
     };
   });
-  // GitHub PR links in rendered markdown navigate in-app; modifier clicks keep the real href
-  const GH_PR_URL = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)(?:$|[#?])/;
-
+  // GitHub PR links in rendered markdown navigate in-app; modifier clicks keep the real href. A
+  // comment link into the open PR leaves the URL and tab alone and lets PrDetail reveal it.
   $effect(() => {
     function onClick(e) {
       if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
       const a = e.target.closest("a");
       if (!a || !a.closest(".md")) return;
-      const m = (a.getAttribute("href") ?? "").match(GH_PR_URL);
-      if (!m) return;
+      const href = a.getAttribute("href") ?? "";
+      const hash = href.startsWith("#/pr/") ? (href.includes("?comment=") ? href : null) : prLinkHash(href);
+      const next = hash ? parseRoute(hash) : null;
+      if (next?.name !== "detail") return;
       e.preventDefault();
-      location.hash = `#/pr/${m[1]}/${m[2]}/${m[3]}`;
+      if (next.commentTarget && route.name === "detail" && route.repo.toLowerCase() === next.repo.toLowerCase() && route.number === next.number) {
+        route = { ...route, commentTarget: next.commentTarget };
+      } else {
+        location.hash = hash;
+      }
     }
     document.addEventListener("click", onClick);
     return () => document.removeEventListener("click", onClick);
@@ -399,7 +407,7 @@
       {#if setupOpen}
         <Onboarding onDone={finishSetup} onCancel={() => (setupOpen = false)} />
       {:else if route.name === "detail"}
-        <PrDetail repo={route.repo} number={route.number} tab={route.tab} actionSha={route.actionSha} actionJob={route.actionJob} historyPath={route.historyPath} historySymbol={route.historySymbol} refreshRevision={detailRevision} />
+        <PrDetail repo={route.repo} number={route.number} tab={route.tab} actionSha={route.actionSha} actionJob={route.actionJob} historyPath={route.historyPath} historySymbol={route.historySymbol} commentTarget={route.commentTarget} refreshRevision={detailRevision} />
       {:else if route.name === "settings"}
         {#if route.section === "usage"}
           <Usage />

@@ -570,6 +570,11 @@ kbd {
   background: var(--link-bg-hover);
   text-decoration: none;
 }
+/* The comment a link opened; PrDetail removes the class after 1.5 s. */
+.comment-target-flash {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+}
 .md .mention {
   font-weight: 500;
   color: var(--text-dim);

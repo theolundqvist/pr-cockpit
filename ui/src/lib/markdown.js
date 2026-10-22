@@ -3,6 +3,7 @@ import DOMPurify from "dompurify";
 import { prIndexRevision, prTitle } from "./prIndex.svelte.js";
 import { linkifyBareRefs } from "./prRefs.js";
 import { cockpitActionsHref } from "./githubLinks.js";
+import { prHash, prLinkHash } from "./commentTarget.js";
 import { theme } from "./theme.svelte.js";
 import { viewer } from "./viewer.svelte.js";
 import { HIGHLIGHT_PENDING, codeHl, highlightFencedCode } from "./codeHighlight.svelte.js";
@@ -223,8 +224,10 @@ function linkifyRefs(doc) {
     const [, owner, repo, kind, num] = match;
     if (kind === "pull") {
       const title = prTitle(`${owner}/${repo}`, Number(num));
-      a.textContent = title ? `${title} #${num}` : `${owner}/${repo}#${num}`;
-      a.setAttribute("href", `#/pr/${owner}/${repo}/${num}`);
+      // A comment permalink keeps its target, labelled the way GitHub renders one.
+      const hash = prLinkHash(href) ?? prHash(`${owner}/${repo}`, num);
+      a.textContent = `${title ? `${title} #${num}` : `${owner}/${repo}#${num}`}${hash.includes("?comment=") ? " (comment)" : ""}`;
+      a.setAttribute("href", hash);
       a.removeAttribute("target");
       a.removeAttribute("rel");
     } else {

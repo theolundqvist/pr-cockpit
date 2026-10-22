@@ -8,7 +8,7 @@
   import { CODE_SCANNING_DISMISSAL_REASONS, isCodeScanningThread } from "../../../shared/codeScanning.js";
   import Kbd from "./Kbd.svelte";
 
-  let { thread, pending, onReply, onToggleResolve, onRetry, onDiscard, inline = false } = $props();
+  let { thread, pending, onReply, onToggleResolve, onRetry, onDiscard, inline = false, reveal = 0 } = $props();
 
   let codeScanningAlert = $derived(isCodeScanningThread(thread));
   let resolveError = $state("");
@@ -26,6 +26,10 @@
     resolveMutation?.state === "pending" ? resolveMutation.payload.resolved : thread.isResolved,
   );
   let showFull = $derived(!effectiveResolved || expanded);
+  // A comment link into this thread opens it; each link carries a new number, so a repeat reopens it.
+  $effect(() => {
+    if (reveal) expanded = true;
+  });
 
   let firstComment = $derived(thread.comments.nodes[0]);
   let loc = $derived(`${thread.path}${thread.line !== null ? ":" + thread.line : ""}`);
@@ -179,7 +183,7 @@
       </div>
     {/if}
     {#each thread.comments.nodes as comment}
-      <div class="comment">
+      <div class="comment" data-comment-id={comment.databaseId}>
         <div class="comment-head">
           <Avatar login={comment.author?.login} url={comment.author?.avatarUrl} />
           <span class="author">{comment.author?.login ?? "ghost"}</span>
