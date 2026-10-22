@@ -5,8 +5,13 @@ describe("prcockpit protocol argv", () => {
   test("keeps the raw desktop-entry URL and routes it through the canonical parser", () => {
     const url = "prcockpit://pr/scape-app/scape/123";
     expect(protocolArgFromArgv(["electron", "/runtime/shell", url])).toBe(url);
-    expect(protocolAction(url)).toEqual({ type: "open-pr", owner: "scape-app", repo: "scape", number: "123" });
+    expect(protocolAction(url)).toEqual({ type: "open-pr", owner: "scape-app", repo: "scape", number: "123", comment: null });
     expect(deepLinkHash(url)).toBe("#/pr/scape-app/scape/123");
+  });
+
+  test("carries one comment target into the PR route", () => {
+    expect(deepLinkHash("prcockpit://pr/acme/widgets/12?comment=discussion_r4348303060")).toBe("#/pr/acme/widgets/12?comment=discussion_r4348303060");
+    expect(deepLinkHash("prcockpit://pr/acme/widgets/12?comment=issuecomment-7")).toBe("#/pr/acme/widgets/12?comment=issuecomment-7");
   });
 
   test("parses exact prcockpit://main as a focus action that never navigates", () => {
@@ -23,6 +28,9 @@ describe("prcockpit protocol argv", () => {
     "prcockpit://user:secret@pr/scape-app/scape/123",
     "prcockpit://pr:4820/scape-app/scape/123",
     "prcockpit://pr/scape-app/scape/123?tab=checks",
+    "prcockpit://pr/scape-app/scape/123?comment=discussion_r0",
+    "prcockpit://pr/scape-app/scape/123?comment=issuecomment-7&tab=files",
+    "prcockpit://pr/scape-app/scape/123?comment=issuecomment-7#files",
     "prcockpit://pr/scape-app/scape/123#files",
     "prcockpit://pr/scape-app/scape",
     "prcockpit://pr/scape-app/scape/123/extra",
