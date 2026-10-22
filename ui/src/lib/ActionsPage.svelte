@@ -271,10 +271,10 @@
         }}>
           <ActionStatusIcon status={run.status} conclusion={run.conclusion} />
           <span class="run-copy">
-            <strong>{run.displayTitle}</strong>
+            <strong>{run.workflowName}{run.runNumber ? ` #${run.runNumber}` : ""}</strong>
             <span class="run-meta">
-              <b>{run.workflowName}</b>{run.runNumber ? ` #${run.runNumber}` : ""}
-              {#if run.event} · {run.event.replaceAll("_", " ")}{/if}
+              {#if run.displayTitle !== run.workflowName}<b>{run.displayTitle}</b> · {/if}
+              {#if run.event}{run.event.replaceAll("_", " ")}{/if}
               {#if run.actorLogin} · {run.actorLogin}{/if}
             </span>
           </span>
