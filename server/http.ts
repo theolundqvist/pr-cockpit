@@ -48,6 +48,7 @@ import {
   setRank,
   unsetRank,
   listWorkflowRunsForPaths,
+  hasWorkflowRunsForPath,
   upsertPr,
   upsertCachedPrDetail,
   upsertPrIndex,
@@ -164,7 +165,7 @@ import { createTmuxFocusHandler } from "./tmuxFocus.ts";
 import type { TmuxFocusHandler } from "./tmuxFocus.ts";
 import { needsMeRank } from "./rank.ts";
 import { invalidateInbox, invalidatePr } from "./rendererInvalidation.ts";
-import { actionJobLog, actionWorkflowGraphs, activateActionsLease, cacheActionsRun, cacheGithubActionsForCommit, cacheRepoActionsRunJobs, cachedJobLogs, formatJobLogs, formatRunJobs, reconciliationError, refreshWorkflowRuns, repoActionWorkflowGraphs, storedActionWorkflowGraphs, type CompactStep } from "./runLogs.ts";
+import { actionJobLog, actionWorkflowGraphs, activateActionsLease, cacheActionsRun, cacheGithubActionsForCommit, cacheRepoActionsRunJobs, cachedJobLogs, formatJobLogs, formatRunJobs, reconciliationError, refreshWorkflowRuns, repoActionWorkflowGraphs, storedActionWorkflowGraphs, workflowRunsFetched, type CompactStep } from "./runLogs.ts";
 import { claimNotifications, viewerMergedPr } from "./notifications.ts";
 import type { NotificationSettings } from "../shared/notificationRules.ts";
 const cockpitRoot = process.cwd();
@@ -2214,10 +2215,10 @@ async function handleRepoActions(url: URL): Promise<Response> {
     ? listWorkflowRunsForPaths(repos, [...selectedWorkflowPaths], 1000)
     : recentRuns;
   if (selectedWorkflowPaths.size > 0) {
-    // Cached rows answer immediately; the per-workflow fetch only blocks the response
-    // when a selected workflow has nothing cached yet.
+    // Cached rows answer immediately and the per-workflow fetch refreshes them behind the
+    // response. It blocks only for a workflow with no cached run that this process has not
+    // fetched yet; a workflow that never runs would otherwise wait on GitHub on every visit.
     const targets = catalog.filter((workflow) => selectedWorkflowPaths.has(workflow.path));
-    const cachedPaths = new Set(allRuns.map((run) => `${run.repo}\n${staticWorkflowPath(run.workflow_path)}`));
     const refresh = Promise.allSettled(targets.map((workflow) => refreshWorkflowRuns(workflow.repo, workflow.workflow_id)))
       .then((results) => {
         results.forEach((result, index) => {
@@ -2226,7 +2227,7 @@ async function handleRepoActions(url: URL): Promise<Response> {
           }
         });
       });
-    if (targets.some((workflow) => !cachedPaths.has(`${workflow.repo}\n${workflow.path}`))) {
+    if (targets.some((workflow) => !workflowRunsFetched(workflow.repo, workflow.workflow_id) && !hasWorkflowRunsForPath(workflow.repo, workflow.path))) {
       await refresh;
       allRuns = listWorkflowRunsForPaths(repos, [...selectedWorkflowPaths], 1000);
     }

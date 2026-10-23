@@ -517,6 +517,10 @@ export async function refreshWorkflowRuns(
   return request;
 }
 
+export function workflowRunsFetched(repo: string, workflowId: number): boolean {
+  return workflowRefreshedAt.has(`${repo}\n${workflowId}`);
+}
+
 function jobIsComplete(job: { status: string; conclusion: string | null }): boolean {
   return job.status === "completed" || job.conclusion !== null;
 }

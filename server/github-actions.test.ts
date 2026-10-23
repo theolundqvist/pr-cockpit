@@ -261,6 +261,95 @@ test("repo-wide Actions lists quiet catalog workflows and scopes selected workfl
   }
 });
 
+test("selected workflows wait on GitHub only until each has been cached or fetched once", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-actions-refresh-wait-"));
+  const fakeGh = join(dataDir, "gh");
+  writeFileSync(fakeGh, "#!/bin/sh\nprintf 'fixture-token\\n'\n");
+  chmodSync(fakeGh, 0o755);
+  try {
+    const script = `
+      const { ingestActionsState } = await import(${JSON.stringify(new URL("./runLogs.ts", import.meta.url).href)});
+      const { replaceActionWorkflows } = await import(${JSON.stringify(new URL("./db.ts", import.meta.url).href)});
+      const { buildFetchHandler } = await import(${JSON.stringify(new URL("./http.ts", import.meta.url).href)});
+      const run = (id, workflowPath, eventAt) => ({
+        id, attempt: 1, headSha: "a".repeat(40), headBranch: "main", workflowName: workflowPath,
+        workflowPath, displayTitle: "run " + id,
+        event: "push", actorLogin: "ci", prNumber: null, status: "completed",
+        conclusion: "success", eventAt, createdAt: eventAt, updatedAt: eventAt,
+        runStartedAt: eventAt, runNumber: id, htmlUrl: null,
+      });
+      replaceActionWorkflows("acme/app", [
+        { id: 1, name: "Busy", path: ".github/workflows/busy.yml", state: "active" },
+        { id: 2, name: "Quiet", path: ".github/workflows/quiet.yml", state: "active" },
+        { id: 3, name: "Never Runs", path: ".github/workflows/never.yml", state: "active" },
+        { id: 4, name: "Uncached", path: ".github/workflows/uncached.yml", state: "active" },
+      ]);
+      await ingestActionsState("acme/app", { run: run(1, ".github/workflows/quiet.yml", "2026-08-01T00:00:00Z") });
+      for (let id = 2; id <= 1002; id++) {
+        await ingestActionsState("acme/app", { run: run(id, ".github/workflows/busy.yml", "2026-08-28T00:00:00Z") });
+      }
+      const fetched = [];
+      let githubAnswers = true;
+      globalThis.fetch = async (input) => {
+        const workflowId = Number(new URL(String(input)).pathname.match(/workflows\\/(\\d+)\\/runs/)?.[1]);
+        fetched.push(workflowId);
+        if (!githubAnswers) return new Promise(() => {});
+        if (workflowId !== 4) return Response.json({ workflow_runs: [] });
+        return Response.json({ workflow_runs: [{
+          id: 5000, run_attempt: 1, head_sha: "b".repeat(40), head_branch: "main", name: "Uncached",
+          path: ".github/workflows/uncached.yml", status: "completed", conclusion: "success",
+          created_at: "2026-08-29T00:00:00Z", updated_at: "2026-08-29T00:00:00Z", html_url: null,
+        }] });
+      };
+      const realNow = Date.now;
+      let clockOffset = 0;
+      Date.now = () => realNow() + clockOffset;
+      const handler = buildFetchHandler(4899);
+      const load = async (...workflows) => {
+        const params = new URLSearchParams(workflows.map((workflow) => ["workflow", ".github/workflows/" + workflow]));
+        const response = handler(new Request("http://127.0.0.1:4899/api/actions/runs?" + params)).then((res) => res.json());
+        // Stubbed GitHub hangs, so a response that waits on it never settles; the timeout fires only on failure.
+        const body = await Promise.race([response, Bun.sleep(2000).then(() => null)]);
+        return body ? body.runs.length : "waited on GitHub";
+      };
+      const uncachedFirst = await load("uncached.yml");
+      const neverFirst = await load("never.yml");
+      githubAnswers = false;
+      clockOffset = 120_000;
+      const neverAgain = await load("never.yml");
+      const cachedOutsideRecentWindow = await load("busy.yml", "quiet.yml");
+      console.log(JSON.stringify({ uncachedFirst, neverFirst, neverAgain, cachedOutsideRecentWindow, fetched }));
+      process.exit(0);
+    `;
+    const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: {
+        ...Bun.env,
+        COCKPIT_DATA_DIR: dataDir,
+        COCKPIT_REPOS: "acme/app",
+        COCKPIT_GH_BIN: fakeGh,
+        COCKPIT_MOCK: "",
+        COCKPIT_MOCK_DATA: "",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(stderr);
+    const result = JSON.parse(stdout);
+    expect(result.uncachedFirst).toBe(1);
+    expect(result.neverFirst).toBe(0);
+    expect(result.neverAgain).toBe(0);
+    expect(result.cachedOutsideRecentWindow).toBe(50);
+    expect(result.fetched).toEqual([4, 3, 3, 1, 2]);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+}, 30_000);
+
 test("failed-job reruns call GitHub's run endpoint and preserve a readable 403", async () => {
   const fakeGhDir = mkdtempSync(join(tmpdir(), "pr-cockpit-actions-rerun-client-"));
   const fakeGh = join(fakeGhDir, "gh");

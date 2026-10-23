@@ -264,7 +264,6 @@ CREATE TABLE IF NOT EXISTS action_workflows (
 );
 
 CREATE INDEX IF NOT EXISTS workflow_runs_pr_idx ON workflow_runs (repo, pr_number, head_sha);
-CREATE INDEX IF NOT EXISTS workflow_runs_repo_time_idx ON workflow_runs (repo, event_at DESC);
 
 CREATE TABLE IF NOT EXISTS actions_leases (
   repo TEXT NOT NULL,
@@ -351,7 +350,6 @@ if (workflowRunPrNumber?.notnull === 1) {
     FROM workflow_runs_legacy;
     DROP TABLE workflow_runs_legacy;
     CREATE INDEX workflow_runs_pr_idx ON workflow_runs (repo, pr_number, head_sha);
-    CREATE INDEX workflow_runs_repo_time_idx ON workflow_runs (repo, event_at DESC);
   `);
   workflowRunColumns = db.query("PRAGMA table_info(workflow_runs)").all() as Array<{ name: string; notnull: number }>;
 }
@@ -369,7 +367,6 @@ for (const [name, definition] of [
     db.exec(`ALTER TABLE workflow_runs ADD COLUMN ${name} ${definition}`);
   }
 }
-db.exec("CREATE INDEX IF NOT EXISTS workflow_runs_repo_time_idx ON workflow_runs (repo, event_at DESC)");
 
 const runJobColumns = db.query("PRAGMA table_info(run_jobs)").all() as Array<{ name: string }>;
 for (const [name, definition] of [
@@ -545,12 +542,18 @@ CREATE INDEX IF NOT EXISTS run_jobs_fetched_idx ON run_jobs (fetched_at);
 CREATE INDEX IF NOT EXISTS workflow_runs_fetched_idx ON workflow_runs (fetched_at);
 `);
 
-// Per-run, per-commit, and per-branch Actions lookups sit on every PR refresh and Actions read.
+// Reusable-workflow runs carry an `@refs/...` suffix; this strips it.
+const STATIC_WORKFLOW_PATH_SQL = "substr(workflow_path, 1, instr(workflow_path || '@refs/', '@refs/') - 1)";
+
+// Per-run, per-commit, per-branch, recent and per-workflow Actions lookups sit on every PR refresh and Actions read.
 // Without these each one walks every row the repository has ever cached (~70-200ms apiece).
 db.exec(`
 CREATE INDEX IF NOT EXISTS run_jobs_run_idx ON run_jobs (repo, run_id, run_attempt);
 CREATE INDEX IF NOT EXISTS workflow_runs_sha_idx ON workflow_runs (repo, head_sha, run_id, run_attempt);
 CREATE INDEX IF NOT EXISTS workflow_runs_branch_idx ON workflow_runs (repo, head_branch, event_at DESC, run_id DESC, run_attempt DESC);
+CREATE INDEX IF NOT EXISTS workflow_runs_recent_idx ON workflow_runs (repo, event_at DESC, run_id DESC, run_attempt DESC);
+CREATE INDEX IF NOT EXISTS workflow_runs_path_idx ON workflow_runs (repo, ${STATIC_WORKFLOW_PATH_SQL}, event_at DESC, run_id DESC, run_attempt DESC);
+DROP INDEX IF EXISTS workflow_runs_repo_time_idx;
 `);
 db.exec("DELETE FROM pr_detail_cache WHERE fetched_at < datetime('now', '-30 days')");
 db.exec("DELETE FROM pr_webhook_activity WHERE received_at < datetime('now', '-30 days')");
@@ -1296,29 +1299,36 @@ export function claimWorkflowRunForPr(
   return claimWorkflowRunForPrTxn(repo, runId, number, headBranch);
 }
 
-export function listWorkflowRuns(repos: string[], limit = 200, offset = 0): WorkflowRunRow[] {
-  if (repos.length === 0) return [];
-  const placeholders = repos.map(() => "?").join(", ");
-  return db.query<WorkflowRunRow, [...string[], number, number]>(
-    `SELECT * FROM workflow_runs
-     WHERE repo IN (${placeholders})
-     ORDER BY event_at DESC, run_id DESC, run_attempt DESC
-     LIMIT ? OFFSET ?`,
-  ).all(...repos, limit, offset);
+const RECENT_RUN_ORDER = "event_at DESC, run_id DESC, run_attempt DESC";
+const recentRepoRunsStmt = db.prepare<WorkflowRunRow, [string, number]>(
+  `SELECT * FROM workflow_runs WHERE repo = ? ORDER BY ${RECENT_RUN_ORDER} LIMIT ?`,
+);
+const recentPathRunsStmt = db.prepare<WorkflowRunRow, [string, string, number]>(
+  `SELECT * FROM workflow_runs WHERE repo = ? AND ${STATIC_WORKFLOW_PATH_SQL} = ? ORDER BY ${RECENT_RUN_ORDER} LIMIT ?`,
+);
+const pathHasRunsStmt = db.prepare<{ found: number }, [string, string]>(
+  `SELECT 1 AS found FROM workflow_runs WHERE repo = ? AND ${STATIC_WORKFLOW_PATH_SQL} = ? LIMIT 1`,
+);
+
+function newestRunFirst(left: WorkflowRunRow, right: WorkflowRunRow): number {
+  if (left.event_at !== right.event_at) return left.event_at < right.event_at ? 1 : -1;
+  return right.run_id - left.run_id || right.run_attempt - left.run_attempt;
 }
 
-// Matches both static paths and reusable-workflow paths carrying an `@refs/...` suffix.
+// `repo IN (...)` cannot read an index in order, so SQLite sorted every cached run of every
+// listed repo. Each repo (and path) reads only its newest rows from its own index range.
+export function listWorkflowRuns(repos: string[], limit = 200): WorkflowRunRow[] {
+  const runs = repos.flatMap((repo) => recentRepoRunsStmt.all(repo, limit));
+  return runs.sort(newestRunFirst).slice(0, limit);
+}
+
 export function listWorkflowRunsForPaths(repos: string[], paths: string[], limit = 200): WorkflowRunRow[] {
-  if (repos.length === 0 || paths.length === 0) return [];
-  const repoPlaceholders = repos.map(() => "?").join(", ");
-  const pathPlaceholders = paths.map(() => "?").join(", ");
-  return db.query<WorkflowRunRow, [...string[], number]>(
-    `SELECT * FROM workflow_runs
-     WHERE repo IN (${repoPlaceholders})
-       AND substr(workflow_path, 1, instr(workflow_path || '@refs/', '@refs/') - 1) IN (${pathPlaceholders})
-     ORDER BY event_at DESC, run_id DESC, run_attempt DESC
-     LIMIT ?`,
-  ).all(...repos, ...paths, limit);
+  const runs = repos.flatMap((repo) => paths.flatMap((path) => recentPathRunsStmt.all(repo, path, limit)));
+  return runs.sort(newestRunFirst).slice(0, limit);
+}
+
+export function hasWorkflowRunsForPath(repo: string, path: string): boolean {
+  return pathHasRunsStmt.get(repo, path) !== null;
 }
 
 const deleteActionWorkflowsStmt = db.prepare("DELETE FROM action_workflows WHERE repo = ?");

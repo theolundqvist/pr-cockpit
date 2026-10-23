@@ -591,7 +591,7 @@ test("startup removes retired generated score tables", async () => {
   }
 });
 
-test("Actions lookups by run, commit, and branch are served by their indexes", async () => {
+test("Actions lookups by run, commit, branch, recency, and workflow are served by their indexes", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-actions-indexes-"));
   const scenario = `
     const { db } = await import(${JSON.stringify(dbModuleUrl)});
@@ -600,6 +600,8 @@ test("Actions lookups by run, commit, and branch are served by their indexes", a
       run: plan("SELECT * FROM run_jobs WHERE repo = 'r' AND run_id = 1 AND run_attempt = 1"),
       commit: plan("SELECT * FROM workflow_runs WHERE repo = 'r' AND head_sha = 's' ORDER BY run_id, run_attempt"),
       branch: plan("SELECT * FROM workflow_runs WHERE repo = 'r' AND head_branch = 'b' ORDER BY event_at DESC, run_id DESC, run_attempt DESC"),
+      recent: plan("SELECT * FROM workflow_runs WHERE repo = 'r' ORDER BY event_at DESC, run_id DESC, run_attempt DESC LIMIT 10"),
+      path: plan("SELECT * FROM workflow_runs WHERE repo = 'r' AND substr(workflow_path, 1, instr(workflow_path || '@refs/', '@refs/') - 1) = 'p' ORDER BY event_at DESC, run_id DESC, run_attempt DESC LIMIT 10"),
     }));
     db.close();
   `;
@@ -619,6 +621,8 @@ test("Actions lookups by run, commit, and branch are served by their indexes", a
     expect(plans.run).toContain("run_jobs_run_idx (repo=? AND run_id=? AND run_attempt=?)");
     expect(plans.commit).toContain("workflow_runs_sha_idx (repo=? AND head_sha=?)");
     expect(plans.branch).toContain("workflow_runs_branch_idx (repo=? AND head_branch=?)");
+    expect(plans.recent).toBe("SEARCH workflow_runs USING INDEX workflow_runs_recent_idx (repo=?)");
+    expect(plans.path).toBe("SEARCH workflow_runs USING INDEX workflow_runs_path_idx (repo=? AND <expr>=?)");
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }
