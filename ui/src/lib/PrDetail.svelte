@@ -37,6 +37,7 @@
   import { loadDiffDocument } from "./diffDocument.js";
   import { imageFallback, renderMarkdown } from "./markdown.js";
   import { botCommentLinks, previewCommentLinks } from "./commentLinks.js";
+  import { commentTargetSelector, locateCommentTarget, threadOpensInFiles } from "./commentTarget.js";
   import { setTasksByKey, taskMarkers } from "../../../shared/taskList.js";
   import { rememberScroll, rememberedScroll } from "./history.svelte.js";
   import { presentMutationError } from "./mutationError.js";
@@ -94,7 +95,7 @@
     { value: "REQUEST_CHANGES", label: "Request changes", tone: "red" },
   ];
 
-  let { repo, number, tab, actionSha = null, actionJob = null, historyPath = null, historySymbol = null, refreshRevision = 0 } = $props();
+  let { repo, number, tab, actionSha = null, actionJob = null, historyPath = null, historySymbol = null, commentTarget = null, refreshRevision = 0 } = $props();
   let handledRefreshRevision = refreshRevision;
   loadPrIndex();
 
@@ -230,6 +231,7 @@
     conflictFilesError = null;
     loadedConflictKey = "";
     conflictEditorPath = null;
+    commentRequest = null;
     sinceAnchor = readLastViewed(repo, number);
     if (untrack(() => pickerMode) === "labels") loadRepoLabels();
     fetchRepoUsers(repo)
@@ -1120,6 +1122,7 @@
       onToggleResolve: (codeScanningDismissal) => submitResolve(thread.id, thread.isResolved, codeScanningDismissal),
       onRetry: handleRetry,
       onDiscard: handleDiscard,
+      reveal: threadReveal?.threadId === thread.id ? threadReveal.seq : 0,
     };
   }
 
@@ -2127,12 +2130,12 @@
     if (!pr) return [];
     const events = [];
     for (const c of pr.comments.nodes) {
-      events.push({ kind: "comment", id: `comment-${c.id}`, author: c.author?.login, avatarUrl: c.author?.avatarUrl, body: c.body, at: c.createdAt, state: null, reactions: c.reactions });
+      events.push({ kind: "comment", id: `comment-${c.id}`, databaseId: c.databaseId ?? null, author: c.author?.login, avatarUrl: c.author?.avatarUrl, body: c.body, at: c.createdAt, state: null, reactions: c.reactions });
     }
     for (const r of pr.reviews.nodes) {
       if (!r.submittedAt) continue;
       if (!r.body && r.state === "COMMENTED") continue;
-      events.push({ kind: "review", id: `review-${r.id}`, author: r.author?.login, avatarUrl: r.author?.avatarUrl, body: r.body, at: r.submittedAt, state: r.state, reactions: r.reactions });
+      events.push({ kind: "review", id: `review-${r.id}`, databaseId: r.databaseId ?? null, author: r.author?.login, avatarUrl: r.author?.avatarUrl, body: r.body, at: r.submittedAt, state: r.state, reactions: r.reactions });
     }
     for (const t of publishedThreads) {
       const at = t.comments.nodes[0]?.createdAt;
@@ -2420,6 +2423,168 @@
     } else if (tries > 0) {
       requestAnimationFrame(() => revealTimelineReply(threadId, tries - 1));
     }
+  }
+
+  // A comment link waits here until this PR's detail, and for an inline thread its diff, can place it.
+  // `tab` is the tab the link switched to; once the page is there, leaving it abandons the link.
+  let commentRequest = $state.raw(null);
+  // Opens one resolved thread; the sequence lets a repeat link reopen a thread the reader collapsed.
+  let threadReveal = $state.raw(null);
+  let threadRevealSeq = 0;
+  let spotlit = null;
+  const COMMENT_SPOTLIGHT_MS = 1500;
+  const COMMENT_RENDER_WAIT_MS = 4000;
+  const MISSING_COMMENT = "Couldn’t find that comment on this pull request. It may have been deleted.";
+
+  $effect(() => {
+    const target = commentTarget;
+    if (target) untrack(() => (commentRequest = commentLinkRequest(target)));
+  });
+
+  // `filesRequest` is the request Files handed back to Conversation. When that Files visit was the link's
+  // own tab switch, the switch back replaces its history entry instead of stacking another.
+  function commentLinkRequest(target, filesRequest = null) {
+    return { target, viaConversation: !!filesRequest, replaceEntry: !!filesRequest?.tab, tab: null, arrived: false, settling: false };
+  }
+
+  $effect(() => {
+    const request = commentRequest;
+    if (!request || !pr || (prefs.pendingReviewsEnabled && pendingReviewState === "loading")) return;
+    void [publishedThreads, tab, diffState];
+    // Revealing flushes and scrolls the page, which waits until this effect's update has finished.
+    queueMicrotask(() => {
+      if (commentRequest === request) advanceCommentLink(request);
+    });
+  });
+
+  function advanceCommentLink(request) {
+    const place = locateCommentTarget(pr, publishedThreads, request.target);
+    if (!place) {
+      settleMissingComment(request);
+      return;
+    }
+    const inFiles = !!place.thread && !request.viaConversation && threadOpensInFiles(place.thread);
+    const wanted = inFiles ? "files" : "conversation";
+    if (tab !== wanted) {
+      if (request.arrived) commentRequest = null;
+      else if (!request.tab) openCommentTab(request, wanted);
+      return;
+    }
+    request.arrived = true;
+    if (inFiles) {
+      if (diffState === "error") commentRequest = commentLinkRequest(request.target, request);
+      else if (diffState === "ready") revealCommentInFiles(request, place.thread);
+      return;
+    }
+    commentRequest = null;
+    const eventId = place.thread ? `thread-${place.thread.id}` : `${request.target.kind === "review" ? "review" : "comment"}-${place.node.id}`;
+    const index = timeline.findIndex((event) => event.id === eventId);
+    // A review without a body or verdict has no timeline entry of its own.
+    if (index < 0) showFlash(MISSING_COMMENT);
+    else revealCommentInConversation(request.target, index, place.thread);
+  }
+
+  // A cached detail can predate the comment, so a miss counts only once this visit's fetches settle.
+  async function settleMissingComment(request) {
+    if (request.settling) return;
+    request.settling = true;
+    await detailLoadPromise?.catch(() => {});
+    await detailRefreshPromise?.catch(() => {});
+    request.settling = false;
+    if (commentRequest !== request || (pr && locateCommentTarget(pr, publishedThreads, request.target))) return;
+    commentRequest = null;
+    showFlash(MISSING_COMMENT);
+  }
+
+  function openCommentTab(request, next) {
+    if (tab === "files" && !finishFileEdit()) {
+      commentRequest = null;
+      return;
+    }
+    request.tab = next;
+    const hash = next === "files" ? `#/pr/${repo}/${number}/files` : `#/pr/${repo}/${number}`;
+    // A history entry made for the link itself is replaced, so Back never lands on it and bounces here
+    // again; a link followed within the open PR adds the tab as a new entry, like any tab switch.
+    if (request.replaceEntry || location.hash.includes("?comment=")) location.replace(hash);
+    else location.hash = hash;
+  }
+
+  function revealCommentInFiles(request, thread) {
+    const i = files.findIndex((file) => file.path === thread.path);
+    if (i < 0 || threadSplit.unanchored.some((item) => item.id === thread.id)) {
+      commentRequest = commentLinkRequest(request.target, request);
+      return;
+    }
+    commentRequest = null;
+    if (collapsedFiles.has(thread.path)) {
+      const next = new Set(collapsedFiles);
+      next.delete(thread.path);
+      collapsedFiles = next;
+    }
+    threadReveal = { threadId: thread.id, seq: ++threadRevealSeq };
+    fileIndex = i;
+    flushSync();
+    fileSection(i)?.scrollIntoView({ block: "start" });
+    // A file DiffView never renders inline, such as one too large to show, leaves the timeline.
+    spotlightComment(request.target, () => (commentRequest = commentLinkRequest(request.target, request)));
+  }
+
+  function revealCommentInConversation(target, index, thread) {
+    if (thread) threadReveal = { threadId: thread.id, seq: ++threadRevealSeq };
+    showTimelineThrough(index);
+    flushSync();
+    spotlightComment(target, () => showFlash(MISSING_COMMENT));
+  }
+
+  // Centers the comment and outlines it briefly; focus stays where it was.
+  function spotlightComment(target, onMissing, token = activeFetch, deadline = performance.now() + COMMENT_RENDER_WAIT_MS) {
+    if (token !== activeFetch) return;
+    const el = document.querySelector(commentTargetSelector(target));
+    if (!el) {
+      if (performance.now() < deadline) requestAnimationFrame(() => spotlightComment(target, onMissing, token, deadline));
+      else onMissing();
+      return;
+    }
+    scrollRestore = null;
+    threadReveal = null;
+    centerUntilSettled(el);
+    if (spotlit) {
+      clearTimeout(spotlit.timer);
+      spotlit.el.classList.remove("comment-target-flash");
+    }
+    el.classList.add("comment-target-flash");
+    const current = {
+      el,
+      timer: setTimeout(() => {
+        el.classList.remove("comment-target-flash");
+        if (spotlit === current) spotlit = null;
+      }, COMMENT_SPOTLIGHT_MS),
+    };
+    spotlit = current;
+  }
+
+  // Images and lazily rendered neighbours above the comment change height as they load; keep it centered
+  // while it is outlined unless the reader takes over the scroll.
+  function centerUntilSettled(el) {
+    const page = el.closest(".page");
+    const takeover = ["wheel", "touchstart", "pointerdown", "keydown"];
+    const until = performance.now() + COMMENT_SPOTLIGHT_MS;
+    let stopped = false;
+    let top = null;
+    const stop = () => (stopped = true);
+    for (const type of takeover) page?.addEventListener(type, stop, { passive: true });
+    const step = () => {
+      if (!stopped && el.isConnected && performance.now() < until) {
+        const next = el.getBoundingClientRect().top;
+        if (next !== top) {
+          el.scrollIntoView({ block: "center" });
+          top = el.getBoundingClientRect().top;
+        }
+        return void requestAnimationFrame(step);
+      }
+      for (const type of takeover) page?.removeEventListener(type, stop);
+    };
+    step();
   }
 
   function scrollToFile(i) {
@@ -3449,6 +3614,8 @@
               {:else}
                 <div
                   class="event"
+                  data-issue-comment-id={event.kind === "comment" ? event.databaseId : null}
+                  data-review-id={event.kind === "review" ? event.databaseId : null}
                   class:activity-event={event.kind === "review" && !event.body && !event.reactions?.length}
                   class:greptile-event={event.author === "greptile-apps"}
                 >

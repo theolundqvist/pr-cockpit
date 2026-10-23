@@ -28,6 +28,7 @@
         { key: "⌘N", label: "new window" },
         { key: "⇧⏎ / ⌘⏎", label: "jump list: new window / github" },
         { key: "/", label: "search / filter" },
+        { key: "d", label: "show / hide drafts" },
         { key: "⇧H / ⇧L", label: "back / forward" },
         { key: "⌘[ / ⌘]", label: "back / forward" },
         { key: "⌘+ / ⌘- / ⌘0", label: "zoom in / out / reset" },

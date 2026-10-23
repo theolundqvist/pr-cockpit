@@ -114,12 +114,12 @@ function baseDetail(number: number, overrides: Partial<PrDetail> = {}): PrDetail
     assignees: { nodes: [{ login: VIEWER }] },
     reviewRequests: { nodes: [] },
     reviews: {
-      nodes: [{ id: `review-${number}`, author: author("reviewer-one"), state: "APPROVED", body: "Looks solid. The state transitions are easy to follow.", submittedAt: at(45), reactions: reactions(1) }],
+      nodes: [{ id: `review-${number}`, databaseId: number * 1000 + 201, author: author("reviewer-one"), state: "APPROVED", body: "Looks solid. The state transitions are easy to follow.", submittedAt: at(45), reactions: reactions(1) }],
     },
     comments: {
       nodes: [
-        { id: `comment-${number}-1`, author: author("reviewer-one"), body: "I ran this locally and the behavior matches the description.", createdAt: at(42), reactions: [] },
-        { id: `comment-${number}-2`, author: author("greptile-apps"), body: `## Greptile summary\n\nConfidence Score: 5/5\n\nLast reviewed commit: https://github.com/${REPO}/commit/${head}`, createdAt: at(35), reactions: [] },
+        { id: `comment-${number}-1`, databaseId: number * 1000 + 101, author: author("reviewer-one"), body: "I ran this locally and the behavior matches the description.", createdAt: at(42), reactions: [] },
+        { id: `comment-${number}-2`, databaseId: number * 1000 + 102, author: author("greptile-apps"), body: `## Greptile summary\n\nConfidence Score: 5/5\n\nLast reviewed commit: https://github.com/${REPO}/commit/${head}`, createdAt: at(35), reactions: [] },
       ],
     },
     reviewThreads: {
@@ -148,8 +148,8 @@ if (isMockGithub) addDetail(REPO, baseDetail(101, {
   body: `This green PR is the baseline conversation and files fixture.\n\nThe inbox now renders every state at a glance:\n\n![Inbox overview](${attachment("inbox-overview")})`,
   comments: {
     nodes: [
-      { id: "comment-101-1", author: author("reviewer-one"), body: `Ran it locally, the detail view matches:\n\n![Detail view](${attachment("detail-view")})`, createdAt: at(42), reactions: reactions(2) },
-      { id: "comment-101-2", author: author("greptile-apps"), body: `## Greptile summary\n\nConfidence Score: 5/5\n\nLast reviewed commit: https://github.com/${REPO}/commit/${sha(101)}`, createdAt: at(35), reactions: [] },
+      { id: "comment-101-1", databaseId: 101101, author: author("reviewer-one"), body: `Ran it locally, the detail view matches:\n\n![Detail view](${attachment("detail-view")})`, createdAt: at(42), reactions: reactions(2) },
+      { id: "comment-101-2", databaseId: 101102, author: author("greptile-apps"), body: `## Greptile summary\n\nConfidence Score: 5/5\n\nLast reviewed commit: https://github.com/${REPO}/commit/${sha(101)}`, createdAt: at(35), reactions: [] },
     ],
   },
   updatedAt: at(12),
@@ -957,7 +957,8 @@ export function seedMockDatabase(db: Database, dataDir: string): void {
       insertPr.run({
         $repo: repo,
         $number: detail.number,
-        $state: detail.state,
+        // Match the tracked row written by the poller, including its draft state.
+        $state: detail.isDraft ? "draft" : detail.state,
         $is_draft: detail.isDraft ? 1 : 0,
         $title: detail.title,
         $author: detail.author?.login ?? "unknown",

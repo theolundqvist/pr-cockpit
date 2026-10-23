@@ -32,6 +32,7 @@
   import { timedFlag } from "./timedFlag.svelte.js";
   import { prKey } from "./prKey.js";
   import { availableRepositories, filterByRepositories } from "./repoFilter.js";
+  import { availableAuthors, filterByAuthorAndDraft } from "./authorFilter.js";
   import { showFlash } from "./flash.svelte.js";
   import Kbd from "./Kbd.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
@@ -214,7 +215,15 @@
     const dismiss = () => (contextMenu = null);
     const outside = (event) => { if (!contextMenuNode?.contains(event.target)) dismiss(); };
     window.addEventListener("pointerdown", outside, true);
-    const scroll = (event) => { if (!contextMenuNode?.contains(event.target)) dismiss(); };
+    // Right-clicking a scrolled row can deliver an already-queued scroll event after the menu opens.
+    // Dismiss only when an ancestor actually moves from the menu's opening position.
+    const scrollPositions = contextMenu.scrollPositions;
+    const scroll = (event) => {
+      if (contextMenuNode?.contains(event.target)) return;
+      const node = event.target === document ? document.scrollingElement : event.target;
+      const position = scrollPositions.get(node);
+      if (!position || node.scrollLeft !== position[0] || node.scrollTop !== position[1]) dismiss();
+    };
     window.addEventListener("scroll", scroll, true);
     window.addEventListener("resize", dismiss);
     return () => {
@@ -228,7 +237,11 @@
   async function openContextMenu(event, pr) {
     event.preventDefault();
     const request = ++contextMenuRequest;
-    contextMenu = { pr, x: 0, y: 0 };
+    const scrollPositions = new Map();
+    for (let node = event.currentTarget; node; node = node.parentElement) {
+      scrollPositions.set(node, [node.scrollLeft, node.scrollTop]);
+    }
+    contextMenu = { pr, x: 0, y: 0, scrollPositions };
     cancelQuickSubmenuClose();
     quickSubmenu = null;
     menuQuickActions = [];
@@ -236,7 +249,7 @@
     menuQuickActionsLoading = pr.state === "OPEN";
     await positionContextMenu(event.clientX, event.clientY);
     if (!contextMenu || request !== contextMenuRequest) return;
-    contextMenuNode.querySelector("button")?.focus();
+    contextMenuNode.querySelector("button")?.focus({ preventScroll: true });
     if (menuQuickActionsLoading) void loadContextActions(pr, request);
   }
 
@@ -425,11 +438,33 @@
   let savedViews = $state(settingsSnapshot ? cachedSavedViews(settingsSnapshot) : []);
   let configuredRepos = $state(settingsSnapshot ? repoList(settingsSnapshot) : []);
   let selectedRepos = $state(storedRepositories());
+  const peopleSnapshot = storedPeopleFilter();
+  let authorFilter = $state(peopleSnapshot.author);
+  let hideDrafts = $state(peopleSnapshot.hideDrafts);
+  // The Whiteboard hides the Filters panel, so it keeps every author and draft.
+  let peopleFilter = $derived(view === "whiteboard" ? { author: "all", hideDrafts: false } : { author: authorFilter, hideDrafts });
+  let peopleFilterActive = $derived(authorFilter !== "all" || hideDrafts);
   let repoPickerOpen = $state(false);
   let viewOptionsOpen = $state(false);
   let viewOptionsButton;
-  let activeViewOptions = $derived(selectedRepos.length > 0 ? 1 : 0);
+  let activeViewOptions = $derived(Number(selectedRepos.length > 0) + Number(authorFilter !== "all") + Number(hideDrafts));
   let changedViewOptions = $derived(activeViewOptions + (prefs.queueTimeControlsEnabled ? Number(openedRange !== "all") + Number(timeOrder !== "queue") + Number(view === "open" && prefs.prGrouping.mode !== "status") : 0));
+  function storedPeopleFilter() {
+    try {
+      const stored = JSON.parse(localStorage.getItem("cockpit:queue-people") ?? "{}");
+      return { author: typeof stored?.author === "string" && stored.author ? stored.author : "all", hideDrafts: stored?.hideDrafts === true };
+    } catch {
+      return { author: "all", hideDrafts: false };
+    }
+  }
+  function setPeopleFilter(next) {
+    if (next.author !== undefined) authorFilter = next.author;
+    if (next.hideDrafts !== undefined) hideDrafts = next.hideDrafts;
+    if (authorFilter === "all" && !hideDrafts) localStorage.removeItem("cockpit:queue-people");
+    else localStorage.setItem("cockpit:queue-people", JSON.stringify({ author: authorFilter, hideDrafts }));
+    selected = 0;
+    multiAnchor = null;
+  }
   function toggleViewOptions() {
     viewOptionsOpen = !viewOptionsOpen;
     if (!viewOptionsOpen) repoPickerOpen = false;
@@ -843,9 +878,10 @@
   let historyActive = $derived(wantsHistory(filterQuery) && historyQuery === filterQuery.trim() && !historyLoading);
   let queryFilteredPrs = $derived(wantsHistory(filterQuery) ? (historyQuery === filterQuery.trim() ? historyPrs : []) : filterPrs(prs, filterQuery, showArchived));
   let availableRepos = $derived(availableRepositories(view === "all" ? [...configuredRepos, ...allPrsRepos, ...selectedRepos] : configuredRepos, prs, archivedPrs, closedPrs));
-  let scopedPrs = $derived(filterByRepositories(queryFilteredPrs.filter((pr) => !isSetAside(pr)), selectedRepos));
+  let scopedPrs = $derived(filterByAuthorAndDraft(filterByRepositories(queryFilteredPrs.filter((pr) => !isSetAside(pr)), selectedRepos), peopleFilter, viewerLogin));
   let filteredPrs = $derived(filterByOpened(scopedPrs, openedFilter));
-  let scopedClosedPrs = $derived(filterByRepositories(closedPrs.filter((pr) => !isSetAside(pr)), selectedRepos));
+  let scopedClosedPrs = $derived(filterByAuthorAndDraft(filterByRepositories(closedPrs.filter((pr) => !isSetAside(pr)), selectedRepos), peopleFilter, viewerLogin));
+  let authorOptions = $derived(availableAuthors(view === "all" ? allPrs : view === "closed" ? closedPrs : prs, authorFilter === "all" || authorFilter === "me" ? [] : [{ author: authorFilter }]));
   let filteredClosedPrs = $derived(sortByTime(orderQueueUnits(filterByOpened(scopedClosedPrs, openedFilter)), listOrder));
   let actionsHref = $derived.by(() => {
     const params = new URLSearchParams();
@@ -1069,8 +1105,8 @@
     return prefs.safeMergeApprovalEnabled && pr.approvedForSafeMerge === true;
   }
 
-  // Tracked drafts carry state "draft"; the server still rejects anything GitHub no longer has open.
-  function approvable(pr) {
+  // Tracked drafts carry state "draft" even though the pull request is still open.
+  function isOpenPr(pr) {
     return pr.state === "OPEN" || pr.state === "draft";
   }
 
@@ -1239,7 +1275,7 @@
       approved: isApproved(pr),
       approvalEnabled: prefs.safeMergeApprovalEnabled,
     });
-    if (!plan || (plan.approve && !approvable(pr)) || (plan.title && retitles[key])) return null;
+    if (!plan || (plan.approve && !isOpenPr(pr)) || (plan.title && retitles[key])) return null;
     return plan;
   }
 
@@ -1366,9 +1402,9 @@
     const pr = prs.find((p) => prKey(p) === dragKey);
     return pr ? groupId(pr) : null;
   });
-  let scopedAllPrs = $derived(allPrs.filter((pr) => !isSetAside(pr)));
+  let scopedAllPrs = $derived(filterByAuthorAndDraft(allPrs.filter((pr) => !isSetAside(pr)), peopleFilter, viewerLogin));
   let visibleAllPrs = $derived(sortByTime(orderQueueUnits(filterByOpened(scopedAllPrs, openedFilter)), listOrder));
-  let scopedArchivedPrs = $derived(archivedPrs.filter((pr) => !isSetAside(pr)));
+  let scopedArchivedPrs = $derived(filterByAuthorAndDraft(archivedPrs.filter((pr) => !isSetAside(pr)), peopleFilter, viewerLogin));
   let visibleArchivedPrs = $derived(sortByTime(filterByOpened(scopedArchivedPrs, openedFilter), listOrder));
   let ordered = $derived(view === "all" ? visibleAllPrs : view === "closed" ? filteredClosedPrs : showArchived ? [...openOrdered, ...visibleArchivedPrs] : openOrdered);
   let archivedSet = $derived(new Set(archivedPrs.map((pr) => prKey(pr))));
@@ -1548,6 +1584,12 @@
       }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (isTypingTarget(e.target)) return;
+      if (e.key === "d" && view !== "whiteboard" && view !== "agents") {
+        setPeopleFilter({ hideDrafts: !hideDrafts });
+        showFlash(hideDrafts ? "Hiding drafts." : "Showing drafts.");
+        e.preventDefault();
+        return;
+      }
       if (e.key === "r") {
         viewOptionsOpen = true;
         repoPickerOpen = !repoPickerOpen;
@@ -1615,7 +1657,7 @@
       } else if (e.key === "o") {
         if (pr) openGithub(pr);
       } else if (view === "open" && e.key === "s") {
-        if (pr && !isArchived(pr) && pr.state === "OPEN") togglePinned(pr);
+        if (pr && !isArchived(pr) && isOpenPr(pr)) togglePinned(pr);
       } else if (view === "open" && keybindAgents.some((a) => a.id !== "fixer" && a.keybind === e.key)) {
         const def = keybindAgents.find((a) => a.id !== "fixer" && a.keybind === e.key);
         if (def.id === "autofix") openAutofixConfirm();
@@ -1678,7 +1720,7 @@
       <div class="view-tabs" role="tablist" aria-label="List view">
         <button class="view-tab" role="tab" title="Pull requests involving you" aria-selected={view === "open"} class:active={view === "open"} onclick={() => showView("open")}>
           Your queue
-          <span class="view-tab-count">{filterByRepositories(prs.filter((pr) => !isSetAside(pr)), selectedRepos).length}</span>
+          <span class="view-tab-count">{filterByAuthorAndDraft(filterByRepositories(prs.filter((pr) => !isSetAside(pr)), selectedRepos), peopleFilter, viewerLogin).length}</span>
           {#if view === "closed"}<Kbd keys="tab" />{/if}
         </button>
         <button class="view-tab" role="tab" title="Every open pull request in tracked repositories" aria-selected={view === "all"} class:active={view === "all"} onclick={() => showView("all")}>
@@ -1728,6 +1770,21 @@
           {/if}
         </div>
       {/if}
+      <div class="time-controls people-controls">
+        <label class="time-field">
+          <span class="time-field-label">Author</span>
+          <select aria-label="Author" class="time-select" value={authorFilter} onchange={(event) => setPeopleFilter({ author: event.currentTarget.value })}>
+            <option value="all">All authors</option>
+            <option value="me">Only me</option>
+            <optgroup label="Person">
+              {#each authorOptions as login (login)}<option value={login}>{login}</option>{/each}
+            </optgroup>
+          </select>
+        </label>
+        <button class="time-apply drafts-toggle" type="button" aria-pressed={hideDrafts} title="Show or hide draft pull requests" onclick={() => setPeopleFilter({ hideDrafts: !hideDrafts })}>
+          {hideDrafts ? "Drafts hidden" : "Drafts shown"}<Kbd keys="d" />
+        </button>
+      </div>
       <div class="repo-filter">
         <MultiSelectDropdown
           label="Repository"
@@ -1990,6 +2047,8 @@
             <div class="empty" role="status">Loading all PRs…</div>
           {:else if visibleAllPrs.length === 0 && openedFilter && scopedAllPrs.length > 0}
             <div class="empty">No PRs match this time range</div>
+          {:else if visibleAllPrs.length === 0 && peopleFilterActive}
+            <div class="empty">No pull requests match the author and draft filters.</div>
           {:else if visibleAllPrs.length === 0}
             <div class="empty">No open pull requests in {selectedRepos.length ? "the selected" : "tracked"} repositories</div>
           {:else}
@@ -2005,7 +2064,7 @@
           {:else if closedPrs.length === 0}
             <div class="empty">Nothing merged or closed yet</div>
           {:else if scopedClosedPrs.length === 0}
-            <div class="empty">Nothing merged or closed in the selected repositories</div>
+            <div class="empty">{peopleFilterActive ? "Nothing merged or closed matches the current filters" : "Nothing merged or closed in the selected repositories"}</div>
           {:else if filteredClosedPrs.length === 0}
             <div class="empty">No PRs match this time range</div>
           {/if}
@@ -2025,6 +2084,8 @@
             <div class="empty">You’re all caught up here. Your set-aside PRs are in the tray.</div>
           {:else if selectedRepos.length && scopedPrs.length === 0}
             <div class="empty">No pull requests involving you in the selected repositories. Use All PRs to see every open pull request.</div>
+          {:else if peopleFilterActive && scopedPrs.length === 0}
+            <div class="empty">No pull requests match the author and draft filters.</div>
           {:else if wantsHistory(filterQuery) && !historyActive}
             <div class="empty">Searching history…</div>
           {:else if filterQuery && scopedPrs.length === 0}
@@ -2162,11 +2223,11 @@
       {#if prefs.groupDragEnabled}
         <button role="menuitem" disabled={!!titleEditor?.saving || !!retitles[prKey(contextMenu.pr)]} onclick={() => startRename(contextMenu.pr)}>Rename</button>
       {/if}
-    {#if view === "open" && !isArchived(contextMenu.pr) && contextMenu.pr.state === "OPEN"}
+    {#if view === "open" && !isArchived(contextMenu.pr) && isOpenPr(contextMenu.pr)}
       <button role="menuitem" onclick={() => { togglePinned(contextMenu.pr); contextMenu = null; }}>{contextMenu.pr.rank == null ? "Pin" : "Unpin"}</button>
     {/if}
     <!-- Revoking consent never waits on grant eligibility: drafts and archived rows can still withdraw it. -->
-    {#if view === "open" && (isApproved(contextMenu.pr) || (prefs.safeMergeApprovalEnabled && !isArchived(contextMenu.pr) && approvable(contextMenu.pr)))}
+    {#if view === "open" && (isApproved(contextMenu.pr) || (prefs.safeMergeApprovalEnabled && !isArchived(contextMenu.pr) && isOpenPr(contextMenu.pr)))}
       {@const approved = isApproved(contextMenu.pr)}
       <button role="menuitem" onclick={() => { applyGroupMove(contextMenu.pr, { approve: !approved }); contextMenu = null; }}>{approved ? "Revoke safe-merge approval" : "Approve for safe merge"}</button>
     {/if}
@@ -2820,6 +2881,8 @@
   .time-input:invalid {
     border-color: var(--fail);
   }
+  .drafts-toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+  .drafts-toggle[aria-pressed="true"] { border-color: var(--link); }
   .queue-filters .time-range-row { flex-basis: 100%; }
   .time-range-row {
     display: flex;

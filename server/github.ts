@@ -2019,6 +2019,7 @@ query($owner: String!, $name: String!, $number: Int!) {
         pageInfo { hasNextPage endCursor }
         nodes {
           id
+          databaseId
           author { __typename login avatarUrl }
           state
           body
@@ -2030,6 +2031,7 @@ query($owner: String!, $name: String!, $number: Int!) {
         pageInfo { hasNextPage endCursor }
         nodes {
           id
+          databaseId
           author { __typename login avatarUrl }
           body
           createdAt
@@ -2075,8 +2077,10 @@ function mapReactions(groups: RawReactionGroup[]): Reaction[] {
 }
 
 type Author = { __typename?: string; login: string; avatarUrl: string };
-type ReviewNode = { id: string; author: Author | null; state: string; body: string; submittedAt: string };
-type CommentNode = { id: string; author: Author | null; body: string; createdAt: string };
+// databaseId is the number in GitHub's #pullrequestreview-<id> and #issuecomment-<id> permalinks; details
+// cached before it was read lack it.
+type ReviewNode = { id: string; databaseId?: number | null; author: Author | null; state: string; body: string; submittedAt: string };
+type CommentNode = { id: string; databaseId?: number | null; author: Author | null; body: string; createdAt: string };
 type ThreadCommentNode = { id: string; databaseId: number | null; diffHunk: string; author: Author | null; body: string; createdAt: string; pullRequestReview?: { state: string } | null };
 
 export function reviewHunkTail(hunk: string): string {

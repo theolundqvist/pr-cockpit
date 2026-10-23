@@ -312,6 +312,63 @@ const scenarios = [
       if (await open.locator(".row-draft").count()) throw new Error("Non-draft PR was marked Draft");
     },
   },
+  ...[105, 104].map((number) => ({
+    name: `inbox-pin-${number === 105 ? "draft" : "open"}`,
+    route: "#/",
+    description: "Pin and unpin through the menu and keyboard, persisting through reloads without merge approval.",
+    ready: ".inbox-layout .queue-group",
+    prepare: async ({ baseURL }) => {
+      const inbox = await requestJson(`${baseURL}/api/inbox`);
+      const pr = inbox.prs.find((pr) => pr.number === number);
+      if (pr.state !== (number === 105 ? "draft" : "OPEN")) throw new Error("Pin fixture does not match the tracked inbox state");
+      if (pr.rank !== null) throw new Error("Pin fixture must start unpinned");
+      return () => requestJson(`${baseURL}/api/inbox/reorder`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ repo: REPO, number, position: null }),
+      });
+    },
+    interact: async (page) => {
+      const row = page.locator(`a.row[href="#/pr/${REPO}/${number}"]`);
+      const menu = page.getByRole("menu", { name: `Actions for #${number}` });
+      const pinned = row.locator(".pinned-mark");
+      const mutate = async (action, expectedPinned) => {
+        const response = page.waitForResponse((response) => response.url().endsWith("/api/inbox/reorder") && response.request().method() === "POST");
+        await action();
+        const result = await response;
+        if (!result.ok()) throw new Error(`Pin request failed: ${result.status()}`);
+        await pinned.waitFor({ state: expectedPinned ? "visible" : "hidden" });
+        const inbox = await page.request.get(new URL("/api/inbox", page.url()).href).then((response) => response.json());
+        const pr = inbox.prs.find((pr) => pr.number === number);
+        if ((pr.rank !== null) !== expectedPinned || pr.approvedForSafeMerge) throw new Error("Pin persistence or merge-approval independence failed");
+      };
+      await row.click({ button: "right" });
+      await menu.waitFor();
+      await page.locator(".inbox-cache .page").evaluate((node) => node.scrollBy(0, node.scrollTop > 0 ? -10 : 10));
+      await menu.waitFor({ state: "hidden" });
+      await row.click({ button: "right" });
+      await mutate(() => menu.getByRole("menuitem", { name: "Pin", exact: true }).click(), true);
+      await page.reload();
+      await pinned.waitFor();
+      await row.click({ button: "right" });
+      await mutate(() => menu.getByRole("menuitem", { name: "Unpin", exact: true }).click(), false);
+      await row.hover();
+      await mutate(() => page.keyboard.press("s"), true);
+      await page.reload();
+      await pinned.waitFor();
+      await row.hover();
+      await mutate(() => page.keyboard.press("s"), false);
+      await page.reload();
+      await row.waitFor();
+      if (await pinned.count()) throw new Error("Unpin did not survive reload");
+      await row.hover();
+      await mutate(() => page.keyboard.press("s"), true);
+    },
+    verify: async (page) => {
+      const row = page.locator(`a.row[href="#/pr/${REPO}/${number}"]`);
+      await row.locator(".pinned-mark").waitFor();
+      if (!await row.evaluate((node) => node.closest(".queue-group")?.textContent.includes("Pinned"))) throw new Error("Pinned PR did not move into the Pinned section");
+    },
+  })),
   {
     name: "inbox-all-prs",
     route: "#/",
@@ -972,6 +1029,8 @@ const scenarios = [
       await file.locator(".hunks").waitFor();
     },
   },
+  commentLinkScenario("detail-comment-link-thread", 101, `https://github.com/${REPO}/pull/101#discussion_r101002`, "Same-PR link to a resolved review-thread reply opens Files, expands the thread, and highlights the reply.", '[data-comment-id="101002"]', `#/pr/${REPO}/101/files`, inlineFixtureThread),
+  commentLinkScenario("detail-comment-link-issue-comment", 102, `https://github.com/${REPO}/pull/101#issuecomment-101101`, "Link from another PR to an issue comment opens that PR and highlights the comment.", '[data-issue-comment-id="101101"]', `#/pr/${REPO}/101?comment=issuecomment-101101`),
   {
     name: "detail-range-picker",
     route: `#/pr/${REPO}/101/files`,
@@ -1349,6 +1408,49 @@ const scenarios = [
 
 function detail(name, number, description, repo = REPO) {
   return { name, route: `#/pr/${repo}/${number}`, description, ready: ".page .detail" };
+}
+
+// Clicks a GitHub comment permalink placed in rendered comment Markdown, as a bot's comment body would carry it.
+function commentLinkScenario(name, from, href, description, target, hash, beforeGoto) {
+  return {
+    name,
+    route: `#/pr/${REPO}/${from}`,
+    description,
+    ready: ".page .detail .event .md",
+    beforeGoto,
+    interact: async (page) => {
+      await page.locator(".event .md").first().evaluate((md, href) => {
+        const link = document.createElement("a");
+        link.setAttribute("href", href);
+        link.className = "comment-link-probe";
+        link.textContent = "the linked comment";
+        md.append(link);
+      }, href);
+      await page.locator(".comment-link-probe").click();
+    },
+    verify: async (page) => {
+      await page.locator(`${target}.comment-target-flash`).waitFor();
+      const state = await page.locator(target).evaluate((node) => {
+        const rect = node.getBoundingClientRect();
+        return { hash: location.hash, top: rect.top, bottom: rect.bottom, focus: document.activeElement?.tagName ?? null };
+      });
+      if (state.hash !== hash) throw new Error(`comment link landed on ${state.hash}, expected ${hash}`);
+      if (state.top < 0 || state.bottom > page.viewportSize().height) throw new Error(`linked comment is outside the viewport: ${JSON.stringify(state)}`);
+      if (state.focus === "TEXTAREA") throw new Error("comment link moved focus into a reply box");
+    },
+  };
+}
+
+// The shared fixture's resolved thread sits on a line outside PR 101's diff, so Files would hand it back to
+// Conversation; move it onto a changed line so the link opens it inline.
+async function inlineFixtureThread(page) {
+  await page.route((url) => url.pathname === `/api/pr/${REPO}/101`, async (route) => {
+    const response = await route.fetch();
+    if (response.status() !== 200) return route.fulfill({ response });
+    const detail = await response.json();
+    for (const thread of detail.reviewThreads.nodes) if (thread.id === "thread-101-resolved") thread.line = 2;
+    await route.fulfill({ response, json: detail });
+  });
 }
 
 async function restFallbackSettingsRoute(page, baseURL) {
