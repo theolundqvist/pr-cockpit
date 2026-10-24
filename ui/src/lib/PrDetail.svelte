@@ -3852,19 +3852,36 @@
               <h3 class="side-title">Preview</h3>
               <div class="actions">
                 {#each previewLinks as link (link.url)}
-                  <a class="btn wide shortcut-action preview-launch" href={link.url} target="_blank" rel="noreferrer" title={link.url}>
-                    <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
-                      {#if link.kind === "desktop"}
-                        <rect x="3" y="4" width="18" height="12" rx="2" />
-                        <path d="M12 16v4m-4 0h8" />
-                      {:else}
-                        <rect x="3" y="4" width="18" height="16" rx="2" />
-                        <path d="M3 9h18M6 6.5h1m2 0h1" />
-                      {/if}
-                    </svg>
-                    <span>Open {link.kind === "desktop" ? "desktop app" : "web app"}</span>
-                    <span aria-hidden="true">↗</span>
-                  </a>
+                  <div class="preview-row">
+                    <a class="btn shortcut-action preview-launch" href={link.url} target="_blank" rel="noreferrer" title={link.url}>
+                      <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        {#if link.kind === "desktop"}
+                          <rect x="3" y="4" width="18" height="12" rx="2" />
+                          <path d="M12 16v4m-4 0h8" />
+                        {:else}
+                          <rect x="3" y="4" width="18" height="16" rx="2" />
+                          <path d="M3 9h18M6 6.5h1m2 0h1" />
+                        {/if}
+                      </svg>
+                      <span>Open {link.kind === "desktop" ? "desktop app" : "web app"}</span>
+                      <span aria-hidden="true">↗</span>
+                    </a>
+                    <button
+                      type="button"
+                      class="btn preview-copy"
+                      aria-label={`Copy ${link.kind === "desktop" ? "desktop app" : "web preview"} link`}
+                      title={`Copy ${link.kind === "desktop" ? "desktop app" : "web preview"} link`}
+                      onclick={() => navigator.clipboard.writeText(link.url).then(
+                        () => copied.show(`Copied ${link.kind === "desktop" ? "desktop app" : "web preview"} link`),
+                        () => showFlash("Couldn't copy the preview link."),
+                      )}
+                    >
+                      <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <rect x="9" y="9" width="10" height="10" rx="1.5" />
+                        <path d="M15 9V6.5A1.5 1.5 0 0 0 13.5 5h-7A1.5 1.5 0 0 0 5 6.5v7A1.5 1.5 0 0 0 6.5 15H9" />
+                      </svg>
+                    </button>
+                  </div>
                 {/each}
               </div>
             </div>
@@ -6843,8 +6860,21 @@
   .side-block + .side-block {
     padding-top: 14px;
   }
+  .preview-row {
+    display: flex;
+    gap: 8px;
+  }
   .preview-launch {
+    flex: 1;
+    min-width: 0;
     text-decoration: none;
+  }
+  .preview-copy {
+    align-self: stretch;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px;
   }
   .block-title,
   .side-title {

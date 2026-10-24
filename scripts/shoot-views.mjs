@@ -576,6 +576,22 @@ const scenarios = [
       if (!await preview.evaluate((node) => node.previousElementSibling?.textContent.includes("Quick actions"))) throw new Error("Preview must follow Quick actions");
       await desktop.focus();
       if (!await desktop.evaluate((node) => node === document.activeElement)) throw new Error("Desktop launch is not keyboard focusable");
+      await page.evaluate(() => {
+        window.previewCopiedUrls = [];
+        Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+          writeText: async (text) => { window.previewCopiedUrls.push(text); },
+        } });
+      });
+      for (const [label, url] of [
+        ["Copy web preview link", "https://preview.example.com/101/"],
+        ["Copy desktop app link", "https://preview.example.com/open-desktop?pr=101"],
+      ]) {
+        const copy = preview.getByRole("button", { name: label, exact: true });
+        await copy.focus();
+        await page.keyboard.press("Enter");
+        if (await page.evaluate(() => window.previewCopiedUrls.at(-1)) !== url) throw new Error(`${label} copied the wrong URL`);
+      }
+      await page.waitForTimeout(1300);
     },
     beforeGoto: async (page) => {
       await page.route("**/api/settings", async (route) => {
