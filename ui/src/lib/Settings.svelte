@@ -1,5 +1,5 @@
 <script>
-  import { untrack } from "svelte";
+  import { tick, untrack } from "svelte";
   import { normalizePrGrouping } from "../../../shared/prGrouping.ts";
   import { fetchQuickGenerateConfig, fetchQuickGenerateModels, fetchRelayCoverage, fetchRelayStatus, fetchSettings, saveSettings } from "./api.js";
   import { cachedView, cacheView } from "./detailCache.js";
@@ -21,6 +21,7 @@
   import { RESERVED_PR_KEYS } from "./prKeys.js";
   import { PERSONAL_QUICK_ACTIONS_EXAMPLE, QUICK_ACTIONS_AGENT_PROMPT, QUICK_ACTIONS_EXAMPLE, QUICK_ACTIONS_PATH } from "./quickActions.js";
   import { tailscaleAccess } from "./tailscaleAccess.js";
+  import { fetchQuotaApp, quotaAppSetupRequest, quotaAppStatus } from "./quotaAppStatus.svelte.js";
   let { onRunSetup, section = "general" } = $props();
 
 
@@ -98,16 +99,26 @@
   let quotaAppOwner = $state(null);
   let quotaAppStarting = $state(false);
   let quotaAppLaunchUrl = $state("");
+  let quotaAppNow = $state(Date.now());
+  let quotaAppField = $state(null);
+  let liveUpdatesOpen = $state(false);
+  let quotaAppLoad = 0;
+  let quotaAppHealth = $derived(quotaAppError ? null : quotaAppStatus(quotaApp, quotaAppNow));
 
   async function loadQuotaApp() {
+    const load = ++quotaAppLoad;
     try {
-      const response = await fetch("/api/github-app/quota");
-      if (!response.ok) throw new Error("App settings unavailable");
-      quotaApp = (await response.json()).app;
+      const app = await fetchQuotaApp();
+      if (load !== quotaAppLoad) return;
+      quotaApp = app;
       quotaAppError = "";
     } catch {
+      if (load !== quotaAppLoad) return;
+      // Unknown is not "no App": hide both the setup form and stale status.
+      quotaApp = undefined;
       quotaAppError = "Could not read GitHub App settings.";
     }
+    quotaAppNow = Date.now();
   }
   async function startQuotaAppSetup(event) {
     event.preventDefault();
@@ -130,11 +141,33 @@
 
 
   $effect(() => {
-    if (activeTab !== "general") return;
-    void loadQuotaApp();
-    const refresh = () => void loadQuotaApp();
+    if (activeTab !== "general" || !liveUpdatesOpen) return;
+    const refresh = () => {
+      if (document.visibilityState === "visible") void loadQuotaApp();
+    };
+    refresh();
+    const timer = setInterval(refresh, 30_000);
     window.addEventListener("focus", refresh);
-    return () => window.removeEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+      quotaAppLoad++;
+      quotaApp = undefined;
+      quotaAppError = "";
+    };
+  });
+  $effect(() => {
+    if (!quotaAppSetupRequest.pending || !loaded || activeTab !== "general") return;
+    liveUpdatesOpen = true;
+    if (quotaApp === undefined && !quotaAppError) return;
+    quotaAppSetupRequest.pending = false;
+    void tick().then(() => {
+      if (!quotaAppField) return;
+      quotaAppField.scrollIntoView({ block: "center" });
+      (quotaAppField.querySelector("input, a.btn") ?? quotaAppField).focus({ preventScroll: true });
+    });
   });
   let loaded = $state(false);
   let saving = $state(false);
@@ -709,7 +742,7 @@
             </span>
           </label>
         </div>
-        <details class="disclosure">
+        <details class="disclosure" bind:open={liveUpdatesOpen}>
           <summary>Live updates</summary>
           <div class="settings-grid disclosure-body">
           <label class="field">
@@ -726,12 +759,28 @@
             </span>
           </label>
 
-          <div class="field field-wide">
+          <div class="field field-wide" id="quota-app" bind:this={quotaAppField} tabindex="-1">
             <span class="label">Extra GitHub quota</span>
             {#if quotaAppError}<span class="hint invalid-hint" role="alert">{quotaAppError}</span>{/if}
             {#if quotaApp}
               <span>{quotaApp.name}</span>
               {#if quotaApp.installUrl}<a class="btn" href={quotaApp.installUrl} target="_blank" rel="noopener noreferrer">Manage repositories</a>{/if}
+              {#if quotaAppHealth}
+                <span class="hint relay-status quota-app-status" class:coverage-live={quotaAppHealth.summary.tone === "working"} class:invalid-hint={quotaAppHealth.summary.tone === "issue"}>{quotaAppHealth.summary.text}</span>
+                {#if quotaAppHealth.rows.length}
+                  <div class="coverage-list quota-app-repos">
+                    {#each quotaAppHealth.rows as row (row.repo)}
+                      <div class="coverage-row" data-repo={row.repo}>
+                        <span class="coverage-repo">{row.repo}</span>
+                        <span class:coverage-live={row.tone === "working"} class:coverage-polling={row.tone !== "working"}>{row.text}</span>
+                        {#if row.issue}<span class="invalid-hint">{row.issue}</span>{/if}
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              {:else if !quotaAppError}
+                <span class="hint relay-status quota-app-status">App status unknown.</span>
+              {/if}
             {:else if quotaApp === null}
               <form onsubmit={startQuotaAppSetup}>
                 <label class="field">
@@ -743,7 +792,7 @@
               </form>
               {#if quotaAppLaunchUrl}<a class="btn" href={quotaAppLaunchUrl} target="_blank" rel="noopener noreferrer">Continue in browser</a>{/if}
             {/if}
-            <span class="hint">Reads use the app quota first. Your account keeps its own quota and handles your actions.</span>
+            <span class="hint">Reads use the app quota first. Your account keeps its own quota and handles your actions. GitHub's secondary rate limits still pause all reads.</span>
           </div>
 
           <div class="field field-wide">

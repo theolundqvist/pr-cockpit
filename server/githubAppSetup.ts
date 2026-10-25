@@ -2,6 +2,7 @@ import { createPrivateKey, randomBytes } from "node:crypto";
 import { link, mkdir, open, readFile, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { githubAppConfigPath, invalidateGithubAppConfig } from "./githubApp.ts";
+import { githubAppReadHealth, type GithubAppReadHealth } from "./github.ts";
 
 const SETUP_PATH = "/api/github-app/quota";
 const COOKIE = "cockpit_quota_app_setup";
@@ -33,18 +34,19 @@ function escapeHtml(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 }
 
-async function configuredApp(): Promise<{ name: string; installUrl: string | null } | null> {
+async function configuredApp(): Promise<{ name: string; installUrl: string | null; health: GithubAppReadHealth } | null> {
   let text: string;
   try { text = await readFile(githubAppConfigPath(), "utf8"); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw new Error("GitHub App configuration could not be read.");
   }
-  const config = JSON.parse(text) as { name?: unknown; slug?: unknown };
+  const config = JSON.parse(text) as { appId?: unknown; name?: unknown; slug?: unknown };
   return {
     name: typeof config.name === "string" ? config.name : "GitHub App",
     installUrl: typeof config.slug === "string" && /^[a-z0-9-]+$/.test(config.slug)
       ? `https://github.com/apps/${config.slug}/installations/new` : null,
+    health: githubAppReadHealth(typeof config.appId === "string" ? config.appId : null),
   };
 }
 

@@ -1,4 +1,4 @@
-import { GithubAppError, githubAppAuthentication, invalidateGithubAppToken, type GithubAppAuthentication } from "./githubApp.ts";
+import { GithubAppError, githubAppAuthentication, githubAppConfigPath, invalidateGithubAppToken, observedGithubAppId, type GithubAppAuthentication } from "./githubApp.ts";
 import { validateCodeScanningDismissal } from "../shared/codeScanning.js";
 import type { MergeMethod } from "./mergeMethod.ts";
 import type { ResolvedMerge } from "./mirror.ts";
@@ -27,7 +27,7 @@ import {
   type GithubRestCoverage,
   type GithubUsageSource,
 } from "./githubUsage.ts";
-import { readSettings, restFallbackEnabled, restUsageEnabled } from "./settings.ts";
+import { readSettings, restFallbackEnabled, restUsageEnabled, settingsRepos } from "./settings.ts";
 import { mergeAttributionWanted } from "./notifications.ts";
 import { createConcurrencyLimit } from "./concurrency.ts";
 import { GRAPHQL_BACKGROUND_RESERVE } from "../ui/src/lib/quotaImpact.js";
@@ -63,6 +63,8 @@ export type GithubRequestErrorKind = "http" | "graphql" | "quota" | "transport";
 
 export class GithubRequestError extends Error {
   credential?: string;
+  // An allowed missing PR alias proves App repository access even though routing still falls back.
+  appReadSucceeded?: boolean;
   constructor(
     message: string,
     readonly status: number,
@@ -105,6 +107,125 @@ const primaryExemptResponses = new WeakSet<Response>();
 let secondaryCooldown: QuotaDeadline | null = null;
 let userQuota = credentialState("user", "user");
 
+type GithubAppReadIssue = {
+  at: string;
+  kind: "quota" | "access" | "authentication" | "connection" | "request";
+  resetAt: string | null;
+};
+export type GithubAppReadHealth = {
+  repositories: { repo: string; lastSuccessAt: string | null; error: GithubAppReadIssue | null }[];
+  cooldownUntil: string | null;
+};
+type AppReadObservation = GithubAppReadHealth["repositories"][number] & {
+  configPath: string;
+  appId: string | null;
+  credential: string | null;
+  sequence: number;
+  visible: boolean;
+};
+const appReadObservations = new Map<string, AppReadObservation>();
+// Dispatch order, not completion order, determines which completed outcome is current.
+let appReadSequence = 0;
+
+// A status snapshot is observational: no discovery, token issuance, quota fetch, or probe.
+export function githubAppReadHealth(appId: string | null): GithubAppReadHealth {
+  const configPath = githubAppConfigPath();
+  const now = Date.now();
+  return {
+    repositories: [...appReadObservations.values()]
+      .filter((item) => item.visible && item.configPath === configPath && (item.appId === appId || item.appId === null && item.lastSuccessAt === null))
+      .map(({ repo, lastSuccessAt, error, credential }) => {
+        const state = credential === null ? undefined : credentialStates.get(credential);
+        let primary: QuotaDeadline | null = null;
+        for (const block of state?.blockedQuotas.values() ?? []) {
+          if (block.until > now && (!primary || block.until > primary.until)) primary = block;
+        }
+        return {
+          repo, lastSuccessAt,
+          error: primary
+            ? { at: state?.observedAt ?? error?.at ?? lastSuccessAt ?? new Date(now).toISOString(), kind: "quota" as const, resetAt: primary.resetAt }
+            : error ? { ...error } : null,
+        };
+      })
+      .sort((a, b) => a.repo.localeCompare(b.repo)),
+    cooldownUntil: activeSecondaryCooldown()?.resetAt ?? null,
+  };
+}
+
+function rememberAppRead(
+  repo: string, appId: string | null, credential: string | null, sequence: number,
+  error: GithubAppReadIssue | null, missing = false,
+): void {
+  repo = repo.toLowerCase();
+  const configPath = githubAppConfigPath();
+  const previous = appReadObservations.get(repo);
+  if (previous && previous.sequence > sequence) return;
+  // Hidden missing-installation outcomes still retire older in-flight reads without adding UI rows.
+  const sameApp = previous?.configPath === configPath && previous.appId === appId;
+  const visible = !missing || appId !== null && (!!(sameApp && previous.visible)
+    || settingsRepos().some((tracked) => tracked.toLowerCase() === repo));
+  appReadObservations.delete(repo);
+  appReadObservations.set(repo, {
+    repo, configPath, appId, credential: missing ? null : credential, sequence, visible,
+    lastSuccessAt: error === null ? new Date(Date.now()).toISOString() : !missing && sameApp ? previous.lastSuccessAt : null,
+    error,
+  });
+  if (appReadObservations.size > 256) appReadObservations.delete(appReadObservations.keys().next().value!);
+}
+
+function rememberAppReadFailure(repo: string, error: unknown, appId: string | null, credential: string | null, sequence: number): void {
+  let kind: GithubAppReadIssue["kind"] = "request";
+  let resetAt: string | null = null;
+  if (error instanceof GithubAppError) {
+    const response = new Response(null, { status: error.status ?? 502, headers: error.headers });
+    const quota = error.secondaryRateLimited || error.status === 429
+      || (error.status === 403 && error.headers.get("x-ratelimit-remaining") === "0");
+    kind = quota ? "quota" : error.status === 401 ? "authentication"
+      : error.status === 403 || error.status === 404 ? "access" : error.kind;
+    if (quota) resetAt = (retryAfterDeadline(response) ?? primaryResetDeadline(response))?.resetAt
+      ?? (error.secondaryRateLimited ? new Date(Date.now() + SECONDARY_RATE_LIMIT_FALLBACK_MS).toISOString() : null);
+  } else if (error instanceof GithubRequestError) {
+    kind = error.kind === "quota" ? "quota" : error.status === 401 ? "authentication"
+      : error.status === 403 || error.status === 404
+        || error.graphqlErrors.some((item) => item.type === "FORBIDDEN" || item.type === "NOT_FOUND" || item.type === "INSUFFICIENT_SCOPES")
+        ? "access" : error.kind === "transport" ? "connection" : "request";
+    resetAt = error.resetAt;
+  } else if (error instanceof Error && !(error instanceof SyntaxError)) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (error.name === "AbortError" || error.name === "TimeoutError"
+      || /^(?:ECONNRESET|ECONNABORTED|ETIMEDOUT|EPIPE|ERR_STREAM|UND_ERR|ConnectionClosed)/.test(code ?? "")
+      || /socket|connection|stream.*(?:closed|failed)|body.*(?:abort|closed|failed)|timed out/i.test(error.message)) {
+      kind = "connection";
+    }
+  }
+  const missing = error instanceof GithubAppError && error.status === 404;
+  if (missing && credential) {
+    for (const affectedRepo of credentialStates.get(credential)?.repositories ?? []) {
+      rememberAppRead(affectedRepo, appId, null, sequence, { at: new Date(Date.now()).toISOString(), kind, resetAt }, true);
+    }
+  }
+  rememberAppRead(repo, appId, credential, sequence, { at: new Date(Date.now()).toISOString(), kind, resetAt }, missing);
+}
+
+async function appRepositoryRead<T>(
+  repo: string, authentication: Authentication, read: (authentication: Authentication) => Promise<T>,
+): Promise<T> {
+  const appId = authentication.state.identity.split(":")[1]!;
+  const sequence = ++appReadSequence;
+  try {
+    const value = await read(authentication);
+    rememberAppRead(repo, appId, authentication.state.identity, sequence, null);
+    return value;
+  } catch (error) {
+    if (error instanceof GithubRequestError && error.appReadSucceeded) {
+      rememberAppRead(repo, appId, authentication.state.identity, sequence, null);
+    } else {
+      rememberAppReadFailure(repo, error, appId, authentication.state.identity, sequence);
+    }
+    throw error;
+  }
+}
+
 function credentialState(identity: string, kind: "user" | "app", installationId?: number): CredentialState {
   let state = credentialStates.get(identity);
   if (!state) {
@@ -135,11 +256,17 @@ async function userAuthentication(): Promise<Authentication> {
 
 async function appAuthentication(repo: string): Promise<Authentication | null> {
   if (readSettings().replica_ssh_host) throw new Error("GitHub access is disabled while PR Cockpit uses an SSH replica");
+  const sequence = ++appReadSequence;
   let authentication: GithubAppAuthentication | null;
+  let providerFailed = false;
   try {
     authentication = await githubAppAuthentication(repo);
   } catch (error) {
     if (!(error instanceof GithubAppError)) throw error;
+    providerFailed = true;
+    const appId = error.appId ?? observedGithubAppId();
+    const credential = appId && error.installationId ? `app:${appId}:installation:${error.installationId}` : null;
+    rememberAppReadFailure(repo, error, appId, credential, sequence);
     if (!error.secondaryRateLimited && (error.status === 403 || error.status === 404)) {
       authentication = null;
     } else {
@@ -164,7 +291,14 @@ async function appAuthentication(repo: string): Promise<Authentication | null> {
   for (const state of credentialStates.values()) {
     if (state.kind === "app" && state.identity !== authentication?.identity) state.repositories.delete(repo.toLowerCase());
   }
-  if (!authentication) return null;
+  if (!authentication) {
+    if (!providerFailed) {
+      const appId = observedGithubAppId();
+      if (appId) rememberAppRead(repo, appId, null, sequence, { at: new Date(Date.now()).toISOString(), kind: "access", resetAt: null }, true);
+      else rememberAppRead(repo, null, null, sequence, { at: new Date(Date.now()).toISOString(), kind: "access", resetAt: null }, true);
+    }
+    return null;
+  }
   return rememberAppAuthentication(repo, authentication);
 }
 
@@ -461,7 +595,7 @@ async function withRepositoryRead<T>(
   }
   if (app && !activeQuotaBlock(resource, app.state)) {
     try {
-      return await read(app);
+      return await appRepositoryRead(repo!, app, read);
     } catch (firstError) {
       let error = firstError;
       if (error instanceof GithubRequestError && error.status === 401) {
@@ -469,7 +603,7 @@ async function withRepositoryRead<T>(
         app = await refreshAppAuthentication(repo!, app);
         if (!app) return read(await userAuthentication());
         try {
-          return await read(app);
+          return await appRepositoryRead(repo!, app, read);
         } catch (refreshedError) {
           error = refreshedError;
         }
@@ -496,16 +630,17 @@ function assertRepositoryPath(repo: string, path: string): void {
   }
 }
 
-async function repositoryApiResponse(
+async function repositoryApiRead<T>(
   repo: string,
   path: string,
+  read: (response: Response) => Promise<T>,
   options: { accept?: string; redirect?: RequestInit["redirect"] } = {},
-): Promise<Response> {
+): Promise<T> {
   assertRepositoryPath(repo, path);
   return withRepositoryRead(repo, quotaResource(path), async (authentication) => {
     const response = await githubApiResponse("GET", path, { ...options, authentication });
     if (!response.ok && response.status !== 302) throw await githubResponseError("GitHub repository read failed", response);
-    return response;
+    return read(response);
   });
 }
 
@@ -778,7 +913,10 @@ async function graphqlRequest<T>(
     data?: T & Record<string, unknown>;
     errors?: GithubGraphqlError[];
   } | null;
-  if (!body || typeof body !== "object") {
+  if (!body || typeof body !== "object" || Array.isArray(body)
+    || (body.data != null && (typeof body.data !== "object" || Array.isArray(body.data)))
+    || (body.errors !== undefined && (!Array.isArray(body.errors)
+      || body.errors.some((error) => !error || typeof error !== "object" || Array.isArray(error))))) {
     record(null, "error");
     throw new GithubRequestError("GraphQL response missing data", 502, [], "graphql", "graphql");
   }
@@ -790,8 +928,9 @@ async function graphqlRequest<T>(
   } | undefined;
   if (rateLimit) updatePrimaryQuota("graphql", rateLimit.remaining, rateLimit.resetAt, 403, credential);
   if (body.data) delete body.data[RATE_LIMIT_ALIAS];
-  const partial = credential.kind === "user" && !!missingAllowed && !!body.data && !!body.errors?.length
+  const missingFields = !!missingAllowed && !!body.data && !!body.errors?.length
     && body.errors.every((error) => error.type === "NOT_FOUND" && !!error.path && missingAllowed(error.path));
+  const partial = credential.kind === "user" && missingFields;
   record(rateLimit ?? null, body.errors?.length && !partial ? "error" : "ok");
   if (body.errors?.length && !partial) {
     const missing = body.errors.every((error) => error.type === "NOT_FOUND");
@@ -812,6 +951,8 @@ async function graphqlRequest<T>(
       secondary ? activeSecondaryCooldown()!.resetAt : exhausted ? resetAt : null,
     );
     error.credential = credential.ledgerIdentity;
+    error.appReadSucceeded = credential.kind === "app" && missingFields
+      && body.data?.repository !== null && typeof body.data?.repository === "object" && !Array.isArray(body.data?.repository);
     throw error;
   }
   if (!body.data) throw new GithubRequestError("GraphQL response missing data", 502, [], "graphql", "graphql");
@@ -3457,17 +3598,21 @@ async function fetchRestPages<T>(initialUrl: string, label = "GitHub comments re
     if (seen.has(url.href)) throw new GithubRequestError("GitHub REST pagination repeated a page", 502);
     seen.add(url.href);
     if (url.origin !== "https://api.github.com") throw new GithubRequestError("GitHub REST pagination left the API origin", 502);
-    const path = `${url.pathname}${url.search}`;
-    const response: Response = repo === undefined
-      ? await githubApiResponse("GET", path)
-      : await repositoryApiResponse(repo, path);
-    if (!response.ok) throw await githubResponseError(label, response);
-    pages.push(...await response.json() as T[]);
-    const next: string | undefined = response.headers
-      .get("link")
-      ?.split(",")
-      .find((part: string) => part.includes('rel="next"'))
-      ?.match(/<([^>]+)>/)?.[1];
+    const path: string = `${url.pathname}${url.search}`;
+    const readPage = async (response: Response): Promise<{ items: T[]; next: string | undefined }> => {
+      if (!response.ok) throw await githubResponseError(label, response);
+      const items = await response.json() as T[];
+      const next = response.headers
+        .get("link")
+        ?.split(",")
+        .find((part) => part.includes('rel="next"'))
+        ?.match(/<([^>]+)>/)?.[1];
+      return { items, next };
+    };
+    const { items, next }: { items: T[]; next: string | undefined } = repo === undefined
+      ? await readPage(await githubApiResponse("GET", path))
+      : await repositoryApiRead(repo, path, readPage);
+    pages.push(...items);
     url = next === undefined ? null : new URL(next);
     if (url) url.pathname = initial.pathname;
   }
@@ -3592,9 +3737,10 @@ export async function fetchDiff(repo: string, number: number, base?: string, hea
   const path = base && head
     ? `/repos/${repo}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`
     : `/repos/${repo}/pulls/${number}`;
-  const res = await repositoryApiResponse(repo, path, { accept: "application/vnd.github.v3.diff" });
-  if (!res.ok) throw await githubResponseError("diff fetch failed", res);
-  return res.text();
+  return repositoryApiRead(repo, path, async (res) => {
+    if (!res.ok) throw await githubResponseError("diff fetch failed", res);
+    return res.text();
+  }, { accept: "application/vnd.github.v3.diff" });
 }
 
 export interface RunJobStep {
@@ -3794,9 +3940,11 @@ export async function fetchRunJobs(repo: string, runId: number, attempt?: number
 // rejects a request carrying GitHub's Authorization header, so the download is a second bare fetch.
 export async function fetchJobLog(repo: string, jobId: number): Promise<string> {
   if (mockGithub) return mockGithub.jobLog(repo, jobId);
-  const res = await repositoryApiResponse(repo, `/repos/${repo}/actions/jobs/${jobId}/logs`, { redirect: "manual" });
-  const location = res.headers.get("location");
-  if (!location) throw await githubResponseError("job log fetch failed", res);
+  const location = await repositoryApiRead(repo, `/repos/${repo}/actions/jobs/${jobId}/logs`, async (res) => {
+    const location = res.headers.get("location");
+    if (!location) throw await githubResponseError("job log fetch failed", res);
+    return location;
+  }, { redirect: "manual" });
   let download: Response;
   try {
     download = await fetch(location, { signal: AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS) });
@@ -3826,13 +3974,14 @@ export interface FileHistoryCommit {
 export async function fetchFileHistory(repo: string, path: string, base: string): Promise<FileHistoryCommit[]> {
   if (mockGithub) return mockGithub.fileHistory(repo, path, base);
   const params = new URLSearchParams({ sha: base, path, per_page: "30" });
-  const res = await repositoryApiResponse(repo, `/repos/${repo}/commits?${params}`);
-  if (!res.ok) throw await githubResponseError("file history fetch failed", res);
-  const commits = (await res.json()) as Array<{
-    sha: string;
-    commit: { message: string; author: { name: string; date: string } | null };
-    author: { login: string } | null;
-  }>;
+  const commits = await repositoryApiRead(repo, `/repos/${repo}/commits?${params}`, async (res) => {
+    if (!res.ok) throw await githubResponseError("file history fetch failed", res);
+    return await res.json() as Array<{
+      sha: string;
+      commit: { message: string; author: { name: string; date: string } | null };
+      author: { login: string } | null;
+    }>;
+  });
   return commits.map((c) => {
     const subject = c.commit.message.split("\n", 1)[0] ?? "";
     const prMatch = subject.match(/\(#(\d+)\)\s*$/);
@@ -3856,18 +4005,19 @@ export interface FileHistoryDiff {
 
 export async function fetchFileHistoryDiff(repo: string, sha: string, path: string): Promise<FileHistoryDiff | null> {
   if (mockGithub) return mockGithub.fileHistoryDiff(repo, sha, path);
-  const res = await repositoryApiResponse(repo, `/repos/${repo}/commits/${sha}`);
-  if (!res.ok) throw await githubResponseError("commit fetch failed", res);
-  const body = (await res.json()) as {
-    files?: Array<{
-      filename: string;
-      previous_filename?: string;
-      patch?: string;
-      additions: number;
-      deletions: number;
-      status: string;
-    }>;
-  };
+  const body = await repositoryApiRead(repo, `/repos/${repo}/commits/${sha}`, async (res) => {
+    if (!res.ok) throw await githubResponseError("commit fetch failed", res);
+    return await res.json() as {
+      files?: Array<{
+        filename: string;
+        previous_filename?: string;
+        patch?: string;
+        additions: number;
+        deletions: number;
+        status: string;
+      }>;
+    };
+  });
   const files = body.files ?? [];
   const entry = files.find((f) => f.filename === path) ?? files.find((f) => f.previous_filename === path);
   if (!entry) return null;
@@ -3885,9 +4035,10 @@ export type FileContents = { content: string } | { tooLarge: true };
 export async function fetchFileContents(repo: string, path: string, sha: string): Promise<FileContents> {
   if (mockGithub) return mockGithub.fileContents(repo, path, sha);
   const encodedPath = path.split("/").map(encodeURIComponent).join("/");
-  const res = await repositoryApiResponse(repo, `/repos/${repo}/contents/${encodedPath}?ref=${sha}`);
-  if (!res.ok) throw await githubResponseError("file fetch failed", res);
-  const body = (await res.json()) as { content?: string; encoding?: string };
+  const body = await repositoryApiRead(repo, `/repos/${repo}/contents/${encodedPath}?ref=${sha}`, async (res) => {
+    if (!res.ok) throw await githubResponseError("file fetch failed", res);
+    return await res.json() as { content?: string; encoding?: string };
+  });
   if (Array.isArray(body) || body.encoding !== "base64") return { tooLarge: true };
   return { content: strictUtf8Decoder.decode(Buffer.from(body.content ?? "", "base64")) };
 }

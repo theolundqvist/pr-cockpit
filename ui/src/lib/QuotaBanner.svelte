@@ -2,6 +2,7 @@
   import { quota } from "./quota.svelte.js";
   import { quotaImpact, quotaLimitedLabel, quotaOutLabel } from "./quotaImpact.js";
   import { prefs } from "./prefs.svelte.js";
+  import { fetchQuotaApp, quotaAppStatus, requestQuotaAppSetup } from "./quotaAppStatus.svelte.js";
 
   let now = $state(Date.now());
 
@@ -11,6 +12,39 @@
   });
 
   let impact = $derived(quotaImpact(quota.resources, { restFallback: prefs.restFallbackEnabled, now }));
+  let warning = $derived(impact.level !== "ok");
+  // undefined: unknown or failed, never treated as "no App".
+  let quotaApp = $state(undefined);
+  let quotaAppHealth = $derived(quotaApp ? quotaAppStatus(quotaApp, now) : null);
+
+  $effect(() => {
+    if (!warning) return;
+    let stopped = false;
+    let load = 0;
+    const refresh = async () => {
+      const current = ++load;
+      try {
+        const app = await fetchQuotaApp();
+        if (!stopped && current === load) quotaApp = app;
+      } catch {
+        if (!stopped && current === load) quotaApp = undefined;
+      }
+    };
+    const refreshVisible = () => {
+      if (document.visibilityState === "visible") void refresh();
+    };
+    refreshVisible();
+    const timer = setInterval(refreshVisible, 60_000);
+    window.addEventListener("focus", refreshVisible);
+    document.addEventListener("visibilitychange", refreshVisible);
+    return () => {
+      stopped = true;
+      quotaApp = undefined;
+      clearInterval(timer);
+      window.removeEventListener("focus", refreshVisible);
+      document.removeEventListener("visibilitychange", refreshVisible);
+    };
+  });
 
   function clock(iso) {
     return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -23,7 +57,7 @@
   }
 </script>
 
-{#if impact.level !== "ok"}
+{#if warning}
   <section class="quota-banner {impact.level}" class:independent={impact.independent} role="status" aria-live="polite">
     <span class="qb-icon" aria-hidden="true">!</span>
     <div class="qb-copy">
@@ -42,6 +76,19 @@
         {/each}
         {#if impact.mergeBlocked}
           <li><span class="qb-pool mono">merge</span><span>Cockpit refuses merges until the {impact.independent ? "User " : ""}quota resets — merge on GitHub instead</span></li>
+        {/if}
+        {#if quotaApp === null}
+          <li class="qb-app">
+            <span class="qb-pool mono">app</span>
+            <span>A GitHub App adds its own read quota. It does not restore your quota for actions or lift GitHub's secondary limits.</span>
+            <a href="#/settings/general" onclick={requestQuotaAppSetup}>Add GitHub App</a>
+          </li>
+        {:else if quotaApp}
+          <li class="qb-app">
+            <span class="qb-pool mono">app</span>
+            <span>{quotaApp.name}: {quotaAppHealth?.summary.text ?? "status unknown"}</span>
+            <a href="#/settings/general" onclick={requestQuotaAppSetup}>App status</a>
+          </li>
         {/if}
       </ul>
     </div>
@@ -128,6 +175,12 @@
     min-width: 0;
     gap: 6px;
     line-height: 1.35;
+  }
+
+  .qb-app a {
+    flex: none;
+    color: var(--link);
+    font-weight: 600;
   }
 
   .qb-pool {

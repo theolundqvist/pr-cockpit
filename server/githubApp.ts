@@ -15,6 +15,8 @@ type GithubAppErrorOptions = {
   installationId?: number;
   headers?: Headers;
   secondaryRateLimited?: boolean;
+  kind?: "authentication" | "connection" | "request";
+  appId?: string;
 };
 
 export class GithubAppError extends Error {
@@ -22,6 +24,8 @@ export class GithubAppError extends Error {
   readonly installationId?: number;
   readonly headers: Headers;
   readonly secondaryRateLimited: boolean;
+  readonly kind: "authentication" | "connection" | "request";
+  readonly appId?: string;
 
   constructor(message: string, options: GithubAppErrorOptions = {}) {
     super(message);
@@ -30,6 +34,8 @@ export class GithubAppError extends Error {
     this.installationId = options.installationId;
     this.headers = sanitizedResponseHeaders(options.headers);
     this.secondaryRateLimited = options.secondaryRateLimited ?? false;
+    this.kind = options.kind ?? "authentication";
+    this.appId = options.appId;
   }
 }
 
@@ -89,6 +95,7 @@ async function loadConfiguration(path: string, previous: Configuration | null): 
     throw new GithubAppError("GitHub App configuration could not be read.");
   }
 
+  let appId: string | undefined;
   try {
     if (previous?.path === path && previous.stamp === stamp
       && previous.keyStamp === await fileStamp(previous.keyPath)) return previous;
@@ -97,6 +104,7 @@ async function loadConfiguration(path: string, previous: Configuration | null): 
       || typeof parsed.privateKeyPath !== "string" || !parsed.privateKeyPath.trim()) {
       throw new Error("Invalid configuration");
     }
+    appId = parsed.appId;
     const keyPath = homePath(parsed.privateKeyPath);
     const keyStamp = await fileStamp(keyPath);
     const key = createPrivateKey(await readFile(keyPath));
@@ -106,7 +114,7 @@ async function loadConfiguration(path: string, previous: Configuration | null): 
       installations: new Map(), discovery: new Map(), tokens: new Map(), issuance: new Map(), failures: new Map(),
     };
   } catch {
-    throw new GithubAppError("GitHub App configuration must contain an appId and a readable RSA privateKeyPath.");
+    throw new GithubAppError("GitHub App configuration must contain an appId and a readable RSA privateKeyPath.", { appId });
   }
 }
 
@@ -148,6 +156,11 @@ export function invalidateGithubAppConfig(): void {
   configurationPath = null;
   configurationExpiresAt = 0;
   configurationFailure = null;
+}
+
+// Only the identity already loaded by authentication; this never reads files or contacts GitHub.
+export function observedGithubAppId(): string | null {
+  return configuration?.appId ?? null;
 }
 
 function appJwt(config: Configuration): string {
@@ -203,7 +216,7 @@ async function appRequest(
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
   } catch {
-    const error = new GithubAppError("GitHub App authentication request failed or timed out.", { installationId });
+    const error = new GithubAppError("GitHub App authentication request failed or timed out.", { installationId, kind: "connection" });
     config.requestFailure = { error, expiresAt: Date.now() + FAILURE_TTL_MS };
     throw error;
   }
@@ -225,7 +238,7 @@ async function appRequest(
       await response.body?.cancel().catch(() => {});
     }
     const error = new GithubAppError(`GitHub App authentication request failed (HTTP ${response.status}).`, {
-      status: response.status, installationId, headers: response.headers, secondaryRateLimited,
+      status: response.status, installationId, headers: response.headers, secondaryRateLimited, kind: "request",
     });
     if (response.status === 401 || response.status === 429 || response.status >= 500
       || secondaryRateLimited || (response.status === 403 && error.headers.get("x-ratelimit-remaining") === "0")) {
@@ -236,7 +249,7 @@ async function appRequest(
   try {
     return await response.json();
   } catch {
-    throw new GithubAppError("GitHub App authentication returned an invalid response.", { installationId });
+    throw new GithubAppError("GitHub App authentication returned an invalid response.", { installationId, kind: "request" });
   }
 }
 
@@ -281,7 +294,7 @@ async function installationFor(config: Configuration, repo: string): Promise<num
       return null;
     }
     if (!result || !Number.isSafeInteger(result.id) || (result.id as number) <= 0) {
-      throw new GithubAppError("GitHub App installation discovery returned an invalid response.");
+      throw new GithubAppError("GitHub App installation discovery returned an invalid response.", { kind: "request" });
     }
     const id = result.id as number;
     boundedSet(config.installations, repo, { id, expiresAt: Date.now() + DISCOVERY_TTL_MS });
@@ -318,11 +331,11 @@ async function installationToken(config: Configuration, installationId: number):
       if (!result || typeof result.token !== "string" || !result.token
         || typeof result.expires_at !== "string" || !result.permissions || typeof result.permissions !== "object"
         || Array.isArray(result.permissions) || Object.values(result.permissions).some((value) => typeof value !== "string")) {
-        throw new GithubAppError("GitHub App token issuance returned an invalid response.", { installationId });
+        throw new GithubAppError("GitHub App token issuance returned an invalid response.", { installationId, kind: "request" });
       }
       const expiresAt = Date.parse(result.expires_at);
       if (!Number.isFinite(expiresAt) || expiresAt <= Date.now() + REFRESH_MARGIN_MS) {
-        throw new GithubAppError("GitHub App token issuance returned an expired or imminently expiring token.", { installationId });
+        throw new GithubAppError("GitHub App token issuance returned an expired or imminently expiring token.", { installationId, kind: "request" });
       }
       return {
         authentication: { token: result.token, identity, installationId, permissions: result.permissions as Record<string, string> },

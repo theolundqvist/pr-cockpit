@@ -145,6 +145,7 @@ test("nonce-launched browser-bound app registration stores credentials once and 
         assert.ok(!publicText.includes(pem) && !publicText.includes(config.privateKeyPath));
         assert.deepEqual(JSON.parse(publicText), { app: {
           name: "Fixture Cockpit", installUrl: "https://github.com/apps/fixture-cockpit/installations/new",
+          health: { repositories: [], cooldownUntil: null },
         } });
         assert.equal((await callback(second.state, second.cookie)).status, 400);
         assert.equal(exchanges, 2);
@@ -185,7 +186,7 @@ test("nonce-launched browser-bound app registration stores credentials once and 
         server.stop(true);
         github.stop(true);
       }
-    `], { env: { ...process.env, HOME: root, COCKPIT_GITHUB_APP_CONFIG: join(root, "github-app.json") }, stdout: "pipe", stderr: "pipe" });
+    `], { env: { ...process.env, HOME: root, COCKPIT_DATA_DIR: root, COCKPIT_GITHUB_APP_CONFIG: join(root, "github-app.json") }, stdout: "pipe", stderr: "pipe" });
     const [exitCode, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
     expect(exitCode, `${stdout}\n${stderr}`).toBe(0);
   } finally {

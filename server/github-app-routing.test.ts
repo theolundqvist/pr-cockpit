@@ -3,7 +3,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { GithubCredentialQuota, GithubQuota, GithubQuotaResource } from "./github.ts";
+import type { GithubAppReadHealth, GithubCredentialQuota, GithubQuota, GithubQuotaResource } from "./github.ts";
 import type { GithubGraphqlUsageEvent, GithubRestUsageEvent } from "./githubUsage.ts";
 
 type Call = { path: string; token: string; method: string; etag?: string | null; query?: string | null };
@@ -15,6 +15,7 @@ const settingsUrl = new URL("./settings.ts", import.meta.url).href;
 const usageUrl = new URL("./githubUsage.ts", import.meta.url).href;
 const dbUrl = new URL("./db.ts", import.meta.url).href;
 const appUrl = new URL("./githubApp.ts", import.meta.url).href;
+const setupUrl = new URL("./githubAppSetup.ts", import.meta.url).href;
 
 // Imports inside the subprocess must follow transport isolation and settings initialization.
 // Each caller types the JSON emitted by its own controlled fixture script.
@@ -33,6 +34,7 @@ async function scenario<T>(code: string, enabled = true): Promise<T> {
     writeFileSync(configPath, JSON.stringify({ appId: "123", privateKeyPath }), { mode: 0o600 });
   }
   const script = `
+    import { unlinkSync } from "node:fs";
     const calls = [];
     const issuances = new Map();
     const reset = Math.floor(Date.now() / 1000) + 1800;
@@ -58,6 +60,7 @@ async function scenario<T>(code: string, enabled = true): Promise<T> {
     let issuanceFailure = null;
     const server = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(request) {
       const url = new URL(request.url);
+      if (url.pathname === "/api/github-app/quota") return setup.handleGithubAppSetup(request);
       const token = (request.headers.get("authorization") ?? "").replace(/^bearer /i, "");
       if (url.pathname.endsWith("/installation")) {
         calls.push({ path: url.pathname, token: "jwt", method: request.method });
@@ -91,6 +94,12 @@ async function scenario<T>(code: string, enabled = true): Promise<T> {
     settings.writeSettings({ rest_usage_enabled: true, rest_fallback_enabled: false });
     const github = await import(${JSON.stringify(githubUrl)});
     const usage = await import(${JSON.stringify(usageUrl)});
+    const setup = await import(${JSON.stringify(setupUrl)});
+    const appStatus = async () => {
+      const response = await nativeFetch(new URL("/api/github-app/quota", server.url));
+      if (!response.ok) throw new Error("App status failed: " + response.status);
+      return response.json();
+    };
     const restEvents = [];
     const graphqlEvents = [];
     usage.setGithubRestUsageRecorder((event) => restEvents.push(event));
@@ -542,4 +551,425 @@ test("uninstalling an App preserves PR lookup through personal authentication", 
   expect(result.calls.filter(call => call.path === "/graphql").map(call => call.token)).toEqual(["personal-one", "personal-one"]);
   expect(result.issuances).toEqual([[41, 2]]);
   expect(result.identities).toBeUndefined();
+});
+
+test("quota App status is passive and only completed repository reads establish success", async () => {
+  const result = await scenario<{
+    before: GithubAppReadHealth; issued: GithubAppReadHealth; working: GithubAppReadHealth;
+    statusTraffic: number[]; issuanceCounts: number[]; firstReadAt: string; secondReadAt: string;
+  }>(`
+    let now = Date.now();
+    Date.now = () => now;
+    respond = async (_request, _token, url) => url.pathname === "/graphql"
+      ? graphqlData(openPrs) : json({ workflows: [] });
+    const statusTraffic = [];
+    const issuanceCounts = [];
+    const snapshot = async () => {
+      const beforeCalls = calls.length;
+      const beforeTokens = [...issuances.values()].reduce((sum, value) => sum + value, 0);
+      const health = (await appStatus()).app.health;
+      await appStatus();
+      statusTraffic.push(calls.length - beforeCalls);
+      issuanceCounts.push([...issuances.values()].reduce((sum, value) => sum + value, 0) - beforeTokens);
+      return health;
+    };
+    const before = await snapshot();
+    await github.repositoryReadQuota("acme/one", "core", true);
+    const issued = await snapshot();
+    const firstReadAt = new Date(now).toISOString();
+    await github.fetchRepositoryOpenPrs("acme/one");
+    now += 1000;
+    const secondReadAt = new Date(now).toISOString();
+    await github.fetchActionWorkflows("acme/two");
+    const working = await snapshot();
+    console.log(JSON.stringify({ before, issued, working, statusTraffic, issuanceCounts, firstReadAt, secondReadAt }));
+  `);
+  expect(result.before).toEqual({ repositories: [], cooldownUntil: null });
+  expect(result.issued).toEqual(result.before);
+  expect(result.working).toEqual({
+    repositories: [
+      { repo: "acme/one", lastSuccessAt: result.firstReadAt, error: null },
+      { repo: "acme/two", lastSuccessAt: result.secondReadAt, error: null },
+    ],
+    cooldownUntil: null,
+  });
+  expect(result.statusTraffic).toEqual([0, 0, 0]);
+  expect(result.issuanceCounts).toEqual([0, 0, 0]);
+});
+
+test("personal fallback cannot report App success and GraphQL body failures retain the last actual success", async () => {
+  const result = await scenario<{
+    fallback: GithubAppReadHealth; recovered: GithubAppReadHealth; malformed: GithubAppReadHealth[];
+    failures: Outcome[]; tokens: string[]; quota: GithubAppReadHealth; exposed: string;
+  }>(`
+    let phase = "forbidden";
+    respond = async (_request, token, url) => {
+      if (!token.startsWith("app-")) return graphqlData(openPrs);
+      if (phase === "forbidden") return Response.json({
+        data: { repository: openPrs }, errors: [{ type: "FORBIDDEN", message: "private-secret" }],
+      });
+      if (phase === "quota") return Response.json({
+        data: { repository: openPrs }, errors: [{ type: "RATE_LIMITED", message: "private-secret" }],
+      }, { headers: headers("graphql", 5000) });
+      if (phase === "array") return Response.json({ data: [] });
+      if (phase === "errors") return Response.json({ data: { repository: openPrs }, errors: {} });
+      if (phase === "json") return new Response("private-secret");
+      return graphqlData(openPrs);
+    };
+    await github.fetchRepositoryOpenPrs("acme/one");
+    const fallback = (await appStatus()).app.health;
+    phase = "healthy";
+    await github.fetchRepositoryOpenPrs("acme/one");
+    const recovered = (await appStatus()).app.health;
+    const malformed = [];
+    const failures = [];
+    for (phase of ["array", "errors", "json"]) {
+      failures.push(await capture(() => github.fetchRepositoryOpenPrs("acme/one")));
+      malformed.push((await appStatus()).app.health);
+    }
+    phase = "quota";
+    await github.fetchRepositoryOpenPrs("acme/two");
+    const quota = (await appStatus()).app.health;
+    const exposed = JSON.stringify({ fallback, recovered, malformed, quota });
+    console.log(JSON.stringify({ fallback, recovered, malformed, failures, quota, exposed,
+      tokens: calls.filter(call => call.path === "/graphql").map(call => call.token) }));
+  `);
+  expect(result.fallback.repositories).toEqual([
+    { repo: "acme/one", lastSuccessAt: null, error: { at: expect.any(String), kind: "access", resetAt: null } },
+  ]);
+  const success = result.recovered.repositories[0]!;
+  expect(success).toMatchObject({ repo: "acme/one", lastSuccessAt: expect.any(String), error: null });
+  expect(result.failures).toHaveLength(3);
+  expect(result.failures.every((failure) => typeof failure.message === "string")).toBe(true);
+  for (const health of result.malformed) {
+    expect(health.repositories[0]).toMatchObject({ lastSuccessAt: success.lastSuccessAt, error: { kind: "request" } });
+  }
+  expect(result.quota.repositories.find((repo) => repo.repo === "acme/two")).toMatchObject({
+    lastSuccessAt: null, error: { kind: "quota", resetAt: expect.any(String) },
+  });
+  expect(result.tokens.slice(0, 3)).toEqual(["app-41-1", "personal-one", "app-41-1"]);
+  expect(result.tokens.slice(-2)).toEqual(["app-42-1", "personal-one"]);
+  expect(result.exposed).not.toContain("private-secret");
+});
+
+test("discovery and issuance failures are visible before the first App credential without status probes", async () => {
+  const result = await scenario<{
+    health: GithubAppReadHealth[]; passive: boolean; exposed: string;
+  }>(`
+    const provider = await import(${JSON.stringify(appUrl)});
+    const health = [];
+    let passive = true;
+    respond = async () => json({ workflows: [] });
+    const snapshot = async () => {
+      const before = calls.length;
+      const issued = JSON.stringify([...issuances]);
+      health.push((await appStatus()).app.health);
+      passive &&= calls.length === before && JSON.stringify([...issuances]) === issued;
+    };
+    installationFailure = () => new Response("private-secret", { status: 401 });
+    await capture(() => github.fetchActionWorkflows("acme/one"));
+    await snapshot();
+    provider.invalidateGithubAppConfig();
+    installationFailure = () => new Response("private-secret", { status: 403 });
+    await github.fetchActionWorkflows("acme/two");
+    await snapshot();
+    provider.invalidateGithubAppConfig();
+    installationFailure = null;
+    issuanceFailure = () => new Response("private-secret", { status: 401 });
+    await capture(() => github.fetchActionWorkflows("acme/three"));
+    await snapshot();
+    provider.invalidateGithubAppConfig();
+    const dispatch = globalThis.fetch;
+    globalThis.fetch = () => { throw new TypeError("private-secret connection"); };
+    await capture(() => github.fetchActionWorkflows("acme/four"));
+    globalThis.fetch = dispatch;
+    await snapshot();
+    console.log(JSON.stringify({ health, passive, exposed: JSON.stringify(health) }));
+  `);
+  expect(result.health[0]?.repositories[0]).toMatchObject({ repo: "acme/one", lastSuccessAt: null, error: { kind: "authentication" } });
+  expect(result.health[1]?.repositories.find((repo) => repo.repo === "acme/two")).toMatchObject({ lastSuccessAt: null, error: { kind: "access" } });
+  expect(result.health[2]?.repositories.find((repo) => repo.repo === "acme/three")).toMatchObject({ lastSuccessAt: null, error: { kind: "authentication" } });
+  expect(result.health[3]?.repositories.find((repo) => repo.repo === "acme/four")).toMatchObject({ lastSuccessAt: null, error: { kind: "connection" } });
+  expect(result.passive).toBe(true);
+  expect(result.exposed).not.toContain("private-secret");
+});
+
+test("renewal errors preserve the last App success and a recovered 401 clears its temporary issue", async () => {
+  const result = await scenario<{
+    first: GithubAppReadHealth; failed: GithubAppReadHealth; renewed: GithubAppReadHealth;
+    rejected: Outcome; tokens: string[]; issuances: [number, number][];
+  }>(`
+    const provider = await import(${JSON.stringify(appUrl)});
+    let phase = "healthy";
+    respond = async (_request, token) => phase === "rejected" && token === "app-41-3"
+      ? new Response("private-secret", { status: 401 }) : json({ workflows: [] });
+    await github.fetchActionWorkflows("acme/one");
+    const first = (await appStatus()).app.health;
+    provider.invalidateGithubAppToken("app:123:installation:41");
+    issuanceFailure = () => new Response("private-secret", { status: 401 });
+    const rejected = await capture(() => github.fetchActionWorkflows("acme/one"));
+    const failed = (await appStatus()).app.health;
+    provider.invalidateGithubAppConfig();
+    issuanceFailure = null;
+    phase = "rejected";
+    await github.fetchActionWorkflows("acme/one");
+    const renewed = (await appStatus()).app.health;
+    console.log(JSON.stringify({ first, failed, renewed, rejected, issuances: [...issuances],
+      tokens: calls.filter(call => call.path.endsWith("/actions/workflows")).map(call => call.token) }));
+  `);
+  expect(result.rejected).toMatchObject({ status: 401 });
+  expect(result.failed.repositories[0]).toMatchObject({
+    lastSuccessAt: result.first.repositories[0]!.lastSuccessAt, error: { kind: "authentication" },
+  });
+  expect(result.renewed.repositories[0]).toMatchObject({ lastSuccessAt: expect.any(String), error: null });
+  expect(result.tokens).toEqual(["app-41-1", "app-41-3", "app-41-4"]);
+  expect(result.issuances).toEqual([[41, 4]]);
+});
+
+test("missing installations clear stale success and replaced or removed configuration cannot expose it", async () => {
+  const result = await scenario<{
+    missing: GithubAppReadHealth; replaced: GithubAppReadHealth; removed: { app: null };
+    before: number; after: number; missingTokens: string[];
+  }>(`
+    let now = Date.now();
+    Date.now = () => now;
+    respond = async () => json({ workflows: [] });
+    await github.fetchActionWorkflows("acme/one");
+    now += 300001;
+    installationFailure = () => new Response("private-secret", { status: 404 });
+    await github.fetchActionWorkflows("acme/one");
+    const missing = (await appStatus()).app.health;
+    const config = await Bun.file(process.env.COCKPIT_GITHUB_APP_CONFIG).json();
+    await Bun.write(process.env.COCKPIT_GITHUB_APP_CONFIG, JSON.stringify({ ...config, appId: "replacement" }));
+    const before = calls.length;
+    const replaced = (await appStatus()).app.health;
+    unlinkSync(process.env.COCKPIT_GITHUB_APP_CONFIG);
+    const removed = await appStatus();
+    console.log(JSON.stringify({ missing, replaced, removed, before, after: calls.length,
+      missingTokens: calls.filter(call => call.path.endsWith("/actions/workflows")).map(call => call.token) }));
+  `);
+  expect(result.missing.repositories).toEqual([
+    { repo: "acme/one", lastSuccessAt: null, error: { at: expect.any(String), kind: "access", resetAt: null } },
+  ]);
+  expect(result.missingTokens).toEqual(["app-41-1", "personal-one"]);
+  expect(result.replaced).toEqual({ repositories: [], cooldownUntil: null });
+  expect(result.removed).toEqual({ app: null });
+  expect(result.after).toBe(result.before);
+});
+
+test("global secondary cooldown is reported over a prior App success without status traffic", async () => {
+  const result = await scenario<{ health: GithubAppReadHealth; before: number; after: number }>(`
+    respond = async (request) => request.method === "POST"
+      ? new Response("private-secret", { status: 403, headers: { "retry-after": "120" } })
+      : json({ workflows: [] });
+    await github.fetchActionWorkflows("acme/one");
+    await capture(() => github.postIssueComment("acme/one", 1, "blocked"));
+    const before = calls.length;
+    const health = (await appStatus()).app.health;
+    await appStatus();
+    console.log(JSON.stringify({ health, before, after: calls.length }));
+  `);
+  expect(result.health.repositories[0]).toMatchObject({ lastSuccessAt: expect.any(String), error: null });
+  expect(result.health.cooldownUntil).toEqual(expect.any(String));
+  expect(result.after).toBe(result.before);
+});
+
+test("App response headers are not success until the repository body finishes, and failed bodies retain the prior success", async () => {
+  const result = await scenario<{
+    pending: GithubAppReadHealth; complete: GithubAppReadHealth; failed: GithubAppReadHealth;
+    diff: string; failure: Outcome;
+  }>(`
+    let headersReceived = Promise.withResolvers();
+    let release = Promise.withResolvers();
+    let failBody = false;
+    respond = async () => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("diff fixture"));
+        release.promise.then(() => {
+          if (failBody) controller.error(new Error("private-secret body failure"));
+          else controller.close();
+        });
+      },
+    }), { headers: headers() });
+    const dispatch = globalThis.fetch;
+    globalThis.fetch = async (input, options) => {
+      const response = await dispatch(input, options);
+      if (new URL(String(input)).pathname.endsWith("/pulls/1")) headersReceived.resolve();
+      return response;
+    };
+    const read = github.fetchDiff("acme/one", 1);
+    await headersReceived.promise;
+    const pending = (await appStatus()).app.health;
+    release.resolve();
+    const diff = await read;
+    const complete = (await appStatus()).app.health;
+    failBody = true;
+    headersReceived = Promise.withResolvers();
+    release = Promise.withResolvers();
+    const rejected = capture(() => github.fetchDiff("acme/one", 1));
+    await headersReceived.promise;
+    release.resolve();
+    const failure = await rejected;
+    const failed = (await appStatus()).app.health;
+    console.log(JSON.stringify({ pending, complete, failed, diff, failure }));
+  `);
+  expect(result.pending.repositories).toEqual([]);
+  expect(result.diff).toBe("diff fixture");
+  expect(result.complete.repositories[0]).toMatchObject({ lastSuccessAt: expect.any(String), error: null });
+  expect(result.failure.message).toEqual(expect.any(String));
+  expect(result.failed.repositories[0]).toMatchObject({
+    lastSuccessAt: result.complete.repositories[0]!.lastSuccessAt, error: { kind: "connection" },
+  });
+});
+
+test("successful reads that drain an installation pool expose a passive quota issue on every observed repository", async () => {
+  for (const resource of ["core", "graphql"] as const) {
+    const result = await scenario<{
+      drained: GithubAppReadHealth; fallback: GithubAppReadHealth; expired: GithubAppReadHealth;
+      resetAt: string; before: number; after: number; tokens: string[];
+    }>(`
+      let now = Date.now();
+      Date.now = () => now;
+      const resource = ${JSON.stringify(resource)};
+      let drain = false;
+      const read = (repo) => resource === "core"
+        ? github.fetchActionWorkflows(repo) : github.fetchRepositoryOpenPrs(repo);
+      respond = async (_request, token) => {
+        const used = drain && token.startsWith("app-") ? 5000 : 10;
+        return resource === "core" ? json({ workflows: [] }, "core", used) : graphqlData(openPrs, used);
+      };
+      await read("acme/one");
+      await read("acme/another");
+      drain = true;
+      await read("acme/one");
+      const before = calls.length;
+      const drained = (await appStatus()).app.health;
+      await appStatus();
+      const after = calls.length;
+      await read("acme/one");
+      await read("acme/another");
+      const fallback = (await appStatus()).app.health;
+      now = reset * 1000 + 1;
+      const expired = (await appStatus()).app.health;
+      console.log(JSON.stringify({ drained, fallback, expired, before, after,
+        resetAt: new Date(reset * 1000).toISOString(),
+        tokens: calls.filter(call => call.token !== "jwt").map(call => call.token) }));
+    `);
+    for (const health of [result.drained, result.fallback]) {
+      expect(health.repositories).toHaveLength(2);
+      for (const repo of health.repositories) {
+        expect(repo).toMatchObject({ lastSuccessAt: expect.any(String), error: { kind: "quota", resetAt: result.resetAt } });
+      }
+    }
+    for (const repo of result.expired.repositories) expect(repo.error).toBeNull();
+    expect(result.tokens).toEqual(["app-41-1", "app-41-1", "app-41-1", "personal-one", "personal-one"]);
+    expect(result.after).toBe(result.before);
+  }
+});
+
+test("an older delayed success cannot clear a newer request failure, provider failure, or missing installation", async () => {
+  const result = await scenario<{ before: GithubAppReadHealth[]; after: GithubAppReadHealth[] }>(`
+    const provider = await import(${JSON.stringify(appUrl)});
+    const before = [];
+    const after = [];
+    let hold = false;
+    let accessFailure = false;
+    let started;
+    let release;
+    respond = async (_request, token) => {
+      if (token.startsWith("app-") && hold) {
+        started.resolve();
+        await release.promise;
+        return json({ workflows: [] });
+      }
+      if (token.startsWith("app-") && accessFailure) return new Response("private-secret", { status: 403 });
+      return json({ workflows: [] });
+    };
+    for (const mode of ["request", "provider", "missing"]) {
+      provider.invalidateGithubAppConfig();
+      installationFailure = null;
+      accessFailure = false;
+      await github.fetchActionWorkflows("acme/one");
+      started = Promise.withResolvers();
+      release = Promise.withResolvers();
+      hold = true;
+      const older = github.fetchActionWorkflows("acme/one");
+      await started.promise;
+      hold = false;
+      if (mode === "request") accessFailure = true;
+      else {
+        provider.invalidateGithubAppConfig();
+        installationFailure = () => new Response("private-secret", { status: mode === "missing" ? 404 : 401 });
+      }
+      await capture(() => github.fetchActionWorkflows("acme/one"));
+      before.push((await appStatus()).app.health);
+      release.resolve();
+      await older;
+      after.push((await appStatus()).app.health);
+    }
+    console.log(JSON.stringify({ before, after }));
+  `);
+  expect(result.after).toEqual(result.before);
+  for (const [index, kind] of (["access", "authentication", "access"] as const).entries()) {
+    expect(result.after[index]?.repositories[0]?.error?.kind).toBe(kind);
+  }
+  expect(result.after[0]?.repositories[0]?.lastSuccessAt).toEqual(expect.any(String));
+  expect(result.after[1]?.repositories[0]?.lastSuccessAt).toEqual(expect.any(String));
+  expect(result.after[2]?.repositories[0]?.lastSuccessAt).toBeNull();
+});
+
+test("missing PR aliases establish App access without changing the existing personal fallback", async () => {
+  const result = await scenario<{ lookup: unknown; health: GithubAppReadHealth; tokens: string[] }>(`
+    respond = async () => Response.json({
+      data: { repository: { pr0: null } },
+      errors: [{ type: "NOT_FOUND", message: "private-secret", path: ["repository", "pr0"] }],
+    });
+    const lookup = await github.lookupPr("acme/one", 7);
+    const health = (await appStatus()).app.health;
+    console.log(JSON.stringify({ lookup, health, tokens: calls.filter(call => call.path === "/graphql").map(call => call.token) }));
+  `);
+  expect(result.lookup).toBeNull();
+  expect(result.health.repositories).toEqual([
+    { repo: "acme/one", lastSuccessAt: expect.any(String), error: null },
+  ]);
+  expect(result.tokens).toEqual(["app-41-1", "personal-one"]);
+});
+
+test("missing installations on untracked links stay out of health while tracked misses and real provider failures remain visible", async () => {
+  const result = await scenario<{ untracked: GithubAppReadHealth; tracked: GithubAppReadHealth; failed: GithubAppReadHealth }>(`
+    settings.writeSettings({ repos: "outside/tracked" });
+    respond = async () => Response.json({
+      data: { repository: { pr0: null } },
+      errors: [{ type: "NOT_FOUND", message: "private-secret", path: ["repository", "pr0"] }],
+    });
+    await github.lookupPr("outside/untracked", 7);
+    const untracked = (await appStatus()).app.health;
+    await github.lookupPr("outside/tracked", 7);
+    const tracked = (await appStatus()).app.health;
+    (await import(${JSON.stringify(appUrl)})).invalidateGithubAppConfig();
+    installationFailure = () => new Response("private-secret", { status: 401 });
+    await capture(() => github.lookupPr("linked/project", 7));
+    const failed = (await appStatus()).app.health;
+    console.log(JSON.stringify({ untracked, tracked, failed }));
+  `);
+  expect(result.untracked.repositories).toEqual([]);
+  expect(result.tracked.repositories).toEqual([
+    { repo: "outside/tracked", lastSuccessAt: null, error: { at: expect.any(String), kind: "access", resetAt: null } },
+  ]);
+  expect(result.failed.repositories.map((repo) => repo.repo)).toEqual(["linked/project", "outside/tracked"]);
+  expect(result.failed.repositories[0]?.error?.kind).toBe("authentication");
+});
+
+test("a binary contents payload remains a successful App read even when text decoding rejects it", async () => {
+  const result = await scenario<{ failure: Outcome; health: GithubAppReadHealth; tokens: string[] }>(`
+    respond = async () => json({ encoding: "base64", content: Buffer.from([255, 254]).toString("base64") });
+    const failure = await capture(() => github.fetchFileContents("acme/one", "image.bin", "fixture-sha"));
+    const health = (await appStatus()).app.health;
+    console.log(JSON.stringify({ failure, health, tokens: calls.filter(call => call.path.includes("/contents/")).map(call => call.token) }));
+  `);
+  expect(result.failure.message).toEqual(expect.any(String));
+  expect(result.health.repositories).toEqual([
+    { repo: "acme/one", lastSuccessAt: expect.any(String), error: null },
+  ]);
+  expect(result.tokens).toEqual(["app-41-1"]);
 });
