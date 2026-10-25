@@ -1,4 +1,4 @@
-import { backgroundQuotaAvailable, fetchGithubQuota, fetchPrDetail, isBackgroundSource, recentGithubQuota, fetchPrDetailPart, GithubRequestError, lookupPr, searchClosedPrs, searchOpenPrs, searchRecentPrs, type GithubQuota, type PrDetail, type PrDetailScope } from "./github.ts";
+import { backgroundGithubQuota, backgroundQuotaAvailable, fetchPrDetail, isBackgroundSource, repositoryReadQuota, fetchPrDetailPart, GithubRequestError, lookupPr, searchClosedPrs, searchOpenPrs, searchRecentPrs, type PrDetail, type PrDetailScope } from "./github.ts";
 import { withGithubUsageSource, type GithubUsageSource } from "./githubUsage.ts";
 import {
   deleteWebhookRegistrationsForPr,
@@ -50,34 +50,39 @@ let openInboxKeys = new Set<string>();
 
 export { backgroundQuotaAvailable };
 
-// Pacing tolerates a reading this old; fetching a fresh one first added a /rate_limit round
-// trip (~0.5s) to the first relay refresh after every quiet minute.
-const BACKGROUND_QUOTA_MAX_AGE_MS = 5 * 60_000;
-
-async function backgroundQuota(): Promise<GithubQuota> {
-  const recent = recentGithubQuota(BACKGROUND_QUOTA_MAX_AGE_MS);
-  // fetchGithubQuota answers from cache while the reading is fresh, so this only calls out when stale.
-  if (recent) void fetchGithubQuota().catch(() => {});
-  return recent ?? await fetchGithubQuota();
-}
 
 // Gates background work that spends REST whichever pool its reads use: Actions listings and catalogs.
-export async function backgroundRestAllowed(): Promise<boolean> {
-  return backgroundQuotaAvailable((await backgroundQuota()).rest);
+export async function backgroundRestAllowed(repo?: string, requireInstallation = false): Promise<boolean> {
+  try {
+    const quota = repo === undefined ? (await backgroundGithubQuota()).rest : await repositoryReadQuota(repo, "core", requireInstallation);
+    return quota !== undefined && (quota === null || backgroundQuotaAvailable(quota));
+  } catch (error) {
+    if (error instanceof GithubRequestError && error.kind === "quota") return false;
+    throw error;
+  }
 }
 
-export async function backgroundPollAllowed(): Promise<boolean> {
-  const quota = await backgroundQuota();
-  // With the REST fallback on, background reads move to the REST pool once GraphQL is low.
-  if (backgroundQuotaAvailable(quota.graphql) || (restFallbackEnabled() && backgroundQuotaAvailable(quota.rest))) {
-    quotaPauseResetAt = null;
-    return true;
+export async function backgroundPollAllowed(repo?: string): Promise<boolean> {
+  try {
+    if (repo !== undefined) {
+      const graphql = await repositoryReadQuota(repo, "graphql");
+      if (graphql === null || (graphql !== undefined && backgroundQuotaAvailable(graphql))) return true;
+      return restFallbackEnabled() && await backgroundRestAllowed(repo);
+    }
+    const quota = await backgroundGithubQuota();
+    if (backgroundQuotaAvailable(quota.graphql) || (restFallbackEnabled() && backgroundQuotaAvailable(quota.rest))) {
+      quotaPauseResetAt = null;
+      return true;
+    }
+    if (quotaPauseResetAt !== quota.graphql.resetAt) {
+      quotaPauseResetAt = quota.graphql.resetAt;
+      console.warn(`background GitHub refreshes paused with ${quota.graphql.remaining} GraphQL points left; resets ${quota.graphql.resetAt}`);
+    }
+    return false;
+  } catch (error) {
+    if (error instanceof GithubRequestError && error.kind === "quota") return false;
+    throw error;
   }
-  if (quotaPauseResetAt !== quota.graphql.resetAt) {
-    quotaPauseResetAt = quota.graphql.resetAt;
-    console.warn(`background GitHub refreshes paused with ${quota.graphql.remaining} GraphQL points left; resets ${quota.graphql.resetAt}`);
-  }
-  return false;
 }
 
 export async function trackedRepos(): Promise<string[]> {
@@ -213,7 +218,7 @@ async function refreshPrNow(
   invalidatePr(repo, number);
   invalidateInbox();
 
-  if (scope !== "review" && (!isBackgroundSource(source) || await backgroundRestAllowed())) {
+  if (scope !== "review" && (!isBackgroundSource(source) || await backgroundRestAllowed(repo))) {
     // Cache the native run catalog alongside check contexts, including queued runs
     // without jobs and run IDs that selected-run cache reads will advertise. It takes a
     // REST round trip or more, so the checks and status above are published first and the
@@ -284,7 +289,6 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
       .finally(() => {
         mirrorPrune = null;
       });
-    if (!await deps.backgroundPollAllowed()) return { checked: 0, refreshed: 0 };
     const tracked = new Set(repos);
     const registered = new Set(searchableRegistrations.map((registration) => prKeyOf(registration.repo, registration.number)));
     const searchRepos = [...new Set([...repos, ...searchableRegistrations.map((registration) => registration.repo)])];
@@ -293,6 +297,7 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
       deps.publishPollCompleted(lastPollAt);
       return { checked: 0, refreshed: 0 };
     }
+    const searchAllowed = await deps.backgroundPollAllowed();
     // The repo-wide recent-runs listing (two ~2.5s pages per repo) feeds only the Actions page,
     // so the poll neither waits for it nor stacks a second one behind a listing still running.
     // Awaiting it held every poll, and the merges and refreshes awaiting a poll, ~4s past its
@@ -301,10 +306,11 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
     // poll interval; webhooks deliver the runs in between.
     const refreshActions = deps.refreshRecentActions;
     const listingInterval = (deps.actionsListingIntervalMs ?? pollIntervalMs)();
-    if (refreshActions && !actionsListing && Date.now() - actionsListedAt >= listingInterval
-      && await (deps.backgroundRestAllowed ?? backgroundRestAllowed)()) {
+    if (refreshActions && !actionsListing && Date.now() - actionsListedAt >= listingInterval) {
       actionsListedAt = Date.now();
-      actionsListing = Promise.allSettled(repos.map((repo) => refreshActions(repo))).then((results) => {
+      actionsListing = Promise.allSettled(repos.map(async (repo) => {
+        if (await (deps.backgroundRestAllowed ?? backgroundRestAllowed)(repo, !searchAllowed)) await refreshActions(repo);
+      })).then((results) => {
         results.forEach((result, index) => {
           if (result.status === "rejected") {
             console.warn(`Actions refresh failed for ${repos[index]}:`, result.reason);
@@ -314,6 +320,8 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
         actionsListing = null;
       });
     }
+    // Personal search may be paused while installation-backed Actions reads remain available.
+    if (!searchAllowed) return { checked: 0, refreshed: 0 };
 
     const searchedAt = Date.now();
     const hits = await deps.searchOpenPrs(searchRepos, (repo, number, updatedAt) => {

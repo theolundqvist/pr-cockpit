@@ -129,6 +129,31 @@ describe("poll-loop registration lifecycle", () => {
     expect(searchedRepos).toEqual([]);
   });
 
+  test("personal search exhaustion does not suppress repository-scoped Actions work", async () => {
+    const gates: string[] = [];
+    const refreshed: string[] = [];
+    const completed = Promise.withResolvers<void>();
+    const result = await createPollOnce({
+      ...deps,
+      trackedRepos: async () => ["acme/app", "acme/user-only"],
+      backgroundPollAllowed: async () => false,
+      backgroundRestAllowed: async (repo) => {
+        gates.push(repo!);
+        return repo === "acme/app";
+      },
+      refreshRecentActions: async (repo) => {
+        refreshed.push(repo);
+        completed.resolve();
+        return 0;
+      },
+      searchOpenPrs: async () => { throw new Error("Personal search is paused"); },
+    })();
+    await completed.promise;
+    expect(result).toEqual({ checked: 0, refreshed: 0 });
+    expect(gates).toEqual(["acme/app", "acme/user-only"]);
+    expect(refreshed).toEqual(["acme/app"]);
+  });
+
   test("prunes all local caches before returning for an empty repository scope", async () => {
     const evicted: string[][] = [];
     const pruned: string[][] = [];

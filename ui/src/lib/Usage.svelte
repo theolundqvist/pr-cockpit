@@ -1,6 +1,7 @@
 <script>
   import { fetchGithubUsage, saveRestRecording } from "./api.js";
   import { cachedView, cacheView } from "./detailCache.js";
+  import { quotaIdentityLabel } from "./quotaImpact.js";
 
   let data = $state(cachedView("usage"));
   let error = $state(null);
@@ -80,15 +81,34 @@
     </div>
   </header>
 
-  {#if data?.quota && data?.usage}
-    {@const quota = data.quota}
-    {@const usage = data.usage}
-    {@const chartMax = Math.max(1, usage.predictedUsed ?? 0, ...usage.history.map((bucket) => bucket.used ?? 0))}
-    {@const rest = data.rest ?? null}
-    {@const restUsage = data.restUsage ?? null}
+    {#snippet restRecording(enabled)}
+      <label class="check-field rest-recording">
+        <input class="check" type="checkbox" checked={enabled} disabled={restSaving} onchange={(event) => setRestRecording(event.currentTarget)} />
+        <span class="check-text">
+          <span class="check-label">Record REST requests</span>
+          {#if restSaveError}
+            <span class="hint save-error" role="alert">{restSaveError}</span>
+          {:else}
+            <span class="hint">Counts this cockpit's GitHub REST requests by feature and endpoint.</span>
+          {/if}
+        </span>
+      </label>
+    {/snippet}
+  {#if data?.identities || (data?.quota && data?.usage)}
+    {#if data.identities}
+      <p class="identity-note">User and GitHub App installations have independent quota pools and reset windows. Writes and viewer-specific data use your User identity.</p>
+      <div class="identity-recording">{@render restRecording(data.restRecordingEnabled)}</div>
+    {/if}
+    {#each data.identities ?? [data] as identity, identityIndex (identity.identity ?? "user")}
+    {@const independent = !!data.identities}
+    {@const quota = identity.quota}
+    {@const usage = identity.usage}
+    {@const chartMax = Math.max(1, usage?.predictedUsed ?? 0, ...(usage?.history ?? []).map((bucket) => bucket.used ?? 0))}
+    {@const rest = identity.rest ?? null}
+    {@const restUsage = identity.restUsage ?? null}
     {@const restChartMax = Math.max(1, ...(restUsage?.history ?? []).map((bucket) => Math.max(bucket.used ?? 0, bucket.chargedRequests)))}
     {#snippet restPools()}
-      {#each [["GitHub REST core", rest], ["GitHub REST search", data.search]] as [label, pool] (label)}
+      {#each [["GitHub REST core", rest], ["GitHub REST search", identity.search]] as [label, pool] (label)}
         {#if pool}
           {@const cooling = !!pool.blockedUntil && Date.parse(pool.blockedUntil) > Date.now()}
           <div class="rest-quota" class:exhausted={pool.remaining === 0 || cooling}>
@@ -103,22 +123,20 @@
               {/if}
             </strong>
           </div>
+        {:else if independent}
+          <div class="rest-quota">
+            <span>{label}</span>
+            <strong>Unknown · no quota reading yet</strong>
+          </div>
         {/if}
       {/each}
     {/snippet}
-    {#snippet restRecording(enabled)}
-      <label class="check-field rest-recording">
-        <input class="check" type="checkbox" checked={enabled} disabled={restSaving} onchange={(event) => setRestRecording(event.currentTarget)} />
-        <span class="check-text">
-          <span class="check-label">Record REST requests</span>
-          {#if restSaveError}
-            <span class="hint save-error" role="alert">{restSaveError}</span>
-          {:else}
-            <span class="hint">Counts this cockpit's GitHub REST requests by feature and endpoint.</span>
-          {/if}
-        </span>
-      </label>
-    {/snippet}
+    {#if independent}
+      <header class="identity-head">
+        <h2>{quotaIdentityLabel(identity)}</h2>
+        <span class="hint">{identity.kind === "app" ? "Read-only installation" : "Personal writes and viewer identity"}{#if identity.repositories?.length} · {identity.repositories.join(", ")}{/if}</span>
+      </header>
+    {/if}
     {#if restUsage}
       <section class="usage-card" aria-label="GitHub REST core usage">
         <div class="usage-head">
@@ -169,13 +187,13 @@
           <strong>{chargeSummary({ ...restUsage, requests: restUsage.localRequests })}</strong>
         </div>
         {@render restPools()}
-        {@render restRecording(true)}
+        {#if !independent}{@render restRecording(true)}{/if}
       </section>
 
-      <section class="history-card" aria-labelledby="rest-history-title">
+      <section class="history-card" aria-labelledby={independent ? `rest-history-title-${identityIndex}` : "rest-history-title"}>
         <div class="section-head">
           <div>
-            <span class="label" id="rest-history-title">Hourly REST core usage</span>
+            <span class="label" id={independent ? `rest-history-title-${identityIndex}` : "rest-history-title"}>Hourly REST core usage</span>
             <span class="hint">Last three days</span>
           </div>
           <div class="legend" aria-hidden="true">
@@ -238,6 +256,7 @@
       <span class="usage-window rest-window">REST core window began {resetTime(restUsage.windowStartedAt)}.{#if restUsage.unknownChargeRequests} {number.format(restUsage.unknownChargeRequests)} requests with unknown charge.{/if} REST search is counted in its own pool.</span>
     {/if}
 
+    {#if quota && usage}
     <section class="usage-card" aria-label="GitHub GraphQL usage">
       <div class="usage-head">
         <div>
@@ -246,6 +265,7 @@
         </div>
         <div class="usage-totals">
           <strong>{percent(quota.used, quota.limit).toFixed(1)}%</strong>
+          {#if independent}<span>Resets at {resetTime(quota.resetAt)}</span>{/if}
           <span>
             {#if usage.predictedUsed === null}
               Forecast needs five minutes
@@ -287,9 +307,9 @@
 
       {#if !restUsage}
         {@render restPools()}
-        {#if "restUsage" in data}
+        {#if !independent && "restUsage" in data}
           {@render restRecording(false)}
-        {:else}
+        {:else if !independent}
           <div class="rest-quota">
             <span>GitHub REST attribution</span>
             <strong>Unavailable: this server does not record its REST requests</strong>
@@ -298,10 +318,10 @@
       {/if}
     </section>
 
-    <section class="history-card" aria-labelledby="usage-history-title">
+    <section class="history-card" aria-labelledby={independent ? `usage-history-title-${identityIndex}` : "usage-history-title"}>
       <div class="section-head">
         <div>
-          <span class="label" id="usage-history-title">Hourly GraphQL usage</span>
+          <span class="label" id={independent ? `usage-history-title-${identityIndex}` : "usage-history-title"}>Hourly GraphQL usage</span>
           <span class="hint">Last three days</span>
         </div>
         <div class="legend" aria-hidden="true">
@@ -363,6 +383,18 @@
     </section>
 
     <span class="usage-window">GraphQL resets at {resetTime(quota.resetAt)}.{#if usage.unknownCostRequests} {number.format(usage.unknownCostRequests)} calls with unknown cost.{/if}</span>
+    {:else}
+      <section class="usage-card" aria-label="GitHub GraphQL usage">
+        <div class="usage-head">
+          <div>
+            <span class="label">GitHub GraphQL usage</span>
+            <span class="hint">Unknown · no quota reading yet</span>
+          </div>
+        </div>
+        {#if !restUsage}{@render restPools()}{/if}
+      </section>
+    {/if}
+    {/each}
   {:else if error}
     <div class="state error">GitHub usage is unavailable: {error}</div>
   {:else}
@@ -403,6 +435,25 @@
     font-size: 17px;
     font-weight: 600;
   }
+  .identity-note {
+    margin: 0 0 24px;
+    color: var(--text-dim);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  .identity-head {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 22px;
+  }
+  .identity-head h2 {
+    margin: 0;
+    color: var(--text);
+    font-size: 15px;
+    font-weight: 600;
+  }
+  .identity-recording { margin: -10px 0 22px; }
   .usage-card,
   .history-card,
   .breakdowns {

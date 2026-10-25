@@ -155,7 +155,7 @@ async function handleHook(
       recordPrWebhookActivity(repo, affectedNumber, receivedAt);
       touchWebhookRegistrations(repo, affectedNumber, receivedAt);
       void refreshPrFromEvent(repo, affectedNumber, prDetailScopeForEvent(event), async (targetRepo, targetNumber, scope) => {
-        if (await refreshAllowed()) await refresh(targetRepo, targetNumber, "webhook", scope);
+        if (await refreshAllowed(targetRepo)) await refresh(targetRepo, targetNumber, "webhook", scope);
       }).catch((e) =>
         console.error(`hook-triggered refresh failed for ${repo}#${affectedNumber}:`, e)
       );
@@ -173,7 +173,7 @@ async function handleHook(
   touchWebhookRegistrations(repo, number, receivedAt);
 
   void refreshPrFromEvent(repo, number, prDetailScopeForEvent(event), async (targetRepo, targetNumber, scope) => {
-    if (await refreshAllowed()) await refresh(targetRepo, targetNumber, "webhook", scope);
+    if (await refreshAllowed(targetRepo)) await refresh(targetRepo, targetNumber, "webhook", scope);
   }).catch((e) =>
     console.error(`hook-triggered refresh failed for ${repo}#${number}:`, e)
   );
@@ -291,6 +291,8 @@ async function handleQuota(): Promise<Response> {
   try {
     const quota = await fetchGithubQuota();
     return Response.json({
+      // Legacy fields remain personal; installations expose their own windows, never a sum.
+      ...(quota.identities ? { identity: quota.identity, identities: quota.identities } : {}),
       graphqlRemaining: quota.graphql.remaining,
       graphqlUsedThisHour: quota.graphql.used,
       rendersSinceStart: 0,

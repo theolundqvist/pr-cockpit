@@ -1,3 +1,4 @@
+import { GithubAppError, githubAppAuthentication, invalidateGithubAppToken, type GithubAppAuthentication } from "./githubApp.ts";
 import { validateCodeScanningDismissal } from "../shared/codeScanning.js";
 import type { MergeMethod } from "./mergeMethod.ts";
 import type { ResolvedMerge } from "./mirror.ts";
@@ -61,6 +62,7 @@ export type GithubQuotaResourceName = "core" | "search" | "graphql";
 export type GithubRequestErrorKind = "http" | "graphql" | "quota" | "transport";
 
 export class GithubRequestError extends Error {
+  credential?: string;
   constructor(
     message: string,
     readonly status: number,
@@ -71,23 +73,107 @@ export class GithubRequestError extends Error {
     cause?: unknown,
   ) {
     super(message, cause === undefined ? undefined : { cause });
+    if (cause instanceof GithubRequestError) this.credential = cause.credential;
     this.name = "GithubRequestError";
   }
 }
 
 type QuotaDeadline = { status: number; resetAt: string; until: number };
-type QuotaBlocks = { primary?: QuotaDeadline; secondary?: QuotaDeadline };
-const blockedQuotas = new Map<GithubQuotaResourceName, QuotaBlocks>();
+type CredentialState = {
+  identity: string;
+  ledgerIdentity: string;
+  kind: "user" | "app";
+  installationId?: number;
+  repositories: Set<string>;
+  token: string | null;
+  observedAt: string | null;
+  blockedQuotas: Map<GithubQuotaResourceName, QuotaDeadline>;
+  quotaProbeInFlight: Map<GithubQuotaResourceName, { primary: QuotaDeadline; promise: Promise<void> }>;
+  lastQuotaProbeAt: Map<GithubQuotaResourceName, number>;
+  cachedQuota: GithubQuota | null;
+  graphqlReading: GithubQuotaResource | null;
+  restReadings: Map<RestQuotaResourceName, GithubQuotaResource>;
+  quotaFetchInFlight: Promise<GithubQuota> | null;
+};
+type Authentication = { token: string; state: CredentialState };
+const credentialStates = new Map<string, CredentialState>();
+const userCredentials = new Map<string, CredentialState>();
+const responseCredentials = new WeakMap<Response, CredentialState>();
 const responseQuotaResources = new WeakMap<Response, GithubQuotaResourceName>();
-const responseQuotaGenerations = new WeakMap<Response, number>();
-// Responses to requests GitHub does not charge to the primary limit; only secondary cooldowns gate them.
 const primaryExemptResponses = new WeakSet<Response>();
-const quotaProbeInFlight = new Map<GithubQuotaResourceName, {
-  generation: number;
-  primary: QuotaDeadline;
-  promise: Promise<void>;
-}>();
-const lastQuotaProbeAt = new Map<GithubQuotaResourceName, number>();
+// A secondary limit is a request-rate signal, not another primary pool to spend.
+let secondaryCooldown: QuotaDeadline | null = null;
+let userQuota = credentialState("user", "user");
+
+function credentialState(identity: string, kind: "user" | "app", installationId?: number): CredentialState {
+  let state = credentialStates.get(identity);
+  if (!state) {
+    state = {
+      identity, kind, installationId, repositories: new Set(), token: null, observedAt: null,
+      ledgerIdentity: kind === "user" ? "user" : identity,
+      blockedQuotas: new Map(), quotaProbeInFlight: new Map(), lastQuotaProbeAt: new Map(),
+      cachedQuota: null, graphqlReading: null, restReadings: new Map(), quotaFetchInFlight: null,
+    };
+    credentialStates.set(identity, state);
+  }
+  return state;
+}
+
+async function userAuthentication(): Promise<Authentication> {
+  const token = await ghToken();
+  let state = userCredentials.get(token);
+  if (!state) {
+    // Tokens have independent live limits; personal usage keeps its durable ledger.
+    state = userCredentials.size === 0 ? userQuota : credentialState(`user:${crypto.randomUUID()}`, "user");
+    state.token = token;
+    userCredentials.set(token, state);
+  }
+  if (userQuota !== state) endGithubRestCoverage("user");
+  userQuota = state;
+  return { token, state };
+}
+
+async function appAuthentication(repo: string): Promise<Authentication | null> {
+  if (readSettings().replica_ssh_host) throw new Error("GitHub access is disabled while PR Cockpit uses an SSH replica");
+  let authentication: GithubAppAuthentication | null;
+  try {
+    authentication = await githubAppAuthentication(repo);
+  } catch (error) {
+    if (!(error instanceof GithubAppError)) throw error;
+    if (!error.secondaryRateLimited && (error.status === 403 || error.status === 404)) {
+      authentication = null;
+    } else {
+      const response = new Response(null, { status: error.status ?? 502, headers: error.headers });
+      let deadline: QuotaDeadline | null = null;
+      if (error.secondaryRateLimited) {
+        const until = Date.now() + SECONDARY_RATE_LIMIT_FALLBACK_MS;
+        deadline = retryAfterDeadline(response)
+          ?? (rateLimitHeader(response, "x-ratelimit-remaining") === 0 ? primaryResetDeadline(response) : null)
+          ?? { status: response.status, until, resetAt: new Date(until).toISOString() };
+        updateSecondaryQuota("core", deadline);
+      }
+      const requestError = new GithubRequestError(
+        error.message, response.status, [], deadline ? "quota" : "http",
+        deadline ? "core" : null, deadline?.resetAt ?? null, error,
+      );
+      requestError.credential = [...credentialStates.values()]
+        .find((state) => state.kind === "app" && state.installationId === error.installationId)?.identity ?? "app";
+      throw requestError;
+    }
+  }
+  for (const state of credentialStates.values()) {
+    if (state.kind === "app" && state.identity !== authentication?.identity) state.repositories.delete(repo.toLowerCase());
+  }
+  if (!authentication) return null;
+  return rememberAppAuthentication(repo, authentication);
+}
+
+function rememberAppAuthentication(repo: string, authentication: GithubAppAuthentication): Authentication {
+  const state = credentialState(authentication.identity, "app", authentication.installationId);
+  state.repositories.add(repo.toLowerCase());
+  state.token = authentication.token;
+  return { token: authentication.token, state };
+}
 const QUOTA_PROBE_INTERVAL_MS = 30_000;
 // GitHub's /rate_limit counts a different core window than the one requests are charged against:
 // it reported 1 used and its own reset while charged responses reported 1,143 used and another
@@ -98,39 +184,9 @@ const CORE_QUOTA_PROBE_PATH = "/user";
 // request stalls the poll loop until restart, so every GitHub request carries a deadline.
 const GITHUB_REQUEST_TIMEOUT_MS = 60_000;
 const SECONDARY_RATE_LIMIT_FALLBACK_MS = 5 * 60_000;
-let activeQuotaToken: string | null = null;
-let activeQuotaGeneration = 0;
-
-function quotaGeneration(token: string): number {
-  if (activeQuotaToken !== token) {
-    activeQuotaToken = token;
-    activeQuotaGeneration++;
-    blockedQuotas.clear();
-    quotaProbeInFlight.clear();
-    lastQuotaProbeAt.clear();
-    cachedQuota = null;
-    graphqlReading = null;
-    restReadings.clear();
-    // The ledger must not subtract this credential's requests from another's count. Tokens of one
-    // user share a budget, but nothing here says the new one belongs to the same account.
-    endGithubRestCoverage();
-  }
-  return activeQuotaGeneration;
-}
-function responseHasActiveQuota(response: Response): boolean {
-  return responseQuotaGenerations.get(response) === activeQuotaGeneration;
-}
-
-function quotaState(resource: GithubQuotaResourceName): QuotaBlocks {
-  const existing = blockedQuotas.get(resource);
-  if (existing) return existing;
-  const state: QuotaBlocks = {};
-  blockedQuotas.set(resource, state);
-  return state;
-}
-
-function removeEmptyQuotaState(resource: GithubQuotaResourceName, state: QuotaBlocks): void {
-  if (!state.primary && !state.secondary && blockedQuotas.get(resource) === state) blockedQuotas.delete(resource);
+function activeSecondaryCooldown(): QuotaDeadline | null {
+  if (secondaryCooldown && Date.now() >= secondaryCooldown.until) secondaryCooldown = null;
+  return secondaryCooldown;
 }
 
 function updatePrimaryQuota(
@@ -138,23 +194,22 @@ function updatePrimaryQuota(
   remaining: number,
   resetAt: string | null,
   status = 403,
+  credential: CredentialState = userQuota,
 ): void {
   if (remaining > 0) {
-    const state = blockedQuotas.get(resource);
-    if (!state) return;
-    delete state.primary;
-    removeEmptyQuotaState(resource, state);
+    const reading = resource === "graphql" ? credential.graphqlReading : credential.restReadings.get(resource);
+    if (reading && reading.resetAt === resetAt && reading.remaining < remaining) return;
+    credential.blockedQuotas.delete(resource);
     return;
   }
   const until = resetAt === null ? Number.NaN : Date.parse(resetAt);
   if (remaining === 0 && resetAt !== null && Number.isFinite(until)) {
-    quotaState(resource).primary = { status, resetAt, until };
+    credential.blockedQuotas.set(resource, { status, resetAt, until });
   }
 }
 
-function updateSecondaryQuota(resource: GithubQuotaResourceName, deadline: QuotaDeadline): void {
-  const state = quotaState(resource);
-  if (!state.secondary || deadline.until > state.secondary.until) state.secondary = deadline;
+function updateSecondaryQuota(_resource: GithubQuotaResourceName, deadline: QuotaDeadline): void {
+  if (!secondaryCooldown || deadline.until > secondaryCooldown.until) secondaryCooldown = deadline;
 }
 
 function quotaResource(path: string): GithubQuotaResourceName {
@@ -202,20 +257,19 @@ function responseQuotaResource(response: Response, fallback: GithubQuotaResource
 function accountQuota(
   response: Response,
   fallback: GithubQuotaResourceName,
-  generation: number,
+  credential: CredentialState,
   chargesPrimary: boolean,
 ): void {
-  if (generation !== activeQuotaGeneration) return;
   const resource = responseQuotaResource(response, fallback);
   if (resource !== null && chargesPrimary) {
     const remaining = rateLimitHeader(response, "x-ratelimit-remaining");
     const primary = primaryResetDeadline(response);
     if (remaining === 0 && primary) {
-      updatePrimaryQuota(resource, 0, primary.resetAt, primary.status);
+      updatePrimaryQuota(resource, 0, primary.resetAt, primary.status, credential);
     } else if (remaining !== null && remaining > 0) {
-      updatePrimaryQuota(resource, remaining, null);
+      updatePrimaryQuota(resource, remaining, primary?.resetAt ?? null, 403, credential);
     }
-    if (resource === "core" || resource === "search") recordRestReading(resource, response);
+    if (resource === "core" || resource === "search") recordRestReading(resource, response, credential);
   }
   if ((response.status === 403 || response.status === 429) && response.headers.has("retry-after")) {
     const secondary = retryAfterDeadline(response);
@@ -223,35 +277,29 @@ function accountQuota(
   }
 }
 
-function activeQuotaBlock(resource: GithubQuotaResourceName): QuotaDeadline | null {
-  const state = blockedQuotas.get(resource);
-  if (!state) return null;
-  const now = Date.now();
-  if (state.primary && now >= state.primary.until) delete state.primary;
-  if (state.secondary && now >= state.secondary.until) delete state.secondary;
-  const blocked = !state.primary
-    ? state.secondary
-    : !state.secondary || state.primary.until >= state.secondary.until
-      ? state.primary
-      : state.secondary;
-  removeEmptyQuotaState(resource, state);
-  return blocked ?? null;
+function activeQuotaBlock(resource: GithubQuotaResourceName, credential = userQuota): QuotaDeadline | null {
+  let primary = credential.blockedQuotas.get(resource);
+  if (primary && Date.now() >= primary.until) {
+    credential.blockedQuotas.delete(resource);
+    primary = undefined;
+  }
+  const secondary = activeSecondaryCooldown();
+  return !primary || (secondary && secondary.until >= primary.until) ? secondary : primary;
 }
 
 async function revalidateQuota(
   resource: GithubQuotaResourceName,
   token: string,
-  generation: number,
+  credential: CredentialState,
 ): Promise<void> {
-  // A GraphQL block holds until its reset because /rate_limit misreports GraphQL (see
-  // graphqlReading); a search block's window is a minute, so probing would cost more than waiting.
-  if (resource !== "core") return;
-  activeQuotaBlock(resource);
-  const state = blockedQuotas.get(resource);
-  if (generation !== activeQuotaGeneration || !state?.primary || state.secondary) return;
-  const primary = state.primary;
+  // App primary blocks wait for reset; /user cannot probe an installation token.
+  if (resource !== "core" || credential.kind !== "user") return;
+  activeQuotaBlock(resource, credential);
+  const primary = credential.blockedQuotas.get(resource);
+  if (!primary || activeSecondaryCooldown()) return;
+  const { quotaProbeInFlight, lastQuotaProbeAt } = credential;
   const existing = quotaProbeInFlight.get(resource);
-  if (existing?.generation === generation && existing.primary === primary) {
+  if (existing?.primary === primary) {
     await existing.promise;
     return;
   }
@@ -259,16 +307,15 @@ async function revalidateQuota(
   if (now - (lastQuotaProbeAt.get(resource) ?? Number.NEGATIVE_INFINITY) < QUOTA_PROBE_INTERVAL_MS) return;
   lastQuotaProbeAt.set(resource, now);
   const entry: {
-    generation: number;
     primary: QuotaDeadline;
     promise: Promise<void>;
-  } = { generation, primary, promise: Promise.resolve() };
+  } = { primary, promise: Promise.resolve() };
   entry.promise = (async () => {
     try {
       // A charged request with the token the refused request would use, so its headers are that
       // token's own core budget (see CORE_QUOTA_PROBE_PATH). A refused probe is not charged.
       const sentAt = new Date().toISOString();
-      const coverage = restCoverageAtDispatch("core", generation);
+      const coverage = restCoverageAtDispatch("core", credential);
       let response: Response;
       let requestStarted = false;
       try {
@@ -282,29 +329,26 @@ async function revalidateQuota(
         requestStarted = true;
         response = await pending;
       } catch (error) {
-        if (requestStarted) recordRestAttempt("GET", CORE_QUOTA_PROBE_PATH, "core", null, sentAt, coverage);
-        else finishGithubRestRequest(coverage);
+        if (requestStarted) recordRestAttempt("GET", CORE_QUOTA_PROBE_PATH, "core", null, sentAt, coverage, credential);
+        else finishGithubRestRequest(coverage, credential.ledgerIdentity);
         throw error;
       }
-      recordRestAttempt("GET", CORE_QUOTA_PROBE_PATH, "core", response, sentAt, coverage);
-      if (generation !== activeQuotaGeneration) return;
+      recordRestAttempt("GET", CORE_QUOTA_PROBE_PATH, "core", response, sentAt, coverage, credential);
+      responseCredentials.set(response, credential);
+      responseQuotaResources.set(response, resource);
+      if (!response.ok) await githubResponseError("GitHub quota probe failed", response);
       const secondary = retryAfterDeadline(response);
       if ((response.status === 403 || response.status === 429) && secondary) {
         updateSecondaryQuota(resource, secondary);
       }
       if (responseQuotaResource(response, resource) !== resource) return;
-      recordRestReading("core", response);
+      recordRestReading("core", response, credential);
       const remaining = rateLimitHeader(response, "x-ratelimit-remaining");
-      const current = blockedQuotas.get(resource);
       // A response that settled while the probe was in flight may have recorded a newer block.
-      if (current?.primary !== primary) return;
+      if (credential.blockedQuotas.get(resource) !== primary) return;
       const reset = primaryResetDeadline(response);
-      if (remaining !== null && remaining > 0) {
-        delete current.primary;
-        removeEmptyQuotaState(resource, current);
-      } else if (remaining === 0 && reset) {
-        current.primary = reset;
-      }
+      if (remaining !== null && remaining > 0) credential.blockedQuotas.delete(resource);
+      else if (remaining === 0 && reset) credential.blockedQuotas.set(resource, reset);
     } catch {
       // Keep the recorded block when the probe is unreachable or malformed.
     }
@@ -315,16 +359,15 @@ async function revalidateQuota(
   await entry.promise;
 }
 
-function gatingQuotaBlock(resource: GithubQuotaResourceName, includePrimary: boolean): QuotaDeadline | null {
-  const active = activeQuotaBlock(resource);
-  return includePrimary ? active : blockedQuotas.get(resource)?.secondary ?? null;
+function gatingQuotaBlock(resource: GithubQuotaResourceName, includePrimary: boolean, credential = userQuota): QuotaDeadline | null {
+  return includePrimary ? activeQuotaBlock(resource, credential) : activeSecondaryCooldown();
 }
 
-function assertQuotaAvailable(resource: GithubQuotaResourceName, includePrimary = true): void {
-  const blocked = gatingQuotaBlock(resource, includePrimary);
+function assertQuotaAvailable(resource: GithubQuotaResourceName, includePrimary = true, credential = userQuota): void {
+  const blocked = activeSecondaryCooldown() ?? gatingQuotaBlock(resource, includePrimary, credential);
   if (!blocked) return;
-  const secondary = blockedQuotas.get(resource)?.secondary === blocked;
-  throw new GithubRequestError(
+  const secondary = activeSecondaryCooldown() !== null;
+  const error = new GithubRequestError(
     secondary
       ? `GitHub ${resource} secondary rate limit cooling down until ${blocked.resetAt}`
       : `GitHub ${resource} quota exhausted until ${blocked.resetAt}`,
@@ -334,25 +377,26 @@ function assertQuotaAvailable(resource: GithubQuotaResourceName, includePrimary 
     resource,
     blocked.resetAt,
   );
+  error.credential = credential.ledgerIdentity;
+  throw error;
 }
 
 async function requireQuota(
   resource: GithubQuotaResourceName,
-  authentication?: { token: string; generation: number },
+  authentication?: Authentication,
   includePrimary = true,
-): Promise<{ token: string; generation: number }> {
-  const token = authentication?.token ?? await ghToken();
-  const generation = authentication?.generation ?? quotaGeneration(token);
-  if (includePrimary) await revalidateQuota(resource, token, generation);
-  assertQuotaAvailable(resource, includePrimary);
-  return { token, generation };
+): Promise<Authentication> {
+  const auth = authentication ?? await userAuthentication();
+  if (includePrimary) await revalidateQuota(resource, auth.token, auth.state);
+  assertQuotaAvailable(resource, includePrimary, auth.state);
+  return auth;
 }
 
-function restCoverageAtDispatch(resource: GithubQuotaResourceName, generation: number): GithubRestCoverage | null {
+function restCoverageAtDispatch(resource: GithubQuotaResourceName, credential: CredentialState): GithubRestCoverage | null {
   if (resource === "graphql") return null;
-  beginGithubRestRequest();
-  if (generation !== activeQuotaGeneration || !restUsageEnabled()) return null;
-  return githubRestCoverage();
+  beginGithubRestRequest(credential.ledgerIdentity);
+  if (!restUsageEnabled()) return null;
+  return githubRestCoverage(credential.ledgerIdentity);
 }
 
 function recordRestAttempt(
@@ -362,14 +406,17 @@ function recordRestAttempt(
   response: Response | null,
   sentAt: string,
   coverage: GithubRestCoverage | null,
+  credential: CredentialState,
 ): void {
   if (resource === "graphql") return;
-  finishGithubRestRequest(coverage);
-  if (coverage === null || activeGithubRestCoverage() !== coverage) return;
+  finishGithubRestRequest(coverage, credential.ledgerIdentity);
+  if (coverage === null || activeGithubRestCoverage(credential.ledgerIdentity) !== coverage) return;
   const endpoint = normalizeGithubRestEndpoint(path);
   const reset = response === null ? null : rateLimitHeader(response, "x-ratelimit-reset");
   recordGithubRestUsage({
     occurredAt: sentAt,
+    credential: credential.ledgerIdentity,
+    credentialKind: credential.kind,
     source: currentGithubUsageSource(),
     method,
     endpoint,
@@ -383,6 +430,84 @@ function recordRestAttempt(
     coverageEpoch: coverage.epoch,
   });
 }
+const appRefreshes = new Map<string, Promise<Authentication | null>>();
+
+async function refreshAppAuthentication(repo: string, rejected: Authentication): Promise<Authentication | null> {
+  // Concurrent 401s for an old token must neither invalidate its replacement nor mint it twice.
+  if (rejected.state.token !== rejected.token) return appAuthentication(repo);
+  let refresh = appRefreshes.get(rejected.state.identity);
+  if (!refresh) {
+    invalidateGithubAppToken(rejected.state.identity);
+    refresh = appAuthentication(repo).finally(() => {
+      if (appRefreshes.get(rejected.state.identity) === refresh) appRefreshes.delete(rejected.state.identity);
+    });
+    appRefreshes.set(rejected.state.identity, refresh);
+  }
+  return refresh;
+}
+
+async function withRepositoryRead<T>(
+  repo: string | undefined,
+  resource: GithubQuotaResourceName,
+  read: (authentication: Authentication) => Promise<T>,
+): Promise<T> {
+  // Check before discovery/token issuance too: changing credentials cannot evade a cooldown.
+  assertQuotaAvailable(resource, false);
+  let app = repo === undefined ? null : await appAuthentication(repo);
+  if (app && isBackgroundSource(currentGithubUsageSource())) {
+    const reading = resource === "graphql" ? liveGraphqlReading(Date.now(), app.state) : liveRestReading(resource, Date.now(), app.state);
+    if (reading !== null && !backgroundQuotaAvailable(reading)
+      && personalBackgroundAvailable(resource) === true) app = null;
+  }
+  if (app && !activeQuotaBlock(resource, app.state)) {
+    try {
+      return await read(app);
+    } catch (firstError) {
+      let error = firstError;
+      if (error instanceof GithubRequestError && error.status === 401) {
+        assertQuotaAvailable(resource, false, app.state);
+        app = await refreshAppAuthentication(repo!, app);
+        if (!app) return read(await userAuthentication());
+        try {
+          return await read(app);
+        } catch (refreshedError) {
+          error = refreshedError;
+        }
+      }
+      if (!(error instanceof GithubRequestError) || activeSecondaryCooldown()) throw error;
+      const primary = error.kind === "quota" && error.resource === resource;
+      const permission = error.kind !== "quota" && (
+        error.status === 403 || error.status === 404
+        || (error.graphqlErrors.length > 0 && error.graphqlErrors.every((item) =>
+          item.type === "FORBIDDEN" || item.type === "NOT_FOUND" || item.type === "INSUFFICIENT_SCOPES"))
+      );
+      if (!primary && !permission) throw error;
+    }
+  }
+  // One user attempt only, including after an app refresh. Transport/auth failures stay explicit.
+  return read(await userAuthentication());
+}
+
+function assertRepositoryPath(repo: string, path: string): void {
+  const match = /^\/repos\/([^/?#]+)\/([^/?#]+)(?:[/?]|$)/.exec(path);
+  if (!match || `${decodeURIComponent(match[1]!)}/${decodeURIComponent(match[2]!)}`.toLowerCase() !== repo.toLowerCase()
+    || new URL(path, "https://api.github.com").pathname !== path.split("?")[0]) {
+    throw new Error("GitHub read does not match its repository scope");
+  }
+}
+
+async function repositoryApiResponse(
+  repo: string,
+  path: string,
+  options: { accept?: string; redirect?: RequestInit["redirect"] } = {},
+): Promise<Response> {
+  assertRepositoryPath(repo, path);
+  return withRepositoryRead(repo, quotaResource(path), async (authentication) => {
+    const response = await githubApiResponse("GET", path, { ...options, authentication });
+    if (!response.ok && response.status !== 302) throw await githubResponseError("GitHub repository read failed", response);
+    return response;
+  });
+}
 
 async function githubApiResponse(
   method: string,
@@ -390,8 +515,8 @@ async function githubApiResponse(
   options: {
     body?: unknown;
     accept?: string;
-    redirect?: RequestRedirect;
-    authentication?: { token: string; generation: number };
+    redirect?: RequestInit["redirect"];
+    authentication?: Authentication;
     ifNoneMatch?: string;
   } = {},
 ): Promise<Response> {
@@ -400,10 +525,10 @@ async function githubApiResponse(
   // counts are not the charged window (see CORE_QUOTA_PROBE_PATH), so it neither records nor
   // clears a primary block. Secondary cooldowns still apply.
   const rateLimitRead = method === "GET" && path === "/rate_limit";
-  const { token, generation } = await requireQuota(resource, options.authentication, !rateLimitRead);
+  const { token, state } = await requireQuota(resource, options.authentication, !rateLimitRead);
   let response: Response;
   const sentAt = new Date().toISOString();
-  const coverage = restCoverageAtDispatch(resource, generation);
+  const coverage = restCoverageAtDispatch(resource, state);
   let requestStarted = false;
   try {
     const pending = fetch(`https://api.github.com${path}`, {
@@ -421,9 +546,9 @@ async function githubApiResponse(
     requestStarted = true;
     response = await pending;
   } catch (error) {
-    if (requestStarted) recordRestAttempt(method, path, resource, null, sentAt, coverage);
-    else if (resource !== "graphql") finishGithubRestRequest(coverage);
-    throw new GithubRequestError(
+    if (requestStarted) recordRestAttempt(method, path, resource, null, sentAt, coverage, state);
+    else if (resource !== "graphql") finishGithubRestRequest(coverage, state.ledgerIdentity);
+    const failure = new GithubRequestError(
       `GitHub ${resource} transport unavailable: ${error instanceof Error ? error.message : String(error)}`,
       503,
       [],
@@ -432,25 +557,28 @@ async function githubApiResponse(
       null,
       error,
     );
+    failure.credential = state.ledgerIdentity;
+    throw failure;
   }
-  recordRestAttempt(method, path, resource, response, sentAt, coverage);
+  recordRestAttempt(method, path, resource, response, sentAt, coverage, state);
   responseQuotaResources.set(response, resource);
-  responseQuotaGenerations.set(response, generation);
+  responseCredentials.set(response, state);
   if (rateLimitRead) primaryExemptResponses.add(response);
-  accountQuota(response, resource, generation, !rateLimitRead);
+  accountQuota(response, resource, state, !rateLimitRead);
   return response;
 }
 
 async function githubResponseError(label: string, response: Response): Promise<GithubRequestError> {
+  const credential = responseCredentials.get(response);
   const fallback = responseQuotaResources.get(response)
     ?? quotaResource(new URL(response.url || "https://api.github.com").pathname);
   const charged = responseQuotaResource(response, fallback);
   const resource = charged ?? fallback;
   const body = await response.text();
-  const secondaryWithoutDeadline = response.status === 403
+  const secondaryWithoutDeadline = (response.status === 403 || response.status === 429)
     && !response.headers.has("retry-after")
-    && /secondary rate limit/i.test(body);
-  if (secondaryWithoutDeadline && responseHasActiveQuota(response)) {
+    && ((response.status === 429 && response.headers.get("x-ratelimit-remaining") !== "0") || /secondary rate limit|abuse detection/i.test(body));
+  if (secondaryWithoutDeadline && credential) {
     const until = Date.now() + SECONDARY_RATE_LIMIT_FALLBACK_MS;
     updateSecondaryQuota(resource, {
       status: response.status,
@@ -470,10 +598,10 @@ async function githubResponseError(label: string, response: Response): Promise<G
     : charged === null
       ? (retryAfterDeadline(response)
         ?? (response.headers.get("x-ratelimit-remaining") === "0" ? primaryResetDeadline(response) : null))?.resetAt ?? null
-      : responseHasActiveQuota(response)
-        ? gatingQuotaBlock(charged, !primaryExemptResponses.has(response))?.resetAt ?? null
+      : credential
+        ? gatingQuotaBlock(charged, !primaryExemptResponses.has(response), credential)?.resetAt ?? null
         : null;
-  return new GithubRequestError(
+  const error = new GithubRequestError(
     `${label}: ${response.status}${body ? ` ${body}` : ""}`,
     response.status,
     [],
@@ -481,6 +609,8 @@ async function githubResponseError(label: string, response: Response): Promise<G
     charged,
     resetAt,
   );
+  error.credential = credential?.ledgerIdentity;
+  return error;
 }
 
 export class StalePrHeadError extends Error {
@@ -562,8 +692,7 @@ export function cachedViewer(): GithubViewer | null {
 // cooldown is a request-rate signal GitHub applies across its APIs, so it moves nothing.
 function coreQuotaExhausted(error: unknown): boolean {
   if (!(error instanceof GithubRequestError && error.kind === "quota" && error.resource === "core")) return false;
-  activeQuotaBlock("core"); // drops expired deadlines
-  return !blockedQuotas.get("core")?.secondary;
+  return activeSecondaryCooldown() === null;
 }
 
 async function graphql<T>(
@@ -573,17 +702,35 @@ async function graphql<T>(
   operation: string,
   // Opt-in for batched aliases: NOT_FOUND errors on accepted paths leave those fields null instead of rejecting siblings.
   missingAllowed?: (path: readonly (string | number)[]) => boolean,
+  repo?: string,
 ): Promise<T> {
+  if (repo !== undefined && !/^\s*query\b/.test(query)) throw new Error("Only repository queries may use GitHub App authentication");
+  return withRepositoryRead(repo, "graphql", (authentication) =>
+    graphqlRequest<T>(query, variables, source, operation, authentication, missingAllowed));
+}
+
+async function graphqlRequest<T>(
+  query: string,
+  variables: Record<string, unknown>,
+  source: GithubUsageSource,
+  operation: string,
+  authentication: Authentication,
+  missingAllowed?: (path: readonly (string | number)[]) => boolean,
+): Promise<T> {
+  const credential = authentication.state;
   const instrumented = instrumentGithubGraphql(query);
   let res: Response;
   try {
     res = await githubApiResponse("POST", "/graphql", {
       body: { query: instrumented.document, variables },
+      authentication,
     });
   } catch (error) {
     if (!(error instanceof GithubRequestError && error.kind === "quota")) {
       recordGithubGraphqlUsage({
         occurredAt: new Date().toISOString(),
+        credential: credential.ledgerIdentity,
+        credentialKind: credential.kind,
         source,
         operation,
         cost: instrumented.fixedCost,
@@ -600,7 +747,6 @@ async function graphql<T>(
     rateLimit: { cost: number; used: number; remaining: number; resetAt: string } | null,
     status: "ok" | "error",
   ) => {
-    if (!responseHasActiveQuota(res)) return;
     const used = rateLimit?.used ?? rateLimitHeader(res, "x-ratelimit-used");
     const remaining = rateLimit?.remaining ?? rateLimitHeader(res, "x-ratelimit-remaining");
     const resetAt = rateLimit?.resetAt ?? (headerReset === null ? null : new Date(headerReset * 1_000).toISOString());
@@ -609,9 +755,12 @@ async function graphql<T>(
       used,
       remaining,
       resetAt,
+      credential,
     );
     recordGithubGraphqlUsage({
       occurredAt: new Date().toISOString(),
+      credential: credential.ledgerIdentity,
+      credentialKind: credential.kind,
       source,
       operation,
       cost: rateLimit?.cost ?? instrumented.fixedCost,
@@ -639,27 +788,38 @@ async function graphql<T>(
     remaining: number;
     resetAt: string;
   } | undefined;
-  if (rateLimit && responseHasActiveQuota(res)) updatePrimaryQuota("graphql", rateLimit.remaining, rateLimit.resetAt);
+  if (rateLimit) updatePrimaryQuota("graphql", rateLimit.remaining, rateLimit.resetAt, 403, credential);
   if (body.data) delete body.data[RATE_LIMIT_ALIAS];
-  const partial = !!missingAllowed && !!body.data && !!body.errors?.length
+  const partial = credential.kind === "user" && !!missingAllowed && !!body.data && !!body.errors?.length
     && body.errors.every((error) => error.type === "NOT_FOUND" && !!error.path && missingAllowed(error.path));
   record(rateLimit ?? null, body.errors?.length && !partial ? "error" : "ok");
   if (body.errors?.length && !partial) {
     const missing = body.errors.every((error) => error.type === "NOT_FOUND");
     const exhausted = body.errors.some((error) => error.type === "RATE_LIMIT" || error.type === "RATE_LIMITED");
     const resetAt = rateLimit?.resetAt
-      ?? (headerReset === null ? cachedQuota?.graphql.resetAt ?? null : new Date(headerReset * 1_000).toISOString());
-    if (exhausted && responseHasActiveQuota(res)) updatePrimaryQuota("graphql", 0, resetAt);
-    throw new GithubRequestError(
+      ?? (headerReset === null ? credential.cachedQuota?.graphql.resetAt ?? null : new Date(headerReset * 1_000).toISOString());
+    const secondary = body.errors.some((error) => /secondary rate limit|abuse detection/i.test(error.message ?? ""));
+    if (secondary) {
+      const until = Date.now() + SECONDARY_RATE_LIMIT_FALLBACK_MS;
+      updateSecondaryQuota("graphql", { status: 403, until, resetAt: new Date(until).toISOString() });
+    } else if (exhausted) updatePrimaryQuota("graphql", 0, resetAt, 403, credential);
+    const error = new GithubRequestError(
       `GraphQL errors: ${JSON.stringify(body.errors)}`,
-      missing ? 404 : exhausted ? 403 : 502,
+      missing ? 404 : exhausted || secondary ? 403 : 502,
       body.errors,
-      exhausted ? "quota" : "graphql",
+      exhausted || secondary ? "quota" : "graphql",
       "graphql",
-      exhausted ? resetAt : null,
+      secondary ? activeSecondaryCooldown()!.resetAt : exhausted ? resetAt : null,
     );
+    error.credential = credential.ledgerIdentity;
+    throw error;
   }
   if (!body.data) throw new GithubRequestError("GraphQL response missing data", 502, [], "graphql", "graphql");
+  if (credential.kind === "app" && body.data.repository === null) {
+    const error = new GithubRequestError("Repository unavailable to GitHub App", 404, [], "graphql", "graphql");
+    error.credential = credential.ledgerIdentity;
+    throw error;
+  }
   return body.data;
 }
 
@@ -675,6 +835,24 @@ export function backgroundQuotaAvailable(quota: GithubQuotaResource, now = Date.
   return quota.remaining > Math.max(GRAPHQL_BACKGROUND_RESERVE, pacedReserve);
 }
 
+function personalBackgroundAvailable(resource: GithubQuotaResourceName): boolean | null {
+  const reading = resource === "graphql"
+    ? liveGraphqlReading(Date.now()) ?? userQuota.cachedQuota?.graphql
+    : liveRestReading(resource, Date.now()) ?? userQuota.cachedQuota?.[resource === "core" ? "rest" : "search"];
+  if (!reading || Date.parse(reading.resetAt) <= Date.now()) return null;
+  return !activeQuotaBlock(resource) && backgroundQuotaAvailable(reading);
+}
+
+function assertPersonalGraphqlReserve(source: GithubUsageSource): void {
+  if (!BACKGROUND_SOURCES.has(source) || personalBackgroundAvailable("graphql") !== false) return;
+  const reading = liveGraphqlReading(Date.now()) ?? userQuota.cachedQuota?.graphql;
+  const error = new GithubRequestError(
+    "Personal GitHub GraphQL quota reserved for interactive actions", 403, [], "quota", "graphql", reading?.resetAt ?? null,
+  );
+  error.credential = "user";
+  throw error;
+}
+
 // Reads made on Cockpit's own schedule rather than for someone looking at the screen.
 const BACKGROUND_SOURCES: ReadonlySet<GithubUsageSource> = new Set([
   "background poll",
@@ -687,31 +865,36 @@ const BACKGROUND_SOURCES: ReadonlySet<GithubUsageSource> = new Set([
 
 // With the REST fallback on, a read takes GitHub's separate REST pool while GraphQL is
 // exhausted, and a background read also while GraphQL is below its background reserve.
-function graphqlReadOnRest(source: GithubUsageSource): boolean {
+async function graphqlReadOnRest(source: GithubUsageSource, repo?: string): Promise<boolean> {
   if (mockGithub || !restFallbackEnabled()) return false;
-  if (activeQuotaBlock("graphql")) return true;
+  assertQuotaAvailable("graphql", false);
+  const app = repo === undefined ? null : await appAuthentication(repo);
+  const credential = app && !activeQuotaBlock("graphql", app.state) ? app.state : (await userAuthentication()).state;
+  if (activeQuotaBlock("graphql", credential)) return true;
   if (!BACKGROUND_SOURCES.has(source)) return false;
-  const reading = liveGraphqlReading();
-  return reading !== null && !backgroundQuotaAvailable(reading);
+  const reading = liveGraphqlReading(Date.now(), credential);
+  if (reading === null || backgroundQuotaAvailable(reading)) return false;
+  return !(credential.kind === "app" && personalBackgroundAvailable("graphql") === true);
 }
 
-export function isBackgroundSource(source: GithubUsageSource): boolean {
-  return BACKGROUND_SOURCES.has(source);
+export function isBackgroundSource(source: GithubUsageSource | "unknown"): boolean {
+  return source !== "unknown" && BACKGROUND_SOURCES.has(source);
 }
 
 async function readWithRestFallback<T>(
   source: GithubUsageSource,
   graphqlRead: () => Promise<T>,
   restRead: () => Promise<T>,
+  repo?: string,
 ): Promise<T> {
   // REST reads, including metadata a GraphQL read takes over REST, are attributed to the same source.
   return withGithubUsageSource(source, async () => {
-    if (graphqlReadOnRest(source)) return restRead();
+    if (await graphqlReadOnRest(source, repo)) return restRead();
     try {
       return await graphqlRead();
     } catch (error) {
       const graphqlExhausted = error instanceof GithubRequestError && error.kind === "quota" && error.resource === "graphql";
-      if (!graphqlExhausted || mockGithub || !restFallbackEnabled()) throw error;
+      if (!graphqlExhausted || activeSecondaryCooldown() || mockGithub || !restFallbackEnabled()) throw error;
       return restRead();
     }
   });
@@ -725,11 +908,12 @@ async function restList<T>(
   path: string,
   maxPages = 10,
   pick: (body: unknown) => T[] = (body) => body as T[],
+  repo?: string,
 ): Promise<T[]> {
   const items: T[] = [];
   const separator = path.includes("?") ? "&" : "?";
   for (let page = 1; page <= maxPages; page++) {
-    const batch = pick(await restJson<unknown>(`${path}${separator}per_page=100&page=${page}`));
+    const batch = pick(await restJson<unknown>(`${path}${separator}per_page=100&page=${page}`, repo));
     items.push(...batch);
     if (batch.length < 100) break;
   }
@@ -749,8 +933,8 @@ type RestChecks = { checkRuns: RestCheckRun[]; statuses: RestCommitStatus[]; wor
 async function fetchRestChecks(repo: string, sha: string): Promise<RestChecks> {
   const commit = encodeURIComponent(sha);
   const [checkRuns, statuses, workflowRuns] = await Promise.all([
-    restList<RestCheckRun>(`/repos/${repo}/commits/${commit}/check-runs`, 10, (body) => (body as { check_runs?: RestCheckRun[] }).check_runs ?? []),
-    restJson<{ statuses?: RestCommitStatus[] }>(`/repos/${repo}/commits/${commit}/status?per_page=100`).then((body) => body.statuses ?? []),
+    restList<RestCheckRun>(`/repos/${repo}/commits/${commit}/check-runs`, 10, (body) => (body as { check_runs?: RestCheckRun[] }).check_runs ?? [], repo),
+    restJson<{ statuses?: RestCommitStatus[] }>(`/repos/${repo}/commits/${commit}/status?per_page=100`, repo).then((body) => body.statuses ?? []),
     fetchWorkflowRuns(repo, sha),
   ]);
   return { checkRuns, statuses, workflowRuns };
@@ -768,9 +952,11 @@ async function fetchRestBranchRules(repo: string, branch: string): Promise<{ con
   const [protectedBranch, rules] = await Promise.all([
     restJson<{ protection?: { required_status_checks?: { contexts?: string[]; checks?: Array<{ context: string }> } } }>(
       `/repos/${repo}/branches/${path}`,
+      repo,
     ).catch(() => null),
     restJson<Array<{ type: string; parameters?: { required_status_checks?: Array<{ context: string }>; required_approving_review_count?: number } }>>(
       `/repos/${repo}/rules/branches/${path}`,
+      repo,
     ).catch(() => []),
   ]);
   const required = protectedBranch?.protection?.required_status_checks;
@@ -785,7 +971,7 @@ async function fetchRestBranchRules(repo: string, branch: string): Promise<{ con
 
 // The open PR as the poll and review inbox see it: REST search has neither the head nor CI.
 async function fetchRestPullWithRollup(repo: string, number: number): Promise<{ pull: RestPullRequest; rollup: string | null }> {
-  const pull = await restJson<RestPullRequest>(`/repos/${repo}/pulls/${number}`);
+  const pull = await restJson<RestPullRequest>(`/repos/${repo}/pulls/${number}`, repo);
   return { pull, rollup: restChecksRollup(await fetchRestChecks(repo, pull.head.sha)).rollup };
 }
 
@@ -861,6 +1047,7 @@ export async function fetchMergedPrAnalytics(repo: string, base: string): Promis
       "user action",
       () => fetchMergedPrsGraphql(owner, name, repo, base, cutoff),
       () => fetchMergedPrsRest(repo, base, cutoff),
+      repo,
     );
   }
 
@@ -873,6 +1060,7 @@ async function fetchMergedPrsRest(repo: string, base: string, cutoff: number): P
   for (let page = 1; page <= 50; page++) {
     const batch = await restJson<RestPullRequest[]>(
       `/repos/${repo}/pulls?state=closed&base=${encodeURIComponent(base)}&sort=updated&direction=desc&per_page=100&page=${page}`,
+      repo,
     );
     for (const pull of batch) {
       if (!pull.merged_at || Date.parse(pull.merged_at) < cutoff) continue;
@@ -913,7 +1101,7 @@ async function fetchMergedPrsGraphql(
           pageInfo: { hasNextPage: boolean; endCursor: string | null };
         };
       } | null;
-    } = await graphql(MERGED_PRS_QUERY, { owner, name, base, cursor }, "user action", "merged-pr-analytics");
+    } = await graphql(MERGED_PRS_QUERY, { owner, name, base, cursor }, "user action", "merged-pr-analytics", undefined, repo);
     if (!data.repository) throw new GithubRequestError(`Repository not found: ${repo}`, 404);
 
     const nodes = data.repository.pullRequests.nodes;
@@ -953,16 +1141,28 @@ export interface GithubQuota {
   graphql: GithubQuotaResource;
   search: GithubQuotaResource;
   fetchedAt: string;
+  // Top-level pools always belong to the personal credential, never a combined budget.
+  identity?: string;
+  identities?: GithubCredentialQuota[];
 }
 
-let cachedQuota: GithubQuota | null = null;
+export interface GithubCredentialQuota {
+  identity: string;
+  kind: "user" | "app";
+  installationId?: number;
+  repositories: string[];
+  rest: GithubQuotaResource | null;
+  graphql: GithubQuotaResource | null;
+  search: GithubQuotaResource | null;
+  fetchedAt: string | null;
+}
 const QUOTA_TTL_MS = 60_000;
 // From GraphQL responses' rateLimit and X-RateLimit headers. /rate_limit's graphql entry counts a
 // different window: it reported 18 points used while GraphQL itself reported 2,446 and went on to
 // answer RATE_LIMIT, so pacing on it never moved background reads to REST before exhaustion.
-let graphqlReading: GithubQuotaResource | null = null;
 
-function liveGraphqlReading(now = Date.now()): GithubQuotaResource | null {
+function liveGraphqlReading(now = Date.now(), credential = userQuota): GithubQuotaResource | null {
+  const { graphqlReading } = credential;
   return graphqlReading && Date.parse(graphqlReading.resetAt) > now ? graphqlReading : null;
 }
 
@@ -971,13 +1171,17 @@ function updateCachedGraphqlQuota(
   used: number | null,
   remaining: number | null,
   resetAt: string | null,
+  credential = userQuota,
 ): void {
   if (limit === null || used === null || remaining === null || resetAt === null) return;
-  graphqlReading = { limit, used, remaining, resetAt };
-  if (!cachedQuota) return;
-  cachedQuota = {
-    ...cachedQuota,
-    graphql: graphqlReading,
+  const previous = credential.graphqlReading;
+  if (previous?.resetAt === resetAt && previous.used > used) return;
+  credential.graphqlReading = { limit, used, remaining, resetAt };
+  credential.observedAt = new Date().toISOString();
+  if (!credential.cachedQuota) return;
+  credential.cachedQuota = {
+    ...credential.cachedQuota,
+    graphql: credential.graphqlReading,
     fetchedAt: new Date().toISOString(),
   };
 }
@@ -985,14 +1189,13 @@ function updateCachedGraphqlQuota(
 // From charged core and search responses' X-RateLimit headers, for the same reason as
 // graphqlReading: see CORE_QUOTA_PROBE_PATH for how far /rate_limit's core entry drifted.
 type RestQuotaResourceName = "core" | "search";
-const restReadings = new Map<RestQuotaResourceName, GithubQuotaResource>();
 
-function liveRestReading(resource: RestQuotaResourceName, now = Date.now()): GithubQuotaResource | null {
-  const reading = restReadings.get(resource);
+function liveRestReading(resource: RestQuotaResourceName, now = Date.now(), credential = userQuota): GithubQuotaResource | null {
+  const reading = credential.restReadings.get(resource);
   return reading && Date.parse(reading.resetAt) > now ? reading : null;
 }
 
-function recordRestReading(resource: RestQuotaResourceName, response: Response): void {
+function recordRestReading(resource: RestQuotaResourceName, response: Response, credential = userQuota): void {
   const limit = rateLimitHeader(response, "x-ratelimit-limit");
   const used = rateLimitHeader(response, "x-ratelimit-used");
   const remaining = rateLimitHeader(response, "x-ratelimit-remaining");
@@ -1000,23 +1203,47 @@ function recordRestReading(resource: RestQuotaResourceName, response: Response):
   if (limit === null || used === null || remaining === null || reset === null) return;
   const resetAt = new Date(reset * 1_000).toISOString();
   // Concurrent responses settle out of order; an earlier one must not undo a later spend.
-  const previous = restReadings.get(resource);
+  const previous = credential.restReadings.get(resource);
   if (previous?.resetAt === resetAt && previous.used > used) return;
   const reading = { limit, used, remaining, resetAt };
-  restReadings.set(resource, reading);
-  if (cachedQuota) cachedQuota = { ...cachedQuota, [resource === "core" ? "rest" : "search"]: reading };
+  credential.restReadings.set(resource, reading);
+  credential.observedAt = new Date().toISOString();
+  if (credential.cachedQuota) credential.cachedQuota = { ...credential.cachedQuota, [resource === "core" ? "rest" : "search"]: reading };
 }
 
 // Every pool as it stands now: search's window is a minute, so a reading past its reset has
 // refilled, and an active block or cooldown refuses requests whatever the count says.
-function currentQuota(quota: GithubQuota, now = Date.now()): GithubQuota {
-  const search = liveRestReading("search", now)
+function currentQuota(quota: GithubQuota, now = Date.now(), credential = userQuota): GithubQuota {
+  const search = liveRestReading("search", now, credential)
     ?? (Date.parse(quota.search.resetAt) > now ? quota.search : { ...quota.search, used: 0, remaining: quota.search.limit });
   const pool = (resource: GithubQuotaResourceName, reading: GithubQuotaResource): GithubQuotaResource => ({
     ...reading,
-    blockedUntil: activeQuotaBlock(resource)?.resetAt ?? null,
+    blockedUntil: activeQuotaBlock(resource, credential)?.resetAt ?? null,
   });
-  return { ...quota, rest: pool("core", quota.rest), graphql: pool("graphql", quota.graphql), search: pool("search", search) };
+  return { ...quota, identity: credential.ledgerIdentity, rest: pool("core", quota.rest), graphql: pool("graphql", quota.graphql), search: pool("search", search) };
+}
+
+function quotaWithIdentities(quota: GithubQuota, credential: CredentialState): GithubQuota {
+  const apps = [...credentialStates.values()].filter((state) => state.kind === "app" && state.repositories.size > 0);
+  if (apps.length === 0) return quota;
+  const identities: GithubCredentialQuota[] = [{
+    identity: credential.ledgerIdentity, kind: "user", repositories: [],
+    rest: quota.rest, graphql: quota.graphql, search: quota.search, fetchedAt: quota.fetchedAt,
+  }];
+  for (const state of apps) {
+    const pool = (resource: GithubQuotaResourceName, reading: GithubQuotaResource | null) => reading
+      ? { ...reading, blockedUntil: activeQuotaBlock(resource, state)?.resetAt ?? null }
+      : null;
+    identities.push({
+      identity: state.identity, kind: "app", installationId: state.installationId,
+      repositories: [...state.repositories],
+      rest: pool("core", liveRestReading("core", Date.now(), state)),
+      graphql: pool("graphql", liveGraphqlReading(Date.now(), state)),
+      search: pool("search", liveRestReading("search", Date.now(), state)),
+      fetchedAt: state.observedAt,
+    });
+  }
+  return { ...quota, identities };
 }
 
 export async function fetchGithubQuota(): Promise<GithubQuota> {
@@ -1030,33 +1257,59 @@ export async function fetchGithubQuota(): Promise<GithubQuota> {
       fetchedAt: new Date().toISOString(),
     };
   }
-  const token = await ghToken();
-  const generation = quotaGeneration(token);
-  if (cachedQuota && Date.now() - Date.parse(cachedQuota.fetchedAt) < QUOTA_TTL_MS) return currentQuota(cachedQuota);
-  if (quotaFetchInFlight?.generation === generation) return currentQuota(await quotaFetchInFlight.promise);
-  const entry = { generation, promise: fetchRateLimit(token, generation) };
-  quotaFetchInFlight = entry;
-  try {
-    return currentQuota(await entry.promise);
-  } finally {
-    if (quotaFetchInFlight === entry) quotaFetchInFlight = null;
+  const authentication = await userAuthentication();
+  const { state } = authentication;
+  if (state.cachedQuota && Date.now() - Date.parse(state.cachedQuota.fetchedAt) < QUOTA_TTL_MS) {
+    return quotaWithIdentities(currentQuota(state.cachedQuota, Date.now(), state), state);
   }
+  if (!state.quotaFetchInFlight) {
+    state.quotaFetchInFlight = fetchRateLimit(authentication).finally(() => { state.quotaFetchInFlight = null; });
+  }
+  return quotaWithIdentities(currentQuota(await state.quotaFetchInFlight, Date.now(), state), state);
 }
 
-let quotaFetchInFlight: { generation: number; promise: Promise<GithubQuota> } | null = null;
+// Null is unobserved; undefined means no installation pool is available for this work.
+export async function repositoryReadQuota(
+  repo: string,
+  resource: "core" | "graphql",
+  requireInstallation = false,
+): Promise<GithubQuotaResource | null | undefined> {
+  if (!mockGithub) {
+    assertQuotaAvailable(resource, false);
+    const app = await appAuthentication(repo);
+    if (requireInstallation && !app) return undefined;
+    if (app && !activeQuotaBlock(resource, app.state)) {
+      const reading = resource === "core" ? liveRestReading("core", Date.now(), app.state) : liveGraphqlReading(Date.now(), app.state);
+      if (reading === null || backgroundQuotaAvailable(reading)) return reading;
+    }
+    if (requireInstallation) return undefined;
+  } else if (requireInstallation) {
+    return undefined;
+  }
+  const quota = await backgroundGithubQuota();
+  return resource === "core" ? quota.rest : quota.graphql;
+}
+
+export async function backgroundGithubQuota(): Promise<GithubQuota> {
+  const recent = recentGithubQuota(5 * 60_000);
+  if (recent) void fetchGithubQuota().catch(() => {});
+  return recent ?? await fetchGithubQuota();
+}
 
 // The last quota reading if it is at most maxAgeMs old and its windows have not reset since,
 // without a network call. Background pacing uses this so a relay-triggered refresh after a
 // quiet minute does not first wait on /rate_limit.
 export function recentGithubQuota(maxAgeMs: number, now = Date.now()): GithubQuota | null {
+  const { cachedQuota } = userQuota;
   if (mockGithub || !cachedQuota) return null;
   if (now - Date.parse(cachedQuota.fetchedAt) > maxAgeMs) return null;
   if (Date.parse(cachedQuota.graphql.resetAt) <= now || Date.parse(cachedQuota.rest.resetAt) <= now) return null;
-  return currentQuota(cachedQuota, now);
+  return quotaWithIdentities(currentQuota(cachedQuota, now), userQuota);
 }
 
-async function fetchRateLimit(token: string, generation: number): Promise<GithubQuota> {
-  const res = await githubApiResponse("GET", "/rate_limit", { authentication: { token, generation } });
+async function fetchRateLimit(authentication: Authentication): Promise<GithubQuota> {
+  const { state } = authentication;
+  const res = await githubApiResponse("GET", "/rate_limit", { authentication });
   if (!res.ok) throw await githubResponseError("GitHub quota request failed", res);
   const body = (await res.json()) as {
     resources: Record<"core" | "graphql" | "search", { limit: number; used: number; remaining: number; reset: number }>;
@@ -1066,12 +1319,12 @@ async function fetchRateLimit(token: string, generation: number): Promise<Github
     return { limit: value.limit, used: value.used, remaining: value.remaining, resetAt: new Date(value.reset * 1_000).toISOString() };
   };
   const quota = {
-    rest: liveRestReading("core") ?? resource("core"),
-    graphql: liveGraphqlReading() ?? resource("graphql"),
-    search: liveRestReading("search") ?? resource("search"),
+    rest: liveRestReading("core", Date.now(), state) ?? resource("core"),
+    graphql: liveGraphqlReading(Date.now(), state) ?? resource("graphql"),
+    search: liveRestReading("search", Date.now(), state) ?? resource("search"),
     fetchedAt: new Date().toISOString(),
   };
-  if (responseHasActiveQuota(res)) cachedQuota = quota;
+  state.cachedQuota = quota;
   return quota;
 }
 
@@ -1243,12 +1496,13 @@ export async function fetchRepositoryOpenPrs(repo: string): Promise<RepositoryOp
     "user action",
     () => fetchRepositoryOpenPrsGraphql(repo, owner, name),
     () => fetchRepositoryOpenPrsRest(repo),
+    repo,
   );
 }
 
 async function fetchRepositoryOpenPrsRest(repo: string): Promise<RepositoryOpenPr[]> {
   const prs = new Map<number, RepositoryOpenPr>();
-  for (const pull of await restList<RestPullRequest>(`/repos/${repo}/pulls?state=open&sort=updated&direction=desc`, 100)) {
+  for (const pull of await restList<RestPullRequest>(`/repos/${repo}/pulls?state=open&sort=updated&direction=desc`, 100, undefined, repo)) {
     const previous = prs.get(pull.number);
     if (previous && previous.updatedAt >= pull.updated_at) continue;
     prs.set(pull.number, {
@@ -1278,7 +1532,7 @@ async function fetchRepositoryOpenPrsGraphql(repo: string, owner: string, name: 
           pageInfo: { hasNextPage: boolean; endCursor: string | null };
         };
       } | null;
-    } = await graphql(REPOSITORY_OPEN_PRS_QUERY, { owner, name, cursor }, "user action", "all PRs");
+    } = await graphql(REPOSITORY_OPEN_PRS_QUERY, { owner, name, cursor }, "user action", "all PRs", undefined, repo);
     if (!data.repository) throw new GithubRequestError(`Repository not found: ${repo}`, 404);
     const { nodes, pageInfo } = data.repository.pullRequests;
     for (const entry of nodes) {
@@ -1423,6 +1677,7 @@ async function graphqlSearchPrs(query: string, perPage: number, source: GithubUs
 // REST search while its window has room for this caller, otherwise the GraphQL pool, otherwise
 // a quota error naming search so background work waits for the minute to turn over.
 async function searchOnAvailablePool(query: string, perPage: number, source: GithubUsageSource): Promise<RestPrSearchItem[]> {
+  await userAuthentication();
   if (!searchPoolAvailable(source)) {
     if (graphqlPoolAvailable(source)) return graphqlSearchPrs(query, perPage, source);
     assertQuotaAvailable("search");
@@ -1469,6 +1724,7 @@ export async function lookupPrIndexes(repo: string, numbers: number[]): Promise<
     "search",
     () => lookupPrIndexesGraphql(repo, owner, name, unique),
     () => lookupPrIndexesRest(repo, unique),
+    repo,
   );
 }
 
@@ -1476,7 +1732,7 @@ async function lookupPrIndexesRest(repo: string, numbers: number[]): Promise<PrI
   const limit = createConcurrencyLimit(REST_FANOUT);
   const pulls = await Promise.all(numbers.map((number) => limit(async () => {
     try {
-      return await restJson<RestPullRequest>(`/repos/${repo}/pulls/${number}`);
+      return await restJson<RestPullRequest>(`/repos/${repo}/pulls/${number}`, repo);
     } catch (error) {
       if (error instanceof GithubRequestError && error.status === 404) return null;
       throw error;
@@ -1509,7 +1765,7 @@ async function lookupPrIndexesGraphql(repo: string, owner: string, name: string,
   }`, { owner, name }, "search", "PR lookup", (path) => (
     // Only a missing PR alias is partial; a missing repository still rejects the batch.
     path.length === 2 && path[0] === "repository" && typeof path[1] === "string" && /^pr\d+$/.test(path[1])
-  ));
+  ), repo);
   const repository = data.repository;
   if (!repository) throw new GithubRequestError(`Repository not found: ${repo}`, 404, [], "graphql", "graphql");
 
@@ -1826,6 +2082,7 @@ export async function fetchAssignableUsers(repo: string): Promise<AssignableUser
   if (mockGithub) return mockGithub.assignableUsers(repo);
   const users = await restJson<Array<{ node_id: string; login: string; avatar_url: string }>>(
     `/repos/${repo}/assignees?per_page=100`,
+    repo,
   );
   return users.map((user) => ({
     id: user.node_id,
@@ -1871,6 +2128,7 @@ async function fetchRepoLabelsRest(repo: string): Promise<RepoLabel[]> {
   const labels = await fetchRestPages<RepoLabel>(
     `https://api.github.com/repos/${encodedRepo(repo)}/labels?per_page=100`,
     "GitHub labels request failed",
+    repo,
   );
   return labels.map(({ name, color }) => ({ name, color }));
 }
@@ -1884,7 +2142,7 @@ async function fetchRepoLabelsGraphql(repo: string, owner: string, name: string)
       repository: {
         labels: { nodes: RepoLabel[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } } | null;
       } | null;
-    } = await graphql(REPOSITORY_LABELS_QUERY, { owner, name, cursor }, "user action", "repository labels");
+    } = await graphql(REPOSITORY_LABELS_QUERY, { owner, name, cursor }, "user action", "repository labels", undefined, repo);
     if (!data.repository) throw new GithubRequestError(`Repository not found: ${repo}`, 404);
     if (!data.repository.labels) throw new GithubRequestError("GraphQL response missing repository labels", 502);
     const { nodes, pageInfo } = data.repository.labels;
@@ -2059,6 +2317,12 @@ query($owner: String!, $name: String!, $number: Int!) {
     }
   }
 }`;
+
+// Keep the repository and personal documents structurally identical; only the viewer's
+// fields move to the personal overlay. The PR id joins that overlay without another read.
+const DETAIL_REPOSITORY_REVIEW_QUERY = DETAIL_REVIEW_QUERY
+  .replace("viewerCanMergeAsAdmin", "id")
+  .replaceAll("viewerHasReacted", "");
 
 interface RawReactionGroup {
   content: string;
@@ -2320,8 +2584,8 @@ export function mapRestPrDetailBase(pullRequest: RestPullRequest, files: RestPul
 
 async function fetchRestPrDetailBase(repo: string, number: number): Promise<PrDetailBase> {
   const [pullRequest, files] = await Promise.all([
-    restJson<RestPullRequest>(`/repos/${repo}/pulls/${number}`),
-    restJson<RestPullRequestFile[]>(`/repos/${repo}/pulls/${number}/files?per_page=100`),
+    restJson<RestPullRequest>(`/repos/${repo}/pulls/${number}`, repo),
+    restJson<RestPullRequestFile[]>(`/repos/${repo}/pulls/${number}/files?per_page=100`, repo),
   ]);
   return mapRestPrDetailBase(pullRequest, files);
 }
@@ -2378,6 +2642,23 @@ query($owner: String!, $name: String!, $number: Int!) {
   }
 }`;
 
+const DETAIL_REPOSITORY_METADATA_QUERY = DETAIL_METADATA_QUERY.replace("viewer { login }", "");
+
+async function fetchRepositoryPrDetailMetadata(
+  repo: string,
+  owner: string,
+  name: string,
+  number: number,
+  source: GithubUsageSource,
+): Promise<PrDetailBase> {
+  const data = await graphql<{
+    repository: { pullRequest: PrDetailBase | null } | null;
+  }>(DETAIL_REPOSITORY_METADATA_QUERY, { owner, name, number }, source, "PR metadata", undefined, repo);
+  const base = data.repository?.pullRequest;
+  if (!base) throw new GithubRequestError(`${repo}#${number} was not found`, 404);
+  return withOrderedBy(base, repo, number, source);
+}
+
 type PrDetailMetadata = { base: PrDetailBase; viewerLogin: string };
 
 async function fetchPrDetailMetadata(
@@ -2425,14 +2706,14 @@ async function withOrderedBy(base: PrDetailBase, repo: string, number: number, s
   if (base.mergedBy?.__typename !== "Bot" || !mergeAttributionWanted()) return base;
   let events: OrderLabelEvent[];
   try {
-    events = (await restList<OrderLabelEvent & { event: string }>(`/repos/${repo}/issues/${number}/events`))
+    events = (await restList<OrderLabelEvent & { event: string }>(`/repos/${repo}/issues/${number}/events`, 10, undefined, repo))
       .filter((event) => event.event === "labeled");
   } catch (error) {
     if (!coreQuotaExhausted(error)) throw error;
     const [owner, name] = repo.split("/");
     const data = await graphql<{
       repository: { pullRequest: { timelineItems: { nodes: OrderLabelEvent[] } } | null } | null;
-    }>(ORDER_LABEL_EVENTS_QUERY, { owner, name, number }, source, "PR order label");
+    }>(ORDER_LABEL_EVENTS_QUERY, { owner, name, number }, source, "PR order label", undefined, repo);
     events = data.repository?.pullRequest?.timelineItems.nodes ?? [];
   }
   const login = events.findLast((event) => event.label?.name.trim().toLowerCase() === ORDER_LABEL)?.actor?.login;
@@ -2519,6 +2800,9 @@ query($threadId: ID!, $after: String!) {
   }
 }`;
 
+const REPOSITORY_REVIEW_THREADS_PAGE_QUERY = REVIEW_THREADS_PAGE_QUERY.replaceAll("viewerHasReacted", "");
+const REPOSITORY_THREAD_COMMENTS_PAGE_QUERY = THREAD_COMMENTS_PAGE_QUERY.replaceAll("viewerHasReacted", "");
+
 
 async function completeCheckContexts(
   owner: string,
@@ -2540,7 +2824,7 @@ async function completeCheckContexts(
           };
         } | null;
       } | null;
-    }>(CHECK_CONTEXTS_PAGE_QUERY, { owner, name, number, after }, source, "PR check pagination");
+    }>(CHECK_CONTEXTS_PAGE_QUERY, { owner, name, number, after }, source, "PR check pagination", undefined, `${owner}/${name}`);
     const next = data.repository?.pullRequest?.lastCommit.nodes[0]?.commit.statusCheckRollup?.contexts;
     if (!next?.pageInfo) throw new GithubRequestError("Check pagination returned no page", 502);
     connection.nodes.push(...next.nodes);
@@ -2591,7 +2875,7 @@ function knownLineCounts(previous: CommitLineCountSource | null): Map<string, Co
 async function fetchCommitListLineCounts(owner: string, name: string, number: number, source: GithubUsageSource): Promise<Map<string, CommitLineCounts>> {
   const data = await graphql<{
     repository: { pullRequest: { commits: { nodes: Array<{ commit: { oid: string } & CommitLineCounts }> } } | null } | null;
-  }>(COMMIT_LIST_LINE_COUNTS_QUERY, { owner, name, number }, source, "PR commit line counts");
+  }>(COMMIT_LIST_LINE_COUNTS_QUERY, { owner, name, number }, source, "PR commit line counts", undefined, `${owner}/${name}`);
   return knownLineCounts({ commitList: data.repository?.pullRequest?.commits ?? { nodes: [] } });
 }
 
@@ -2618,6 +2902,7 @@ async function completeCommitLineCounts(
         { owner, name },
         source,
         "PR commit line counts",
+        undefined, `${owner}/${name}`,
       );
       batch.forEach((commit, index) => {
         const counts = data.repository?.[`c${index}`];
@@ -2648,7 +2933,7 @@ async function fetchDetailChecks(
     });
   const data = await graphql<{
     repository: { pullRequest: RawPrDetailChecks | null } | null;
-  }>(DETAIL_CHECKS_QUERY, { owner, name, number }, source, "PR checks");
+  }>(DETAIL_CHECKS_QUERY, { owner, name, number }, source, "PR checks", undefined, `${owner}/${name}`);
   const checks = data.repository?.pullRequest;
   if (!checks) return null;
   const rollup = checks.lastCommit.nodes[0]?.commit.statusCheckRollup;
@@ -2671,18 +2956,23 @@ async function fetchDetailReview(
   number: number,
   source: GithubUsageSource,
   previousThreadCount: number,
-): Promise<RawPrDetailReview | null> {
+  repositoryOnly = false,
+): Promise<(RawPrDetailReview & { id?: string }) | null> {
   // A PR that already had a full first page of threads very likely has more, so its later
   // pages start beside the first instead of after it.
   const laterPages = previousThreadCount >= REVIEW_THREADS_PER_PAGE
-    ? fetchReviewThreadPagesAfter(owner, name, number, null, source).catch(() => null)
+    ? fetchReviewThreadPagesAfter(owner, name, number, null, source, repositoryOnly).catch(() => null)
     : null;
   const data = await graphql<{
-    repository: { pullRequest: RawPrDetailReview | null } | null;
-  }>(DETAIL_REVIEW_QUERY, { owner, name, number }, source, "PR review detail");
+    repository: { pullRequest: (RawPrDetailReview & { id?: string }) | null } | null;
+  }>(
+    repositoryOnly ? DETAIL_REPOSITORY_REVIEW_QUERY : DETAIL_REVIEW_QUERY,
+    { owner, name, number }, source, "PR review detail", undefined,
+    repositoryOnly ? `${owner}/${name}` : undefined,
+  );
   const review = data.repository?.pullRequest;
   if (!review) return null;
-  await completeReviewThreads(owner, name, number, review.reviewThreads, laterPages, source);
+  await completeReviewThreads(owner, name, number, review.reviewThreads, laterPages, source, repositoryOnly);
   return review;
 }
 
@@ -2694,10 +2984,15 @@ async function fetchReviewThreadPage(
   number: number,
   after: string,
   source: GithubUsageSource,
+  repositoryOnly: boolean,
 ): Promise<ReviewThreadPage> {
   const data = await graphql<{
     repository: { pullRequest: { reviewThreads: RawThreadConnection } | null } | null;
-  }>(REVIEW_THREADS_PAGE_QUERY, { owner, name, number, after }, source, "PR review thread pagination");
+  }>(
+    repositoryOnly ? REPOSITORY_REVIEW_THREADS_PAGE_QUERY : REVIEW_THREADS_PAGE_QUERY,
+    { owner, name, number, after }, source, "PR review thread pagination", undefined,
+    repositoryOnly ? `${owner}/${name}` : undefined,
+  );
   const connection = data.repository?.pullRequest?.reviewThreads;
   if (!connection?.pageInfo) throw new GithubRequestError("Review thread pagination returned no page", 502);
   return { after, connection };
@@ -2713,13 +3008,14 @@ async function fetchReviewThreadPagesAfter(
   number: number,
   start: string | null,
   source: GithubUsageSource,
+  repositoryOnly: boolean,
 ): Promise<ReviewThreadPage[]> {
   const pages: Promise<ReviewThreadPage>[] = [];
   const seen = new Set<string>();
   const startPage = (after: string) => {
     if (seen.has(after)) throw new GithubRequestError("Review thread pagination returned an invalid cursor", 502);
     seen.add(after);
-    const page = fetchReviewThreadPage(owner, name, number, after, source);
+    const page = fetchReviewThreadPage(owner, name, number, after, source, repositoryOnly);
     // Observed by Promise.all below; this keeps a failure during the walk from going unhandled.
     page.catch(() => {});
     pages.push(page);
@@ -2729,7 +3025,7 @@ async function fetchReviewThreadPagesAfter(
   for (;;) {
     const data = await graphql<{
       repository: { pullRequest: { reviewThreads: Pick<RawThreadConnection, "pageInfo"> } | null } | null;
-    }>(REVIEW_THREAD_CURSORS_QUERY, { owner, name, number, after: cursor }, source, "PR review thread cursors");
+    }>(REVIEW_THREAD_CURSORS_QUERY, { owner, name, number, after: cursor }, source, "PR review thread cursors", undefined, `${owner}/${name}`);
     const pageInfo = data.repository?.pullRequest?.reviewThreads.pageInfo;
     if (!pageInfo) throw new GithubRequestError("Review thread pagination returned no page", 502);
     if (!pageInfo.hasNextPage) break;
@@ -2761,13 +3057,14 @@ async function completeReviewThreads(
   connection: RawThreadConnection,
   laterPages: Promise<ReviewThreadPage[] | null> | null,
   source: GithubUsageSource,
+  repositoryOnly: boolean,
 ): Promise<void> {
   if (connection.pageInfo?.hasNextPage) {
     const early = laterPages ? await laterPages : null;
     if (!early || !appendReviewThreadPages(connection, early)) {
       const after = connection.pageInfo.endCursor;
       if (!after) throw new GithubRequestError("Review thread pagination returned an invalid cursor", 502);
-      appendReviewThreadPages(connection, await fetchReviewThreadPagesAfter(owner, name, number, after, source));
+      appendReviewThreadPages(connection, await fetchReviewThreadPagesAfter(owner, name, number, after, source, repositoryOnly));
     }
   }
   // Only reached with pages left when the walk above raced a change to the thread list.
@@ -2776,31 +3073,98 @@ async function completeReviewThreads(
     const after = connection.pageInfo.endCursor;
     if (!after || cursors.has(after)) throw new GithubRequestError("Review thread pagination returned an invalid cursor", 502);
     cursors.add(after);
-    const next = await fetchReviewThreadPage(owner, name, number, after, source);
+    const next = await fetchReviewThreadPage(owner, name, number, after, source, repositoryOnly);
     connection.nodes.push(...next.connection.nodes);
     connection.pageInfo = next.connection.pageInfo;
   }
   for (const thread of connection.nodes) {
-    if (!thread.isResolved) await completeThreadComments(thread, source);
+    if (!thread.isResolved) await completeThreadComments(thread, source, repositoryOnly ? `${owner}/${name}` : undefined);
   }
 }
 
-async function completeThreadComments(thread: RawThread, source: GithubUsageSource): Promise<void> {
+async function completeThreadComments(thread: RawThread, source: GithubUsageSource, repo?: string): Promise<void> {
   const cursors = new Set<string>();
   while (thread.comments.pageInfo?.hasNextPage) {
     const after = thread.comments.pageInfo.endCursor;
     if (!after || cursors.has(after)) throw new GithubRequestError("Review comment pagination returned an invalid cursor", 502);
     cursors.add(after);
     const data = await graphql<{ node: { comments: RawThreadCommentConnection } | null }>(
-      THREAD_COMMENTS_PAGE_QUERY,
+      repo === undefined ? THREAD_COMMENTS_PAGE_QUERY : REPOSITORY_THREAD_COMMENTS_PAGE_QUERY,
       { threadId: thread.id, after },
       source,
       "PR review comment pagination",
+      undefined,
+      repo,
     );
     if (!data.node?.comments.pageInfo) throw new GithubRequestError("Review comment pagination returned no page", 502);
     thread.comments.nodes.push(...data.node.comments.nodes);
     thread.comments.pageInfo = data.node.comments.pageInfo;
   }
+}
+
+const DETAIL_VIEWER_QUERY = `
+query($ids: [ID!]!) {
+  viewer { login }
+  nodes(ids: $ids) {
+    id
+    ... on Reactable { reactionGroups { content viewerHasReacted } }
+    ... on PullRequest { viewerCanMergeAsAdmin }
+  }
+}`;
+const DETAIL_VIEWER_BATCH = 100;
+
+async function fetchRepositoryDetailReview(
+  owner: string,
+  name: string,
+  number: number,
+  source: GithubUsageSource,
+  previousThreadCount: number,
+): Promise<{ review: RawPrDetailReview; viewerLogin: string } | null> {
+  const review = await fetchDetailReview(owner, name, number, source, previousThreadCount, true);
+  if (!review) return null;
+  if (!review.id) throw new GithubRequestError("PR review detail returned no id", 502);
+  const targets = [
+    { id: review.id, reactionGroups: review.reactionGroups },
+    ...review.reviews.nodes,
+    ...review.comments.nodes,
+    ...review.reviewThreads.nodes.flatMap((thread) => thread.comments.nodes),
+  ].filter((target) => target.id === review.id || target.reactionGroups.some((group) => group.reactors.totalCount > 0));
+  let viewerLogin = "";
+  for (let start = 0; start < targets.length; start += DETAIL_VIEWER_BATCH) {
+    const batch = targets.slice(start, start + DETAIL_VIEWER_BATCH);
+    // No repository routing here: an installation's viewer state is never the person's.
+    const data = await graphql<{
+      viewer: { login: string };
+      nodes: Array<{
+        id: string;
+        reactionGroups: Array<Pick<RawReactionGroup, "content" | "viewerHasReacted">>;
+        viewerCanMergeAsAdmin?: boolean;
+      } | null>;
+    }>(DETAIL_VIEWER_QUERY, { ids: batch.map((target) => target.id) }, source, "PR viewer state");
+    if (!data.viewer?.login) throw new GithubRequestError("PR viewer state returned no viewer", 502);
+    viewerLogin = data.viewer.login;
+    const nodes = new Map(data.nodes.filter((node) => node !== null).map((node) => [node.id, node]));
+    for (const target of batch) {
+      const node = nodes.get(target.id);
+      if (!node) throw new GithubRequestError("PR viewer state returned no node", 502);
+      if (target.id === review.id) {
+        if (typeof node.viewerCanMergeAsAdmin !== "boolean") {
+          throw new GithubRequestError("PR viewer state returned no merge permission", 502);
+        }
+        review.viewerCanMergeAsAdmin = node.viewerCanMergeAsAdmin;
+      }
+      for (const group of target.reactionGroups) {
+        if (group.reactors.totalCount === 0) continue;
+        const personal = node.reactionGroups.find((item) => item.content === group.content);
+        if (typeof personal?.viewerHasReacted !== "boolean") {
+          throw new GithubRequestError("PR viewer state returned no reaction state", 502);
+        }
+        group.viewerHasReacted = personal.viewerHasReacted;
+      }
+    }
+  }
+  cachedViewerLogin = viewerLogin;
+  return { review, viewerLogin };
 }
 
 
@@ -2867,9 +3231,28 @@ export async function fetchPrDetail(
   if (mockGithub) return mockGithub.detail(repo, number);
   const [owner, name] = repo.split("/");
   if (!owner || !name) throw new GithubRequestError(`Invalid repository: ${repo}`, 404);
+  assertQuotaAvailable("graphql", false);
+  const app = await appAuthentication(repo);
   return readWithRestFallback<PrDetail>(source, async () => {
-    // Metadata moves to GraphQL when core is exhausted, so only GraphQL has to have room.
+    // The personal viewer overlay is required in either mode. Gate it before starting
+    // concurrent repository reads, especially REST metadata in the no-app path.
     await requireQuota("graphql");
+    if (app) {
+      assertPersonalGraphqlReserve(source);
+      const [checks, detailReview, base] = await Promise.all([
+        fetchDetailChecks(owner, name, number, previous, source),
+        fetchRepositoryDetailReview(owner, name, number, source, previous?.reviewThreads?.nodes.length ?? 0),
+        fetchRepositoryPrDetailMetadata(repo, owner, name, number, source),
+      ]);
+      if (!checks || !detailReview) throw new GithubRequestError(`${repo}#${number} was not found`, 404);
+      const { review, viewerLogin } = detailReview;
+      return {
+        ...base,
+        ...checks,
+        viewerLogin,
+        ...normalizeReviewDetail(review, viewerLogin, review.author, base.reviewRequests),
+      };
+    }
     const [checks, review, { base, viewerLogin }] = await Promise.all([
       fetchDetailChecks(owner, name, number, previous, source),
       fetchDetailReview(owner, name, number, source, previous?.reviewThreads?.nodes.length ?? 0),
@@ -2883,7 +3266,25 @@ export async function fetchPrDetail(
       viewerLogin,
       ...normalizeReviewDetail(review, viewerLogin, review.author, base.reviewRequests),
     };
-  }, () => fetchRestPrDetail(repo, number, previous, source));
+  }, () => fetchRestPrDetail(repo, number, previous, source), repo);
+}
+
+async function fetchViewerMergePermission(repo: string, number: number, source: GithubUsageSource): Promise<boolean> {
+  try {
+    const repository = await restJson<{ permissions?: { admin?: boolean } }>(`/repos/${repo}`);
+    return repository.permissions?.admin === true;
+  } catch (error) {
+    if (!coreQuotaExhausted(error) || activeQuotaBlock("graphql", userQuota)) throw error;
+  }
+  const [owner, name] = repo.split("/");
+  const data = await graphql<{
+    repository: { pullRequest: { viewerCanMergeAsAdmin: boolean } | null } | null;
+  }>(`query($owner: String!, $name: String!, $number: Int!) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $number) { viewerCanMergeAsAdmin }
+    }
+  }`, { owner, name, number }, source, "PR viewer merge permission");
+  return data.repository?.pullRequest?.viewerCanMergeAsAdmin === true;
 }
 
 // The whole detail over REST. Every list goes through the ETag cache, so rereading an
@@ -2895,15 +3296,15 @@ async function fetchRestPrDetail(
   source: GithubUsageSource,
 ): Promise<PrDetail> {
   const base = fetchRestPrDetailBase(repo, number);
-  const [rest, viewerLogin, issue, repository, commits, reviews, comments, reviewComments, checks, rules] = await Promise.all([
+  const [rest, viewerLogin, issue, viewerCanMergeAsAdmin, commits, reviews, comments, reviewComments, checks, rules] = await Promise.all([
     base.then((pull) => withOrderedBy(pull, repo, number, source)),
-    getViewerLogin(),
-    restJson<{ reactions?: RestReactions }>(`/repos/${repo}/issues/${number}`),
-    restJson<{ permissions?: { admin?: boolean } }>(`/repos/${repo}`),
-    restList<RestPrCommit>(`/repos/${repo}/pulls/${number}/commits`, 3),
-    restList<RestReview>(`/repos/${repo}/pulls/${number}/reviews`),
-    restList<RestIssueComment>(`/repos/${repo}/issues/${number}/comments`),
-    restList<RestReviewComment>(`/repos/${repo}/pulls/${number}/comments`),
+    getViewerLogin(source),
+    restJson<{ reactions?: RestReactions }>(`/repos/${repo}/issues/${number}`, repo),
+    fetchViewerMergePermission(repo, number, source),
+    restList<RestPrCommit>(`/repos/${repo}/pulls/${number}/commits`, 3, undefined, repo),
+    restList<RestReview>(`/repos/${repo}/pulls/${number}/reviews`, 10, undefined, repo),
+    restList<RestIssueComment>(`/repos/${repo}/issues/${number}/comments`, 10, undefined, repo),
+    restList<RestReviewComment>(`/repos/${repo}/pulls/${number}/comments`, 10, undefined, repo),
     base.then((pull) => fetchRestChecks(repo, pull.headRefOid)),
     base.then((pull) => fetchRestBranchRules(repo, pull.baseRefName)),
   ]);
@@ -2911,7 +3312,7 @@ async function fetchRestPrDetail(
   const review: RawPrDetailReview = {
     author: rest.author,
     reactionGroups: restReactionGroups(issue.reactions),
-    viewerCanMergeAsAdmin: repository.permissions?.admin === true,
+    viewerCanMergeAsAdmin,
     reviewDecision: restReviewDecision(reviews, rules.approvals),
     reviews: restReviews(reviews),
     comments: restIssueComments(comments),
@@ -2983,10 +3384,13 @@ export async function fetchPrDetailPart(
   }
   const [owner, name] = repo.split("/");
   if (!owner || !name) throw new GithubRequestError(`Invalid repository: ${repo}`, 404);
+  assertQuotaAvailable("graphql", false);
+  const repositoryReview = scope === "review" && await appAuthentication(repo) !== null;
   return readWithRestFallback<PrDetail>(
     source,
-    () => fetchPrDetailPartGraphql(repo, owner, name, number, current, scope, source),
+    () => fetchPrDetailPartGraphql(repo, owner, name, number, current, scope, source, repositoryReview),
     () => scope === "checks" ? fetchRestPrChecks(repo, current) : fetchRestPrDetail(repo, number, current, source),
+    repo,
   );
 }
 
@@ -2998,6 +3402,7 @@ async function fetchPrDetailPartGraphql(
   current: PrDetail,
   scope: Exclude<PrDetailScope, "all">,
   source: GithubUsageSource,
+  repositoryReview: boolean,
 ): Promise<PrDetail> {
   if (scope === "checks") {
     const checks = await fetchDetailChecks(owner, name, number, current, source);
@@ -3005,6 +3410,18 @@ async function fetchPrDetailPartGraphql(
     return {
       ...current,
       ...checks,
+    };
+  }
+  if (repositoryReview) {
+    await requireQuota("graphql");
+    assertPersonalGraphqlReserve(source);
+    const detailReview = await fetchRepositoryDetailReview(owner, name, number, source, current.reviewThreads?.nodes.length ?? 0);
+    if (!detailReview) throw new GithubRequestError(`${repo}#${number} was not found`, 404);
+    const { review, viewerLogin } = detailReview;
+    return {
+      ...current,
+      viewerLogin,
+      ...normalizeReviewDetail(review, viewerLogin, review.author, current.reviewRequests),
     };
   }
 
@@ -3031,15 +3448,19 @@ export interface PrCommentSince {
   url: string | null;
 }
 
-async function fetchRestPages<T>(initialUrl: string, label = "GitHub comments request failed"): Promise<T[]> {
+async function fetchRestPages<T>(initialUrl: string, label = "GitHub comments request failed", repo?: string): Promise<T[]> {
   const pages: T[] = [];
   const seen = new Set<string>();
-  let url: string | null = initialUrl;
+  const initial = new URL(initialUrl);
+  let url: URL | null = initial;
   while (url !== null) {
-    if (seen.has(url)) throw new GithubRequestError("GitHub REST pagination repeated a page", 502);
-    seen.add(url);
-    const parsed = new URL(url);
-    const response = await githubApiResponse("GET", `${parsed.pathname}${parsed.search}`);
+    if (seen.has(url.href)) throw new GithubRequestError("GitHub REST pagination repeated a page", 502);
+    seen.add(url.href);
+    if (url.origin !== "https://api.github.com") throw new GithubRequestError("GitHub REST pagination left the API origin", 502);
+    const path = `${url.pathname}${url.search}`;
+    const response: Response = repo === undefined
+      ? await githubApiResponse("GET", path)
+      : await repositoryApiResponse(repo, path);
     if (!response.ok) throw await githubResponseError(label, response);
     pages.push(...await response.json() as T[]);
     const next: string | undefined = response.headers
@@ -3047,7 +3468,8 @@ async function fetchRestPages<T>(initialUrl: string, label = "GitHub comments re
       ?.split(",")
       .find((part: string) => part.includes('rel="next"'))
       ?.match(/<([^>]+)>/)?.[1];
-    url = next ?? null;
+    url = next === undefined ? null : new URL(next);
+    if (url) url.pathname = initial.pathname;
   }
   return pages;
 }
@@ -3099,7 +3521,7 @@ export async function fetchPrCommentsSince(repo: string, number: number, since: 
       body: string;
       created_at: string;
       html_url: string;
-    }>(`${baseUrl}/issues/${number}/comments?since=${encodedSince}&per_page=100`),
+    }>(`${baseUrl}/issues/${number}/comments?since=${encodedSince}&per_page=100`, undefined, repo),
     fetchRestPages<{
       user: { login: string } | null;
       body: string;
@@ -3109,7 +3531,7 @@ export async function fetchPrCommentsSince(repo: string, number: number, since: 
       line: number | null;
       original_line: number | null;
       pull_request_review_id: number | null;
-    }>(`${baseUrl}/pulls/${number}/comments?since=${encodedSince}&per_page=100`),
+    }>(`${baseUrl}/pulls/${number}/comments?since=${encodedSince}&per_page=100`, undefined, repo),
     fetchRestPages<{
       id: number;
       user: { login: string } | null;
@@ -3117,7 +3539,7 @@ export async function fetchPrCommentsSince(repo: string, number: number, since: 
       submitted_at: string | null;
       state: string;
       html_url: string;
-    }>(`${baseUrl}/pulls/${number}/reviews?per_page=100`),
+    }>(`${baseUrl}/pulls/${number}/reviews?per_page=100`, undefined, repo),
   ]);
   const pendingReviewIds = new Set(
     reviews.filter((review) => review.state === "PENDING").map((review) => review.id),
@@ -3170,7 +3592,7 @@ export async function fetchDiff(repo: string, number: number, base?: string, hea
   const path = base && head
     ? `/repos/${repo}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`
     : `/repos/${repo}/pulls/${number}`;
-  const res = await githubApiResponse("GET", path, { accept: "application/vnd.github.v3.diff" });
+  const res = await repositoryApiResponse(repo, path, { accept: "application/vnd.github.v3.diff" });
   if (!res.ok) throw await githubResponseError("diff fetch failed", res);
   return res.text();
 }
@@ -3217,6 +3639,7 @@ export async function fetchActionWorkflows(repo: string): Promise<ActionWorkflow
     const payload = await githubRestJson<{ workflows?: ActionWorkflow[] }>(
       "GET",
       `/repos/${repo}/actions/workflows?per_page=100&page=${page}`,
+      undefined, repo,
     );
     const batch = payload.workflows ?? [];
     workflows.push(...batch);
@@ -3235,8 +3658,8 @@ export async function rerunFailedJobs(repo: string, runId: number): Promise<void
   );
   if (response.ok) return;
   const responseCopy = response.clone();
-  const generation = responseQuotaGenerations.get(response);
-  if (generation !== undefined) responseQuotaGenerations.set(responseCopy, generation);
+  const credential = responseCredentials.get(response);
+  if (credential !== undefined) responseCredentials.set(responseCopy, credential);
   const resource = responseQuotaResources.get(response);
   if (resource !== undefined) responseQuotaResources.set(responseCopy, resource);
   const classified = await githubResponseError("GitHub REST request failed", responseCopy);
@@ -3281,7 +3704,7 @@ export interface WorkflowRun {
 }
 export async function fetchWorkflowRun(repo: string, runId: number): Promise<WorkflowRun> {
   if (mockGithub) return mockGithub.workflowRun(repo, runId);
-  return githubRestJson<WorkflowRun>("GET", `/repos/${repo}/actions/runs/${runId}`);
+  return githubRestJson<WorkflowRun>("GET", `/repos/${repo}/actions/runs/${runId}`, undefined, repo);
 }
 
 export interface RefActivity {
@@ -3291,17 +3714,17 @@ export interface RefActivity {
 
 export async function fetchRepositoryIdentity(repo: string): Promise<{ id: number; defaultBranch: string }> {
   if (mockGithub) throw new GithubRequestError(`${repo} has no repository identity in mock mode`, 404);
-  const repository = await githubRestJson<{ id: number; default_branch: string }>("GET", `/repos/${encodedRepo(repo)}`);
+  const repository = await githubRestJson<{ id: number; default_branch: string }>("GET", `/repos/${encodedRepo(repo)}`, undefined, repo);
   return { id: repository.id, defaultBranch: repository.default_branch };
 }
 
 // The newest page only, newest first.
 export async function fetchRefActivity(repo: string, ref: string): Promise<RefActivity[]> {
-  return githubRestJson<RefActivity[]>("GET", `/repos/${encodedRepo(repo)}/activity?ref=${encodeURIComponent(ref)}&per_page=100`);
+  return githubRestJson<RefActivity[]>("GET", `/repos/${encodedRepo(repo)}/activity?ref=${encodeURIComponent(ref)}&per_page=100`, undefined, repo);
 }
 
 export async function fetchCommitTree(repo: string, sha: string): Promise<string> {
-  const commit = await githubRestJson<{ tree: { sha: string } }>("GET", `/repos/${encodedRepo(repo)}/git/commits/${sha}`);
+  const commit = await githubRestJson<{ tree: { sha: string } }>("GET", `/repos/${encodedRepo(repo)}/git/commits/${sha}`, undefined, repo);
   return commit.tree.sha;
 }
 
@@ -3313,6 +3736,7 @@ export async function fetchWorkflowRuns(repo: string, headSha: string): Promise<
     const payload = await githubRestJson<{ workflow_runs?: WorkflowRun[] }>(
       "GET",
       `/repos/${repo}/actions/runs?head_sha=${encodeURIComponent(headSha)}&per_page=100&page=${page}`,
+      undefined, repo,
     );
     const batch = payload.workflow_runs ?? [];
     runs.push(...batch);
@@ -3326,6 +3750,7 @@ export async function fetchRecentWorkflowRuns(repo: string, maxPages = 2): Promi
     const payload = await githubRestJson<{ workflow_runs?: WorkflowRun[] }>(
       "GET",
       `/repos/${repo}/actions/runs?per_page=100&page=${page}`,
+      undefined, repo,
     );
     const batch = payload.workflow_runs ?? [];
     runs.push(...batch);
@@ -3341,6 +3766,7 @@ export async function fetchWorkflowRunsForWorkflow(repo: string, workflowId: num
     const payload = await githubRestJson<{ workflow_runs?: WorkflowRun[] }>(
       "GET",
       `/repos/${repo}/actions/workflows/${workflowId}/runs?per_page=100&page=${page}`,
+      undefined, repo,
     );
     const batch = payload.workflow_runs ?? [];
     runs.push(...batch);
@@ -3357,7 +3783,7 @@ export async function fetchRunJobs(repo: string, runId: number, attempt?: number
     const endpoint = attempt === undefined
       ? `/repos/${repo}/actions/runs/${runId}/jobs?per_page=100&filter=latest&page=${page}`
       : `/repos/${repo}/actions/runs/${runId}/attempts/${attempt}/jobs?per_page=100&page=${page}`;
-    const payload = await githubRestJson<{ jobs?: RunJob[] }>("GET", endpoint);
+    const payload = await githubRestJson<{ jobs?: RunJob[] }>("GET", endpoint, undefined, repo);
     const batch = payload.jobs ?? [];
     jobs.push(...batch);
     if (batch.length < 100) return jobs;
@@ -3368,7 +3794,7 @@ export async function fetchRunJobs(repo: string, runId: number, attempt?: number
 // rejects a request carrying GitHub's Authorization header, so the download is a second bare fetch.
 export async function fetchJobLog(repo: string, jobId: number): Promise<string> {
   if (mockGithub) return mockGithub.jobLog(repo, jobId);
-  const res = await githubApiResponse("GET", `/repos/${repo}/actions/jobs/${jobId}/logs`, { redirect: "manual" });
+  const res = await repositoryApiResponse(repo, `/repos/${repo}/actions/jobs/${jobId}/logs`, { redirect: "manual" });
   const location = res.headers.get("location");
   if (!location) throw await githubResponseError("job log fetch failed", res);
   let download: Response;
@@ -3400,7 +3826,7 @@ export interface FileHistoryCommit {
 export async function fetchFileHistory(repo: string, path: string, base: string): Promise<FileHistoryCommit[]> {
   if (mockGithub) return mockGithub.fileHistory(repo, path, base);
   const params = new URLSearchParams({ sha: base, path, per_page: "30" });
-  const res = await githubApiResponse("GET", `/repos/${repo}/commits?${params}`);
+  const res = await repositoryApiResponse(repo, `/repos/${repo}/commits?${params}`);
   if (!res.ok) throw await githubResponseError("file history fetch failed", res);
   const commits = (await res.json()) as Array<{
     sha: string;
@@ -3430,7 +3856,7 @@ export interface FileHistoryDiff {
 
 export async function fetchFileHistoryDiff(repo: string, sha: string, path: string): Promise<FileHistoryDiff | null> {
   if (mockGithub) return mockGithub.fileHistoryDiff(repo, sha, path);
-  const res = await githubApiResponse("GET", `/repos/${repo}/commits/${sha}`);
+  const res = await repositoryApiResponse(repo, `/repos/${repo}/commits/${sha}`);
   if (!res.ok) throw await githubResponseError("commit fetch failed", res);
   const body = (await res.json()) as {
     files?: Array<{
@@ -3459,7 +3885,7 @@ export type FileContents = { content: string } | { tooLarge: true };
 export async function fetchFileContents(repo: string, path: string, sha: string): Promise<FileContents> {
   if (mockGithub) return mockGithub.fileContents(repo, path, sha);
   const encodedPath = path.split("/").map(encodeURIComponent).join("/");
-  const res = await githubApiResponse("GET", `/repos/${repo}/contents/${encodedPath}?ref=${sha}`);
+  const res = await repositoryApiResponse(repo, `/repos/${repo}/contents/${encodedPath}?ref=${sha}`);
   if (!res.ok) throw await githubResponseError("file fetch failed", res);
   const body = (await res.json()) as { content?: string; encoding?: string };
   if (Array.isArray(body) || body.encoding !== "base64") return { tooLarge: true };
@@ -3512,26 +3938,31 @@ function forgetRestEtag(path: string): void {
   restEtagBytes -= entry.text.length;
 }
 
-async function githubRestJson<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const cached = method === "GET" ? restEtags.get(path) : undefined;
-  const response = await githubApiResponse(method, path, { body, ifNoneMatch: cached?.etag });
-  if (response.status === 304 && cached) {
-    restEtags.delete(path);
-    restEtags.set(path, cached);
-    return JSON.parse(cached.text) as T;
-  }
-  if (!response.ok) throw await githubResponseError("GitHub REST request failed", response);
-  const text = await response.text();
-  const etag = method === "GET" ? response.headers.get("etag") : null;
-  if (etag) {
-    forgetRestEtag(path);
-    if (text.length <= REST_ETAG_BODY_LIMIT) {
-      restEtags.set(path, { etag, text });
-      restEtagBytes += text.length;
-      while (restEtagBytes > REST_ETAG_TOTAL_LIMIT) forgetRestEtag(restEtags.keys().next().value!);
+async function githubRestJson<T>(method: string, path: string, body?: unknown, repo?: string): Promise<T> {
+  if (repo !== undefined) assertRepositoryPath(repo, path);
+  return withRepositoryRead(method === "GET" || method === "HEAD" ? repo : undefined, quotaResource(path), async (authentication) => {
+    // Validators and bodies are credential-scoped, including the user fallback of an app read.
+    const key = `${authentication.state.identity}:${path}`;
+    const cached = method === "GET" ? restEtags.get(key) : undefined;
+    const response = await githubApiResponse(method, path, { body, authentication, ifNoneMatch: cached?.etag });
+    if (response.status === 304 && cached) {
+      restEtags.delete(key);
+      restEtags.set(key, cached);
+      return JSON.parse(cached.text) as T;
     }
-  }
-  return JSON.parse(text) as T;
+    if (!response.ok) throw await githubResponseError("GitHub REST request failed", response);
+    const text = await response.text();
+    const etag = method === "GET" ? response.headers.get("etag") : null;
+    if (etag) {
+      forgetRestEtag(key);
+      if (text.length <= REST_ETAG_BODY_LIMIT) {
+        restEtags.set(key, { etag, text });
+        restEtagBytes += text.length;
+        while (restEtagBytes > REST_ETAG_TOTAL_LIMIT) forgetRestEtag(restEtags.keys().next().value!);
+      }
+    }
+    return JSON.parse(text) as T;
+  });
 }
 
 function encodedRepo(repo: string): string {
@@ -3755,8 +4186,8 @@ async function restRequest(method: string, path: string, body: unknown): Promise
   }
 }
 
-async function restJson<T>(path: string): Promise<T> {
-  return githubRestJson<T>("GET", path);
+async function restJson<T>(path: string, repo?: string): Promise<T> {
+  return githubRestJson<T>("GET", path, undefined, repo);
 }
 
 export interface PendingReviewComment {
@@ -4074,7 +4505,7 @@ mutation($threadId: ID!) {
 
 export async function findCodeScanningAlert(repo: string, number: number, path: string, line: number | null): Promise<number> {
   type Alert = { number: number; most_recent_instance: { location: { path: string; start_line: number; end_line?: number } } };
-  const alerts = await fetchRestPages<Alert>(`https://api.github.com/repos/${encodedRepo(repo)}/code-scanning/alerts?ref=${encodeURIComponent(`refs/pull/${number}/merge`)}&tool_name=CodeQL&per_page=100`);
+  const alerts = await fetchRestPages<Alert>(`https://api.github.com/repos/${encodedRepo(repo)}/code-scanning/alerts?ref=${encodeURIComponent(`refs/pull/${number}/merge`)}&tool_name=CodeQL&per_page=100`, undefined, repo);
   const matches = alerts.filter((alert) => {
     const location = alert.most_recent_instance.location;
     return location.path === path && line !== null && line >= location.start_line && line <= (location.end_line ?? location.start_line);
@@ -4135,7 +4566,7 @@ export async function closePullRequest(repo: string, number: number): Promise<vo
 
 export async function fetchPullRequestBody(repo: string, number: number): Promise<string> {
   if (mockGithub) return mockGithub.pullRequestBody(repo, number);
-  const pr = await restJson<{ body: string | null }>(`/repos/${repo}/pulls/${number}`);
+  const pr = await restJson<{ body: string | null }>(`/repos/${repo}/pulls/${number}`, repo);
   return pr.body ?? "";
 }
 

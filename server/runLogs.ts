@@ -28,7 +28,7 @@ import {
 import {
   fetchActionWorkflows,
   fetchFileContents,
-  fetchGithubQuota,
+  repositoryReadQuota,
   fetchJobLog,
   fetchRunJobs,
   fetchRecentWorkflowRuns,
@@ -118,7 +118,7 @@ export interface ActionsFetchers {
   fetchWorkflowRuns: typeof fetchWorkflowRuns;
   fetchRunJobs: typeof fetchRunJobs;
   fetchJobLog: typeof fetchJobLog;
-  restRemaining: () => Promise<number>;
+  restRemaining: (repo: string) => Promise<number | null>;
   // Since when every webhook for the repository has been ingested; null while uncovered.
   webhookCoveredSince?: (repo: string) => number | null;
 }
@@ -127,7 +127,10 @@ const liveFetchers: ActionsFetchers = {
   fetchWorkflowRuns,
   fetchRunJobs,
   fetchJobLog,
-  restRemaining: async () => (await fetchGithubQuota()).rest.remaining,
+  restRemaining: async (repo) => {
+    const quota = await repositoryReadQuota(repo, "core");
+    return quota?.blockedUntil && Date.parse(quota.blockedUntil) > Date.now() ? 0 : quota?.remaining ?? null;
+  },
   webhookCoveredSince: webhookCoverageSince,
 };
 
@@ -555,7 +558,8 @@ async function fetchLogs(repo: string, jobs: CompactJob[], fetchers: ActionsFetc
   const wanted = jobs.filter((job) => jobProducesLog(job) && getRunJobLog(repo, job.id) === null
     && job.conclusion !== null && LOG_WORTHY_CONCLUSION.has(job.conclusion));
   if (wanted.length === 0) return true;
-  if (background && (await fetchers.restRemaining()) - wanted.length < REST_BACKGROUND_RESERVE) {
+  const remaining = background ? await fetchers.restRemaining(repo) : null;
+  if (remaining !== null && remaining - wanted.length < REST_BACKGROUND_RESERVE) {
     for (const job of wanted) saveRunJobLogError(repo, job.id, job.attempt, "log not fetched: REST quota reserved for actions");
     return false;
   }
@@ -573,7 +577,8 @@ async function fetchLogs(repo: string, jobs: CompactJob[], fetchers: ActionsFetc
   return complete;
 }
 async function reconcileRun(repo: string, run: CompactRun, fetchers: ActionsFetchers, background: boolean): Promise<boolean> {
-  if (background && await fetchers.restRemaining() <= REST_BACKGROUND_RESERVE) return false;
+  const remaining = background ? await fetchers.restRemaining(repo) : null;
+  if (remaining !== null && remaining <= REST_BACKGROUND_RESERVE) return false;
   const jobs = (await fetchers.fetchRunJobs(repo, run.id, run.status === "completed" ? run.attempt : undefined))
     .map((job) => compactJob(job, run));
   for (const job of jobs) storeJob(repo, job);
@@ -763,7 +768,8 @@ export async function cacheRepoActionsRunJobs(
   fetchers: ActionsFetchers = liveFetchers,
   background = false,
 ): Promise<boolean> {
-  if (background && await fetchers.restRemaining() <= REST_BACKGROUND_RESERVE) return false;
+  const remaining = background ? await fetchers.restRemaining(run.repo) : null;
+  if (remaining !== null && remaining <= REST_BACKGROUND_RESERVE) return false;
   const compact: CompactRun = {
     id: run.run_id,
     attempt: run.run_attempt,
@@ -873,7 +879,8 @@ export async function actionJobLog(
   const cachedBefore = getRunJobLog(repo, jobId);
   const canUseCached = cachedBefore !== null && job.log_truncated !== 1;
   if (cachedBefore === null || job.log_truncated === 1 || job.log_format_version < RUN_JOB_LOG_FORMAT_VERSION) {
-    if (background && await fetchers.restRemaining() <= REST_BACKGROUND_RESERVE) {
+    const remaining = background ? await fetchers.restRemaining(repo) : null;
+    if (remaining !== null && remaining <= REST_BACKGROUND_RESERVE) {
       return { job, body: null, state: "deferred" };
     }
     const key = `${repo}:${jobId}`;

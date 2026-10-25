@@ -15,6 +15,7 @@ const dbModuleUrl = new URL("./db.ts", import.meta.url).href;
 const usageModuleUrl = new URL("./githubUsage.ts", import.meta.url).href;
 const githubModuleUrl = new URL("./github.ts", import.meta.url).href;
 const settingsModuleUrl = new URL("./settings.ts", import.meta.url).href;
+const httpModuleUrl = new URL("./http.ts", import.meta.url).href;
 
 // Runs the scenario in a fresh process on its own database, with a gh that answers a fixture token
 // unless the scenario brings its own.
@@ -24,7 +25,13 @@ async function runScenario(scenario: string, gh = "#!/bin/sh\nprintf 'fixture-to
   writeFileSync(fakeGh, gh);
   chmodSync(fakeGh, 0o755);
   try {
-    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], {
+    const script = `
+      function restCredential(database) {
+        return database.db.query("SELECT credential FROM github_rest_usage ORDER BY id DESC LIMIT 1").get()?.credential ?? "user";
+      }
+      ${scenario}
+    `;
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
       env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_GH_BIN: fakeGh, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "" },
       stdout: "pipe",
       stderr: "pipe",
@@ -159,7 +166,7 @@ test("REST requests are recorded per source, including the quota probe but not a
       requested,
       failures,
       rows: database.db.query("SELECT source, method, endpoint, resource, status, charged FROM github_rest_usage ORDER BY id").all(),
-      summary: database.githubRestUsage(5000, new Date(resetSeconds * 1000).toISOString()),
+      summary: database.githubRestUsage(5000, new Date(resetSeconds * 1000).toISOString(), restCredential(database)),
     }));
     database.db.close();
   `);
@@ -308,7 +315,7 @@ test("/rate_limit's own core count never yields a REST remainder", async () => {
     );
     settings.writeSettings({ rest_usage_enabled: true });
     const quota = await github.fetchGithubQuota();
-    console.log(JSON.stringify({ reset, quota: quota.rest, summary: database.githubRestUsage(quota.rest.used, quota.rest.resetAt) }));
+    console.log(JSON.stringify({ reset, quota: quota.rest, summary: database.githubRestUsage(quota.rest.used, quota.rest.resetAt, quota.identity) }));
     database.db.close();
   `);
   // The quota display keeps /rate_limit's reading; the ledger has no charged core response to trust.
@@ -369,7 +376,7 @@ test("a credential change starts a new coverage span even when GitHub reports th
         },
       });
     };
-    const summary = (resetSeconds) => database.githubRestUsage(used, new RealDate(resetSeconds * 1000).toISOString());
+    const summary = (resetSeconds) => database.githubRestUsage(used, new RealDate(resetSeconds * 1000).toISOString(), restCredential(database));
     // Token A is recorded from before the window began.
     settings.writeSettings({ rest_usage_enabled: true });
     await github.fetchAssignableUsers("acme/app");
@@ -542,7 +549,7 @@ test("a native HTTP redirect leaves its combined REST charge unknown", async () 
       await github.fetchRepoLabels("fixture/repository");
       console.log(JSON.stringify({
         paths,
-        summary: database.githubRestUsage(2, new Date(resetSeconds * 1000).toISOString()),
+        summary: database.githubRestUsage(2, new Date(resetSeconds * 1000).toISOString(), restCredential(database)),
         charges: database.db.query("SELECT charged FROM github_rest_usage ORDER BY id").all(),
       }));
     } finally {
@@ -605,10 +612,10 @@ test("concurrent Cockpit charges never become other-client usage before response
     const slow = github.fetchAssignableUsers("fixture/slow");
     await received.promise;
     await github.fetchAssignableUsers("fixture/fast");
-    const inFlight = database.githubRestUsage(used, new RealDate(reset * 1000).toISOString());
+    const inFlight = database.githubRestUsage(used, new RealDate(reset * 1000).toISOString(), restCredential(database));
     held.resolve();
     await slow;
-    const settled = database.githubRestUsage(used, new RealDate(reset * 1000).toISOString());
+    const settled = database.githubRestUsage(used, new RealDate(reset * 1000).toISOString(), restCredential(database));
     console.log(JSON.stringify({ inFlight, settled }));
     database.db.close();
   `);
@@ -695,13 +702,13 @@ test("an unrecorded request crossing a new window cannot contaminate a later rec
     await received.promise;
     settings.writeSettings({ rest_usage_enabled: true });
     await github.fetchAssignableUsers("fixture/current");
-    const during = database.githubRestUsage(used, resetAt);
+    const during = database.githubRestUsage(used, resetAt, restCredential(database));
     held.resolve();
     await old;
-    const afterOld = database.githubRestUsage(used, resetAt);
+    const afterOld = database.githubRestUsage(used, resetAt, restCredential(database));
     clock += 1_000;
     await github.fetchAssignableUsers("fixture/fresh");
-    const fresh = database.githubRestUsage(used, resetAt);
+    const fresh = database.githubRestUsage(used, resetAt, restCredential(database));
     console.log(JSON.stringify({ during, afterOld, fresh }));
     database.db.close();
   `);
@@ -743,7 +750,7 @@ test("GraphQL traffic preserves a fully covered REST window and its external rem
         "x-ratelimit-reset": String(offset < 0 ? reset - 3600 : reset),
       } });
     };
-    const summary = () => database.githubRestUsage(used, new RealDate(reset * 1000).toISOString());
+    const summary = () => database.githubRestUsage(used, new RealDate(reset * 1000).toISOString(), restCredential(database));
     settings.writeSettings({ rest_usage_enabled: true });
     await github.fetchAssignableUsers("fixture/before");
     offset = 0;
@@ -810,4 +817,274 @@ test("hot PRs rank charged core calls from the last hour with their dominant sou
     { pr: "acme/app#2", calls: 5, source: "agent read" },
   ]);
   expect(result.stored).toEqual([{ pr: "acme/app#1" }, { pr: "acme/app#2" }, { pr: "acme/app#3" }, { pr: "acme/app#4" }]);
+});
+
+test("GraphQL windows, sources, operations, and history stay independent by credential", async () => {
+  const result = await runScenario(`
+    const database = await import(${JSON.stringify(dbModuleUrl)});
+    const usage = await import(${JSON.stringify(usageModuleUrl)});
+    const resetAt = new Date(Math.ceil(Date.now() / 1000) * 1000 + 2 * 60 * 60_000).toISOString();
+    const previousResetAt = new Date(Date.parse(resetAt) - 60 * 60_000).toISOString();
+    const record = (credential, credentialKind, overrides) => usage.recordGithubGraphqlUsage({
+      occurredAt: new Date().toISOString(), credential, credentialKind,
+      source: "background poll", operation: "PR detail", cost: 2, used: 50,
+      remaining: 4950, resetAt, status: "ok", ...overrides,
+    });
+    record("user:fixture", "user", { resetAt: previousResetAt, cost: 4, used: 120 });
+    record("app:1:2", "app", { resetAt: previousResetAt, cost: 11, used: 900 });
+    record("user:fixture", "user", {});
+    record("app:1:2", "app", { cost: 7, used: 300 });
+    record("app:1:2", "app", { cost: null, source: "relay", operation: "PR checks", used: 301 });
+    console.log(JSON.stringify({
+      personal: database.githubGraphqlUsage(50, 5000, resetAt, Date.now(), "user:fixture"),
+      app: database.githubGraphqlUsage(301, 5000, resetAt, Date.now(), "app:1:2"),
+      legacy: database.githubGraphqlUsage(0, 5000, resetAt),
+      credentials: database.db.query("SELECT DISTINCT credential, credential_kind FROM github_graphql_usage ORDER BY credential").all(),
+    }));
+    database.db.close();
+  `);
+  expect(result.personal).toMatchObject({ localPoints: 2, localRequests: 1, unknownCostRequests: 0, otherPoints: 48 });
+  expect(result.personal.sources).toEqual([{ source: "background poll", points: 2, requests: 1, unknownCostRequests: 0 }]);
+  expect(result.personal.operations).toEqual([{ operation: "PR detail", points: 2, requests: 1, unknownCostRequests: 0 }]);
+  expect(result.personal.history.at(-2)).toMatchObject({ used: 120, localPoints: 4, localRequests: 1 });
+  expect(result.app).toMatchObject({ localPoints: 7, localRequests: 2, unknownCostRequests: 1, otherPoints: null });
+  expect(result.app.history.at(-2)).toMatchObject({ used: 900, localPoints: 11, localRequests: 1 });
+  expect(result.app.history.at(-1)).toMatchObject({ used: 301, localPoints: 7, localRequests: 2 });
+  expect(result.legacy.localRequests).toBe(0);
+  expect(result.credentials).toEqual([
+    { credential: "app:1:2", credential_kind: "app" },
+    { credential: "user:fixture", credential_kind: "user" },
+  ]);
+});
+
+test("a newly observed GraphQL credential never inherits another credential's full window", async () => {
+  const result = await runScenario(`
+    const RealDate = Date;
+    let clock = RealDate.now() - 60 * 60_000;
+    globalThis.Date = class extends RealDate {
+      constructor(value) { super(arguments.length ? value : clock); }
+      static now() { return clock; }
+    };
+    const database = await import(${JSON.stringify(dbModuleUrl)});
+    const usage = await import(${JSON.stringify(usageModuleUrl)});
+    clock = RealDate.now();
+    const resetAt = new Date(clock + 30 * 60_000).toISOString();
+    const event = { occurredAt: new Date().toISOString(), source: "background poll", operation: "PR detail",
+      cost: 1, used: 10, remaining: 4990, resetAt, status: "ok" };
+    usage.recordGithubGraphqlUsage(event);
+    usage.recordGithubGraphqlUsage({ ...event, credential: "app:1:2", credentialKind: "app" });
+    console.log(JSON.stringify({
+      personal: database.githubGraphqlUsage(10, 5000, resetAt),
+      app: database.githubGraphqlUsage(10, 5000, resetAt, Date.now(), "app:1:2"),
+    }));
+    database.db.close();
+  `);
+  expect(result.personal).toMatchObject({ windowComplete: true, otherPoints: 9 });
+  expect(result.app).toMatchObject({ localPoints: 1, windowComplete: false, otherPoints: null });
+});
+
+test("REST coverage, remainder, history, and hot PRs stay independent for overlapping credentials", async () => {
+  const result = await runScenario(`
+    const database = await import(${JSON.stringify(dbModuleUrl)});
+    const usage = await import(${JSON.stringify(usageModuleUrl)});
+    const resetAt = new Date(Math.ceil(Date.now() / 1000) * 1000 + 2 * 60 * 60_000).toISOString();
+    const previousResetAt = new Date(Date.parse(resetAt) - 60 * 60_000).toISOString();
+    const personalCoverage = usage.githubRestCoverage("user:fixture");
+    const appCoverage = usage.githubRestCoverage("app:1:2");
+    const record = (credential, credentialKind, coverageEpoch, overrides) => usage.recordGithubRestUsage({
+      occurredAt: new Date().toISOString(), credential, credentialKind, coverageEpoch,
+      source: "background poll", method: "GET", endpoint: "/repos/:owner/:repo/pulls/:pull_number",
+      pr: "acme/app#1", resource: "core", status: 200, used: 10, remaining: 4990,
+      resetAt, charged: true, ...overrides,
+    });
+    record("user:fixture", "user", personalCoverage.epoch, { resetAt: previousResetAt, used: 120 });
+    record("app:1:2", "app", appCoverage.epoch, { resetAt: previousResetAt, used: 900, source: "relay" });
+    record("user:fixture", "user", personalCoverage.epoch, { used: 9 });
+    record("user:fixture", "user", personalCoverage.epoch, {});
+    for (let i = 0; i < 3; i++) record("app:1:2", "app", appCoverage.epoch, { used: 498 + i, source: "relay" });
+    const personal = () => database.githubRestUsage(10, resetAt, "user:fixture");
+    const app = () => database.githubRestUsage(500, resetAt, "app:1:2");
+    const before = { personal: personal(), app: app() };
+    usage.beginGithubRestRequest("app:1:2");
+    const pending = { personal: personal(), app: app() };
+    usage.finishGithubRestRequest(appCoverage, "app:1:2");
+    record("app:1:2", "app", appCoverage.epoch, {
+      occurredAt: new Date(Date.parse(resetAt) - 30 * 60_000).toISOString(),
+      used: null, remaining: null, resetAt: null, source: "relay",
+    });
+    const headerless = { personal: personal(), app: app() };
+    usage.endGithubRestCoverage("app:1:2");
+    console.log(JSON.stringify({
+      before, pending, headerless, ended: { personal: personal(), app: app() },
+      personalHot: database.githubHotPrs(Date.now(), "user:fixture"),
+      appHot: database.githubHotPrs(Date.now(), "app:1:2"),
+      legacyHot: database.githubHotPrs(),
+      credentials: database.db.query("SELECT DISTINCT credential, credential_kind FROM github_rest_usage ORDER BY credential").all(),
+    }));
+    database.db.close();
+  `);
+  expect(result.before.personal).toMatchObject({ localRequests: 2, chargedRequests: 2, windowComplete: true, otherRequests: 8 });
+  expect(result.before.app).toMatchObject({ localRequests: 3, chargedRequests: 3, windowComplete: true, otherRequests: 497 });
+  expect(result.before.personal.sources).toEqual([{ source: "background poll", requests: 2, chargedRequests: 2, notModifiedRequests: 0, unknownChargeRequests: 0 }]);
+  expect(result.before.app.sources).toEqual([{ source: "relay", requests: 3, chargedRequests: 3, notModifiedRequests: 0, unknownChargeRequests: 0 }]);
+  expect(result.before.personal.endpoints[0]).toMatchObject({ requests: 2, chargedRequests: 2 });
+  expect(result.before.app.endpoints[0]).toMatchObject({ requests: 3, chargedRequests: 3 });
+  expect(result.before.personal.history.at(-2)).toMatchObject({ used: 120, chargedRequests: 1 });
+  expect(result.before.app.history.at(-2)).toMatchObject({ used: 900, chargedRequests: 1 });
+  expect(result.pending.personal.otherRequests).toBe(8);
+  expect(result.pending.app.otherRequests).toBeNull();
+  expect(result.headerless.personal.otherRequests).toBe(8);
+  expect(result.headerless.app.otherRequests).toBeNull();
+  expect(result.ended.personal).toMatchObject({ localRequests: 2, windowComplete: true, otherRequests: 8 });
+  expect(result.ended.app).toMatchObject({ localRequests: 0, windowComplete: false, otherRequests: null });
+  expect(result.personalHot).toEqual([{ pr: "acme/app#1", calls: 3, source: "background poll" }]);
+  expect(result.appHot).toEqual([{ pr: "acme/app#1", calls: 5, source: "relay" }]);
+  expect(result.legacyHot).toEqual([]);
+  expect(result.credentials).toEqual([
+    { credential: "app:1:2", credential_kind: "app" },
+    { credential: "user:fixture", credential_kind: "user" },
+  ]);
+});
+
+test("legacy usage rows migrate as user and remain visible only in default-user queries", async () => {
+  const result = await runScenario(`
+    import { Database } from "bun:sqlite";
+    const resetAt = new Date(Math.ceil(Date.now() / 1000) * 1000 + 2 * 60 * 60_000).toISOString();
+    const occurredAt = new Date().toISOString();
+    const legacy = new Database(process.env.COCKPIT_DATA_DIR + "/cockpit.db");
+    legacy.exec(\`
+      CREATE TABLE github_graphql_usage (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at TEXT NOT NULL, machine TEXT NOT NULL,
+        source TEXT NOT NULL, operation TEXT NOT NULL, cost INTEGER, used INTEGER, remaining INTEGER,
+        reset_at TEXT, status TEXT NOT NULL
+      );
+      CREATE TABLE github_rest_usage (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at TEXT NOT NULL, machine TEXT NOT NULL,
+        source TEXT NOT NULL, method TEXT NOT NULL, endpoint TEXT NOT NULL, resource TEXT NOT NULL,
+        status INTEGER, used INTEGER, remaining INTEGER, reset_at TEXT, charged INTEGER, coverage_epoch TEXT
+      );
+    \`);
+    legacy.query("INSERT INTO github_graphql_usage (occurred_at,machine,source,operation,cost,used,remaining,reset_at,status) VALUES (?,?,?,?,?,?,?,?,?)")
+      .run(occurredAt, "fixture", "background poll", "PR detail", 4, 10, 4990, resetAt, "ok");
+    legacy.query("INSERT INTO github_rest_usage (occurred_at,machine,source,method,endpoint,resource,status,used,remaining,reset_at,charged,coverage_epoch) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+      .run(occurredAt, "fixture", "background poll", "GET", "/user", "core", 200, 10, 4990, resetAt, 1, "old-span");
+    legacy.close();
+    const database = await import(${JSON.stringify(dbModuleUrl)});
+    const usage = await import(${JSON.stringify(usageModuleUrl)});
+    const coverage = usage.githubRestCoverage();
+    usage.recordGithubRestUsage({
+      occurredAt, source: "agent read", method: "GET", endpoint: "/repos/:owner/:repo/pulls/:pull_number",
+      pr: "acme/app#1", resource: "core", status: 200, used: 11, remaining: 4989, resetAt,
+      charged: true, coverageEpoch: coverage.epoch,
+    });
+    console.log(JSON.stringify({
+      graphqlRows: database.db.query("SELECT credential,credential_kind FROM github_graphql_usage").all(),
+      restRows: database.db.query("SELECT credential,credential_kind FROM github_rest_usage").all(),
+      personalGraphql: database.githubGraphqlUsage(10, 5000, resetAt),
+      appGraphql: database.githubGraphqlUsage(10, 5000, resetAt, Date.now(), "app:1:2"),
+      personalRest: database.githubRestUsage(11, resetAt),
+      appRest: database.githubRestUsage(11, resetAt, "app:1:2"),
+      hot: database.githubHotPrs(),
+    }));
+    database.db.close();
+  `);
+  expect(result.graphqlRows).toEqual([{ credential: "user", credential_kind: "user" }]);
+  expect(result.restRows).toEqual([
+    { credential: "user", credential_kind: "user" }, { credential: "user", credential_kind: "user" },
+  ]);
+  expect(result.personalGraphql.localPoints).toBe(4);
+  expect(result.appGraphql.localRequests).toBe(0);
+  expect(result.personalRest.localRequests).toBe(1);
+  expect(result.personalRest.history.at(-1)).toMatchObject({ localRequests: 2, chargedRequests: 2 });
+  expect(result.appRest.history.at(-1)).toMatchObject({ localRequests: 0, chargedRequests: 0 });
+  expect(result.hot).toEqual([{ pr: "acme/app#1", calls: 1, source: "agent read" }]);
+});
+
+test("usage HTTP reports and agent hot PRs preserve independent nullable identity quotas", async () => {
+  const result = await runScenario(`
+    const database = await import(${JSON.stringify(dbModuleUrl)});
+    const usage = await import(${JSON.stringify(usageModuleUrl)});
+    const settings = await import(${JSON.stringify(settingsModuleUrl)});
+    const http = await import(${JSON.stringify(httpModuleUrl)});
+    globalThis.fetch = () => { throw new Error("Usage reports must not fetch unobserved app resources"); };
+    const resetAt = new Date(Math.ceil(Date.now() / 1000) * 1000 + 2 * 60 * 60_000).toISOString();
+    const pool = (used, limit = 5000) => ({ limit, used, remaining: limit - used, resetAt });
+    const fetchedAt = new Date().toISOString();
+    const personal = { identity: "user:fixture", kind: "user", repositories: [],
+      rest: pool(5000), graphql: pool(5000), search: pool(0, 30), fetchedAt };
+    const app = { identity: "app:1:2", kind: "app", installationId: 2, repositories: ["acme/app"],
+      rest: pool(3, 100), graphql: pool(70, 100), search: null, fetchedAt };
+    const unknown = { identity: "app:1:3", kind: "app", installationId: 3, repositories: ["acme/other"],
+      rest: null, graphql: null, search: null, fetchedAt: null };
+    let resources = { identity: personal.identity, rest: personal.rest, graphql: personal.graphql,
+      search: personal.search, fetchedAt, identities: [personal, app, unknown] };
+    for (const [identity, cost] of [[personal, 2], [app, 7], [unknown, 5]]) {
+      usage.recordGithubGraphqlUsage({
+        occurredAt: fetchedAt, credential: identity.identity, credentialKind: identity.kind,
+        source: "background poll", operation: "PR detail", cost, used: identity.graphql?.used ?? null,
+        remaining: identity.graphql?.remaining ?? null, resetAt, status: "ok",
+      });
+    }
+    settings.writeSettings({ rest_usage_enabled: true, rest_fallback_enabled: false });
+    for (const [identity, count] of [[personal, 1], [app, 2]]) {
+      const coverage = usage.githubRestCoverage(identity.identity);
+      for (let i = 0; i < count; i++) usage.recordGithubRestUsage({
+        occurredAt: fetchedAt, credential: identity.identity, credentialKind: identity.kind,
+        source: identity.kind === "app" ? "relay" : "background poll", method: "GET",
+        endpoint: "/repos/:owner/:repo/pulls/:pull_number", pr: "acme/app#1", resource: "core",
+        status: 200, used: identity.rest.used, remaining: identity.rest.remaining, resetAt,
+        charged: true, coverageEpoch: coverage.epoch,
+      });
+    }
+    const handler = http.buildFetchHandler(4820, { fetchGithubQuota: async () => resources });
+    const readUsage = async () => {
+      const response = await handler(new Request("http://127.0.0.1:4820/api/github-usage"));
+      if (!response.ok) throw new Error("Fixture usage response failed: " + response.status);
+      return response.json();
+    };
+    const enabled = await readUsage();
+    const detail = { title: "Fixture", body: "", state: "OPEN", headRefOid: "a".repeat(40),
+      reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } }, lastCommit: { nodes: [] },
+      agentSnapshot: { fetchedAt, freshness: "recent", newerActivityAt: null } };
+    const summary = http.buildPrAgentSummary("acme/app#1", detail, resources);
+    const markdown = http.formatPrAgentSummary(summary);
+    settings.writeSettings({ rest_usage_enabled: false });
+    const disabled = await readUsage();
+    delete resources.identities;
+    const legacy = await readUsage();
+    console.log(JSON.stringify({ enabled, disabled, legacy, summary, markdown }));
+    database.db.close();
+  `);
+  expect(result.enabled).toMatchObject({
+    quota: { used: 5000 }, rest: { used: 5000 }, usage: { localPoints: 2 },
+    restUsage: { localRequests: 1, chargedRequests: 1 }, restRecordingEnabled: true,
+  });
+  expect(result.enabled.identities).toHaveLength(3);
+  expect(result.enabled.identities[0]).toMatchObject({
+    identity: "user:fixture", kind: "user", quota: { used: 5000 },
+    usage: { localPoints: 2 }, restUsage: { localRequests: 1 },
+  });
+  expect(result.enabled.identities[1]).toMatchObject({
+    identity: "app:1:2", kind: "app", installationId: 2, repositories: ["acme/app"],
+    quota: { used: 70 }, rest: { used: 3 }, search: null,
+    usage: { localPoints: 7 }, restUsage: { localRequests: 2 },
+  });
+  expect(result.enabled.identities[2]).toMatchObject({
+    identity: "app:1:3", quota: null, rest: null, search: null, fetchedAt: null,
+    usage: null, restUsage: null,
+  });
+  expect(result.disabled.restRecordingEnabled).toBe(false);
+  expect(result.disabled.restUsage).toBeNull();
+  expect(result.disabled.identities.every((identity: { restUsage: unknown }) => identity.restUsage === null)).toBe(true);
+  expect(Object.keys(result.legacy).sort()).toEqual(["quota", "rest", "restUsage", "search", "usage"]);
+  expect(result.legacy.usage.localPoints).toBe(2);
+  expect(result.legacy.restUsage).toBeNull();
+  expect(result.summary.quota.hotPrs).toEqual([{ pr: "acme/app#1", calls: 1, source: "background poll" }]);
+  expect(result.summary.quota.identities[1].hotPrs).toEqual([{ pr: "acme/app#1", calls: 2, source: "relay" }]);
+  expect(result.markdown).not.toContain("Refresh unavailable");
+  expect(result.markdown).not.toContain("core REST quota exhausted");
+  expect(result.markdown).toContain("Personal quota: REST 0/5000 left");
+  expect(result.markdown).toContain("GitHub App quota (installation 2): REST 97/100 left");
+  expect(result.markdown).toContain("Personal hot PRs (charged core REST calls, last 60m): acme/app#1 1 (mostly background poll)");
+  expect(result.markdown).toContain("GitHub App hot PRs (installation 2, charged core REST calls, last 60m): acme/app#1 2 (mostly relay)");
 });

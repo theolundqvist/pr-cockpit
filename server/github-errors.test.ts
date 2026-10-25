@@ -271,7 +271,7 @@ test("non-quota GraphQL errors do not expose the ordinary rate-window reset", as
   }
 });
 
-test("quota boundaries isolate search, GraphQL, and core while transport and mutation failures stay typed", async () => {
+test("primary quotas remain separate while secondary cooldowns pause all pools and errors stay typed", async () => {
   const fakeGhDir = mkdtempSync(join(tmpdir(), "pr-cockpit-github-errors-"));
   const fakeGh = join(fakeGhDir, "gh");
   writeFileSync(fakeGh, "#!/bin/sh\nprintf 'fixture-token\\n'\n");
@@ -359,8 +359,10 @@ test("quota boundaries isolate search, GraphQL, and core while transport and mut
       coreLimited = true;
       const coreFirst = await capture(() => github.fetchActionWorkflows("acme/app"));
       const coreBlocked = await capture(() => github.fetchActionWorkflows("acme/app"));
-      await github.searchRecentPrs("acme/app");
+      const searchSecondary = await capture(() => github.searchRecentPrs("acme/app"));
+      const graphqlSecondary = await capture(() => github.fetchRepositoryOpenPrs("acme/app"));
       now += 1000;
+      await github.searchRecentPrs("acme/app");
       await github.fetchActionWorkflows("acme/app");
 
       const gateway = await capture(() => github.fetchDiff("acme/app", 9));
@@ -372,6 +374,7 @@ test("quota boundaries isolate search, GraphQL, and core while transport and mut
         searchFirst: shape(searchFirst), searchBlocked: shape(searchBlocked),
         graphqlFirst: shape(graphqlFirst), graphqlBlocked: shape(graphqlBlocked),
         coreFirst: shape(coreFirst), coreBlocked: shape(coreBlocked),
+        searchSecondary: shape(searchSecondary), graphqlSecondary: shape(graphqlSecondary),
         gateway: shape(gateway),
         mutation: shape(mutation), mutationType: mutation instanceof github.RestRequestError,
         transport: shape(transport), transportType: transport instanceof github.GithubRequestError,
@@ -396,6 +399,8 @@ test("quota boundaries isolate search, GraphQL, and core while transport and mut
     expect(result.searchBlocked).toMatchObject({ status: 403, kind: "quota", resource: "search" });
     expect(result.graphqlFirst).toMatchObject({ status: 403, kind: "quota", resource: "graphql" });
     expect(result.graphqlBlocked).toMatchObject({ status: 403, kind: "quota", resource: "graphql" });
+    expect(result.searchSecondary).toMatchObject({ status: 403, kind: "quota", resource: "search" });
+    expect(result.graphqlSecondary).toMatchObject({ status: 403, kind: "quota", resource: "graphql" });
     expect(result.coreFirst).toMatchObject({ status: 403, kind: "quota", resource: "core" });
     expect(result.coreBlocked).toMatchObject({ status: 403, kind: "quota", resource: "core" });
     expect(result.graphqlUsage).toEqual(["error", "ok"]);
@@ -968,6 +973,7 @@ async function runCoreExhaustionScenario(body: string): Promise<unknown> {
       const restFiles = [{ filename: "a.ts", additions: 4, deletions: 2 }, { filename: "b.ts", additions: 1, deletions: 0 }];
       const graphqlPull = {
         id: "PR_7", title: "Fresh title", number: 7, state: "OPEN", mergedAt: null, closedAt: null, isDraft: false,
+        mergeCommit: null, mergedBy: null,
         author: { __typename: "User", login: "author", avatarUrl: "https://avatars.example/author" },
         baseRefName: "main", baseRefOid: "b".repeat(40), headRefName: "topic", headRepository: { nameWithOwner: "contributor/app" }, headRefOid: head,
         body: "Fresh body", additions: 5, deletions: 2, changedFiles: 2,
@@ -1353,11 +1359,10 @@ test("a stale quota probe cannot change the next account's block", async () => {
       token = "new-token";
       const newLimitedError = await capture(() => github.fetchActionWorkflows("acme/app"));
       resolveOldProbe(Response.json({}, { headers: { "x-ratelimit-resource": "core", "x-ratelimit-remaining": "5000" } }));
-      const staleOldRequest = await oldBlocked;
+      await oldBlocked;
       const newBlocked = await capture(() => github.fetchActionWorkflows("acme/app"));
       console.log(JSON.stringify({
         newLimited: newLimitedError?.kind === "quota",
-        staleOldBlocked: staleOldRequest?.kind === "quota",
         newStillBlocked: newBlocked?.kind === "quota",
         probes,
       }));
@@ -1375,7 +1380,6 @@ test("a stale quota probe cannot change the next account's block", async () => {
     expect(exitCode, stderr).toBe(0);
     expect(JSON.parse(stdout)).toEqual({
       newLimited: true,
-      staleOldBlocked: true,
       newStillBlocked: true,
       probes: ["bearer old-token", "bearer new-token"],
     });

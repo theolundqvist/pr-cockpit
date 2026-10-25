@@ -1304,7 +1304,7 @@
   let forceMergeConfirm = $state(false);
   let mergeMenuOpen = $state(false);
   let mergeMethodBusy = $state(false);
-  let quotaStatus = $derived(quotaImpact(quota.resources, { restFallback: prefs.restFallbackEnabled }));
+  let quotaStatus = $derived(quotaImpact(quota.resources, { restFallback: prefs.restFallbackEnabled, repo }));
   let mergeBlockedByQuota = $derived(quotaStatus.mergeBlocked);
   let quotaMergeModal = $state(false);
 

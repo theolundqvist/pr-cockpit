@@ -56,7 +56,7 @@ function poolState(api, quota, restFallback, now) {
 // level "out": a pool is unavailable and the actions it powers fail outright.
 // level "reserved": background work slowed or moved to another pool; the screen still works.
 // restFallback: GraphQL reads fall back to REST, so an empty GraphQL pool no longer blocks merges.
-export function quotaImpact(quota, { restFallback = false, now = Date.now() } = {}) {
+function credentialImpact(quota, { restFallback = false, now = Date.now() } = {}) {
   const pools = [];
   for (const api of ["graphql", "rest", "search"]) {
     const state = poolState(api, quota, restFallback, now);
@@ -83,14 +83,73 @@ export function quotaImpact(quota, { restFallback = false, now = Date.now() } = 
   };
 }
 
+export function quotaIdentityLabel(identity) {
+  if (identity.kind !== "app") return "User";
+  const owners = [...new Set((identity.repositories ?? []).map((repo) => repo.split("/")[0]).filter(Boolean))];
+  return owners.length ? `GitHub App (${owners.join(", ")})` : "GitHub App";
+}
+
+function identityEffect(identity, pool) {
+  if (identity.kind === "app") {
+    const state = pool.level === "reserved" ? "limited" : "unavailable";
+    return `installation ${pool.api === "search" ? "search" : pool.label} quota is ${state}; User quota is independent`;
+  }
+  if (pool.api === "rest") {
+    return "commenting, reviewing, and merging fail; installation reads have separate quotas";
+  }
+  if (pool.api === "graphql") {
+    return pool.level === "reserved"
+      ? "personal background polling is paused or uses REST; installation reads have separate quotas"
+      : "personal GraphQL actions are unavailable; installation reads have separate quotas";
+  }
+  return pool.level === "reserved"
+    ? "personal PR searches use GraphQL; installation search has a separate quota"
+    : "personal PR searches are unavailable; installation search has a separate quota";
+}
+
+export function quotaImpact(quota, options = {}) {
+  const appDetailRead = !!options.repo && quota?.identities?.some((identity) =>
+    identity.kind === "app" && identity.repositories?.some((repo) => repo.toLowerCase() === options.repo.toLowerCase()));
+  // An opted-in repository's detail uses app-first REST even when the general fallback is off.
+  // Only its read protocol changes: merging and viewer permissions still require User quota.
+  const personal = credentialImpact(quota, { ...options, restFallback: options.restFallback || appDetailRead });
+  if (!quota?.identities) return personal;
+  const pools = [];
+  for (const identity of quota.identities) {
+    for (const pool of credentialImpact(identity, options).pools) {
+      pools.push({
+        ...pool,
+        identity: identity.identity,
+        kind: identity.kind,
+        label: `${quotaIdentityLabel(identity)} ${pool.label}`,
+        effect: identityEffect(identity, pool),
+      });
+    }
+  }
+  return {
+    ...personal,
+    independent: true,
+    level: pools.some((pool) => pool.level === "out") ? "out" : pools.length ? "reserved" : "ok",
+    pools,
+    // Mutations and their viewer/permission preflights always use the personal credential.
+    // Its merge block and restoration must never inherit an installation's quota window.
+  };
+}
+
 export function quotaOutLabel(impact) {
   const out = impact.pools.filter((p) => p.level === "out");
   if (out.length === 0) return "";
   const names = out.map((p) => p.label).join(" and ");
+  if (impact.independent) {
+    return out.every((p) => p.cooldown)
+      ? `GitHub rate limited for ${names}`
+      : `GitHub quota exhausted for ${names}`;
+  }
   return out.every((p) => p.cooldown) ? `GitHub ${names} rate limited` : `GitHub ${names} quota exhausted`;
 }
 
 export function quotaLimitedLabel(impact) {
   const names = impact.pools.map((p) => p.label).join(" and ");
+  if (impact.independent) return `GitHub quota limited for ${names}`;
   return names === "GraphQL" ? "GitHub GraphQL quota nearly exhausted" : `GitHub ${names} quota limited`;
 }

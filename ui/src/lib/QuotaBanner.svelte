@@ -24,26 +24,34 @@
 </script>
 
 {#if impact.level !== "ok"}
-  <section class="quota-banner {impact.level}" role="status" aria-live="polite">
+  <section class="quota-banner {impact.level}" class:independent={impact.independent} role="status" aria-live="polite">
     <span class="qb-icon" aria-hidden="true">!</span>
     <div class="qb-copy">
       <strong class="qb-title">
         {impact.level === "out" ? quotaOutLabel(impact) : quotaLimitedLabel(impact)}
       </strong>
       <ul class="qb-list">
-        {#each impact.pools as pool (pool.api)}
-          <li><span class="qb-pool mono">{pool.label} {pool.remaining.toLocaleString()} / {pool.limit.toLocaleString()}</span><span>{pool.effect}</span></li>
+        {#each impact.pools as pool (`${pool.identity ?? "user"}:${pool.api}`)}
+          <li>
+            <span class="qb-pool mono">{pool.label} {pool.remaining.toLocaleString()} / {pool.limit.toLocaleString()}</span>
+            <span>{pool.effect}</span>
+            {#if impact.independent}
+              <time class="qb-pool-reset mono" datetime={pool.resetAt}>{pool.cooldown ? "Limited until" : "Resets"} {clock(pool.resetAt)}</time>
+            {/if}
+          </li>
         {/each}
         {#if impact.mergeBlocked}
-          <li><span class="qb-pool mono">merge</span><span>Cockpit refuses merges until the quota resets — merge on GitHub instead</span></li>
+          <li><span class="qb-pool mono">merge</span><span>Cockpit refuses merges until the {impact.independent ? "User " : ""}quota resets — merge on GitHub instead</span></li>
         {/if}
       </ul>
     </div>
+    {#if !impact.independent}
     <div class="qb-reset">
       <span>Restores</span>
       <strong>{inMinutes(impact.restoresAt)}</strong>
       <time class="qb-clock mono" datetime={impact.restoresAt}>{clock(impact.restoresAt)}</time>
     </div>
+    {/if}
   </section>
 {/if}
 
@@ -62,6 +70,10 @@
     color: var(--text);
     font-size: 12.5px;
   }
+  .quota-banner.independent { grid-template-columns: auto minmax(0, 1fr); }
+  .independent .qb-list { display: grid; }
+  .independent .qb-list li { flex-wrap: wrap; }
+  .qb-pool-reset { color: var(--text-faint); font-size: 10.5px; white-space: nowrap; }
 
   .quota-banner.out {
     border-bottom-color: color-mix(in srgb, var(--fail) 20%, var(--border));

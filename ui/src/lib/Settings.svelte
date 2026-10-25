@@ -93,6 +93,49 @@
   let relayInfo = $state(cachedView("relayStatus"));
   let relayCoverage = $state(cachedView("relayCoverage"));
   let health = $state(null);
+  let quotaApp = $state(undefined);
+  let quotaAppError = $state("");
+  let quotaAppOwner = $state(null);
+  let quotaAppStarting = $state(false);
+  let quotaAppLaunchUrl = $state("");
+
+  async function loadQuotaApp() {
+    try {
+      const response = await fetch("/api/github-app/quota");
+      if (!response.ok) throw new Error("App settings unavailable");
+      quotaApp = (await response.json()).app;
+      quotaAppError = "";
+    } catch {
+      quotaAppError = "Could not read GitHub App settings.";
+    }
+  }
+  async function startQuotaAppSetup(event) {
+    event.preventDefault();
+    if (quotaAppStarting) return;
+    const body = new FormData(event.currentTarget);
+    quotaAppStarting = true;
+    quotaAppError = "";
+    quotaAppLaunchUrl = "";
+    try {
+      const response = await fetch("/api/github-app/quota/start", { method: "POST", body });
+      if (!response.ok) throw new Error("App setup unavailable");
+      quotaAppLaunchUrl = (await response.json()).url;
+      window.open(quotaAppLaunchUrl, "_blank", "noopener");
+    } catch {
+      quotaAppError = "Could not start GitHub App setup. Try again from Cockpit Settings.";
+    } finally {
+      quotaAppStarting = false;
+    }
+  }
+
+
+  $effect(() => {
+    if (activeTab !== "general") return;
+    void loadQuotaApp();
+    const refresh = () => void loadQuotaApp();
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  });
   let loaded = $state(false);
   let saving = $state(false);
   let saved = $state(false);
@@ -683,7 +726,25 @@
             </span>
           </label>
 
-
+          <div class="field field-wide">
+            <span class="label">Extra GitHub quota</span>
+            {#if quotaAppError}<span class="hint invalid-hint" role="alert">{quotaAppError}</span>{/if}
+            {#if quotaApp}
+              <span>{quotaApp.name}</span>
+              {#if quotaApp.installUrl}<a class="btn" href={quotaApp.installUrl} target="_blank" rel="noopener noreferrer">Manage repositories</a>{/if}
+            {:else if quotaApp === null}
+              <form onsubmit={startQuotaAppSetup}>
+                <label class="field">
+                  <span class="label">Organization</span>
+                  <span class="hint">Leave empty for your personal account.</span>
+                  <input class="input" name="owner" value={quotaAppOwner ?? relayOrg} oninput={(event) => quotaAppOwner = event.currentTarget.value} pattern={"[a-zA-Z0-9][a-zA-Z0-9\\-]{0,38}"} autocomplete="off" />
+                </label>
+                <button class="btn" type="submit" disabled={quotaAppStarting}>{quotaAppStarting ? "Opening…" : "Connect GitHub App"}</button>
+              </form>
+              {#if quotaAppLaunchUrl}<a class="btn" href={quotaAppLaunchUrl} target="_blank" rel="noopener noreferrer">Continue in browser</a>{/if}
+            {/if}
+            <span class="hint">Reads use the app quota first. Your account keeps its own quota and handles your actions.</span>
+          </div>
 
           <div class="field field-wide">
             <label class="label" for="relay-url">Live update relay</label>

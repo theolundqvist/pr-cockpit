@@ -145,7 +145,7 @@ function refreshMarkedPr(repo: string, number: number, scope: PrDetailScope, tra
   const allowed = deps.backgroundAllowed ?? backgroundPollAllowed;
   const refreshViewed = deps.refreshViewedPr ?? refreshCachedPrDetail;
   void refreshPrFromEvent(repo, number, scope, async (targetRepo, targetNumber, targetScope) => {
-    if (!await allowed()) return;
+    if (!await allowed(targetRepo)) return;
     if (tracked) await refreshPr(targetRepo, targetNumber, "relay", targetScope);
     else await refreshViewed(targetRepo, targetNumber, "relay", targetScope);
   }).catch((error) => console.error(`relay-triggered refresh failed for ${repo}#${number}:`, error));

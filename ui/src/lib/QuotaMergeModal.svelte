@@ -14,8 +14,8 @@
 </script>
 
 <div class="qm-backdrop" onclick={onClose} role="presentation">
-  <div class="qm" role="dialog" aria-modal="true" aria-label={`GitHub quota exhausted. Available at ${clock(impact.restoresAt)}`} onclick={(e) => e.stopPropagation()}>
-    <div class="qm-title">GitHub quota exhausted</div>
+  <div class="qm" role="dialog" aria-modal="true" aria-label={`${impact.independent ? "User quota blocks merging" : "GitHub quota exhausted"}. Available at ${clock(impact.restoresAt)}`} onclick={(e) => e.stopPropagation()}>
+    <div class="qm-title">{impact.independent ? "User quota blocks merging" : "GitHub quota exhausted"}</div>
     <div class="qm-reset">Available <strong>{clock(impact.restoresAt)}</strong></div>
     <div class="qm-actions">
       <button class="qm-btn shortcut-action" type="button" onclick={onClose}>

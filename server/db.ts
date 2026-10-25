@@ -116,6 +116,8 @@ CREATE TABLE IF NOT EXISTS github_graphql_usage (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   occurred_at TEXT NOT NULL,
   machine TEXT NOT NULL,
+  credential TEXT NOT NULL DEFAULT 'user',
+  credential_kind TEXT NOT NULL DEFAULT 'user',
   source TEXT NOT NULL,
   operation TEXT NOT NULL,
   cost INTEGER,
@@ -125,13 +127,12 @@ CREATE TABLE IF NOT EXISTS github_graphql_usage (
   status TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS github_graphql_usage_window_idx
-ON github_graphql_usage (reset_at, source, operation);
-
 CREATE TABLE IF NOT EXISTS github_rest_usage (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   occurred_at TEXT NOT NULL,
   machine TEXT NOT NULL,
+  credential TEXT NOT NULL DEFAULT 'user',
+  credential_kind TEXT NOT NULL DEFAULT 'user',
   source TEXT NOT NULL,
   method TEXT NOT NULL,
   endpoint TEXT NOT NULL,
@@ -144,9 +145,6 @@ CREATE TABLE IF NOT EXISTS github_rest_usage (
   coverage_epoch TEXT,
   pr TEXT
 );
-
-CREATE INDEX IF NOT EXISTS github_rest_usage_window_idx
-ON github_rest_usage (resource, reset_at);
 
 CREATE TABLE IF NOT EXISTS pr_index (
   repo TEXT NOT NULL,
@@ -527,13 +525,29 @@ const diffColumns = db.query("PRAGMA table_info(diffs)").all() as Array<{ name: 
 if (!diffColumns.some((c) => c.name === "fetched_at")) {
   db.exec("ALTER TABLE diffs ADD COLUMN fetched_at TEXT NOT NULL DEFAULT ''");
 }
+for (const table of ["github_graphql_usage", "github_rest_usage"]) {
+  const columns = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "credential")) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN credential TEXT NOT NULL DEFAULT 'user'`);
+  }
+  if (!columns.some((column) => column.name === "credential_kind")) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN credential_kind TEXT NOT NULL DEFAULT 'user'`);
+  }
+}
 const githubRestUsageColumns = db.query("PRAGMA table_info(github_rest_usage)").all() as Array<{ name: string }>;
 if (!githubRestUsageColumns.some((c) => c.name === "pr")) {
   db.exec("ALTER TABLE github_rest_usage ADD COLUMN pr TEXT");
 }
 db.exec(`
-CREATE INDEX IF NOT EXISTS github_rest_usage_pr_idx
-ON github_rest_usage (occurred_at) WHERE pr IS NOT NULL;
+DROP INDEX IF EXISTS github_graphql_usage_window_idx;
+DROP INDEX IF EXISTS github_rest_usage_window_idx;
+DROP INDEX IF EXISTS github_rest_usage_pr_idx;
+CREATE INDEX IF NOT EXISTS github_graphql_usage_credential_window_idx
+ON github_graphql_usage (credential, reset_at, source, operation);
+CREATE INDEX IF NOT EXISTS github_rest_usage_credential_window_idx
+ON github_rest_usage (credential, resource, reset_at);
+CREATE INDEX IF NOT EXISTS github_rest_usage_credential_pr_idx
+ON github_rest_usage (credential, occurred_at) WHERE pr IS NOT NULL;
 `);
 
 const storedEpoch = (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
@@ -1868,17 +1882,22 @@ export function getMergedPrAnalyticsCache(repo: string, base: string): { payload
 
 const insertGithubGraphqlUsageStmt = db.prepare(`
 INSERT INTO github_graphql_usage (
-  occurred_at, machine, source, operation, cost, used, remaining, reset_at, status
+  occurred_at, machine, credential, credential_kind, source, operation, cost, used, remaining, reset_at, status
 ) VALUES (
-  $occurred_at, $machine, $source, $operation, $cost, $used, $remaining, $reset_at, $status
+  $occurred_at, $machine, $credential, $credential_kind, $source, $operation, $cost, $used, $remaining, $reset_at, $status
 )`);
 const pruneGithubGraphqlUsageStmt = db.prepare(
   "DELETE FROM github_graphql_usage WHERE julianday(occurred_at) < julianday('now', '-7 days')",
 );
 let lastGithubUsagePruneAt = 0;
 const githubUsageTrackingStartedAt = new Date().toISOString();
+const githubGraphqlTrackingStartedAt = new Map<string, string>([["user", githubUsageTrackingStartedAt]]);
 
 setGithubGraphqlUsageRecorder((event: GithubGraphqlUsageEvent) => {
+  const credential = event.credential ?? "user";
+  if (!githubGraphqlTrackingStartedAt.has(credential)) {
+    githubGraphqlTrackingStartedAt.set(credential, new Date().toISOString());
+  }
   const now = Date.now();
   if (now - lastGithubUsagePruneAt >= 60 * 60_000) {
     pruneGithubGraphqlUsageStmt.run();
@@ -1887,6 +1906,8 @@ setGithubGraphqlUsageRecorder((event: GithubGraphqlUsageEvent) => {
   insertGithubGraphqlUsageStmt.run({
     $occurred_at: event.occurredAt,
     $machine: hostname(),
+    $credential: credential,
+    $credential_kind: event.credentialKind ?? "user",
     $source: event.source,
     $operation: event.operation,
     $cost: event.cost,
@@ -1925,17 +1946,17 @@ export interface GithubGraphqlUsageSummary {
   predictedUsed: number | null;
 }
 
-function githubUsageRows(column: "source" | "operation", resetAt: string): GithubUsageRow[] {
-  return db.query<GithubUsageRow, [string]>(`
+function githubUsageRows(column: "source" | "operation", resetAt: string, credential: string): GithubUsageRow[] {
+  return db.query<GithubUsageRow, [string, string]>(`
     SELECT ${column} AS label,
       COALESCE(SUM(cost), 0) AS points,
       COUNT(*) AS requests,
       SUM(cost IS NULL) AS unknown_cost_requests
     FROM github_graphql_usage
-    WHERE julianday(reset_at) = julianday(?)
+    WHERE credential = ? AND julianday(reset_at) = julianday(?)
     GROUP BY ${column}
     ORDER BY points DESC, requests DESC, label
-  `).all(resetAt);
+  `).all(credential, resetAt);
 }
 
 interface GithubUsageHistoryRow {
@@ -1946,19 +1967,19 @@ interface GithubUsageHistoryRow {
   unknown_cost_requests: number;
 }
 
-function githubUsageHistory(globalUsed: number, resetAt: string): GithubGraphqlUsageSummary["history"] {
+function githubUsageHistory(globalUsed: number, resetAt: string, credential: string): GithubGraphqlUsageSummary["history"] {
   const resetMs = Date.parse(resetAt);
   const hourMs = 60 * 60_000;
-  const rows = db.query<GithubUsageHistoryRow, [string]>(`
+  const rows = db.query<GithubUsageHistoryRow, [string, string]>(`
     SELECT reset_at,
       MAX(used) AS used,
       COALESCE(SUM(cost), 0) AS local_points,
       COUNT(*) AS local_requests,
       SUM(cost IS NULL) AS unknown_cost_requests
     FROM github_graphql_usage
-    WHERE julianday(reset_at) > julianday(?)
+    WHERE credential = ? AND julianday(reset_at) > julianday(?)
     GROUP BY reset_at
-  `).all(new Date(resetMs - 72 * hourMs).toISOString());
+  `).all(credential, new Date(resetMs - 72 * hourMs).toISOString());
   const byReset = new Map(rows.map((row) => [Date.parse(row.reset_at), row]));
   return Array.from({ length: 72 }, (_, index) => {
     const bucketResetMs = resetMs - (71 - index) * hourMs;
@@ -1985,17 +2006,18 @@ export function predictGithubHourlyUsage(
 }
 
 
-export function githubGraphqlUsage(globalUsed: number, globalLimit: number, resetAt: string, nowMs = Date.now()): GithubGraphqlUsageSummary {
-  const sources = githubUsageRows("source", resetAt);
-  const operations = githubUsageRows("operation", resetAt);
+export function githubGraphqlUsage(globalUsed: number, globalLimit: number, resetAt: string, nowMs = Date.now(), credential = "user"): GithubGraphqlUsageSummary {
+  const sources = githubUsageRows("source", resetAt, credential);
+  const operations = githubUsageRows("operation", resetAt, credential);
   const localPoints = sources.reduce((sum, row) => sum + row.points, 0);
   const localRequests = sources.reduce((sum, row) => sum + row.requests, 0);
   const unknownCostRequests = sources.reduce((sum, row) => sum + row.unknown_cost_requests, 0);
-  const first = db.query<{ occurred_at: string | null }, [string]>(
-    "SELECT MIN(occurred_at) AS occurred_at FROM github_graphql_usage WHERE julianday(reset_at) = julianday(?)",
-  ).get(resetAt);
+  const first = db.query<{ occurred_at: string | null }, [string, string]>(
+    "SELECT MIN(occurred_at) AS occurred_at FROM github_graphql_usage WHERE credential = ? AND julianday(reset_at) = julianday(?)",
+  ).get(credential, resetAt);
   const windowStartedAt = new Date(Date.parse(resetAt) - 60 * 60_000).toISOString();
-  const windowComplete = Date.parse(githubUsageTrackingStartedAt) <= Date.parse(windowStartedAt)
+  const trackingStartedAt = githubGraphqlTrackingStartedAt.get(credential);
+  const windowComplete = trackingStartedAt !== undefined && Date.parse(trackingStartedAt) <= Date.parse(windowStartedAt)
     && unknownCostRequests === 0;
   return {
     machine: hostname(),
@@ -2018,16 +2040,16 @@ export function githubGraphqlUsage(globalUsed: number, globalLimit: number, rese
       requests: row.requests,
       unknownCostRequests: row.unknown_cost_requests,
     })),
-    history: githubUsageHistory(globalUsed, resetAt),
+    history: githubUsageHistory(globalUsed, resetAt, credential),
     predictedUsed: predictGithubHourlyUsage(globalUsed, globalLimit, windowStartedAt, nowMs),
   };
 }
 
 const insertGithubRestUsageStmt = db.prepare(`
 INSERT INTO github_rest_usage (
-  occurred_at, machine, source, method, endpoint, pr, resource, status, used, remaining, reset_at, charged, coverage_epoch
+  occurred_at, machine, credential, credential_kind, source, method, endpoint, pr, resource, status, used, remaining, reset_at, charged, coverage_epoch
 ) VALUES (
-  $occurred_at, $machine, $source, $method, $endpoint, $pr, $resource, $status, $used, $remaining, $reset_at, $charged, $coverage_epoch
+  $occurred_at, $machine, $credential, $credential_kind, $source, $method, $endpoint, $pr, $resource, $status, $used, $remaining, $reset_at, $charged, $coverage_epoch
 )`);
 const pruneGithubRestUsageStmt = db.prepare(
   "DELETE FROM github_rest_usage WHERE julianday(occurred_at) < julianday('now', '-7 days')",
@@ -2043,6 +2065,8 @@ setGithubRestUsageRecorder((event: GithubRestUsageEvent) => {
   insertGithubRestUsageStmt.run({
     $occurred_at: event.occurredAt,
     $machine: hostname(),
+    $credential: event.credential ?? "user",
+    $credential_kind: event.credentialKind ?? "user",
     $source: event.source,
     $method: event.method,
     $endpoint: event.endpoint,
@@ -2098,7 +2122,7 @@ const REST_USAGE_COUNTS_SQL = `COUNT(*) AS requests,
 
 // Core requests of the windows ending in (?1, ?2]: windows last an hour, so a response belongs to
 // the one its reset falls in, and a request that got no rate-limit headers to the hour it was made in.
-const REST_CORE_WINDOWS_SQL = `resource = 'core' AND (
+const REST_CORE_WINDOWS_SQL = `credential = ?3 AND resource = 'core' AND (
   (reset_at > ?1 AND reset_at <= ?2)
   OR (reset_at IS NULL AND occurred_at >= ?1 AND occurred_at < ?2)
 )`;
@@ -2114,8 +2138,8 @@ function githubRestUsageCounts(row: GithubRestUsageRow): GithubRestUsageCounts {
   };
 }
 
-function githubRestUsageHistory(globalUsed: number, resetMs: number): GithubRestUsageSummary["history"] {
-  const rows = db.query<GithubRestUsageRow & { reset_at: string | null; occurred_at: string; used: number | null }, [string, string]>(`
+function githubRestUsageHistory(globalUsed: number, resetMs: number, credential: string): GithubRestUsageSummary["history"] {
+  const rows = db.query<GithubRestUsageRow & { reset_at: string | null; occurred_at: string; used: number | null }, [string, string, string]>(`
     SELECT reset_at,
       MIN(occurred_at) AS occurred_at,
       MAX(CASE WHEN endpoint != '/rate_limit' THEN used END) AS used,
@@ -2123,7 +2147,7 @@ function githubRestUsageHistory(globalUsed: number, resetMs: number): GithubRest
     FROM github_rest_usage
     WHERE ${REST_CORE_WINDOWS_SQL}
     GROUP BY reset_at, CASE WHEN reset_at IS NULL THEN occurred_at END
-  `).all(new Date(resetMs - 72 * HOUR_MS).toISOString(), new Date(resetMs).toISOString());
+  `).all(new Date(resetMs - 72 * HOUR_MS).toISOString(), new Date(resetMs).toISOString(), credential);
   const history = Array.from({ length: 72 }, (_, index) => ({
     resetAt: new Date(resetMs - (71 - index) * HOUR_MS).toISOString(),
     used: null as number | null,
@@ -2147,14 +2171,14 @@ function githubRestUsageHistory(globalUsed: number, resetMs: number): GithubRest
   return history;
 }
 
-export function githubRestUsage(globalUsed: number, resetAt: string): GithubRestUsageSummary {
+export function githubRestUsage(globalUsed: number, resetAt: string, credential = "user"): GithubRestUsageSummary {
   const resetMs = Date.parse(resetAt);
   const windowStartedAt = new Date(resetMs - HOUR_MS).toISOString();
-  const coverage = activeGithubRestCoverage();
-  const window: [string, string, string | null] = [
-    windowStartedAt, new Date(resetMs).toISOString(), coverage?.epoch ?? null,
+  const coverage = activeGithubRestCoverage(credential);
+  const window: [string, string, string | null, string] = [
+    windowStartedAt, new Date(resetMs).toISOString(), coverage?.epoch ?? null, credential,
   ];
-  const currentWindow = `resource = 'core' AND coverage_epoch = ?3 AND (
+  const currentWindow = `credential = ?4 AND resource = 'core' AND coverage_epoch = ?3 AND (
     reset_at = ?2 OR (reset_at IS NULL AND occurred_at >= ?1 AND occurred_at < ?2)
   )`;
   const totals = db.query<GithubRestUsageRow & { recorded_since: string | null }, typeof window>(`
@@ -2178,12 +2202,12 @@ export function githubRestUsage(globalUsed: number, resetAt: string): GithubRest
   `).all(...window);
   // A span opened while a GitHub CLI command could spend this budget unseen never attributes the rest.
   const windowComplete = coverage !== null && coverage.eligible && Date.parse(coverage.startedAt) <= resetMs - HOUR_MS;
-  const reading = windowComplete && githubRestRequestsInFlight() === 0 ? db.query<{ used: number | null; ambiguous_windows: number; headerless_charges: number }, typeof window>(`
+  const reading = windowComplete && githubRestRequestsInFlight(credential) === 0 ? db.query<{ used: number | null; ambiguous_windows: number; headerless_charges: number }, typeof window>(`
     SELECT MAX(CASE WHEN charged = 1 AND reset_at = ?2 THEN used END) AS used,
       COALESCE(SUM(reset_at IS NOT NULL AND reset_at != ?2), 0) AS ambiguous_windows,
       COALESCE(SUM(charged = 1 AND (used IS NULL OR reset_at IS NULL)), 0) AS headerless_charges
     FROM github_rest_usage
-    WHERE resource = 'core' AND coverage_epoch = ?3 AND (
+    WHERE credential = ?4 AND resource = 'core' AND coverage_epoch = ?3 AND (
       reset_at = ?2 OR (occurred_at >= ?1 AND occurred_at < ?2)
     )
   `).get(...window)! : null;
@@ -2202,7 +2226,7 @@ export function githubRestUsage(globalUsed: number, resetAt: string): GithubRest
       : null,
     sources: sources.map((row) => ({ source: row.source, ...githubRestUsageCounts(row) })),
     endpoints: endpoints.map((row) => ({ method: row.method, endpoint: row.endpoint, ...githubRestUsageCounts(row) })),
-    history: githubRestUsageHistory(globalUsed, resetMs),
+    history: githubRestUsageHistory(globalUsed, resetMs, credential),
   };
 }
 
@@ -2215,12 +2239,12 @@ export interface GithubHotPr {
 }
 
 // Charged core REST calls that named a pull request in the last hour, hottest first.
-export function githubHotPrs(nowMs = Date.now()): GithubHotPr[] {
-  return db.query<GithubHotPr, [string]>(`
+export function githubHotPrs(nowMs = Date.now(), credential = "user"): GithubHotPr[] {
+  return db.query<GithubHotPr, [string, string]>(`
     WITH by_source AS (
       SELECT pr, source, COUNT(*) AS calls
       FROM github_rest_usage
-      WHERE pr IS NOT NULL AND occurred_at >= ?1 AND resource = 'core' AND charged = 1
+      WHERE credential = ?2 AND pr IS NOT NULL AND occurred_at >= ?1 AND resource = 'core' AND charged = 1
       GROUP BY pr, source
     ), ranked AS (
       SELECT pr, source, SUM(calls) OVER (PARTITION BY pr) AS total,
@@ -2228,7 +2252,7 @@ export function githubHotPrs(nowMs = Date.now()): GithubHotPr[] {
       FROM by_source
     )
     SELECT pr, total AS calls, source FROM ranked WHERE position = 1 ORDER BY total DESC, pr
-  `).all(new Date(nowMs - HOUR_MS).toISOString());
+  `).all(new Date(nowMs - HOUR_MS).toISOString(), credential);
 }
 
 const REPLICA_TABLES = [

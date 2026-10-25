@@ -1,5 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
+export type GithubCredentialKind = "user" | "app";
+
 export type GithubUsageSource =
   | "agent read"
   | "app detail"
@@ -16,6 +18,8 @@ export type GithubUsageSource =
   | "webhook";
 
 export interface GithubGraphqlUsageEvent {
+  credential?: string;
+  credentialKind?: GithubCredentialKind;
   occurredAt: string;
   source: GithubUsageSource;
   operation: string;
@@ -69,58 +73,69 @@ export function currentGithubUsageSource(): GithubUsageSource | "unknown" {
 
 // Opaque GitHub CLI traffic cannot be attributed to other clients.
 export interface GithubRestCoverage {
+  credential: string;
   epoch: string;
   startedAt: string;
   eligible: boolean;
 }
 
-let restCoverage: GithubRestCoverage | null = null;
+const restCoverages = new Map<string, GithubRestCoverage>();
 let unmeteredGithubCliOperations = 0;
-let restRequestsInFlight = 0;
+const restRequestsInFlight = new Map<string, number>();
 
-export function githubRestCoverage(): GithubRestCoverage {
-  restCoverage ??= {
-    epoch: crypto.randomUUID(),
-    startedAt: new Date().toISOString(),
-    eligible: unmeteredGithubCliOperations === 0,
-  };
-  return restCoverage;
+export function githubRestCoverage(credential = "user"): GithubRestCoverage {
+  let coverage = restCoverages.get(credential);
+  if (!coverage) {
+    coverage = {
+      credential,
+      epoch: crypto.randomUUID(),
+      startedAt: new Date().toISOString(),
+      eligible: credential.startsWith("app:") || unmeteredGithubCliOperations === 0,
+    };
+    restCoverages.set(credential, coverage);
+  }
+  return coverage;
 }
 
-export function activeGithubRestCoverage(): GithubRestCoverage | null {
-  return restCoverage;
+export function activeGithubRestCoverage(credential = "user"): GithubRestCoverage | null {
+  return restCoverages.get(credential) ?? null;
 }
 
-export function endGithubRestCoverage(): void {
-  restCoverage = null;
+export function endGithubRestCoverage(credential?: string): void {
+  if (credential === undefined) restCoverages.clear();
+  else restCoverages.delete(credential);
 }
 
-export function beginGithubRestRequest(): void {
-  restRequestsInFlight++;
+export function beginGithubRestRequest(credential = "user"): void {
+  restRequestsInFlight.set(credential, (restRequestsInFlight.get(credential) ?? 0) + 1);
 }
 
-export function finishGithubRestRequest(coverage: GithubRestCoverage | null): void {
-  restRequestsInFlight--;
-  if (restCoverage !== coverage) endGithubRestCoverage();
+export function finishGithubRestRequest(coverage: GithubRestCoverage | null, credential = coverage?.credential ?? "user"): void {
+  const remaining = (restRequestsInFlight.get(credential) ?? 0) - 1;
+  if (remaining > 0) restRequestsInFlight.set(credential, remaining);
+  else restRequestsInFlight.delete(credential);
+  if (activeGithubRestCoverage(credential) !== coverage) endGithubRestCoverage(credential);
 }
 
-export function githubRestRequestsInFlight(): number {
-  return restRequestsInFlight;
+export function githubRestRequestsInFlight(credential = "user"): number {
+  return restRequestsInFlight.get(credential) ?? 0;
 }
 
 export function beginUnmeteredGithubCliOperation(): () => void {
   unmeteredGithubCliOperations++;
-  endGithubRestCoverage();
+  for (const key of restCoverages.keys()) if (!key.startsWith("app:")) endGithubRestCoverage(key);
   let ended = false;
   return () => {
     if (ended) return;
     ended = true;
     unmeteredGithubCliOperations--;
-    endGithubRestCoverage();
+    for (const key of restCoverages.keys()) if (!key.startsWith("app:")) endGithubRestCoverage(key);
   };
 }
 
 export interface GithubRestUsageEvent {
+  credential?: string;
+  credentialKind?: GithubCredentialKind;
   occurredAt: string;
   source: GithubUsageSource | "unknown";
   method: string;
@@ -150,7 +165,7 @@ export function recordGithubRestUsage(event: GithubRestUsageEvent): void {
   try {
     restRecorder(event);
   } catch (error) {
-    endGithubRestCoverage();
+    endGithubRestCoverage(event.credential ?? "user");
     console.error("GitHub REST usage recording failed:", error);
   }
 }

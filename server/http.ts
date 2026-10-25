@@ -98,6 +98,7 @@ import {
   viewerRepos,
   type FileHistoryCommit,
   type FileHistoryDiff,
+  type GithubCredentialQuota,
   type GithubQuota,
   type PrCommentSince,
   type PrDetail,
@@ -117,6 +118,7 @@ import { tailscaleServeStatus } from "./tailscaleServe.ts";
 import { runtimeSupervisor } from "./supervisor.ts";
 import { withGithubUsageSource, type GithubUsageSource } from "./githubUsage.ts";
 import type { GithubAuthStatus } from "./githubAuth.ts";
+import { handleGithubAppSetup } from "./githubAppSetup.ts";
 import { branchesFromMirror, commitsFromMirror, commitStatsFromMirror, conflictFilesFromMirror, conflictMergeFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError, resolvedMergeFromMirror, summarizeCommitStats, type MirrorDiffResult, type PullRequestCommit } from "./mirror.ts";
 import { cachedGeneratedPathsFromMirror, generatedFilesFromMirror, generatedPathsForCommitsFromMirror } from "./generatedFiles.ts";
 import { checkState, currentChecks, type CheckState } from "./checkState.ts";
@@ -186,7 +188,8 @@ function hotPrLabel(hot: GithubHotPr): string {
 // hotPrs: name the PR spending core quota when core is exhausted or cooling down.
 function githubErrorResponse(error: unknown, message = "GitHub request failed", options: { hotPrs?: boolean } = {}): Response {
   if (!(error instanceof GithubRequestError)) return json({ error: message }, 502);
-  const hotPrs = options.hotPrs && error.kind === "quota" && error.resource === "core" ? githubHotPrs() : null;
+  const hotPrs = options.hotPrs && error.kind === "quota" && error.resource === "core"
+    ? githubHotPrs(Date.now(), error.credential ?? "user") : null;
   const hottest = hotPrs?.[0];
   const response = json({
     error: error.status === 404 ? "GitHub resource not found or inaccessible"
@@ -791,13 +794,34 @@ async function handleAllPrs(url: URL, runtime: HttpRuntime): Promise<Response> {
 async function handleGithubUsage(runtime: HttpRuntime): Promise<Response> {
   try {
     const resources = await runtime.fetchGithubQuota();
+    const credential = resources.identity ?? "user";
+    const recording = restUsageEnabled();
     return json({
       quota: resources.graphql,
       rest: resources.rest,
       search: resources.search,
-      usage: githubGraphqlUsage(resources.graphql.used, resources.graphql.limit, resources.graphql.resetAt),
+      usage: githubGraphqlUsage(resources.graphql.used, resources.graphql.limit, resources.graphql.resetAt, Date.now(), credential),
       // null while REST usage recording is off for this installation.
-      restUsage: restUsageEnabled() ? githubRestUsage(resources.rest.used, resources.rest.resetAt) : null,
+      restUsage: recording ? githubRestUsage(resources.rest.used, resources.rest.resetAt, credential) : null,
+      ...(resources.identities ? {
+        restRecordingEnabled: recording,
+        identities: resources.identities.map((identity) => ({
+          identity: identity.identity,
+          kind: identity.kind,
+          ...(identity.installationId === undefined ? {} : { installationId: identity.installationId }),
+          repositories: identity.repositories,
+          quota: identity.graphql,
+          rest: identity.rest,
+          search: identity.search,
+          fetchedAt: identity.fetchedAt,
+          usage: identity.graphql
+            ? githubGraphqlUsage(identity.graphql.used, identity.graphql.limit, identity.graphql.resetAt, Date.now(), identity.identity)
+            : null,
+          restUsage: recording && identity.rest
+            ? githubRestUsage(identity.rest.used, identity.rest.resetAt, identity.identity)
+            : null,
+        })),
+      } : {}),
     });
   } catch (err) {
     if (isTransportFailure(err)) console.warn(`GitHub usage fetch failed: ${(err as Error).message}`);
@@ -1159,7 +1183,10 @@ export interface PrAgentSummary {
   newCommentsSince: string | null;
   newComments: PrSummaryNewComment[];
   newCommentsComplete: boolean;
-  quota: (GithubQuota & { hotPrs: GithubHotPr[] }) | null;
+  quota: (Omit<GithubQuota, "identities"> & {
+    hotPrs: GithubHotPr[];
+    identities?: Array<GithubCredentialQuota & { hotPrs: GithubHotPr[] }>;
+  }) | null;
 }
 
 
@@ -1287,7 +1314,13 @@ export function buildPrAgentSummary(
     newCommentsSince,
     newComments: commentsSince,
     newCommentsComplete: true,
-    quota: quota && { ...quota, hotPrs: githubHotPrs() },
+    quota: quota && {
+      ...quota,
+      hotPrs: githubHotPrs(Date.now(), quota.identity ?? "user"),
+      identities: quota.identities?.map((identity) => ({
+        ...identity, hotPrs: githubHotPrs(Date.now(), identity.identity),
+      })),
+    },
   };
 }
 
@@ -1353,10 +1386,17 @@ function mergeApprovalLine(summary: PrAgentSummary): string {
   return `Merge approval: ${summary.approvedForSafeMerge ? "approved for safe merge" : "not granted"}`;
 }
 
+function activeAgentQuota(summary: PrAgentSummary) {
+  const repo = summary.ref.slice(0, summary.ref.lastIndexOf("#"));
+  return summary.quota?.identities?.find((identity) => identity.kind === "app" && identity.repositories.includes(repo))
+    ?? summary.quota;
+}
+
 function coreExhaustionLine(summary: PrAgentSummary): string | null {
-  const hottest = summary.quota?.hotPrs[0];
-  return summary.quota?.rest.remaining === 0
-    ? `GitHub core REST quota exhausted until ${summary.quota.rest.resetAt}${hottest ? `; hottest PR: ${hotPrLabel(hottest)}` : ""}.`
+  const quota = activeAgentQuota(summary);
+  const hottest = quota?.hotPrs[0];
+  return quota?.rest?.remaining === 0
+    ? `GitHub ${"kind" in quota && quota.kind === "app" ? "App " : ""}core REST quota exhausted until ${quota.rest.resetAt}${hottest ? `; hottest PR: ${hotPrLabel(hottest)}` : ""}.`
     : null;
 }
 
@@ -1387,8 +1427,9 @@ export function formatPrAgentSummary(summary: PrAgentSummary, options: AgentSumm
     if (newerActivityAt) {
       lines.push(`Known newer activity: webhook received ${newerActivityAt}. This snapshot does not include that activity.`);
     }
-    if (summary.quota?.graphql.remaining === 0 && !restFallbackEnabled()) {
-      lines.push(`Refresh unavailable until ${summary.quota.graphql.resetAt}: GitHub GraphQL quota exhausted.`);
+    const activeQuota = activeAgentQuota(summary);
+    if (activeQuota?.graphql?.remaining === 0 && !restFallbackEnabled()) {
+      lines.push(`Refresh unavailable until ${activeQuota.graphql.resetAt}: GitHub ${"kind" in activeQuota && activeQuota.kind === "app" ? "App " : ""}GraphQL quota exhausted.`);
     }
     const coreExhausted = coreExhaustionLine(summary);
     if (coreExhausted) lines.push(coreExhausted);
@@ -1422,12 +1463,21 @@ export function formatPrAgentSummary(summary: PrAgentSummary, options: AgentSumm
   }
 
   lines.push("", summary.quota
-    ? `Quota: REST ${summary.quota.rest.remaining}/${summary.quota.rest.limit} left · GraphQL ${summary.quota.graphql.remaining}/${summary.quota.graphql.limit} left${summary.quota.search ? ` · Search ${summary.quota.search.remaining}/${summary.quota.search.limit} left` : ""}`
+    ? `${summary.quota.identities ? "Personal quota" : "Quota"}: REST ${summary.quota.rest.remaining}/${summary.quota.rest.limit} left · GraphQL ${summary.quota.graphql.remaining}/${summary.quota.graphql.limit} left${summary.quota.search ? ` · Search ${summary.quota.search.remaining}/${summary.quota.search.limit} left` : ""}`
     : "Quota: unavailable");
   // Every PR over 100 calls, and at least the five hottest.
   const hotPrs = summary.quota?.hotPrs.filter((hot, index) => index < 5 || hot.calls > 100) ?? [];
   if (hotPrs.length) {
-    lines.push(`Hot PRs (charged core REST calls, last 60m): ${hotPrs.map((hot) => `${hot.pr} ${hot.calls} (mostly ${hot.source})`).join(" · ")}`);
+    lines.push(`${summary.quota?.identities ? "Personal hot PRs" : "Hot PRs"} (charged core REST calls, last 60m): ${hotPrs.map((hot) => `${hot.pr} ${hot.calls} (mostly ${hot.source})`).join(" · ")}`);
+  }
+  for (const identity of summary.quota?.identities ?? []) {
+    if (identity.kind !== "app") continue;
+    const resource = (quota: GithubCredentialQuota["rest"]) => quota ? `${quota.remaining}/${quota.limit} left` : "unknown";
+    lines.push(`GitHub App quota (installation ${identity.installationId ?? identity.identity}): REST ${resource(identity.rest)} · GraphQL ${resource(identity.graphql)} · Search ${resource(identity.search)}`);
+    const hot = identity.hotPrs.filter((pr, index) => index < 5 || pr.calls > 100);
+    if (hot.length) {
+      lines.push(`GitHub App hot PRs (installation ${identity.installationId ?? identity.identity}, charged core REST calls, last 60m): ${hot.map((pr) => `${pr.pr} ${pr.calls} (mostly ${pr.source})`).join(" · ")}`);
+    }
   }
   return `${lines.join("\n")}\n`;
 }
@@ -3901,6 +3951,11 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     }
     if (req.method === "GET" && url.pathname === "/api/relay/coverage") {
       return handleRelayCoverage(url);
+    }
+    if (url.pathname === "/api/github-app/quota" || url.pathname.startsWith("/api/github-app/quota/")) {
+      if (isMockGithub) return url.pathname === "/api/github-app/quota" && req.method === "GET"
+        ? json({ app: null }) : json({ error: "App registration is unavailable in fixture mode" }, 405);
+      return handleGithubAppSetup(req);
     }
     if (req.method === "GET" && url.pathname === "/api/github-app/start") {
       return handleGithubAppStart(url, port);
