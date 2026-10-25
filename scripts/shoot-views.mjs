@@ -221,7 +221,63 @@ function setAsideScenario(roundtrip) {
   };
 }
 
+function inboxRefreshBurstScenario() {
+  let state;
+  return {
+    name: "inbox-refresh-burst",
+    route: "#/",
+    description: "Slow inbox refreshes remain serial and show completed snapshots during sustained events.",
+    ready: ".inbox-layout .queue-group",
+    beforeGoto: async (page, { baseURL }) => {
+      const inbox = await requestJson(`${baseURL}/api/inbox`);
+      const updatedTitle = "Updated while inbox refresh events continue";
+      const updated = structuredClone(inbox);
+      updated.prs.find((pr) => pr.number === 101).title = updatedTitle;
+      let startDelay;
+      const burstStarted = new Promise((resolve) => { startDelay = resolve; });
+      state = { requests: 0, active: 0, maxActive: 0, socket: null, startDelay, updatedTitle };
+      const current = state;
+      await page.routeWebSocket("**/api/events", (socket) => { current.socket = socket; });
+      await page.route("**/api/inbox", async (route) => {
+        const initial = current.requests++ === 0;
+        current.active++;
+        current.maxActive = Math.max(current.maxActive, current.active);
+        try {
+          if (!initial) {
+            await burstStarted;
+            await new Promise((resolve) => setTimeout(resolve, 900));
+          }
+          await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(initial ? inbox : updated) });
+        } finally {
+          current.active--;
+        }
+      });
+    },
+    interact: async (page) => {
+      if (!state.socket) throw new Error("Inbox event socket was not opened");
+      const send = () => state.socket.send(JSON.stringify({ type: "inbox" }));
+      let burstEnded = false;
+      const burst = setInterval(send, 275);
+      const end = setTimeout(() => { burstEnded = true; clearInterval(burst); }, 2400);
+      state.startDelay();
+      send();
+      try {
+        await page.getByText(state.updatedTitle, { exact: true }).waitFor({ timeout: 1800 });
+        if (burstEnded) throw new Error("Inbox snapshot appeared only after invalidations stopped");
+        if (state.maxActive !== 1) throw new Error(`Inbox refreshes overlapped: maximum ${state.maxActive} concurrent requests`);
+        console.log(`inbox-refresh-burst: snapshot visible during events; max concurrent requests=${state.maxActive}`);
+      } catch (error) {
+        throw new Error(`${error.message}; inbox requests=${state.requests}, max concurrent=${state.maxActive}, burst ended=${burstEnded}`, { cause: error });
+      } finally {
+        clearInterval(burst);
+        clearTimeout(end);
+      }
+    },
+  };
+}
+
 const scenarios = [
+  inboxRefreshBurstScenario(),
   ...[false, true].map((expanded) => ({
     name: `inbox-filter-panel-${expanded ? "expanded" : "collapsed"}`,
     route: "#/",

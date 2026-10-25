@@ -9,6 +9,7 @@
 <script>
   import KitchenNotifications from "./KitchenNotifications.svelte";
   import { cookingStage } from "./cookingStage.js";
+  import { coalescedRefresh } from "./coalescedRefresh.js";
   import { categoryForPr, normalizePrGrouping, orderQueueUnits, planGroupDrop, PR_TYPES, TYPE_TITLES } from "../../../shared/prGrouping.ts";
   import { assignments, assignPr, syncAssignments, onAssignmentStorage } from "./prAssignments.svelte.js";
   import { isSetAside, putAside } from "./setAside.svelte.js";
@@ -103,7 +104,6 @@
   let appliedCustom = $state(timeSnapshot.custom);
   let clock = $state(Date.now());
   const copied = timedFlag(1200);
-  let inboxSeq = 0;
   let archivedSeq = 0;
   let lastMouseX = -1;
   let lastMouseY = -1;
@@ -555,11 +555,9 @@
       .catch(console.error);
   }
 
-  async function loadInbox() {
-    const seq = ++inboxSeq;
+  const loadInbox = coalescedRefresh(async () => {
     try {
       const res = await fetchInbox();
-      if (seq !== inboxSeq) return;
       cacheView("inbox", res);
       const selectedKey = ordered[selected] ? prKey(ordered[selected]) : null;
       prs = res.prs;
@@ -581,9 +579,9 @@
       }
       warmDetails(res.prs);
     } catch (e) {
-      if (seq === inboxSeq) error = String(e);
+      error = String(e);
     }
-  }
+  });
 
   const relayStatusSnapshot = cachedView("relayStatus");
   let relayOkAt = $state(relayStatusSnapshot?.url ? relayStatusSnapshot.lastOkAt : null);
