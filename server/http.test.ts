@@ -1280,6 +1280,61 @@ describe("agent PR summary", () => {
     }
   });
 
+  test("rapid stale agent reads share one revalidation per minute and a newer webhook permits one more", async () => {
+    const repo = "test/agent-throttle";
+    const number = 1;
+    const now = Date.parse("2026-10-25T12:00:00Z");
+    setSystemTime(now);
+    const fetchedAt = new Date(now - 10 * 60_000).toISOString();
+    upsertPr(trackedPrRow({ repo, number, fetchedAt }));
+    let calls = 0;
+    let commentCalls = 0;
+    const { promise: gate, resolve: release } = Promise.withResolvers<void>();
+    const window = { limit: 5000, used: 0, remaining: 5000, resetAt: fetchedAt };
+    const handler = buildFetchHandler(4820, {
+      fetchGithubQuota: async () => ({ rest: window, graphql: window, search: window, fetchedAt }),
+      refreshPr: async () => { calls++; await gate; },
+      fetchPrCommentsSince: async () => {
+        commentCalls++;
+        return [{ kind: "comment", author: "reviewer", body: "new", createdAt: new Date(now).toISOString(), path: null, line: null, state: null, url: null }];
+      },
+    });
+    const url = `http://127.0.0.1:4820/api/agent/pr/${repo}/${number}?format=json`;
+    try {
+      const responses = await Promise.all(Array.from({ length: 5 }, () => handler(new Request(url))));
+      expect(calls).toBe(1);
+      release();
+      await gate;
+      await Promise.resolve();
+      for (const response of responses) {
+        expect(await response.json()).toMatchObject({ snapshot: { fetchedAt, freshness: "outdated", newerActivityAt: null } });
+      }
+      // Completed refreshes that leave an old snapshot must still be throttled.
+      for (let i = 0; i < 5; i++) {
+        expect((await handler(new Request(`${url}&fresh=1&since=${new Date(now - i * 1000).toISOString()}`))).status).toBe(200);
+      }
+      expect(calls).toBe(1);
+      expect(commentCalls).toBe(1);
+      setSystemTime(now + 1000);
+      const webhookAt = new Date(now + 1000).toISOString();
+      recordPrWebhookActivity(repo, number, webhookAt);
+      const afterWebhook = await handler(new Request(url));
+      expect(await afterWebhook.json()).toMatchObject({ snapshot: { fetchedAt, freshness: "outdated", newerActivityAt: webhookAt } });
+      expect(calls).toBe(2);
+      for (let i = 0; i < 5; i++) {
+        expect((await handler(new Request(`${url}&fresh=1`))).status).toBe(409);
+      }
+      expect(calls).toBe(2);
+      setSystemTime(now + 61_001);
+      await handler(new Request(url));
+      expect(calls).toBe(3);
+    } finally {
+      release();
+      setSystemTime();
+      for (const table of ["prs", "pr_detail_cache", "pr_webhook_activity"]) db.query(`DELETE FROM ${table} WHERE repo = ?`).run(repo);
+    }
+  });
+
   test("agent reads join known newer activity and fresh responses reject a webhook arriving during refresh", async () => {
     const repo = "test/known-newer";
     const number = 1;

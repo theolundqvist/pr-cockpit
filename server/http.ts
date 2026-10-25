@@ -52,6 +52,8 @@ import {
   upsertPr,
   upsertCachedPrDetail,
   upsertPrIndex,
+  githubHotPrs,
+  type GithubHotPr,
   type MutationRow,
   type PrIndexRow,
   type PrRow,
@@ -177,12 +179,21 @@ function json(data: unknown, status = 200, headers: Record<string, string> = {})
   });
 }
 
-function githubErrorResponse(error: unknown, message = "GitHub request failed"): Response {
+function hotPrLabel(hot: GithubHotPr): string {
+  return `${hot.pr} (${hot.calls} charged core REST calls in the last 60m, mostly ${hot.source})`;
+}
+
+// hotPrs: name the PR spending core quota when core is exhausted or cooling down.
+function githubErrorResponse(error: unknown, message = "GitHub request failed", options: { hotPrs?: boolean } = {}): Response {
   if (!(error instanceof GithubRequestError)) return json({ error: message }, 502);
+  const hotPrs = options.hotPrs && error.kind === "quota" && error.resource === "core" ? githubHotPrs() : null;
+  const hottest = hotPrs?.[0];
   const response = json({
-    error: error.status === 404 ? "GitHub resource not found or inaccessible" : error.message,
+    error: error.status === 404 ? "GitHub resource not found or inaccessible"
+      : hottest ? `${error.message}; hottest PR: ${hotPrLabel(hottest)}` : error.message,
     kind: error.kind,
     ...(error.resetAt ? { resetAt: error.resetAt } : {}),
+    ...(hotPrs ? { hotPrs } : {}),
   }, error.status);
   if (error.resetAt) {
     response.headers.set("retry-after", String(Math.max(0, Math.ceil((Date.parse(error.resetAt) - Date.now()) / 1_000))));
@@ -545,15 +556,35 @@ async function handleInbox(url: URL): Promise<Response> {
 }
 
 const UNTRACKED_STALE_MS = 5 * 60_000;
+const AGENT_REVALIDATE_MS = 60_000;
+type AgentReadAttempt = { startedAt: number; webhookAt: string | null };
+
+function beginAgentRead(
+  attempts: Map<string, AgentReadAttempt>, repo: string, number: number, useSnapshot = true,
+): boolean {
+  const key = `${repo}#${number}`;
+  const previous = attempts.get(key);
+  const webhookAt = lastWebhookAtForPr(repo, number);
+  const startedAt = Date.now();
+  const lastStartedAt = previous?.startedAt ?? (useSnapshot ? Date.parse(cachedPrSnapshot(repo, number)?.row.fetched_at ?? "") : NaN);
+  const newerWebhook = webhookAt !== null
+    && Date.parse(webhookAt) > lastStartedAt
+    && webhookAt !== previous?.webhookAt;
+  if (startedAt - lastStartedAt < AGENT_REVALIDATE_MS && !newerWebhook) return false;
+  attempts.set(key, { startedAt, webhookAt });
+  return true;
+}
 
 function createPrDetailRevalidator(
   refresh: (repo: string, number: number, source: GithubUsageSource) => Promise<void>,
+  agentAttempts: Map<string, AgentReadAttempt>,
+  revalidating: Map<string, Promise<void>>,
 ): (repo: string, number: number, source: GithubUsageSource) => Promise<void> {
-  const revalidating = new Map<string, Promise<void>>();
   return (repo, number, source) => {
     const key = `${repo}#${number}`;
     let revalidation = revalidating.get(key);
     if (!revalidation) {
+      if (source === "agent read" && !beginAgentRead(agentAttempts, repo, number)) return Promise.resolve();
       revalidation = refresh(repo, number, source);
       revalidating.set(key, revalidation);
       void revalidation.catch((err) => console.error(`background revalidate failed for ${repo}#${number}:`, err));
@@ -1015,6 +1046,15 @@ async function handlePrDetail(
   }
 
   try {
+    if (agentRead) {
+      await runtime.revalidateCachedPrDetail(repoName, num, "agent read");
+      const stored = cachedPrSnapshot(repoName, num);
+      if (!stored) return json({ error: "PR snapshot unavailable" }, 503);
+      return json({
+        ...withBaseBranchPr(repoName, num, JSON.parse(stored.row.detail_json)),
+        agentSnapshot: snapshotStatus(stored.row.fetched_at, lastWebhookAtForPr(repoName, num)),
+      });
+    }
     const snapshotCutoffAt = new Date().toISOString();
     const detail = await runtime.fetchPrDetail(repoName, num, agentRead ? "agent read" : "app detail");
     if (recordView || agentRead) {
@@ -1037,7 +1077,7 @@ async function handlePrDetail(
     return json(agentRead ? { ...response, agentSnapshot: snapshotStatus(stored.fetched_at, lastWebhookAtForPr(repoName, num)) } : response);
   } catch (err) {
     console.error(`detail fetch failed for ${repoName}#${num}:`, err);
-    return githubErrorResponse(err);
+    return githubErrorResponse(err, "GitHub request failed", { hotPrs: agentRead });
   }
 }
 
@@ -1119,7 +1159,7 @@ export interface PrAgentSummary {
   newCommentsSince: string | null;
   newComments: PrSummaryNewComment[];
   newCommentsComplete: boolean;
-  quota: GithubQuota | null;
+  quota: (GithubQuota & { hotPrs: GithubHotPr[] }) | null;
 }
 
 
@@ -1247,7 +1287,7 @@ export function buildPrAgentSummary(
     newCommentsSince,
     newComments: commentsSince,
     newCommentsComplete: true,
-    quota,
+    quota: quota && { ...quota, hotPrs: githubHotPrs() },
   };
 }
 
@@ -1280,6 +1320,8 @@ function formatPrAgentDigest(summary: PrAgentSummary, includeComments: boolean, 
     lines.push(`Cached snapshot: OUTDATED · ${snapshotAge(summary.snapshot.fetchedAt)} old · ${summary.snapshot.fetchedAt}`);
     if (summary.snapshot.newerActivityAt) lines.push(`Known newer activity: webhook received ${summary.snapshot.newerActivityAt}.`);
   }
+  const coreExhausted = coreExhaustionLine(summary);
+  if (coreExhausted) lines.push(coreExhausted);
   const attention = summary.ci.checks.filter((check) => check.state === "failed" || check.state === "cancelled");
   if (attention.length > 0) {
     lines.push(`CI: ${summary.ci.state}`);
@@ -1309,6 +1351,13 @@ function formatPrAgentDigest(summary: PrAgentSummary, includeComments: boolean, 
 
 function mergeApprovalLine(summary: PrAgentSummary): string {
   return `Merge approval: ${summary.approvedForSafeMerge ? "approved for safe merge" : "not granted"}`;
+}
+
+function coreExhaustionLine(summary: PrAgentSummary): string | null {
+  const hottest = summary.quota?.hotPrs[0];
+  return summary.quota?.rest.remaining === 0
+    ? `GitHub core REST quota exhausted until ${summary.quota.rest.resetAt}${hottest ? `; hottest PR: ${hotPrLabel(hottest)}` : ""}.`
+    : null;
 }
 
 export function formatPrAgentSummary(summary: PrAgentSummary, options: AgentSummaryFormatOptions = {}): string {
@@ -1341,6 +1390,8 @@ export function formatPrAgentSummary(summary: PrAgentSummary, options: AgentSumm
     if (summary.quota?.graphql.remaining === 0 && !restFallbackEnabled()) {
       lines.push(`Refresh unavailable until ${summary.quota.graphql.resetAt}: GitHub GraphQL quota exhausted.`);
     }
+    const coreExhausted = coreExhaustionLine(summary);
+    if (coreExhausted) lines.push(coreExhausted);
   }
 
   lines.push("", "## Body", "");
@@ -1373,6 +1424,11 @@ export function formatPrAgentSummary(summary: PrAgentSummary, options: AgentSumm
   lines.push("", summary.quota
     ? `Quota: REST ${summary.quota.rest.remaining}/${summary.quota.rest.limit} left · GraphQL ${summary.quota.graphql.remaining}/${summary.quota.graphql.limit} left${summary.quota.search ? ` · Search ${summary.quota.search.remaining}/${summary.quota.search.limit} left` : ""}`
     : "Quota: unavailable");
+  // Every PR over 100 calls, and at least the five hottest.
+  const hotPrs = summary.quota?.hotPrs.filter((hot, index) => index < 5 || hot.calls > 100) ?? [];
+  if (hotPrs.length) {
+    lines.push(`Hot PRs (charged core REST calls, last 60m): ${hotPrs.map((hot) => `${hot.pr} ${hot.calls} (mostly ${hot.source})`).join(" · ")}`);
+  }
   return `${lines.join("\n")}\n`;
 }
 
@@ -1430,8 +1486,12 @@ async function handleAgentPr(
       commentsSince = await runtime.fetchPrCommentsSince(`${owner}/${repo}`, Number(number), newCommentsSince);
     } catch (err) {
       console.error(`GitHub comments fetch failed for ${owner}/${repo}#${number}:`, err);
-      return githubErrorResponse(err, "GitHub comments fetch failed");
+      return githubErrorResponse(err, "GitHub comments fetch failed", { hotPrs: true });
     }
+  }
+  detail.agentSnapshot = snapshotStatus(detail.agentSnapshot.fetchedAt, lastWebhookAtForPr(`${owner}/${repo}`, Number(number)));
+  if (url.searchParams.get("fresh") === "1" && detail.agentSnapshot.newerActivityAt) {
+    return json({ error: "PR snapshot predates known activity" }, 409);
   }
   const summary = buildPrAgentSummary(`${owner}/${repo}#${number}`, detail, quota, newCommentsSince, commentsSince);
   if (format === "json") return json(summary);
@@ -3595,19 +3655,34 @@ async function handleSwitchBranch(req: Request): Promise<Response> {
 
 export function buildFetchHandler(port: number, dependencyOverrides: Partial<HttpDependencies> = {}) {
   const dependencies: HttpDependencies = { ...defaultHttpDependencies, ...dependencyOverrides };
+  const agentAttempts = new Map<string, AgentReadAttempt>();
+  const revalidating = new Map<string, Promise<void>>();
+  const commentAttempts = new Map<string, AgentReadAttempt>();
+  const comments = new Map<string, { pending: boolean; promise: Promise<PrCommentSince[]> }>();
   const runtime: HttpRuntime = {
     ...dependencies,
+    fetchPrCommentsSince: async (repo, number, since) => {
+      const key = `${repo}#${number}`;
+      if (!comments.get(key)?.pending && (beginAgentRead(commentAttempts, repo, number, false) || !comments.has(key))) {
+        // Fetch a complete, boundary-independent set once; moving --new-since cursors
+        // must not bypass the per-PR window.
+        const fetched = dependencies.fetchPrCommentsSince(repo, number, "1970-01-01T00:00:00.000Z");
+        const entry = { pending: true, promise: fetched };
+        comments.set(key, entry);
+        void fetched.then(() => { entry.pending = false; }, () => { entry.pending = false; });
+      }
+      return (await comments.get(key)!.promise).filter((comment) => Date.parse(comment.createdAt) >= Date.parse(since));
+    },
     allPrsCache: new Map(),
     allPrsRefreshes: new Map(),
     revalidateCachedPrDetail: createPrDetailRevalidator((repo, number, source) =>
       refreshCachedPrDetail(repo, number, source, "all", {
         fetchPrDetail: dependencies.fetchPrDetail,
         cacheGithubActionsForCommit: dependencies.cacheGithubActionsForCommit,
-      })
-    ),
+      }), agentAttempts, revalidating),
     revalidateTrackedPr: createPrDetailRevalidator(async (repo, number, source) => {
       await dependencies.refreshPr(repo, number, source);
-    }),
+    }, agentAttempts, revalidating),
   };
   const webhookRoute = buildWebhookRoutes();
   async function route(req: Request): Promise<Response> {
@@ -4207,7 +4282,9 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     } catch (error) {
       if (!(error instanceof GithubRequestError)) throw error;
       console.error("GitHub request failed:", error);
-      return githubErrorResponse(error);
+      return githubErrorResponse(error, undefined, {
+        hotPrs: httpUsageSource(req.method, new URL(req.url).pathname) === "agent read",
+      });
     }
   };
 }

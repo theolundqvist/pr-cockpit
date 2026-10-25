@@ -125,6 +125,8 @@ export interface GithubRestUsageEvent {
   source: GithubUsageSource | "unknown";
   method: string;
   endpoint: string;
+  // repo#number for a pull request or issue route, which the normalized endpoint masks.
+  pr: string | null;
   // X-RateLimit-Resource when GitHub sent it, otherwise the pool the path belongs to.
   resource: string;
   // null when the request never got an HTTP response.
@@ -161,6 +163,14 @@ export function githubRestCharged(method: string, endpoint: string, status: numb
   if (status === 304) return false;
   if (status !== null && status >= 200 && status < 400) return true;
   return null;
+}
+
+const REST_PR_PATH_RE = /^\/repos\/([^/?#]+)\/([^/?#]+)\/(?:issues|pulls)\/([1-9][0-9]*)(?:[/?#]|$)/;
+
+// Pull requests share issue numbers, so an issue route names the same pull request.
+export function githubRestPullRequest(path: string): string | null {
+  const match = REST_PR_PATH_RE.exec(path);
+  return match ? `${match[1]}/${match[2]}#${match[3]}` : null;
 }
 
 // The identifier after each collection, named as in GitHub's REST reference.

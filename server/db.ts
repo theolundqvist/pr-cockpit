@@ -141,7 +141,8 @@ CREATE TABLE IF NOT EXISTS github_rest_usage (
   remaining INTEGER,
   reset_at TEXT,
   charged INTEGER,
-  coverage_epoch TEXT
+  coverage_epoch TEXT,
+  pr TEXT
 );
 
 CREATE INDEX IF NOT EXISTS github_rest_usage_window_idx
@@ -526,6 +527,14 @@ const diffColumns = db.query("PRAGMA table_info(diffs)").all() as Array<{ name: 
 if (!diffColumns.some((c) => c.name === "fetched_at")) {
   db.exec("ALTER TABLE diffs ADD COLUMN fetched_at TEXT NOT NULL DEFAULT ''");
 }
+const githubRestUsageColumns = db.query("PRAGMA table_info(github_rest_usage)").all() as Array<{ name: string }>;
+if (!githubRestUsageColumns.some((c) => c.name === "pr")) {
+  db.exec("ALTER TABLE github_rest_usage ADD COLUMN pr TEXT");
+}
+db.exec(`
+CREATE INDEX IF NOT EXISTS github_rest_usage_pr_idx
+ON github_rest_usage (occurred_at) WHERE pr IS NOT NULL;
+`);
 
 const storedEpoch = (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
 if (storedEpoch !== SCHEMA_EPOCH) {
@@ -2016,9 +2025,9 @@ export function githubGraphqlUsage(globalUsed: number, globalLimit: number, rese
 
 const insertGithubRestUsageStmt = db.prepare(`
 INSERT INTO github_rest_usage (
-  occurred_at, machine, source, method, endpoint, resource, status, used, remaining, reset_at, charged, coverage_epoch
+  occurred_at, machine, source, method, endpoint, pr, resource, status, used, remaining, reset_at, charged, coverage_epoch
 ) VALUES (
-  $occurred_at, $machine, $source, $method, $endpoint, $resource, $status, $used, $remaining, $reset_at, $charged, $coverage_epoch
+  $occurred_at, $machine, $source, $method, $endpoint, $pr, $resource, $status, $used, $remaining, $reset_at, $charged, $coverage_epoch
 )`);
 const pruneGithubRestUsageStmt = db.prepare(
   "DELETE FROM github_rest_usage WHERE julianday(occurred_at) < julianday('now', '-7 days')",
@@ -2037,6 +2046,7 @@ setGithubRestUsageRecorder((event: GithubRestUsageEvent) => {
     $source: event.source,
     $method: event.method,
     $endpoint: event.endpoint,
+    $pr: event.pr ?? null,
     $resource: event.resource,
     $status: event.status,
     $used: event.used,
@@ -2194,6 +2204,31 @@ export function githubRestUsage(globalUsed: number, resetAt: string): GithubRest
     endpoints: endpoints.map((row) => ({ method: row.method, endpoint: row.endpoint, ...githubRestUsageCounts(row) })),
     history: githubRestUsageHistory(globalUsed, resetMs),
   };
+}
+
+export interface GithubHotPr {
+  pr: string;
+  // Charged core REST calls in the last hour.
+  calls: number;
+  // The source that made most of them.
+  source: string;
+}
+
+// Charged core REST calls that named a pull request in the last hour, hottest first.
+export function githubHotPrs(nowMs = Date.now()): GithubHotPr[] {
+  return db.query<GithubHotPr, [string]>(`
+    WITH by_source AS (
+      SELECT pr, source, COUNT(*) AS calls
+      FROM github_rest_usage
+      WHERE pr IS NOT NULL AND occurred_at >= ?1 AND resource = 'core' AND charged = 1
+      GROUP BY pr, source
+    ), ranked AS (
+      SELECT pr, source, SUM(calls) OVER (PARTITION BY pr) AS total,
+        ROW_NUMBER() OVER (PARTITION BY pr ORDER BY calls DESC, source) AS position
+      FROM by_source
+    )
+    SELECT pr, total AS calls, source FROM ranked WHERE position = 1 ORDER BY total DESC, pr
+  `).all(new Date(nowMs - HOUR_MS).toISOString());
 }
 
 const REPLICA_TABLES = [

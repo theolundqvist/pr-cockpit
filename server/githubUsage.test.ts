@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   githubRestCharged,
+  githubRestPullRequest,
   instrumentGithubGraphql,
   normalizeGithubRestEndpoint,
   RATE_LIMIT_ALIAS,
@@ -90,6 +91,17 @@ test("REST routes keep their shape without owners, identifiers, paths, or querie
   expect(normalizeGithubRestEndpoint("/search/issues?q=repo%3Aacme%2Fapp+secret")).toBe("/search/issues");
   // A route the table does not know keeps nothing that could name an owner or object.
   expect(normalizeGithubRestEndpoint("/orgs/acme/teams/core")).toBe("/:id/:id/:id/:id");
+});
+
+test("PR and issue routes name their pull request while the endpoint stays masked", () => {
+  expect(githubRestPullRequest("/repos/acme/app/pulls/42/files?per_page=100")).toBe("acme/app#42");
+  expect(githubRestPullRequest("/repos/acme/app/issues/7/comments")).toBe("acme/app#7");
+  expect(githubRestPullRequest("/repos/acme/app/pulls/42")).toBe("acme/app#42");
+  expect(normalizeGithubRestEndpoint("/repos/acme/app/pulls/42/files?per_page=100")).toBe("/repos/:owner/:repo/pulls/:pull_number/files");
+  expect(githubRestPullRequest("/repos/acme/app/pulls/comments/5")).toBeNull();
+  expect(githubRestPullRequest("/repos/acme/app/issues/comments/5")).toBeNull();
+  expect(githubRestPullRequest("/repos/acme/app/pulls")).toBeNull();
+  expect(githubRestPullRequest("/repos/acme/app/actions/runs/9")).toBeNull();
 });
 
 test("only REST answers that served the request are charged", () => {
@@ -751,4 +763,51 @@ test("GraphQL traffic preserves a fully covered REST window and its external rem
   expect(result.afterGraphql.localRequests).toBe(1);
   expect(result.afterRest.otherRequests).toBe(4);
   expect(result.afterRest.localRequests).toBe(2);
+});
+
+test("hot PRs rank charged core calls from the last hour with their dominant source", async () => {
+  const result = await runScenario(`
+    const database = await import(${JSON.stringify(dbModuleUrl)});
+    const usage = await import(${JSON.stringify(usageModuleUrl)});
+    const coverage = usage.githubRestCoverage();
+    const record = (overrides, times = 1) => {
+      for (let i = 0; i < times; i++) usage.recordGithubRestUsage({
+        occurredAt: new Date().toISOString(),
+        source: "background poll",
+        method: "GET",
+        endpoint: "/repos/:owner/:repo/pulls/:pull_number",
+        pr: "acme/app#1",
+        resource: "core",
+        status: 200,
+        used: 10,
+        remaining: 4990,
+        resetAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+        charged: true,
+        coverageEpoch: coverage.epoch,
+        ...overrides,
+      });
+    };
+    record({}, 101);
+    record({ source: "agent read" }, 30);
+    record({ pr: "acme/app#2", source: "agent read" }, 3);
+    record({ pr: "acme/app#2", source: "relay" }, 2);
+    record({ pr: "acme/app#3" }, 50);
+    // Not charged to core in the last hour: none of these count.
+    record({ pr: "acme/app#3", status: 304, charged: false }, 20);
+    record({ pr: "acme/app#3", status: 502, charged: null }, 20);
+    record({ pr: "acme/app#4", resource: "search" }, 200);
+    record({ pr: "acme/app#4", occurredAt: new Date(Date.now() - 61 * 60_000).toISOString() }, 200);
+    record({ pr: null, endpoint: "/repos/:owner/:repo/assignees" }, 500);
+    console.log(JSON.stringify({
+      hot: database.githubHotPrs(),
+      stored: database.db.query("SELECT DISTINCT pr FROM github_rest_usage WHERE pr IS NOT NULL ORDER BY pr").all(),
+    }));
+    database.db.close();
+  `);
+  expect(result.hot).toEqual([
+    { pr: "acme/app#1", calls: 131, source: "background poll" },
+    { pr: "acme/app#3", calls: 50, source: "background poll" },
+    { pr: "acme/app#2", calls: 5, source: "agent read" },
+  ]);
+  expect(result.stored).toEqual([{ pr: "acme/app#1" }, { pr: "acme/app#2" }, { pr: "acme/app#3" }, { pr: "acme/app#4" }]);
 });
