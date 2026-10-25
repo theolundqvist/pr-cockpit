@@ -31,6 +31,7 @@ This repository is worked on by humans and coding agents alike. Leave it easier 
 - Operational telemetry belongs on a dedicated Usage page in Settings, not among general controls; it keeps three days of hourly context and forecasts the active GitHub quota window.
 - File status lives in the colored leading icon; moved files use a distinct move glyph, never a text badge beside the name.
 1: - Agents mutate existing PRs through `pr-cockpit`; use its `--body-file` commands for exact multiline text, never `gh` or direct GitHub APIs.
+- Agent reads share a per-PR 60-second GitHub revalidation window, including fresh/listen reads and `--new-since` queries. A newer webhook permits one immediate revalidation; concurrent reads share in-flight work. Cached responses retain their actual snapshot timestamp and freshness. With REST request recording enabled, agent JSON's `quota.hotPrs` ranks charged core calls over the last 60 minutes by PR and dominant source; Markdown and exhausted-quota errors identify the hottest PR.
 - Keep examples, fixtures, benchmarks, and docs free of private company, product, repository, host, and infrastructure names; do not perform unrelated hosting or infrastructure work here.
 2: COCKPIT_PROXY="build-server"                        # optional Cockpit replica source over SSH
 3: # COCKPIT_PROXY="build-server"       # replicate another Cockpit over SSH
