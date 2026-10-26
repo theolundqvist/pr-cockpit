@@ -33,7 +33,11 @@ type GhAccount = {
   state?: string;
 };
 
-let cachedToken: string | null = null;
+// `gh auth login`/`refresh` outside Cockpit (e.g. to authorize SAML SSO) can issue a new token
+// while the old one keeps working without the org grant, so the token is re-read periodically.
+const TOKEN_TTL_MS = 60_000;
+let cachedToken: { value: string; readAt: number } | null = null;
+let tokenRead: Promise<string> | null = null;
 let authorization: AuthorizationAttempt | null = null;
 
 function ghExecutable(): string {
@@ -223,9 +227,13 @@ export async function startGithubSetup(scopes: readonly string[] = DEFAULT_SCOPE
 }
 
 export async function liveGithubToken(): Promise<string> {
-  if (cachedToken) return cachedToken;
-  const result = await runGh(["auth", "token"]);
-  if (!result || result.code !== 0 || !result.stdout) throw new Error("GitHub CLI is not authenticated");
-  cachedToken = result.stdout;
-  return cachedToken;
+  if (cachedToken && Date.now() - cachedToken.readAt < TOKEN_TTL_MS) return cachedToken.value;
+  tokenRead ??= runGh(["auth", "token"]).then((result) => {
+    if (!result || result.code !== 0 || !result.stdout) throw new Error("GitHub CLI is not authenticated");
+    cachedToken = { value: result.stdout, readAt: Date.now() };
+    return result.stdout;
+  }).finally(() => {
+    tokenRead = null;
+  });
+  return tokenRead;
 }
