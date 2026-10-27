@@ -1173,6 +1173,7 @@ export interface PrAgentSummary {
   draft: boolean;
   merge: string;
   approvedForSafeMerge: boolean;
+  pinned: boolean;
   labels: string[];
   review: string;
   updatedAt: string;
@@ -1297,6 +1298,7 @@ export function buildPrAgentSummary(
     draft: detail.isDraft === true,
     merge: String(detail.mergeStateStatus ?? detail.mergeable ?? "UNKNOWN"),
     approvedForSafeMerge: approvedForSafeMerge(repo, number, String(detail.state ?? "UNKNOWN")),
+    pinned: getRanks().has(`${repo}#${number}`),
     labels: (detail.labels?.nodes ?? []).map((label) => label.name),
     review: String(detail.reviewDecision ?? "NONE"),
     updatedAt: String(detail.updatedAt ?? ""),

@@ -1038,10 +1038,26 @@ test("mutation commands enqueue every PR operation under the system Bash and wai
   writeFileSync(bodyPath, body);
   const received: unknown[] = [];
   let nextId = 1;
+  let pinned = false;
   const server = Bun.serve({
     port: 0,
     async fetch(request) {
       const url = new URL(request.url);
+      if (url.pathname === "/healthz") return Response.json({ replica: { host: "build-server" } });
+      if (request.method === "GET" && url.pathname === "/api/agent/pr/owner/repo/17") {
+        return Response.json({ pinned });
+      }
+      if (request.method === "GET" && url.pathname === "/api/inbox") {
+        expect(request.headers.get("x-pr-cockpit-cli")).toBe("1");
+        return Response.json({ prs: [{ rank: null }, { rank: 0 }, { rank: 4.5 }] });
+      }
+      if (request.method === "POST" && url.pathname === "/api/inbox/reorder") {
+        expect(request.headers.get("x-pr-cockpit-cli")).toBe("1");
+        const payload = await request.json();
+        received.push(payload);
+        pinned = payload.position !== null;
+        return Response.json({ ok: true });
+      }
       if (request.method === "POST" && url.pathname.endsWith("/mutations")) {
         expect(request.headers.get("x-pr-cockpit-cli")).toBe("1");
         received.push(await request.json());
@@ -1055,7 +1071,7 @@ test("mutation commands enqueue every PR operation under the system Bash and wai
       return new Response("not found", { status: 404 });
     },
   });
-  const cases: Array<{ args: string[]; payload: { kind: string; [key: string]: unknown } }> = [
+  const cases: Array<{ args: string[]; payload?: { kind: string; [key: string]: unknown }; reorder?: { repo: string; number: number; position: number | null } }> = [
     { args: ["comment", "owner/repo#17", "--body-file", bodyPath], payload: { kind: "comment", body } },
     { args: ["reply", "owner/repo#17", "0123456789", "--body-file", bodyPath], payload: { kind: "reply-to-thread", threadHandle: "0123456789", body } },
     { args: ["unresolve", "owner/repo#17", "0123456789"], payload: { kind: "resolve-thread", threadHandle: "0123456789", resolved: false } },
@@ -1066,6 +1082,10 @@ test("mutation commands enqueue every PR operation under the system Bash and wai
     { args: ["ready-for-review", "owner/repo#17"], payload: { kind: "ready-for-review" } },
     { args: ["convert-to-draft", "owner/repo#17"], payload: { kind: "convert-to-draft" } },
     { args: ["close", "owner/repo#17"], payload: { kind: "close" } },
+    { args: ["pin", "owner/repo#17", "--use-as-proxy", "build-server"], reorder: { repo: "owner/repo", number: 17, position: 5.5 } },
+    { args: ["pin", "owner/repo#17"] },
+    { args: ["unpin", "owner/repo#17"], reorder: { repo: "owner/repo", number: 17, position: null } },
+    { args: ["unpin", "owner/repo#17"], reorder: { repo: "owner/repo", number: 17, position: null } },
     { args: ["edit-body", "owner/repo#17", "--body-file", bodyPath], payload: { kind: "edit-body", body } },
     { args: ["edit-title", "owner/repo#17", "fix(ui): preserve width"], payload: { kind: "edit-title", title: "fix(ui): preserve width" } },
     { args: ["auto-merge", "owner/repo#17", "enable", "--method", "squash"], payload: { kind: "github-auto-merge", enable: true, method: "squash" } },
@@ -1095,9 +1115,9 @@ test("mutation commands enqueue every PR operation under the system Bash and wai
       ]);
       expect(exitCode).toBe(0);
       expect(error).toBe("");
-      expect(JSON.parse(output)).toEqual({ ok: true, id: received.length, kind: scenario.payload.kind });
+      expect(JSON.parse(output)).toEqual(scenario.payload ? { ok: true, id: nextId - 1, kind: scenario.payload.kind } : { ok: true });
     }
-    expect(received).toEqual(cases.map((scenario) => ({ payload: scenario.payload })));
+    expect(received).toEqual(cases.flatMap((scenario) => scenario.payload ? [{ payload: scenario.payload }] : scenario.reorder ? [scenario.reorder] : []));
   } finally {
     server.stop(true);
     rmSync(root, { recursive: true, force: true });

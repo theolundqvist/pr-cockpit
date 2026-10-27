@@ -29,6 +29,7 @@ Mutation commands:
   ready-for-review     mark a draft ready
   convert-to-draft     convert the PR back to a draft
   close                close the PR
+  pin, unpin           bookmark or unbookmark the PR in Cockpit's pinned order
   edit-body            replace the PR body from --body-file
   edit-title           replace the PR title with one quoted positional argument
   auto-merge           enable or disable GitHub auto-merge
@@ -86,8 +87,8 @@ Mutation options:
 CodeQL dismissal reasons: "false positive", "won't fix", "used in tests", "mitigated".
 Use --body-file for an optional dismissal comment (maximum 280 characters).
 
-Default read output is Markdown. Successful mutations print one JSON result after GitHub
-accepts the change and Cockpit refreshes its cache.
+Default read output is Markdown. Successful mutations print one JSON result. Pins update
+Cockpit immediately; GitHub mutations wait for acceptance and Cockpit's cache refresh.
 EOF
   exit "$status"
 }
@@ -178,7 +179,7 @@ fi
 
 command="read"
 case "${1:-}" in
-  listen|resolve|cache-run|comment|reply|unresolve|dismiss-alert|review|merge|update-branch|ready-for-review|convert-to-draft|close|edit-body|edit-title|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers|add-labels|remove-labels)
+  listen|resolve|cache-run|comment|reply|unresolve|dismiss-alert|review|merge|update-branch|ready-for-review|convert-to-draft|close|pin|unpin|edit-body|edit-title|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers|add-labels|remove-labels)
     command="$1"
     shift
     ;;
@@ -186,7 +187,7 @@ esac
 
 mutation_command=0
 case "$command" in
-  comment|reply|unresolve|dismiss-alert|review|merge|update-branch|ready-for-review|convert-to-draft|close|edit-body|edit-title|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers|add-labels|remove-labels)
+  comment|reply|unresolve|dismiss-alert|review|merge|update-branch|ready-for-review|convert-to-draft|close|pin|unpin|edit-body|edit-title|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers|add-labels|remove-labels)
     mutation_command=1
     ;;
 esac
@@ -817,6 +818,11 @@ try {
       exact(0, "close takes only a PR reference");
       payload = { kind: "close" };
       break;
+    case "pin":
+    case "unpin":
+      exact(0, `${command} takes only a PR reference`);
+      payload = { repo, number: Number(numberText), position: null };
+      break;
     case "edit-body":
       exact(0, "edit-body takes only a PR reference");
       payload = { kind: "edit-body", body: await body() };
@@ -891,6 +897,32 @@ try {
   };
   for (const [option, present] of Object.entries(supplied)) {
     if (present && !uses.has(option)) fail(`${command} does not accept --${option.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`);
+  }
+
+  if (command === "pin" || command === "unpin") {
+    if (command === "pin") {
+      const detailResponse = await fetch(`${baseUrl}?format=json`);
+      const detail = await detailResponse.json();
+      if (!detailResponse.ok) fail(detail?.error || `pin status failed (${detailResponse.status})`);
+      if (typeof detail.pinned !== "boolean") fail("server does not expose pinned status; update Cockpit");
+      if (detail.pinned) {
+        console.log(JSON.stringify({ ok: true }));
+        process.exit(0);
+      }
+      const inboxResponse = await fetch(new URL("/api/inbox", baseUrl), { headers: { "x-pr-cockpit-cli": "1" } });
+      const inbox = await inboxResponse.json();
+      if (!inboxResponse.ok) fail(inbox?.error || `inbox read failed (${inboxResponse.status})`);
+      payload.position = Math.max(-1, ...inbox.prs.map((pr) => pr.rank).filter((rank) => rank != null)) + 1;
+    }
+    const response = await fetch(new URL("/api/inbox/reorder", baseUrl), {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-pr-cockpit-cli": "1" },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json().catch(() => null);
+    if (!response.ok) fail(result?.error || `inbox reorder failed (${response.status})`);
+    console.log(JSON.stringify(result));
+    process.exit(0);
   }
 
   const response = await fetch(`${baseUrl}/mutations`, {
