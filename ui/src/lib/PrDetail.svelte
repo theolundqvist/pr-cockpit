@@ -3416,6 +3416,7 @@
                 {files}
                 onWarmFile={warmDiffFile}
                 onReleaseFile={releaseDiffFile}
+                onReadFile={(path) => diffDocument?.read(path)}
                 anchored={threadSplit.anchored}
                 {threadProps}
                 collapsed={collapsedFiles}

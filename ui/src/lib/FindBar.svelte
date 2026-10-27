@@ -1,3 +1,23 @@
+<script module>
+  const findSources = new Set();
+  let refreshFind = null;
+
+  // A source searches content it may not have rendered: `search(query)` returns `{ count, at(n) }`,
+  // `ranges(result)` the `{ n, range }` pairs currently in the DOM, and `reveal(match)` mounts a
+  // match and returns its range. Its root element is left out of the DOM walk.
+  export function registerFindSource(source) {
+    findSources.add(source);
+    refreshFind?.();
+    return {
+      changed: () => refreshFind?.(),
+      remove() {
+        findSources.delete(source);
+        refreshFind?.();
+      },
+    };
+  }
+</script>
+
 <script>
   import { cancelHoldScroll } from "./scroll.js";
   import Kbd from "./Kbd.svelte";
@@ -7,7 +27,13 @@
   let current = $state(-1);
   let count = $state(0);
   let inputEl;
-  let matches = [];
+  let segments = [];
+  let revealing = 0;
+  let refreshFrame = 0;
+  let repaintFrame = 0;
+  const rootObserver = new MutationObserver(() => {
+    if (!repaintFrame) repaintFrame = requestAnimationFrame(repaint);
+  });
 
   const matchHl = new Highlight();
   const currentHl = new Highlight();
@@ -19,58 +45,123 @@
     currentHl.clear();
   }
 
-  function centerInScrollAncestors(el) {
-    let node = el.parentElement;
+  function centerInScrollAncestors(range) {
+    let node = range.startContainer.parentElement;
     while (node && node !== document.body) {
-      if (node.scrollHeight > node.clientHeight && /(auto|scroll)/.test(getComputedStyle(node).overflowY)) {
-        const rect = el.getBoundingClientRect();
-        const containerRect = node.getBoundingClientRect();
+      const style = getComputedStyle(node);
+      const rect = range.getBoundingClientRect();
+      const containerRect = node.getBoundingClientRect();
+      if (node.scrollHeight > node.clientHeight && /(auto|scroll)/.test(style.overflowY)) {
         node.scrollTop += rect.top - containerRect.top - containerRect.height / 2 + rect.height / 2;
+      }
+      if (node.scrollWidth > node.clientWidth && /(auto|scroll)/.test(style.overflowX) && (rect.left < containerRect.left || rect.right > containerRect.right)) {
+        node.scrollLeft += rect.left - containerRect.left - containerRect.width / 2 + rect.width / 2;
       }
       node = node.parentElement;
     }
   }
 
-  function paint() {
+  function collect() {
+    segments = [];
+    rootObserver.disconnect();
+    const q = query.toLowerCase();
+    const root = document.querySelector(".page");
+    if (!q || !root) return;
+    const sources = new Map();
+    for (const source of findSources) {
+      const sourceRoot = source.root();
+      if (sourceRoot && root.contains(sourceRoot)) sources.set(sourceRoot, source);
+    }
+    let ranges = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (node.nodeType === Node.TEXT_NODE) return node.nodeValue.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+        if (node.classList.contains("find-bar")) return NodeFilter.FILTER_REJECT;
+        const source = sources.get(node);
+        if (!source) return NodeFilter.FILTER_SKIP;
+        segments.push({ ranges, count: ranges.length });
+        const result = source.search(q);
+        segments.push({ source, result, count: result.count });
+        rootObserver.observe(node, { childList: true, subtree: true, characterData: true });
+        ranges = [];
+        return NodeFilter.FILTER_REJECT;
+      },
+    });
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      const text = node.nodeValue.toLowerCase();
+      let i = text.indexOf(q);
+      while (i !== -1) {
+        const range = new Range();
+        range.setStart(node, i);
+        range.setEnd(node, i + q.length);
+        ranges.push(range);
+        i = text.indexOf(q, i + q.length);
+      }
+    }
+    segments.push({ ranges, count: ranges.length });
+    count = segments.reduce((sum, segment) => sum + segment.count, 0);
+  }
+
+  function currentRange() {
+    let n = current;
+    for (const segment of segments) {
+      if (n >= segment.count) {
+        n -= segment.count;
+        continue;
+      }
+      return segment.ranges ? segment.ranges[n] : segment.source.reveal(segment.result.at(n));
+    }
+    return null;
+  }
+
+  function repaint() {
+    repaintFrame = 0;
     matchHl.clear();
     currentHl.clear();
-    matches.forEach((r, i) => (i === current ? currentHl : matchHl).add(r));
-    const el = matches[current]?.startContainer.parentElement;
-    if (el) {
-      cancelHoldScroll(document.querySelector(".page"));
-      centerInScrollAncestors(el);
+    let offset = 0;
+    for (const segment of segments) {
+      if (segment.ranges) segment.ranges.forEach((range, n) => (offset + n === current ? currentHl : matchHl).add(range));
+      else for (const { n, range } of segment.source.ranges(segment.result)) (offset + n === current ? currentHl : matchHl).add(range);
+      offset += segment.count;
     }
   }
 
-  function search() {
-    matches = [];
-    current = -1;
-    const q = query.toLowerCase();
-    const root = document.querySelector(".page");
-    if (q && root) {
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-        acceptNode(node) {
-          if (!node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
-          if (node.parentElement?.closest(".find-bar")) return NodeFilter.FILTER_REJECT;
-          return NodeFilter.FILTER_ACCEPT;
-        },
-      });
-      while (walker.nextNode()) {
-        const node = walker.currentNode;
-        const text = node.nodeValue.toLowerCase();
-        let i = text.indexOf(q);
-        while (i !== -1) {
-          const range = new Range();
-          range.setStart(node, i);
-          range.setEnd(node, i + q.length);
-          matches.push(range);
-          i = text.indexOf(q, i + q.length);
-        }
+  // Rows mounting around a revealed match shift it for a few frames; follow it until the reader scrolls.
+  function paint() {
+    const token = ++revealing;
+    const range = currentRange();
+    repaint();
+    if (!range) return;
+    cancelHoldScroll(document.querySelector(".page"));
+    centerInScrollAncestors(range);
+    let frames = 12;
+    let top = range.getBoundingClientRect().top;
+    const follow = () => {
+      if (token !== revealing || --frames < 0) return;
+      const next = currentRange();
+      if (!next) return;
+      if (next.getBoundingClientRect().top !== top) {
+        centerInScrollAncestors(next);
+        top = next.getBoundingClientRect().top;
       }
-    }
-    count = matches.length;
-    if (count) current = 0;
+      requestAnimationFrame(follow);
+    };
+    requestAnimationFrame(follow);
+  }
+
+  function search() {
+    collect();
+    current = count ? 0 : -1;
     paint();
+  }
+
+  function refresh() {
+    refreshFrame = 0;
+    if (!open || !query) return;
+    collect();
+    current = count ? Math.min(Math.max(current, 0), count - 1) : -1;
+    repaint();
   }
 
   function cycle(dir) {
@@ -89,13 +180,19 @@
   function close() {
     open = false;
     query = "";
-    matches = [];
+    segments = [];
     count = 0;
     current = -1;
+    revealing++;
+    rootObserver.disconnect();
     clearHighlights();
   }
 
   $effect(() => {
+    refreshFind = () => {
+      if (!refreshFrame) refreshFrame = requestAnimationFrame(refresh);
+    };
+    const takeOver = () => revealing++;
     function onKey(e) {
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "f") {
         e.preventDefault();
@@ -116,8 +213,16 @@
       }
     }
     window.addEventListener("keydown", onKey);
+    window.addEventListener("wheel", takeOver, { passive: true });
+    window.addEventListener("touchstart", takeOver, { passive: true });
     return () => {
+      refreshFind = null;
+      cancelAnimationFrame(refreshFrame);
+      cancelAnimationFrame(repaintFrame);
+      rootObserver.disconnect();
       window.removeEventListener("keydown", onKey);
+      window.removeEventListener("wheel", takeOver);
+      window.removeEventListener("touchstart", takeOver);
       clearHighlights();
     };
   });

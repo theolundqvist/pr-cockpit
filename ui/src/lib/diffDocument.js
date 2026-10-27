@@ -37,10 +37,15 @@ export function createDiffDocument(bytes, indexedFiles, worker = null) {
 
   return {
     files: indexedFiles,
+    read(path) {
+      const file = current.get(path);
+      if (!file || file.hydrated) return file;
+      return parseDiff(decoder.decode(bytes.subarray(file.byteStart, file.byteEnd)))[0];
+    },
     hydrate(path) {
       const file = current.get(path);
       if (!file || file.hydrated) return file;
-      return storeHydrated(parseDiff(decoder.decode(bytes.subarray(file.byteStart, file.byteEnd)))[0]);
+      return storeHydrated(this.read(path));
     },
     prefetch(path) {
       const file = current.get(path);

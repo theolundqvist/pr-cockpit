@@ -17,6 +17,7 @@
   import { columnWithin, createDefinitionHover, tokenAtPoint } from "./wordAtPoint.js";
   import Chevron from "./Chevron.svelte";
   import Kbd from "./Kbd.svelte";
+  import { registerFindSource } from "./FindBar.svelte";
   import GithubSetupModal from "./GithubSetupModal.svelte";
 
   let {
@@ -24,6 +25,7 @@
     diffIdentity = "",
     onWarmFile = null,
     onReleaseFile = null,
+    onReadFile = null,
     anchored,
     threadProps,
     collapsed,
@@ -1419,6 +1421,201 @@
     };
   }
 
+  // Find covers every line the current mode would render, mounted or not: per file, one lowercased
+  // text of its path, hunk labels and code cells joined by newlines, rebuilt when its mode changes.
+  let diffEl;
+  const findIndexes = new WeakMap();
+  const findSource = registerFindSource({ root: () => diffEl, search: searchFind, ranges: findRanges, reveal: revealFindMatch });
+  $effect(() => findSource.remove);
+  $effect(() => {
+    files;
+    collapsed;
+    wholeFile;
+    gapRows;
+    gapFiles;
+    layout;
+    compactLayout;
+    fileEditor?.path;
+    findSource.changed();
+  });
+
+  function findRowKey(side, row) {
+    return `${side}:${row.oldNum ?? ""}:${row.newNum ?? ""}`;
+  }
+
+  function findIndex(file) {
+    const path = file.path;
+    const whole = wholeFile.get(path);
+    const wholeRows = whole?.status === "ready" ? whole.rows : null;
+    const code = !collapsed.has(path) && fileEditor?.path !== path && !file.isBinary && !file.isUnchangedRename;
+    const split = usesSplitLayout(file);
+    const lineCount = gapFiles.get(path)?.lineCount;
+    const deps = [code, split, wholeRows, lineCount];
+    if (code && !wholeRows) for (let hi = 0; hi <= file.hunks.length; hi++) deps.push(gapRows.get(gapKey(file, hi)));
+    const cached = findIndexes.get(file);
+    if (cached?.deps.length === deps.length && cached.deps.every((dep, i) => dep === deps[i])) return cached;
+
+    const texts = [];
+    const units = [];
+    const add = (text, unit) => {
+      const lower = text.toLowerCase();
+      texts.push(lower.length === text.length ? lower : text);
+      units.push(unit);
+    };
+    const addRows = (rows, seg) => {
+      if (!split) {
+        rows.forEach((row, pos) => add(row.text, { key: findRowKey("", row), seg, pos }));
+        return;
+      }
+      pairedRows(rows).forEach((pair, pos) => {
+        if (pair.left) add(pair.left.text, { key: findRowKey("left", pair.left), seg, pos });
+        if (pair.right) add(pair.right.text, { key: findRowKey("right", pair.right), seg, pos });
+      });
+    };
+    if (file.previousPath) add(file.previousPath, { key: "path:0" });
+    add(path, { key: file.previousPath ? "path:1" : "path:0" });
+    if (code && wholeRows) addRows(wholeRows, { whole: true });
+    else if (code) {
+      const parsed = file.hunks.every((hunk) => hunk.rows) ? file : (hydratedFiles.get(path) ?? onReadFile?.(path));
+      parsed?.hunks.forEach((hunk, hi) => {
+        const gap = gapRows.get(gapKey(file, hi));
+        if (!Array.isArray(gap) || (!file.isNew && gapHasMore(parsed, hi, gap, lineCount))) {
+          add(hunk.range + (hunk.context ? " " + hunk.context : ""), { key: `hunk:${hi}` });
+        }
+        if (Array.isArray(gap)) addRows(gap, { gap: hi });
+        addRows(hunk.rows, { hunk: hi });
+      });
+      const tail = gapRows.get(gapKey(file, file.hunks.length));
+      if (parsed && !file.isNew && !file.isDeleted && Array.isArray(tail)) addRows(tail, { gap: file.hunks.length });
+    }
+
+    const starts = new Int32Array(texts.length);
+    let offset = 0;
+    texts.forEach((text, i) => {
+      starts[i] = offset;
+      offset += text.length + 1;
+    });
+    const index = { deps, text: texts.join("\n"), starts, units };
+    findIndexes.set(file, index);
+    return index;
+  }
+
+  function findUnitAt(starts, offset) {
+    let low = 0;
+    let high = starts.length - 1;
+    while (low < high) {
+      const middle = (low + high + 1) >>> 1;
+      if (starts[middle] <= offset) low = middle;
+      else high = middle - 1;
+    }
+    return low;
+  }
+
+  function searchFind(q) {
+    const hits = [];
+    let count = 0;
+    files.forEach((file, index) => {
+      const data = findIndex(file);
+      let at = data.text.indexOf(q);
+      if (at === -1) return;
+      const offsets = [];
+      for (; at !== -1; at = data.text.indexOf(q, at + q.length)) offsets.push(at);
+      hits.push({ index, path: file.path, data, offsets, before: count });
+      count += offsets.length;
+    });
+    return {
+      count,
+      length: q.length,
+      hits,
+      at(n) {
+        let low = 0;
+        let high = hits.length - 1;
+        while (low < high) {
+          const middle = (low + high + 1) >>> 1;
+          if (hits[middle].before <= n) low = middle;
+          else high = middle - 1;
+        }
+        const hit = hits[low];
+        const offset = hit.offsets[n - hit.before];
+        const unit = findUnitAt(hit.data.starts, offset);
+        return { index: hit.index, path: hit.path, unit: hit.data.units[unit], start: offset - hit.data.starts[unit], length: q.length };
+      },
+    };
+  }
+
+  function findCells(section) {
+    const cells = new Map();
+    section.querySelectorAll(".file-head .file-path").forEach((element, i) => cells.set(`path:${i}`, element));
+    for (const element of section.querySelectorAll(".hunk-head .hunk-label")) cells.set(`hunk:${element.parentElement.dataset.hunkIndex}`, element);
+    for (const line of section.querySelectorAll(".file-diff-content .line")) {
+      const side = line.classList.contains("left") ? "left" : line.classList.contains("right") ? "right" : "";
+      cells.set(`${side}:${line.dataset.oldLine ?? ""}:${line.dataset.newLine ?? ""}`, line.querySelector(".code"));
+    }
+    return cells;
+  }
+
+  function textRange(element, start, length) {
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    const range = new Range();
+    let offset = 0;
+    let started = false;
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      const next = offset + node.length;
+      if (!started && start < next) {
+        range.setStart(node, start - offset);
+        started = true;
+      }
+      if (started && start + length <= next) {
+        range.setEnd(node, start + length - offset);
+        return range;
+      }
+      offset = next;
+    }
+    return null;
+  }
+
+  function findRanges(result) {
+    const ranges = [];
+    for (const hit of result.hits) {
+      const section = hotPaths.has(hit.path) && document.getElementById(`diff-file-${hit.index}`);
+      if (!section) continue;
+      const cells = findCells(section);
+      hit.offsets.forEach((offset, i) => {
+        const unit = findUnitAt(hit.data.starts, offset);
+        const cell = cells.get(hit.data.units[unit].key);
+        const range = cell && textRange(cell, offset - hit.data.starts[unit], result.length);
+        if (range) ranges.push({ n: hit.before + i, range });
+      });
+    }
+    return ranges;
+  }
+
+  function revealFindMatch(match) {
+    const file = files[match.index];
+    if (file?.path !== match.path) return null;
+    revealFile(match.index);
+    if (!hotPaths.has(file.path) || (onWarmFile && !hydratedFiles.has(file.path))) {
+      hotPaths.add(file.path);
+      retainFile(file.path, true);
+      flushSync();
+    }
+    const { seg, pos } = match.unit;
+    if (seg) {
+      const shown = hydratedFiles.get(file.path) ?? file;
+      const rows = seg.whole ? wholeFile.get(file.path)?.rows : seg.gap !== undefined ? gapRows.get(gapKey(file, seg.gap)) : shown.hunks[seg.hunk]?.rows;
+      const displayed = rows && (usesSplitLayout(shown) ? pairedRows(rows) : rows);
+      const chunk = displayed?.length > VIRTUAL_ROW_THRESHOLD ? rowChunks(displayed)[Math.floor(pos / ROW_CHUNK_SIZE)] : null;
+      if (chunk && !hotRowChunks.has(chunk)) {
+        hotRowChunks.add(chunk);
+        flushSync();
+      }
+    }
+    const section = document.getElementById(`diff-file-${match.index}`);
+    const cell = section && findCells(section).get(match.unit.key);
+    return cell ? textRange(cell, match.start, match.length) : null;
+  }
+
   $effect(() => () => {
     hoverFile(null);
     observer?.disconnect();
@@ -1766,7 +1963,7 @@
   {/if}
 {/snippet}
 
-<div class="diff" class:file-editing={!!fileEditor}>
+<div class="diff" class:file-editing={!!fileEditor} bind:this={diffEl}>
   {#each renderedFiles as indexedFile (indexedFile.path)}
     {@const file = hydratedFiles.get(indexedFile.path) ?? indexedFile}
     {@const isCollapsed = collapsed.has(file.path)}
