@@ -1425,6 +1425,8 @@
   // text of its path, hunk labels and code cells joined by newlines, rebuilt when its mode changes.
   let diffEl;
   const findIndexes = new WeakMap();
+  let findVersion = 0;
+  let findMemo = null;
   const findSource = registerFindSource({ root: () => diffEl, search: searchFind, ranges: findRanges, reveal: revealFindMatch });
   $effect(() => findSource.remove);
   $effect(() => {
@@ -1436,6 +1438,7 @@
     layout;
     compactLayout;
     fileEditor?.path;
+    findVersion++;
     findSource.changed();
   });
 
@@ -1511,7 +1514,19 @@
     return low;
   }
 
-  function searchFind(q) {
+  function countBelow(values, value, inclusive = false) {
+    let low = 0;
+    let high = values.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (values[middle] < value || (inclusive && values[middle] === value)) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  }
+
+  function findData(q) {
+    if (findMemo?.q === q && findMemo.version === findVersion) return findMemo;
     const hits = [];
     let count = 0;
     files.forEach((file, index) => {
@@ -1523,22 +1538,99 @@
       hits.push({ index, path: file.path, data, offsets, before: count });
       count += offsets.length;
     });
-    return {
-      count,
-      length: q.length,
-      hits,
-      at(n) {
-        let low = 0;
-        let high = hits.length - 1;
-        while (low < high) {
-          const middle = (low + high + 1) >>> 1;
-          if (hits[middle].before <= n) low = middle;
-          else high = middle - 1;
+    findMemo = { q, version: findVersion, hits, count, indexes: hits.map((hit) => hit.index), befores: hits.map((hit) => hit.before) };
+    return findMemo;
+  }
+
+  // Data hits before a point in the diff: all hits of earlier files plus this file's through `unit`.
+  function findDataBefore(data, fileIndex, unit) {
+    const hit = data.hits[countBelow(data.indexes, fileIndex)];
+    if (hit?.index !== fileIndex) return hit?.before ?? data.count;
+    const end = unit + 1 < hit.data.starts.length ? hit.data.starts[unit + 1] : Infinity;
+    return hit.before + countBelow(hit.offsets, end);
+  }
+
+  function findUnitByKey(data) {
+    data.byKey ??= new Map(data.units.map((unit, i) => [unit.key, i]));
+    return data.byKey;
+  }
+
+  // Mounted text the data leaves out, such as inline threads and file controls, sits after the
+  // last data unit rendered before it.
+  function findMountedText(q) {
+    const matches = [];
+    let fileIndex = -1;
+    let data = null;
+    let unit = -1;
+    let paths = 0;
+    const walker = document.createTreeWalker(diffEl, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (node.nodeType === Node.TEXT_NODE) return node.nodeValue.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+        if (node.hidden) return NodeFilter.FILTER_REJECT;
+        const classes = node.classList;
+        let key;
+        if (node.tagName === "SECTION" && classes.contains("file")) {
+          fileIndex = Number(node.id.slice("diff-file-".length));
+          if (!hotPaths.has(files[fileIndex]?.path)) return NodeFilter.FILTER_REJECT;
+          data = findIndex(files[fileIndex]);
+          unit = -1;
+          paths = 0;
+          return NodeFilter.FILTER_SKIP;
         }
-        const hit = hits[low];
-        const offset = hit.offsets[n - hit.before];
+        if (classes.contains("line")) {
+          const side = classes.contains("left") ? "left" : classes.contains("right") ? "right" : "";
+          key = `${side}:${node.dataset.oldLine ?? ""}:${node.dataset.newLine ?? ""}`;
+        } else if (classes.contains("file-path")) key = `path:${paths++}`;
+        else if (classes.contains("hunk-label")) key = `hunk:${node.parentElement.dataset.hunkIndex}`;
+        else return NodeFilter.FILTER_SKIP;
+        unit = (data && findUnitByKey(data).get(key)) ?? unit;
+        return NodeFilter.FILTER_REJECT;
+      },
+    });
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      const text = node.nodeValue.toLowerCase();
+      for (let i = text.indexOf(q); i !== -1; i = text.indexOf(q, i + q.length)) {
+        const range = new Range();
+        range.setStart(node, i);
+        range.setEnd(node, i + q.length);
+        matches.push({ fileIndex, unit, range });
+      }
+    }
+    return matches;
+  }
+
+  function searchFind(q) {
+    const data = findData(q);
+    const mounted = diffEl ? findMountedText(q) : [];
+    const mountedBefore = mounted.map((match) => findDataBefore(data, match.fileIndex, match.unit));
+    const mountedAt = mountedBefore.map((before, i) => before + i);
+    const position = (rank) => rank + countBelow(mountedBefore, rank, true);
+    return {
+      count: data.count + mounted.length,
+      length: q.length,
+      data,
+      mounted,
+      mountedAt,
+      position,
+      at(n) {
+        const i = countBelow(mountedAt, n);
+        if (mountedAt[i] === n) return { range: mounted[i].range };
+        const rank = n - i;
+        const hit = data.hits[countBelow(data.befores, rank, true) - 1];
+        const offset = hit.offsets[rank - hit.before];
         const unit = findUnitAt(hit.data.starts, offset);
-        return { index: hit.index, path: hit.path, unit: hit.data.units[unit], start: offset - hit.data.starts[unit], length: q.length };
+        return { index: hit.index, path: hit.path, offset, unit: hit.data.units[unit], start: offset - hit.data.starts[unit], length: q.length };
+      },
+      indexOf(match) {
+        if (match.range) {
+          const i = mounted.findIndex(({ range }) => range.startContainer === match.range.startContainer && range.startOffset === match.range.startOffset);
+          return i < 0 ? -1 : mountedAt[i];
+        }
+        const hit = data.hits[countBelow(data.indexes, match.index)];
+        if (hit?.index !== match.index) return -1;
+        const i = countBelow(hit.offsets, match.offset);
+        return hit.offsets[i] === match.offset ? position(hit.before + i) : -1;
       },
     };
   }
@@ -1577,7 +1669,7 @@
 
   function findRanges(result) {
     const ranges = [];
-    for (const hit of result.hits) {
+    for (const hit of result.data.hits) {
       const section = hotPaths.has(hit.path) && document.getElementById(`diff-file-${hit.index}`);
       if (!section) continue;
       const cells = findCells(section);
@@ -1585,13 +1677,17 @@
         const unit = findUnitAt(hit.data.starts, offset);
         const cell = cells.get(hit.data.units[unit].key);
         const range = cell && textRange(cell, offset - hit.data.starts[unit], result.length);
-        if (range) ranges.push({ n: hit.before + i, range });
+        if (range) ranges.push({ n: result.position(hit.before + i), range });
       });
     }
+    result.mounted.forEach(({ range }, i) => {
+      if (range.startContainer.isConnected) ranges.push({ n: result.mountedAt[i], range });
+    });
     return ranges;
   }
 
   function revealFindMatch(match) {
+    if (match.range) return match.range.startContainer.isConnected ? match.range : null;
     const file = files[match.index];
     if (file?.path !== match.path) return null;
     revealFile(match.index);

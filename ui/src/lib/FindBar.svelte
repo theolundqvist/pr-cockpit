@@ -2,9 +2,9 @@
   const findSources = new Set();
   let refreshFind = null;
 
-  // A source searches content it may not have rendered: `search(query)` returns `{ count, at(n) }`,
-  // `ranges(result)` the `{ n, range }` pairs currently in the DOM, and `reveal(match)` mounts a
-  // match and returns its range. Its root element is left out of the DOM walk.
+  // A source searches content it may not have rendered: `search(query)` returns `{ count, at(n),
+  // indexOf(match) }`, `ranges(result)` the `{ n, range }` pairs currently in the DOM, and
+  // `reveal(match)` mounts a match and returns its range. Its root element is left out of the DOM walk.
   export function registerFindSource(source) {
     findSources.add(source);
     refreshFind?.();
@@ -30,10 +30,7 @@
   let segments = [];
   let revealing = 0;
   let refreshFrame = 0;
-  let repaintFrame = 0;
-  const rootObserver = new MutationObserver(() => {
-    if (!repaintFrame) repaintFrame = requestAnimationFrame(repaint);
-  });
+  const rootObserver = new MutationObserver(scheduleRefresh);
 
   const matchHl = new Highlight();
   const currentHl = new Highlight();
@@ -103,20 +100,33 @@
     count = segments.reduce((sum, segment) => sum + segment.count, 0);
   }
 
-  function currentRange() {
+  function currentMatch() {
     let n = current;
     for (const segment of segments) {
-      if (n >= segment.count) {
-        n -= segment.count;
-        continue;
-      }
-      return segment.ranges ? segment.ranges[n] : segment.source.reveal(segment.result.at(n));
+      if (n < segment.count) return segment.ranges ? { range: segment.ranges[n] } : { source: segment.source, match: segment.result.at(n) };
+      n -= segment.count;
     }
     return null;
   }
 
+  function currentRange() {
+    const found = currentMatch();
+    return found?.source ? found.source.reveal(found.match) : (found?.range ?? null);
+  }
+
+  function indexOfMatch(found) {
+    let offset = 0;
+    for (const segment of segments) {
+      const n = segment.ranges
+        ? segment.ranges.findIndex((range) => range.startContainer === found.range?.startContainer && range.startOffset === found.range.startOffset)
+        : segment.source === found.source ? segment.result.indexOf(found.match) : -1;
+      if (n >= 0) return offset + n;
+      offset += segment.count;
+    }
+    return -1;
+  }
+
   function repaint() {
-    repaintFrame = 0;
     matchHl.clear();
     currentHl.clear();
     let offset = 0;
@@ -156,11 +166,18 @@
     paint();
   }
 
+  function scheduleRefresh() {
+    if (!refreshFrame) refreshFrame = requestAnimationFrame(refresh);
+  }
+
+  // Mounting and unmounting changes which diff text is in the DOM; the current match keeps its place.
   function refresh() {
     refreshFrame = 0;
     if (!open || !query) return;
+    const found = currentMatch();
     collect();
-    current = count ? Math.min(Math.max(current, 0), count - 1) : -1;
+    const n = found ? indexOfMatch(found) : -1;
+    current = count ? (n >= 0 ? n : Math.min(Math.max(current, 0), count - 1)) : -1;
     repaint();
   }
 
@@ -189,9 +206,7 @@
   }
 
   $effect(() => {
-    refreshFind = () => {
-      if (!refreshFrame) refreshFrame = requestAnimationFrame(refresh);
-    };
+    refreshFind = scheduleRefresh;
     const takeOver = () => revealing++;
     function onKey(e) {
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "f") {
@@ -218,7 +233,6 @@
     return () => {
       refreshFind = null;
       cancelAnimationFrame(refreshFrame);
-      cancelAnimationFrame(repaintFrame);
       rootObserver.disconnect();
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("wheel", takeOver);
