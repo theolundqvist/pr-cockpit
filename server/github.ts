@@ -2523,6 +2523,7 @@ type PrDetailShape<Rx> = {
   mergedBy?: { __typename?: string; login: string } | null;
   // Who last added the merge queue's `order` label; read only for bot merges while merge attribution is on.
   orderedBy?: { login: string } | null;
+  kitchenEnteredAt?: string | null;
   closedAt: string | null;
   isDraft: boolean;
   author: Author | null;
@@ -2797,7 +2798,7 @@ async function fetchRepositoryPrDetailMetadata(
   }>(DETAIL_REPOSITORY_METADATA_QUERY, { owner, name, number }, source, "PR metadata", undefined, repo);
   const base = data.repository?.pullRequest;
   if (!base) throw new GithubRequestError(`${repo}#${number} was not found`, 404);
-  return withOrderedBy(base, repo, number, source);
+  return withLabelHistory(base, repo, number, source);
 }
 
 type PrDetailMetadata = { base: PrDetailBase; viewerLogin: string };
@@ -2833,32 +2834,48 @@ query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       timelineItems(itemTypes: [LABELED_EVENT], last: 100) {
-        nodes { ... on LabeledEvent { actor { login } label { name } } }
+        nodes { ... on LabeledEvent { createdAt actor { login } label { name } } }
       }
     }
   }
 }`;
 
-type OrderLabelEvent = { actor?: { login: string } | null; label?: { name: string } | null };
+type OrderLabelEvent = { createdAt?: string; created_at?: string; actor?: { login: string } | null; label?: { name: string } | null };
 
-// A bot merge belongs to whoever last ordered it. Only bot merges pay for this read, and only
-// while merge attribution is consumed; later reads of the events list are ETag-cached.
-async function withOrderedBy(base: PrDetailBase, repo: string, number: number, source: GithubUsageSource): Promise<PrDetailBase> {
-  if (base.mergedBy?.__typename !== "Bot" || !mergeAttributionWanted()) return base;
-  let events: OrderLabelEvent[];
+// Share the ETag-cached label history between merge attribution and the opt-in Kitchen clock.
+// The last order starts a new visit; stage changes, comments and pushes must not reset it.
+async function withLabelHistory(base: PrDetailBase, repo: string, number: number, source: GithubUsageSource): Promise<PrDetailBase> {
+  const attribution = base.mergedBy?.__typename === "Bot" && mergeAttributionWanted();
+  const cooking = readSettings().cooking_section_enabled && base.state === "OPEN"
+    && base.labels.nodes.some((label) => label.name.trim().toLowerCase().startsWith("kitchen:"));
+  if (!attribution && !cooking) return base;
   try {
-    events = (await restList<OrderLabelEvent & { event: string }>(`/repos/${repo}/issues/${number}/events`, 10, undefined, repo))
-      .filter((event) => event.event === "labeled");
+    let events: OrderLabelEvent[];
+    let completeHistory = true;
+    try {
+      const history = await restList<OrderLabelEvent & { event: string }>(`/repos/${repo}/issues/${number}/events`, 10, undefined, repo);
+      // A capped REST history may hide a newer order. Never time an older visit in that case.
+      completeHistory = history.length < 1000;
+      events = history.filter((event) => event.event === "labeled");
+    } catch (error) {
+      if (!coreQuotaExhausted(error)) throw error;
+      const [owner, name] = repo.split("/");
+      const data = await graphql<{
+        repository: { pullRequest: { timelineItems: { nodes: OrderLabelEvent[] } } | null } | null;
+      }>(ORDER_LABEL_EVENTS_QUERY, { owner, name, number }, source, "PR order label", undefined, repo);
+      events = data.repository?.pullRequest?.timelineItems.nodes ?? [];
+    }
+    const order = events.findLast((event) => event.label?.name.trim().toLowerCase() === ORDER_LABEL);
+    const enteredAt = order?.created_at ?? order?.createdAt;
+    return { ...base,
+      ...(attribution ? { orderedBy: order?.actor?.login ? { login: order.actor.login } : null } : {}),
+      kitchenEnteredAt: cooking && completeHistory && enteredAt && Number.isFinite(Date.parse(enteredAt)) ? enteredAt : null,
+    };
   } catch (error) {
-    if (!coreQuotaExhausted(error)) throw error;
-    const [owner, name] = repo.split("/");
-    const data = await graphql<{
-      repository: { pullRequest: { timelineItems: { nodes: OrderLabelEvent[] } } | null } | null;
-    }>(ORDER_LABEL_EVENTS_QUERY, { owner, name, number }, source, "PR order label", undefined, repo);
-    events = data.repository?.pullRequest?.timelineItems.nodes ?? [];
+    if (attribution) throw error;
+    console.warn(`Kitchen entry time unavailable for ${repo}#${number}:`, error);
+    return { ...base, kitchenEnteredAt: null };
   }
-  const login = events.findLast((event) => event.label?.name.trim().toLowerCase() === ORDER_LABEL)?.actor?.login;
-  return { ...base, orderedBy: login ? { login } : null };
 }
 
 export type PrDetail = PrDetailShape<{ reactions: Reaction[] }> & {
@@ -3398,7 +3415,7 @@ export async function fetchPrDetail(
       fetchDetailChecks(owner, name, number, previous, source),
       fetchDetailReview(owner, name, number, source, previous?.reviewThreads?.nodes.length ?? 0),
       fetchPrDetailMetadata(repo, owner, name, number, source)
-        .then(async (metadata) => ({ ...metadata, base: await withOrderedBy(metadata.base, repo, number, source) })),
+        .then(async (metadata) => ({ ...metadata, base: await withLabelHistory(metadata.base, repo, number, source) })),
     ]);
     if (!checks || !review) throw new GithubRequestError(`${repo}#${number} was not found`, 404);
     return {
@@ -3438,7 +3455,7 @@ async function fetchRestPrDetail(
 ): Promise<PrDetail> {
   const base = fetchRestPrDetailBase(repo, number);
   const [rest, viewerLogin, issue, viewerCanMergeAsAdmin, commits, reviews, comments, reviewComments, checks, rules] = await Promise.all([
-    base.then((pull) => withOrderedBy(pull, repo, number, source)),
+    base.then((pull) => withLabelHistory(pull, repo, number, source)),
     getViewerLogin(source),
     restJson<{ reactions?: RestReactions }>(`/repos/${repo}/issues/${number}`, repo),
     fetchViewerMergePermission(repo, number, source),

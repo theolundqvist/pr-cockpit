@@ -252,6 +252,7 @@ describe("poll-loop registration lifecycle", () => {
   test("a poll confirming the searched fields spends no detail fetch", async () => {
     searchHits = [hit("acme/tracked", 5)];
     const row = {
+      detail_json: "{}",
       head_sha: "abc",
       updated_at: "2026-07-25T00:00:00Z",
       ci_status: "SUCCESS",
@@ -263,6 +264,7 @@ describe("poll-loop registration lifecycle", () => {
 
   test("a REST search reuses cached head and CI only while webhooks covered the time since the snapshot", async () => {
     const row = {
+      detail_json: "{}",
       head_sha: "abc",
       updated_at: "2026-07-25T00:00:00Z",
       ci_status: "PENDING",
@@ -290,6 +292,7 @@ describe("poll-loop registration lifecycle", () => {
   test("a search that confirms an unchanged PR lets later REST searches vouch for it under newer coverage", async () => {
     searchHits = [{ ...hit("acme/tracked", 5), ciState: "PENDING" }];
     const row = {
+      detail_json: "{}",
       head_sha: "abc",
       updated_at: "2026-07-25T00:00:00Z",
       ci_status: "PENDING",

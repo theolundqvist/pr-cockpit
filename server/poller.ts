@@ -22,7 +22,7 @@ import { fetchMirror, pruneMirrors } from "./mirror.ts";
 import { needsMeRank } from "./rank.ts";
 import { refreshRepoUsers } from "./repoUsers.ts";
 import { createPrRefreshScheduler } from "./refreshScheduler.ts";
-import { pollIntervalMs, restFallbackEnabled, settingsRepos } from "./settings.ts";
+import { pollIntervalMs, readSettings, restFallbackEnabled, settingsRepos } from "./settings.ts";
 import { discoveredRepos, refreshWorktreeScan } from "./worktreeScan.ts";
 import { onPrActivity } from "./activity.ts";
 import { invalidateInbox, invalidatePr, publishPollCompleted } from "./rendererInvalidation.ts";
@@ -337,9 +337,15 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
     const openInboxChanged = nextOpenInboxKeys.size !== openInboxKeys.size
       || [...nextOpenInboxKeys].some((key) => !openInboxKeys.has(key));
     openInboxKeys = nextOpenInboxKeys;
+    const cookingEnabled = readSettings().cooking_section_enabled;
     const changedHits = hits.filter((hit) => {
       if (!tracked.has(hit.repo) && !registered.has(prKeyOf(hit.repo, hit.number))) return false;
       const cached = deps.getPr(hit.repo, hit.number);
+      // Backfill existing Cooking rows once when the opt-in starts consuming label timestamps.
+      if (cookingEnabled && cached) {
+        const detail = JSON.parse(cached.detail_json) as PrDetail;
+        if (detail.kitchenEnteredAt === undefined && detail.labels?.nodes.some((label) => label.name.trim().toLowerCase().startsWith("kitchen:"))) return true;
+      }
       // fetched_at deliberately stays put: thread resolution moves none of these fields, so only detail staleness repairs it.
       const unchanged = !!cached && cached.head_sha === hit.headRefOid && cached.updated_at === hit.updatedAt && cached.ci_status === hit.ciState;
       if (unchanged) confirmedAt.set(prKeyOf(hit.repo, hit.number), searchedAt);

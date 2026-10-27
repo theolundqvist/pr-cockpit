@@ -41,6 +41,7 @@ export function cookingScenarios() {
           [508, "Retry failed merge", "kitchen: oven"],
         ].map(([number, title, label]) => ({ ...seed, number, title,
           baseRef: "main", headRef: `example-${number}`, rank: number === 501 ? 1 : null,
+          kitchenEnteredAt: number === 503 ? null : "2026-07-15T08:18:00Z",
           approvedForSafeMerge: false, mergeFailed: number === 508,
           isDraft: number === 506, ciStatus: number === 507 ? "PENDING" : "SUCCESS",
           labels: label ? [{ name: label, color: "d99a39" }] : [],
@@ -157,6 +158,21 @@ export function cookingScenarios() {
         await page.reload();
         await page.getByRole("button", { name: /^Notifications/ }).click();
         await page.getByRole("dialog", { name: "Notifications" }).waitFor();
+      }
+      if (mode === "expanded") {
+        const durations = page.locator("#cooking-prs .kitchen-duration");
+        if ((await durations.allTextContents()).join() !== Array(3).fill("1h 42m in Kitchen").join()) throw new Error("Kitchen elapsed time is wrong");
+        if (await page.locator(".queue-list .kitchen-duration").count() !== 3) throw new Error("Non-cooking rows show Kitchen time");
+        await page.clock.install({ time: new Date("2026-07-15T10:00:00Z") });
+        // Remount so the clock owns the interval too.
+        await page.locator(".cooking-toggle").click();
+        await page.locator(".cooking-toggle").click();
+        await page.clock.fastForward(60000);
+        if ((await durations.allTextContents()).some((value) => value !== "1h 43m in Kitchen")) throw new Error("Kitchen clock did not tick");
+        // Clock belongs to the shared browser context; restore the fixture time for later scenarios.
+        await page.clock.setFixedTime(new Date("2026-07-15T10:00:00Z"));
+        await page.clock.fastForward(60000);
+        await page.clock.resume();
       }
       if (mode === "before" && await page.locator(".cooking-toggle,.cooking-stage").count()) throw new Error("Cooking UI visible before opt-in");
       if (mode !== "before" && mode !== "history" && await page.locator(".cooking-toggle .group-count").textContent() !== "4") throw new Error("Cooking count is wrong");

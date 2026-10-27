@@ -30,6 +30,19 @@
     ...rest
   } = $props();
 
+  let now = $state(Date.now());
+  const kitchenStart = $derived(cooking && pr.kitchenEnteredAt ? Date.parse(pr.kitchenEnteredAt) : NaN);
+  const kitchenMinutes = $derived(Math.max(0, Math.floor((now - kitchenStart) / 60000)));
+  const kitchenDuration = $derived(kitchenMinutes < 1 ? "<1m" : kitchenMinutes < 60 ? `${kitchenMinutes}m`
+    : kitchenMinutes < 1440 ? `${Math.floor(kitchenMinutes / 60)}h ${kitchenMinutes % 60}m`
+    : `${Math.floor(kitchenMinutes / 1440)}d ${Math.floor(kitchenMinutes % 1440 / 60)}h`);
+  $effect(() => {
+    if (!Number.isFinite(kitchenStart)) return;
+    now = Date.now();
+    const timer = setInterval(() => { now = Date.now(); }, 60000);
+    return () => clearInterval(timer);
+  });
+
   function greptileTitle(greptileStatus) {
     if (greptileStatus === "stale") return "reviewed before recent pushes - the score may no longer reflect the current state";
     if (greptileStatus === "addressed") return "reviewed before recent pushes, but every thread that reviewer left is resolved";
@@ -86,7 +99,12 @@
       {:else}
         {@const statsDiffer = pr.additions !== pr.rawAdditions || pr.deletions !== pr.rawDeletions}
         <span class="num">#{pr.number}</span>
-        {#if cooking}<span class="cooking-stage" title={cooking.label}>{cooking.title}</span>{/if}
+        {#if cooking}
+          <span class="cooking-stage" title={cooking.label}>{cooking.title}</span>
+          {#if Number.isFinite(kitchenStart)}
+            <span class="kitchen-duration" title={`In Kitchen since ${new Date(kitchenStart).toLocaleString()}`}>{kitchenDuration} in Kitchen</span>
+          {/if}
+        {/if}
         <span class="sep">·</span>
         <span>{pr.repo.split("/")[1] ?? pr.repo}</span>
         {#if prefs.inboxLabels !== "off" && pr.labels?.length}
@@ -133,6 +151,7 @@
 </svelte:element>
 
 <style>
+  .kitchen-duration { flex-shrink: 0; color: var(--text-dim); }
   .cooking-stage { color: var(--text); border: 1px solid color-mix(in srgb, #d99a39 45%, transparent); background: color-mix(in srgb, #d99a39 10%, transparent); border-radius: 4px; padding: 1px 5px; }
   .archived-row {
     opacity: 0.5;

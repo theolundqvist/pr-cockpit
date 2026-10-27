@@ -82,6 +82,7 @@ async function scenario<T>(code: string): Promise<T> {
       author: null, parents: { nodes: [] } };
     const previous = { commitList: { nodes: [{ commit: { ...commit, additions: 5, deletions: 2 } }] }, reviewThreads: { nodes: [] } };
     const calls = [];
+    let labelEvents = [];
     const respond = async (input, init) => {
       const url = new URL(String(input));
       assert(url.origin === "https://api.github.com", "Unexpected network origin");
@@ -100,6 +101,9 @@ async function scenario<T>(code: string): Promise<T> {
         if (state.secondary) return Response.json({ message: "secondary rate limit" }, { status: 403,
           headers: { ...headers("graphql"), "retry-after": "120" } });
         if (token === "app-token") assert(!/viewerHasReacted|viewerCanMergeAsAdmin|\\bviewer\\s*\\{/.test(query), "App received viewer fields");
+        if (query.includes("timelineItems")) return ok({ data: { repository: { pullRequest: { timelineItems: {
+          nodes: labelEvents.map(({ created_at, ...event }) => ({ ...event, createdAt: created_at })),
+        } } } } }, "graphql");
         if (query.includes("nodes(ids: $ids)")) {
           assert(token === "personal-token", "Viewer overlay used App identity");
           return ok({ data: { viewer: { login: "viewer" }, nodes: variables.ids.map((id) => ({ id,
@@ -130,6 +134,7 @@ async function scenario<T>(code: string): Promise<T> {
         throw new Error("Unexpected GraphQL document: " + query);
       }
       if (state.coreBlocked) return exhausted("core");
+      if (url.pathname.endsWith("/issues/7/events")) return ok(labelEvents);
       if (url.pathname === "/user") return ok({ login: "viewer", id: 1 });
       if (url.pathname === "/repos/acme/repo") return ok({ permissions: { admin: true } });
       if (url.pathname.endsWith("/pulls/7")) return ok(restPull);
@@ -392,3 +397,32 @@ test("a healthy personal GraphQL pool preserves full fidelity when the App reach
   expectReviewParity(result.detail);
   expect(result.calls.every(call => call.path === "/graphql" && call.token === "personal-token")).toBe(true);
 });
+
+for (const mode of ["app", "personal", "graphql-fallback"]) {
+  test(`Kitchen duration follows orders across stage changes (${mode})`, async () => {
+    const result = await scenario<{ timestamps: Array<string | null>; disabledReads: number }>(`
+      state.app = ${mode !== "personal"};
+      state.coreBlocked = ${mode === "graphql-fallback"};
+      base.labels.nodes = restPull.labels = [{ name: "kitchen: chef" }];
+      labelEvents = [
+        { event: "labeled", label: { name: "order" }, created_at: "2026-09-01T09:00:00Z" },
+        { event: "labeled", label: { name: "kitchen: chef" }, created_at: "2026-09-01T09:30:00Z" },
+      ];
+      settings.writeSettings({ cooking_section_enabled: false });
+      await fetchDetail();
+      const disabledReads = calls.filter((call) => call.path.endsWith("/events") || call.query?.includes("timelineItems")).length;
+      settings.writeSettings({ cooking_section_enabled: true });
+      const first = await fetchDetail();
+      base.labels.nodes = restPull.labels = [{ name: "kitchen: oven" }];
+      base.updatedAt = restPull.updated_at = "2026-09-01T10:00:00Z";
+      const nextStage = await fetchDetail();
+      labelEvents.push({ event: "labeled", label: { name: "order" }, created_at: "2026-09-01T10:05:00Z" });
+      const reordered = await fetchDetail();
+      labelEvents = [];
+      const unknown = await fetchDetail();
+      console.log(JSON.stringify({ disabledReads, timestamps: [first, nextStage, reordered, unknown].map((detail) => detail.kitchenEnteredAt) }));
+    `);
+    expect(result.disabledReads).toBe(0);
+    expect(result.timestamps).toEqual(["2026-09-01T09:00:00Z", "2026-09-01T09:00:00Z", "2026-09-01T10:05:00Z", null]);
+  });
+}

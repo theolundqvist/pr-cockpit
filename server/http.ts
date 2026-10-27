@@ -498,6 +498,7 @@ function inboxRows(prs: PrRow[]) {
       // fall back to what the index recorded, else null — never updatedAt.
       createdAt: typeof detail.createdAt === "string" ? detail.createdAt : prIndexCreatedAt(pr.repo, pr.number),
       updatedAt: pr.updated_at,
+      kitchenEnteredAt: detail.kitchenEnteredAt ?? null,
       additions: stats.additions,
       deletions: stats.deletions,
       rawAdditions: pr.additions,
