@@ -51,6 +51,8 @@ Diffs, threads, checks, and file history live in the same review workspace. The 
 
 PR images are prefetched into each machine's persistent cache, including SSH replicas; opening an image reuses that local download.
 
+SSH replicas forward the source's PR updates to an open conversation, including comment edits and PRs outside the inbox or already merged. Changed inbox snapshots also refresh the matching detail after import.
+
 ![Folding five regression-test diffs in graphql/graphql-js#4692 to isolate the one-line implementation change](docs/screenshots/landing-hide-tests.gif)
 
 When the review needs a change, stay in context: <kbd>e</kbd> edits the open file and commits the patch to the PR; <kbd>p</kbd> opens the PR in your configured coding agent with review context. You can also revert a focused hunk or press <kbd>h</kbd> to inspect file history. A failed merge immediately requests fresh PR details to reveal conflicts or other blockers, while keeping the original error available to retry or dismiss.

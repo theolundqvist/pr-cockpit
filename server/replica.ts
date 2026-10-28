@@ -1,9 +1,10 @@
 import type { Subprocess } from "bun";
+import { reconnectRendererEventClients } from "./cockpitServer.ts";
 import { getPr, getSetting, listFailedMergeKeys, listPrs, readInboxReplica, replaceInboxReplica, setSetting, type InboxReplica, type PrRow } from "./db.ts";
 import { prefetchDetailImages } from "./imageproxy.ts";
 import { observePrNotifications } from "./notifications.ts";
 import { setLastPollAt, lastPollAt } from "./poller.ts";
-import { invalidateInbox, publishPollCompleted } from "./rendererInvalidation.ts";
+import { invalidateInbox, invalidatePr, publishPollCompleted } from "./rendererInvalidation.ts";
 import { pendingReviewsEnabled, readSettings, safeMergeApprovalEnabled, writeSettings } from "./settings.ts";
 
 const SOURCE_PORT = Number(Bun.env.COCKPIT_PROXY_PORT ?? 4820);
@@ -114,6 +115,7 @@ function parseReplicaSnapshot(value: unknown): ReplicaSnapshot {
 let tunnel: Subprocess<"ignore", "ignore", "pipe"> | null = null;
 let syncTimer: Timer | null = null;
 let syncInFlight: Promise<void> | null = null;
+let sourceEvents: WebSocket | null = null;
 
 export function replicaSshHost(): string {
   return readSettings().replica_ssh_host;
@@ -137,6 +139,35 @@ export function replicaFailedMergeKeys(): Set<string> {
 
 function sourceUrl(path: string): string {
   return `http://127.0.0.1:${TUNNEL_PORT}${path}`;
+}
+
+function ensureSourceEvents(): void {
+  if (sourceEvents) return;
+  const socket = new WebSocket(sourceUrl("/api/events").replace("http:", "ws:"));
+  sourceEvents = socket;
+  socket.addEventListener("open", () => {
+    if (sourceEvents !== socket) return;
+    reconnectRendererEventClients();
+  });
+  socket.addEventListener("message", (message) => {
+    if (sourceEvents !== socket) return;
+    let event: unknown;
+    try {
+      event = JSON.parse(String(message.data));
+    } catch {
+      return;
+    }
+    // Detail reads use the source cache, committed before this event.
+    if (event && typeof event === "object" && "type" in event && event.type === "pr"
+      && "repo" in event && typeof event.repo === "string"
+      && "number" in event && typeof event.number === "number" && Number.isSafeInteger(event.number)) {
+      invalidatePr(event.repo, event.number);
+    }
+  });
+  socket.addEventListener("error", () => socket.close());
+  socket.addEventListener("close", () => {
+    if (sourceEvents === socket) sourceEvents = null;
+  });
 }
 
 async function waitForTunnel(process: Subprocess<"ignore", "ignore", "pipe">): Promise<void> {
@@ -194,7 +225,10 @@ export function importInboxReplica(tables: InboxReplica): void {
     if (!next) continue;
     const previous = previousPrs.get(`${row.repo}\0${row.number}`) ?? null;
     observePrNotifications(previous, next);
-    if (previous?.detail_json !== next.detail_json) prefetchDetailImages(JSON.parse(next.detail_json));
+    if (previous?.detail_json !== next.detail_json) {
+      prefetchDetailImages(JSON.parse(next.detail_json));
+      invalidatePr(row.repo, row.number);
+    }
   }
 }
 
@@ -203,6 +237,7 @@ async function syncReplica(): Promise<void> {
   syncInFlight = (async () => {
     try {
       await ensureTunnel();
+      ensureSourceEvents();
       const headers = new Headers();
       if (state.revision) headers.set("if-none-match", state.revision);
       const response = await fetch(sourceUrl("/api/replica/inbox"), {
@@ -276,6 +311,8 @@ export async function startReplicaSync(): Promise<() => void> {
   return () => {
     if (syncTimer) clearInterval(syncTimer);
     syncTimer = null;
+    sourceEvents?.close();
+    sourceEvents = null;
     tunnel?.kill();
     tunnel = null;
   };

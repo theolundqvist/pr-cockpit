@@ -93,6 +93,74 @@ test("a local server imports inbox state and proxies GitHub-backed APIs through 
 
     const status = await fetch(`http://127.0.0.1:${replicaPort}/api/replica/status`).then((response) => response.json()) as { connected: boolean; lastError: string | null };
     expect(status).toEqual(expect.objectContaining({ connected: true, lastError: null }));
+
+    // A connected renderer only refreshes its open detail on a matching PR event, not an inbox
+    // event. Exercise the installed server path, including an edit with unchanged counts/timestamps.
+    const livePr = sourceSnapshot.tables.prs![0] as { repo: string; number: number; detail_json: string };
+    const detailPath = `/api/pr/${livePr.repo}/${livePr.number}`;
+    const originalDetail = JSON.parse(livePr.detail_json);
+    let socket = new WebSocket(`ws://127.0.0.1:${replicaPort}/api/events`);
+    const opened = (ws: WebSocket) => new Promise<void>((resolve, reject) => {
+      ws.addEventListener("open", () => resolve(), { once: true });
+      ws.addEventListener("error", () => reject(new Error("replica event socket failed")), { once: true });
+    });
+    await opened(socket);
+    const publishComment = (body: string) => {
+      const detail = {
+        ...originalDetail,
+        comments: { ...originalDetail.comments, nodes: [
+          ...(originalDetail.comments?.nodes ?? []),
+          { id: "synthetic-preview", body, author: { login: "preview-bot" }, createdAt: "2026-10-28T12:00:00Z" },
+        ] },
+      };
+      const writer = new Database(join(root, "source", "cockpit.db"));
+      try {
+        // Deliberately leave updated_at, fetched_at, and every inbox counter unchanged.
+        writer.query("UPDATE prs SET detail_json = ? WHERE repo = ? AND number = ?")
+          .run(JSON.stringify(detail), livePr.repo, livePr.number);
+      } finally {
+        writer.close();
+      }
+    };
+    const refreshFromEvent = async (body: string) => {
+      const { promise, resolve, reject } = Promise.withResolvers<void>();
+      // Real server processes own the production sync timer; this deadline bounds a missing
+      // event rather than sleeping to guess when replication has finished.
+      const timer = setTimeout(() => reject(new Error(`No PR invalidation for ${body}`)), 7_000);
+      const onMessage = (message: MessageEvent) => {
+        const event = JSON.parse(String(message.data));
+        if (event.type !== "pr" || event.repo !== livePr.repo || event.number !== livePr.number) return;
+        // Read immediately, just as the renderer does; data must already be committed.
+        void (async () => {
+          const local = new Database(join(root, "replica", "cockpit.db"), { readonly: true });
+          try {
+            const row = local.query<{ detail_json: string }, [string, number]>(
+              "SELECT detail_json FROM prs WHERE repo = ? AND number = ?",
+            ).get(livePr.repo, livePr.number)!;
+            expect(JSON.parse(row.detail_json).comments.nodes.at(-1).body).toBe(body);
+          } finally {
+            local.close();
+          }
+          const response = await fetch(`http://127.0.0.1:${replicaPort}${detailPath}`);
+          expect(response.status).toBe(200);
+          expect((await response.json() as typeof originalDetail).comments.nodes.at(-1).body).toBe(body);
+        })().then(resolve, reject);
+      };
+      socket.addEventListener("message", onMessage);
+      publishComment(body);
+      try {
+        await promise;
+      } finally {
+        clearTimeout(timer);
+        socket.removeEventListener("message", onMessage);
+      }
+    };
+    try {
+      await refreshFromEvent("Preview is building");
+      await refreshFromEvent("Preview is ready");
+    } finally {
+      socket.close();
+    }
     expect((await fetch(`http://127.0.0.1:${replicaPort}/api/replica/inbox`)).status).toBe(409);
     const sourceInbox = await fetch(`http://127.0.0.1:${sourcePort}/api/inbox`).then((response) => response.json()) as { prs: Array<{ repo: string; number: number }> };
     const replicaInbox = await fetch(`http://127.0.0.1:${replicaPort}/api/inbox`).then((response) => response.json()) as { prs: Array<{ repo: string; number: number }> };
@@ -168,7 +236,7 @@ test("a local server imports inbox state and proxies GitHub-backed APIs through 
     await Promise.all([replica?.exited, source.exited]);
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, 25_000);
 
 test("a replica mirrors the source's failed merges without touching its local mutation queue", async () => {
   const root = mkdtempSync(join(tmpdir(), "pr-cockpit-replica-merges-"));

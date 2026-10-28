@@ -1,6 +1,14 @@
+import type { ServerWebSocket } from "bun";
 import { setRendererInvalidationPublisher } from "./rendererInvalidation.ts";
 
 type FetchHandler = (request: Request) => Response | Promise<Response>;
+
+const rendererEventClients = new Set<ServerWebSocket<unknown>>();
+
+// The stream has no replay; reconnect consumers so they refresh their current route.
+export function reconnectRendererEventClients(): void {
+  for (const socket of rendererEventClients) socket.close(1012, "Source event stream reconnected");
+}
 
 const UNSAFE_BROWSER_METHODS: Record<string, true> = { POST: true, PUT: true, PATCH: true, DELETE: true };
 
@@ -73,9 +81,13 @@ export function startCockpitServer(port: number, fetchHandler: FetchHandler, all
     },
     websocket: {
       open(socket) {
+        rendererEventClients.add(socket);
         socket.subscribe("renderer-invalidations");
       },
       message() {},
+      close(socket) {
+        rendererEventClients.delete(socket);
+      },
     },
     // above Bun's 10s default - the range-diff route can wait out a bounded incremental mirror fetch
     idleTimeout: 30,
