@@ -105,9 +105,11 @@ export function promptDiffLink(rollup) {
     if (c.__typename !== "CheckRun" || c.name !== "Prompt preview" || !c.detailsUrl) continue;
     if (!latest || (c.startedAt ?? "") >= (latest.startedAt ?? "")) latest = c;
   }
-  if (!latest) return null;
-  // A neutral conclusion means the diff could not be generated; the link stays, labelled with that conclusion.
-  return { url: latest.detailsUrl, hint: (latest.conclusion ?? "").toUpperCase() === "NEUTRAL" ? "Check concluded neutral" : null };
+  // Skipped means the head sends the same context as its base, so there is no diff to open.
+  if (!latest || (latest.conclusion ?? "").toUpperCase() === "SKIPPED") return null;
+  // The title states the change ("2 of 8 scenarios change, +120 tokens sent") or why the diff is missing.
+  const neutral = (latest.conclusion ?? "").toUpperCase() === "NEUTRAL";
+  return { url: latest.detailsUrl, hint: latest.title || (neutral ? "Check concluded neutral" : null) };
 }
 
 export function countChecks(checks) {

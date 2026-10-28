@@ -2346,6 +2346,7 @@ const CHECK_CONTEXT_FIELDS = `
     name
     status
     conclusion
+    title
     detailsUrl
     startedAt
     completedAt
@@ -2561,6 +2562,7 @@ type PrDetailShape<Rx> = {
                   name: string;
                   status: string;
                   conclusion: string | null;
+                  title?: string | null;
                   detailsUrl: string | null;
                   startedAt: string | null;
                   completedAt: string | null;

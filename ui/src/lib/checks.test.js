@@ -183,6 +183,17 @@ describe("promptDiffLink", () => {
     expect(promptDiffLink(rollup(run({ conclusion: "NEUTRAL" })))).toEqual({ url: "https://pr-7-prompts.preview.example.com", hint: "Check concluded neutral" });
   });
 
+  test("hints the check's title, which states the change", () => {
+    expect(promptDiffLink(rollup(run({ title: "2 of 8 scenarios change, +120 tokens sent" })))).toEqual({ url: "https://pr-7-prompts.preview.example.com", hint: "2 of 8 scenarios change, +120 tokens sent" });
+  });
+
+  test("hides the link when the latest run skipped because nothing changed", () => {
+    expect(promptDiffLink(rollup(
+      run({ conclusion: "SKIPPED", title: "No context trace changes", startedAt: "2026-07-15T09:30:00Z" }),
+      run({ title: "1 of 8 scenarios change, +4 tokens sent" }),
+    ))).toBeNull();
+  });
+
   test("ignores other names, status contexts, and runs without a details URL", () => {
     expect(promptDiffLink(null)).toBeNull();
     expect(promptDiffLink(rollup(

@@ -14,6 +14,7 @@ export type RestCheckRun = {
   name: string;
   status: string;
   conclusion: string | null;
+  output?: { title: string | null } | null;
   details_url: string | null;
   html_url: string | null;
   started_at: string | null;
@@ -127,6 +128,7 @@ export function restCheckContexts(
       name: run.name,
       status: run.status.toUpperCase(),
       conclusion: run.conclusion ? run.conclusion.toUpperCase() : null,
+      title: run.output?.title ?? null,
       detailsUrl: run.details_url ?? run.html_url,
       startedAt: run.started_at,
       completedAt: run.completed_at,
