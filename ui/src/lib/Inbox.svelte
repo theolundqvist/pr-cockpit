@@ -8,7 +8,7 @@
 
 <script>
   import KitchenNotifications from "./KitchenNotifications.svelte";
-  import { cookingStage } from "./cookingStage.js";
+  import { cookingStage, isBurnt } from "./cookingStage.js";
   import { coalescedRefresh } from "./coalescedRefresh.js";
   import { categoryForPr, normalizePrGrouping, orderQueueUnits, planGroupDrop, PR_TYPES, TYPE_TITLES } from "../../../shared/prGrouping.ts";
   import { assignments, assignPr, syncAssignments, onAssignmentStorage } from "./prAssignments.svelte.js";
@@ -965,10 +965,11 @@
     return () => window.removeEventListener("storage", onAssignmentStorage);
   });
 
-  // A failed merge outranks approval, pinning, and grouping; stacks never pull a failed PR under a healthy ancestor.
-  // Cooking labels place only their own PR; pins and approvals retain their saved state.
+  // A burnt Kitchen order or failed merge outranks approval, pinning, and grouping; stacks never pull either
+  // under a healthy ancestor. Cooking labels place only their own PR; pins and approvals retain their saved state.
   // Approval places only its own PR, never the stack beneath it.
   function groupId(pr) {
+    if (cookingActive && isBurnt(pr)) return "burnt";
     if (pr.mergeFailed === true) return "merge-failed";
     if (cookingActive && cookingStage(pr)) return "cooking";
     if (isApproved(pr)) return "approved";
@@ -987,13 +988,15 @@
   }
 
   let groups = $derived.by(() => {
+    const burnt = [];
     const failed = [];
     const approved = [];
     const pinned = [];
     const buckets = new Map();
     for (const pr of filteredPrs) {
       const id = groupId(pr);
-      if (id === "merge-failed") failed.push(pr);
+      if (id === "burnt") burnt.push(pr);
+      else if (id === "merge-failed") failed.push(pr);
       else if (id === "approved") approved.push(pr);
       else if (id === "pinned") pinned.push(pr);
       else {
@@ -1024,6 +1027,10 @@
       return { id, title, units, unrankedCount, items };
     });
     const leading = [];
+    if (burnt.length) {
+      const { units, unrankedCount, items } = orderGroup(burnt, sortUnits);
+      leading.push({ id: "burnt", title: "Burnt", units, unrankedCount, items });
+    }
     if (failed.length) {
       const { units, unrankedCount, items } = orderGroup(failed, sortUnits);
       leading.push({ id: "merge-failed", title: "FAILED TO MERGE", units, unrankedCount, items });
@@ -1263,7 +1270,7 @@
   // Cross-section drops exist only while group dragging is on, for the dragged row's own section.
   function dropPlan(key, target) {
     const pr = prefs.groupDragEnabled && key ? prs.find((p) => prKey(p) === key) : null;
-    if (!pr || target === "cooking" || groupId(pr) === "cooking") return null;
+    if (!pr || [target, groupId(pr)].some((id) => id === "cooking" || id === "burnt")) return null;
     const plan = planGroupDrop({
       from: groupId(pr),
       to: target,
@@ -1955,7 +1962,7 @@
       {/if}
       {#each group.items as item (item.divider ? group.id + ":div" : prKey(item.pr))}
         {#if item.divider}
-          {#if group.id !== "pinned" && group.id !== "merge-failed" && group.id !== "approved"}
+          {#if group.id !== "pinned" && group.id !== "merge-failed" && group.id !== "approved" && group.id !== "burnt"}
             <div
               class="rank-divider"
               class:drop-active={dropHint?.key === "div:" + group.id}

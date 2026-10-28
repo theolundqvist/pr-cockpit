@@ -730,7 +730,7 @@
             <input class="check" type="checkbox" bind:checked={cookingSectionEnabled} />
             <span class="check-text">
               <span class="check-label">Separate PRs that are cooking</span>
-              <span class="hint">Group active Kitchen PRs by stage in Your queue and show merged completions in Notifications. Burnt PRs and failed merges stay visible.</span>
+              <span class="hint">List burnt Kitchen PRs first, group active ones by stage in Your queue, and show merged completions in Notifications. Failed merges stay visible.</span>
             </span>
           </label>
 

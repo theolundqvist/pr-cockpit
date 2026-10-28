@@ -175,7 +175,14 @@ export function cookingScenarios() {
         await page.clock.resume();
       }
       if (mode === "before" && await page.locator(".cooking-toggle,.cooking-stage").count()) throw new Error("Cooking UI visible before opt-in");
-      if (mode !== "before" && mode !== "history" && await page.locator(".cooking-toggle .group-count").textContent() !== "4") throw new Error("Cooking count is wrong");
+      const firstGroup = page.locator(".queue-group").first();
+      if (mode === "before" && (await firstGroup.locator(".group-label").textContent()).startsWith("Burnt")) throw new Error("Burnt section visible before opt-in");
+      if (mode !== "before" && mode !== "history") {
+        if (await page.locator(".cooking-toggle .group-count").textContent() !== "4") throw new Error("Cooking count is wrong");
+        if ((await firstGroup.locator(".group-label").textContent()).replace(/\s+/g, "") !== "Burnt1") throw new Error("Burnt is not the first section");
+        if ((await firstGroup.locator(".num").allTextContents()).join() !== "#505") throw new Error("Burnt rows are wrong");
+        if (await page.locator(".queue-list .num").getByText("#505", { exact: true }).count() !== 1) throw new Error("Burnt PR is duplicated");
+      }
     },
   }));
 }
