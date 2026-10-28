@@ -325,6 +325,8 @@ export function replicaSnapshotResponse(request: Request): Response {
 
 export function isLocalReplicaRequest(request: Request, url: URL): boolean {
   if (url.pathname === "/api/inbox" && request.headers.get("x-pr-cockpit-cli") === "1") return false;
+  // Embedded rows can include untracked details, which only the source retains.
+  if (url.pathname === "/api/pr-details" && url.searchParams.get("rows") === "1") return false;
   if (LOCAL_API_PATHS.has(url.pathname) || PR_MEDIA_PATH_RE.test(url.pathname)) return true;
   if (url.pathname === "/api/pr-index" && !url.searchParams.has("keys")) return true;
   if (url.pathname.startsWith("/api/tmux/")) return true;

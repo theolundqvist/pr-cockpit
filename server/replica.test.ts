@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Subprocess } from "bun";
+import { Database } from "bun:sqlite";
 import type { GithubQuota } from "./github.ts";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -98,6 +99,33 @@ test("a local server imports inbox state and proxies GitHub-backed APIs through 
     expect(replicaInbox.prs.map(({ repo, number }) => `${repo}#${number}`)).toEqual(
       sourceInbox.prs.map(({ repo, number }) => `${repo}#${number}`),
     );
+    const storedDetail = sourceSnapshot.tables.prs?.[0];
+    if (!storedDetail || typeof storedDetail !== "object" || !("detail_json" in storedDetail) || typeof storedDetail.detail_json !== "string") {
+      throw new Error("Source fixture has no stored PR detail");
+    }
+    const detail = {
+      ...JSON.parse(storedDetail.detail_json),
+      title: "Outside the replicated inbox",
+      url: "https://github.com/fixture/external/pull/901",
+    };
+    const sourceDb = new Database(join(root, "source", "cockpit.db"));
+    try {
+      sourceDb.query("INSERT INTO pr_detail_cache (repo, number, head_sha, detail_json, fetched_at) VALUES (?, ?, ?, ?, ?)").run(
+        "fixture/external", 901, detail.headRefOid, JSON.stringify(detail), new Date().toISOString(),
+      );
+    } finally {
+      sourceDb.close();
+    }
+    const tracked = sourceInbox.prs[0]!;
+    const trackedKey = `${tracked.repo}#${tracked.number}`;
+    const keys = [trackedKey, "fixture/external#901", "fixture/external#902"];
+    const embedded = await fetch(`http://127.0.0.1:${replicaPort}/api/pr-details?rows=1&keys=${encodeURIComponent(keys.join(","))}`)
+      .then((response) => response.json()) as { rows: Record<string, unknown> };
+    expect(embedded.rows[trackedKey]).toMatchObject(tracked);
+    expect(embedded.rows["fixture/external#901"]).toMatchObject({
+      repo: "fixture/external", number: 901, title: "Outside the replicated inbox",
+    });
+    expect(embedded.rows).not.toHaveProperty("fixture/external#902");
     const sourceQuota = await fetch(`http://127.0.0.1:${sourcePort}/api/quota`).then((response) => response.json()) as GithubQuota;
     const replicaQuota = await fetch(`http://127.0.0.1:${replicaPort}/api/quota`).then((response) => response.json()) as GithubQuota;
     expect(replicaQuota).toEqual({
