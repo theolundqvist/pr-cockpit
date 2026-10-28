@@ -42,6 +42,7 @@ This repository is worked on by humans and coding agents alike. Leave it easier 
 - Deliver changes directly on `main`, not through pull requests. Commit only owned hunks with every imported new module; smoke boot-path changes from a tracked-source snapshot before pushing, because a shared checkout can hide missing release files.
 - New functionality is behaviorally inert and invisible until explicitly enabled, including no background work. Styling is opt-in unless it is minor polish that preserves the default appearance.
 - UI changes include before-and-after screenshots showing their effect in the app.
+- Deploy UI assets by building to a scratch `--outDir` with the installed Vite under Node, then `cp -rn` its `assets/` into the served `static/assets` before replacing `static/index.html`. Building in the served checkout empties `static/` and deletes hashed chunks an open renderer may still lazy-load; Node builds of the same commit reproduce those hashes, Bun builds do not.
 
 ## Restarting the local server
 
