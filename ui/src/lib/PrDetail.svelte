@@ -61,7 +61,7 @@
   import { prKeyOf } from "./prKey.js";
   import { getDetail, cacheDetail, cacheDiff, cacheDiffIndex, cachedDiff, cachedDiffIndex, cacheGeneratedPaths, cachedGeneratedPaths, diffCacheKey, prDiffRange } from "./detailCache.js";
   import { preloadPr, whenIdle } from "./preload.js";
-  import { buildChecks, countChecks, summarizeChecks, sectionizeChecks, ciFixPrompt } from "./checks.js";
+  import { buildChecks, countChecks, summarizeChecks, sectionizeChecks, ciFixPrompt, promptDiffLink } from "./checks.js";
   import { mergeGate as evalMergeGate, forceMergeAvailable as evalForceMerge, forceMergeShortcutAction, mergeabilityPending } from "./mergeGate.js";
   import { quota } from "./quota.svelte.js";
   import { quotaImpact } from "./quotaImpact.js";
@@ -1748,6 +1748,7 @@
   let checkCounts = $derived.by(() => countChecks(checks));
   let checkSummary = $derived(summarizeChecks(checkCounts));
   let checkSections = $derived.by(() => sectionizeChecks(checks));
+  let promptDiff = $derived(promptDiffLink(rollup));
 
   let hasFailing = $derived((checkCounts.failing ?? 0) > 0);
   let showSuccessful = $state(false);
@@ -3848,7 +3849,7 @@
               {#if cancelOrderError}<span class="mut-error">{cancelOrderError}</span>{/if}
             </div>
           {/if}
-          {#if previewLinks.length}
+          {#if previewLinks.length || promptDiff}
             <div class="side-block preview-block">
               <h3 class="side-title">Preview</h3>
               <div class="actions">
@@ -3884,6 +3885,34 @@
                     </button>
                   </div>
                 {/each}
+                {#if promptDiff}
+                  <div class="preview-row">
+                    <a class="btn shortcut-action preview-launch" href={promptDiff.url} target="_blank" rel="noreferrer" title={promptDiff.url}>
+                      <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M6 3h8l4 4v14H6z" />
+                        <path d="M12 8v6m-3-3h6m-6 6h6" />
+                      </svg>
+                      <span>Open prompt diff</span>
+                      <span aria-hidden="true">↗</span>
+                    </a>
+                    <button
+                      type="button"
+                      class="btn preview-copy"
+                      aria-label="Copy prompt diff link"
+                      title="Copy prompt diff link"
+                      onclick={() => navigator.clipboard.writeText(promptDiff.url).then(
+                        () => copied.show("Copied prompt diff link"),
+                        () => showFlash("Couldn't copy the prompt diff link."),
+                      )}
+                    >
+                      <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <rect x="9" y="9" width="10" height="10" rx="1.5" />
+                        <path d="M15 9V6.5A1.5 1.5 0 0 0 13.5 5h-7A1.5 1.5 0 0 0 5 6.5v7A1.5 1.5 0 0 0 6.5 15H9" />
+                      </svg>
+                    </button>
+                  </div>
+                  {#if promptDiff.hint}<span class="preview-hint">{promptDiff.hint}</span>{/if}
+                {/if}
               </div>
             </div>
           {/if}
@@ -6876,6 +6905,11 @@
     align-items: center;
     justify-content: center;
     padding: 8px;
+  }
+  .preview-hint {
+    margin: -2px 0 0 4px;
+    color: var(--text-faint);
+    font-size: 12px;
   }
   .block-title,
   .side-title {

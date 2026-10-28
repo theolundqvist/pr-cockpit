@@ -663,6 +663,46 @@ const scenarios = [
       });
     },
   })),
+  ...[
+    ["detail-prompt-diff-with-preview", "Prompt diff check link below the published web and desktop previews.", "SUCCESS", true],
+    ["detail-prompt-diff-only", "Prompt diff check link alone, with its neutral conclusion as a hint.", "NEUTRAL", false],
+  ].map(([name, description, conclusion, withPreview]) => ({
+    ...detail(name, 101, description),
+    verify: async (page) => {
+      const preview = page.locator(".preview-block");
+      await preview.waitFor();
+      const promptDiff = preview.getByRole("link", { name: /^Open prompt diff/ });
+      if (await promptDiff.getAttribute("href") !== "https://pr-101-prompts.preview.example.com") throw new Error("Prompt diff URL changed");
+      if (await preview.getByRole("link", { name: "Open web app" }).count() !== (withPreview ? 1 : 0)) throw new Error("Web preview row changed");
+      if (await preview.locator(".preview-row").last().getByRole("link").textContent().then((text) => !text.includes("Open prompt diff"))) throw new Error("Prompt diff must follow the preview launches");
+      if ((await preview.locator(".preview-hint").count()) !== (conclusion === "NEUTRAL" ? 1 : 0)) throw new Error("Prompt diff conclusion hint changed");
+      await page.evaluate(() => {
+        window.previewCopiedUrls = [];
+        Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+          writeText: async (text) => { window.previewCopiedUrls.push(text); },
+        } });
+      });
+      await preview.getByRole("button", { name: "Copy prompt diff link", exact: true }).focus();
+      await page.keyboard.press("Enter");
+      await page.evaluate(() => document.activeElement?.blur());
+      if (await page.evaluate(() => window.previewCopiedUrls.at(-1)) !== "https://pr-101-prompts.preview.example.com") throw new Error("Copy prompt diff link copied the wrong URL");
+      await page.waitForTimeout(1300);
+    },
+    beforeGoto: async (page) => {
+      await page.route("**/api/settings", async (route) => {
+        const response = await route.fetch();
+        await route.fulfill({ response, json: { ...await response.json(), comment_links_enabled: false } });
+      });
+      await page.route("https://example.com/*.svg", (route) => route.fulfill({ contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="24"><text x="4" y="16">Preview</text></svg>' }));
+      await page.route((url) => url.pathname === `/api/pr/${REPO}/101`, async (route) => {
+        const response = await route.fetch();
+        const pr = await response.json();
+        if (withPreview) pr.comments.nodes.push({ id: "preview-bot", author: { __typename: "Bot", login: "preview-bot" }, createdAt: "2026-07-15T09:00:00Z", body: "Preview is live\n[![Open preview](https://example.com/web.svg)](https://preview.example.com/101/) [![Desktop](https://example.com/desktop.svg)](https://preview.example.com/open-desktop?pr=101)" });
+        pr.lastCommit.nodes[0].commit.statusCheckRollup.contexts.nodes.push({ __typename: "CheckRun", name: "Prompt preview", status: "COMPLETED", conclusion, detailsUrl: "https://pr-101-prompts.preview.example.com", startedAt: "2026-07-15T09:01:00Z", completedAt: "2026-07-15T09:04:00Z", isRequired: false, checkSuite: null });
+        await route.fulfill({ response, json: pr });
+      });
+    },
+  })),
   {
     ...detail("detail-conversation", 101, "Green PR conversation with approvals, threads, comments, and successful checks."),
     verify: async (page) => {

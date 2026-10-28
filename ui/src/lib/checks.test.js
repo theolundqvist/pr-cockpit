@@ -9,6 +9,7 @@ import {
   summarizeChecks,
   sectionizeChecks,
   ciFixPrompt,
+  promptDiffLink,
 } from "./checks.js";
 
 describe("checkBucket", () => {
@@ -167,5 +168,34 @@ describe("ciFixPrompt", () => {
     expect(prompt).toContain("- CI / lint (required)");
     expect(prompt).toContain("https://github.com/example-org/webapp/actions/runs/123");
     expect(prompt).toContain("gh pr checks 42 --repo example-org/webapp");
+  });
+});
+
+describe("promptDiffLink", () => {
+  const rollup = (...nodes) => ({ contexts: { nodes } });
+  const run = (fields) => ({ __typename: "CheckRun", name: "Prompt preview", status: "COMPLETED", conclusion: "SUCCESS", detailsUrl: "https://pr-7-prompts.preview.example.com", startedAt: "2026-07-15T09:00:00Z", ...fields });
+
+  test("links the Prompt preview check run's details URL", () => {
+    expect(promptDiffLink(rollup(run({})))).toEqual({ url: "https://pr-7-prompts.preview.example.com", hint: null });
+  });
+
+  test("hints a neutral conclusion without dropping the link", () => {
+    expect(promptDiffLink(rollup(run({ conclusion: "NEUTRAL" })))).toEqual({ url: "https://pr-7-prompts.preview.example.com", hint: "Check concluded neutral" });
+  });
+
+  test("ignores other names, status contexts, and runs without a details URL", () => {
+    expect(promptDiffLink(null)).toBeNull();
+    expect(promptDiffLink(rollup(
+      run({ name: "Prompt preview build" }),
+      run({ detailsUrl: null }),
+      { __typename: "StatusContext", context: "Prompt preview", state: "SUCCESS", targetUrl: "https://example.com" },
+    ))).toBeNull();
+  });
+
+  test("prefers the most recently started run", () => {
+    expect(promptDiffLink(rollup(
+      run({ detailsUrl: "https://example.com/new", startedAt: "2026-07-15T09:30:00Z" }),
+      run({ detailsUrl: "https://example.com/old", conclusion: "NEUTRAL" }),
+    ))).toEqual({ url: "https://example.com/new", hint: null });
   });
 });

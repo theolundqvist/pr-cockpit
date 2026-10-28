@@ -97,6 +97,19 @@ export function buildChecks(rollup) {
     .filter((check) => (check.bucket !== "failing" && check.bucket !== "cancelled") || !live.has(check.name));
 }
 
+// Preview servers publish a link-only "Prompt preview" check run whose details URL is the PR's rendered prompt diff.
+// A re-run leaves the earlier run in the rollup, so the most recently started one wins.
+export function promptDiffLink(rollup) {
+  let latest = null;
+  for (const c of rollup?.contexts.nodes ?? []) {
+    if (c.__typename !== "CheckRun" || c.name !== "Prompt preview" || !c.detailsUrl) continue;
+    if (!latest || (c.startedAt ?? "") >= (latest.startedAt ?? "")) latest = c;
+  }
+  if (!latest) return null;
+  // A neutral conclusion means the diff could not be generated; the link stays, labelled with that conclusion.
+  return { url: latest.detailsUrl, hint: (latest.conclusion ?? "").toUpperCase() === "NEUTRAL" ? "Check concluded neutral" : null };
+}
+
 export function countChecks(checks) {
   const counts = {};
   for (const c of checks) counts[c.bucket] = (counts[c.bucket] ?? 0) + 1;
