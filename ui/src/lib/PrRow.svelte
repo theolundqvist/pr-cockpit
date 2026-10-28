@@ -6,11 +6,15 @@
   import CurrentBranchBadge from "./CurrentBranchBadge.svelte";
 
   // The inbox's PR row. Views without the queue's selection, drag and rename state pass only the PR, its status and a link.
+  // `compact` keeps the title, lifecycle, number, repo and Kitchen state for narrow overlays; `burnt` marks a Kitchen
+  // order that needs intervention, which `cooking` never represents.
   let {
     pr,
     status,
     href,
     cooking = null,
+    burnt = false,
+    compact = false,
     age = undefined,
     ageTitle = undefined,
     editing = false,
@@ -31,7 +35,7 @@
   } = $props();
 
   let now = $state(Date.now());
-  const kitchenStart = $derived(cooking && pr.kitchenEnteredAt ? Date.parse(pr.kitchenEnteredAt) : NaN);
+  const kitchenStart = $derived(cooking && !compact && pr.kitchenEnteredAt ? Date.parse(pr.kitchenEnteredAt) : NaN);
   const kitchenMinutes = $derived(Math.max(0, Math.floor((now - kitchenStart) / 60000)));
   const kitchenDuration = $derived(kitchenMinutes < 1 ? "<1m" : kitchenMinutes < 60 ? `${kitchenMinutes}m`
     : kitchenMinutes < 1440 ? `${Math.floor(kitchenMinutes / 60)}h ${kitchenMinutes % 60}m`
@@ -58,6 +62,7 @@
   class:multi-selected={multiSelected}
   class:archived-row={archived}
   class:stack-child={stacked}
+  class:compact
   class:dragging
   class:drop-before={dropBefore}
   class:drop-after={dropAfter}
@@ -65,12 +70,14 @@
   {...rest}
 >
   {#if stacked}<span class="stack-glyph" aria-hidden="true">└</span>{/if}
-  <span class="row-avatar">
-    {#if descriptionChanged}
-      <span class="description-dot" role="img" aria-label="Description changed" title="Description changed since you last read it"></span>
-    {/if}
-    <Avatar login={pr.author} url={`https://github.com/${pr.author}.png?size=64`} size={30} />
-  </span>
+  {#if !compact}
+    <span class="row-avatar">
+      {#if descriptionChanged}
+        <span class="description-dot" role="img" aria-label="Description changed" title="Description changed since you last read it"></span>
+      {/if}
+      <Avatar login={pr.author} url={`https://github.com/${pr.author}.png?size=64`} size={30} />
+    </span>
+  {/if}
   {#if badge}
     {@render badge()}
   {:else}
@@ -99,7 +106,9 @@
       {:else}
         {@const statsDiffer = pr.additions !== pr.rawAdditions || pr.deletions !== pr.rawDeletions}
         <span class="num">#{pr.number}</span>
-        {#if cooking}
+        {#if burnt}
+          <span class="cooking-stage burnt" title="kitchen: burnt — needs intervention">Burnt</span>
+        {:else if cooking}
           <span class="cooking-stage" title={cooking.label}>{cooking.title}</span>
           {#if Number.isFinite(kitchenStart)}
             <span class="kitchen-duration" title={`In Kitchen since ${new Date(kitchenStart).toLocaleString()}`}>{kitchenDuration} in Kitchen</span>
@@ -107,29 +116,31 @@
         {/if}
         <span class="sep">·</span>
         <span>{pr.repo.split("/")[1] ?? pr.repo}</span>
-        {#if prefs.inboxLabels !== "off" && pr.labels?.length}
+        {#if !compact}
+          {#if prefs.inboxLabels !== "off" && pr.labels?.length}
+            <span class="sep">·</span>
+            <span class="labels" class:dots={prefs.inboxLabels === "dot"}>
+              {#each pr.labels as label (label.name)}
+                {#if prefs.inboxLabels === "dot"}
+                  <span class="label-dot" style:--label-color={label.color ? `#${label.color}` : null} title={label.name} role="img" aria-label={label.name}></span>
+                {:else}
+                  <span class="label-name" style:--label-color={label.color ? `#${label.color}` : null}>{label.name}</span>
+                {/if}
+              {/each}
+            </span>
+          {/if}
           <span class="sep">·</span>
-          <span class="labels" class:dots={prefs.inboxLabels === "dot"}>
-            {#each pr.labels as label (label.name)}
-              {#if prefs.inboxLabels === "dot"}
-                <span class="label-dot" style:--label-color={label.color ? `#${label.color}` : null} title={label.name} role="img" aria-label={label.name}></span>
-              {:else}
-                <span class="label-name" style:--label-color={label.color ? `#${label.color}` : null}>{label.name}</span>
-              {/if}
-            {/each}
-          </span>
-        {/if}
-        <span class="sep">·</span>
-        <span class="branch">{pr.baseRef} <span class="arrow">←</span> {pr.headRef}</span>
-        {#if pr.localBranch === pr.headRef}
-          <CurrentBranchBadge label="checked out" />
-        {/if}
-        <span class="sep">·</span>
-        <span class="add" title={statsDiffer ? `+${pr.rawAdditions} including tests` : undefined}>+{pr.additions}</span>
-        <span class="del" title={statsDiffer ? `−${pr.rawDeletions} including tests` : undefined}>−{pr.deletions}</span>
-        {#if pr.unresolvedCount > 0}
+          <span class="branch">{pr.baseRef} <span class="arrow">←</span> {pr.headRef}</span>
+          {#if pr.localBranch === pr.headRef}
+            <CurrentBranchBadge label="checked out" />
+          {/if}
           <span class="sep">·</span>
-          <span class="threads">{pr.unresolvedCount} unresolved</span>
+          <span class="add" title={statsDiffer ? `+${pr.rawAdditions} including tests` : undefined}>+{pr.additions}</span>
+          <span class="del" title={statsDiffer ? `−${pr.rawDeletions} including tests` : undefined}>−{pr.deletions}</span>
+          {#if pr.unresolvedCount > 0}
+            <span class="sep">·</span>
+            <span class="threads">{pr.unresolvedCount} unresolved</span>
+          {/if}
         {/if}
       {/if}
     </div>
@@ -147,12 +158,13 @@
   {/if}
   {#if keys}<span class="row-keys">{@render keys()}</span>{/if}
   {@render media?.(pr)}
-  <span class="row-age mono" title={ageTitle}>{relativeTime(age ?? pr.updatedAt)}</span>
+  {#if !compact}<span class="row-age mono" title={ageTitle}>{relativeTime(age ?? pr.updatedAt)}</span>{/if}
 </svelte:element>
 
 <style>
   .kitchen-duration { flex-shrink: 0; color: var(--text-dim); }
   .cooking-stage { color: var(--text); border: 1px solid color-mix(in srgb, #d99a39 45%, transparent); background: color-mix(in srgb, #d99a39 10%, transparent); border-radius: 4px; padding: 1px 5px; }
+  .cooking-stage.burnt { color: var(--fail); border-color: color-mix(in srgb, var(--fail) 45%, transparent); background: var(--fail-bg); }
   .archived-row {
     opacity: 0.5;
   }
@@ -566,5 +578,51 @@
     .row-meta .sep:has(+ .add) {
       display: none;
     }
+  }
+
+  /* Compact rows lay title over lifecycle, number, repo and Kitchen state at every width, overriding the
+     desktop and phone layouts above; row-main dissolves so its lines join the row's grid. */
+  .row.compact {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 3px 8px;
+    min-height: 0;
+    padding: 7px 10px;
+  }
+  .row.compact .row-main {
+    display: contents;
+  }
+  .row.compact .row-title {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    white-space: normal;
+  }
+  .row.compact .row-title-text {
+    display: contents;
+    white-space: normal;
+  }
+  .row.compact .pinned-mark {
+    display: none;
+  }
+  .row.compact .row-badge-slot {
+    display: flex;
+    grid-column: 1;
+    grid-row: 2;
+    flex: none;
+    margin-top: 0;
+  }
+  .row.compact .row-meta {
+    grid-column: 2;
+    grid-row: 2;
+    margin-top: 0;
+  }
+  .row.compact .greptile {
+    grid-column: 3;
+    grid-row: 2;
+    margin-top: 0;
   }
 </style>
