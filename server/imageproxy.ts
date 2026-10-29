@@ -9,7 +9,7 @@ const CACHE_BYTES_PER_KIND = 2 * 1024 * 1024 * 1024;
 
 const ghImgBin =
   Bun.env.COCKPIT_GH_IMG ??
-  [`${Bun.env.HOME}/dev/gh-img/gh-img`, `${Bun.env.HOME}/.local/share/gh/extensions/gh-img/gh-img`].find((p) => {
+  [`${Bun.env.HOME}/.local/share/gh/extensions/gh-img/gh-img`, `${Bun.env.HOME}/dev/gh-img/gh-img`].find((p) => {
     try {
       accessSync(p, constants.X_OK);
       return true;
@@ -39,6 +39,10 @@ function sniffContentType(bytes: Uint8Array): string {
   const head = new TextDecoder().decode(bytes.subarray(0, 256)).trimStart();
   if (head.startsWith("<?xml") || head.startsWith("<svg")) return "image/svg+xml";
   return "application/octet-stream";
+}
+
+function isHtml(bytes: Uint8Array): boolean {
+  return /^\s*(?:<!doctype\s+html\b|<html\b)/i.test(new TextDecoder().decode(bytes.subarray(0, 512)));
 }
 
 function ghImgAvailable(): boolean {
@@ -163,7 +167,10 @@ async function loadImage(raw: string): Promise<ImageResult> {
   const key = cacheKey(raw);
   for (const dir of [imageCacheDir, videoCacheDir]) {
     const cached = Bun.file(`${dir}/${key}`);
-    if (await cached.exists()) return { file: cached };
+    if (await cached.exists()) {
+      if (!isHtml(new Uint8Array(await cached.slice(0, 512).arrayBuffer()))) return { file: cached };
+      rmSync(`${dir}/${key}`);
+    }
   }
 
   let fetched = await fetchAllowedImage(raw).catch(() => null);
@@ -188,7 +195,9 @@ async function loadImage(raw: string): Promise<ImageResult> {
     return { error: stderr || `gh-img get exited ${code}`, status: 502 };
   }
 
-  return { file: await storeCached(key, new Uint8Array(stdout)) };
+  const bytes = new Uint8Array(stdout);
+  if (isHtml(bytes)) return { error: "GitHub returned a sign-in page instead of media; authorize the selected browser's SSO session", status: 502 };
+  return { file: await storeCached(key, bytes) };
 }
 
 // Videos keep their own budget so one large recording cannot evict every cached image.

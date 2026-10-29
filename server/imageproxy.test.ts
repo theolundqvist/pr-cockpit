@@ -152,6 +152,21 @@ test("failed image requests do not poison subsequent downloads", async () => {
   expect(result).toEqual({ failed: 501, recovered: 200, bytes: Array.from(png) });
 });
 
+test("cached sign-in HTML is replaced by the authenticated image", async () => {
+  const result = await imageScenario(`
+    const key = new Bun.CryptoHasher("sha256").update(raw).digest("hex");
+    const path = Bun.env.COCKPIT_DATA_DIR + "/images/" + key;
+    await Bun.write(path, "\\n<!DOCTYPE html><html>Sign in to GitHub</html>");
+    let fetches = 0;
+    globalThis.fetch = async () => { fetches++; return new Response(png); };
+    const response = await handleImage(url);
+    const cached = await handleImage(url);
+    console.log(JSON.stringify({ status: response.status, type: response.headers.get("content-type"), fetches,
+      bytes: Array.from(new Uint8Array(await cached.arrayBuffer())) }));
+  `);
+  expect(result).toEqual({ status: 200, type: "image/png", fetches: 1, bytes: Array.from(png) });
+});
+
 test("GitHub video attachments are proxied with a playable content type", async () => {
   const result = await imageScenario(`
     const mp4 = new Uint8Array([0, 0, 0, 0x20, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
