@@ -144,6 +144,11 @@ function cacheKey(raw: string): string {
 type MediaKind = "image" | "gif" | "video";
 type ImageResult = { file: Bun.BunFile | Uint8Array; kind?: MediaKind } | { error: string; status: number };
 const imageRequests = new Map<string, Promise<ImageResult>>();
+let fetchReplicaImage: ((raw: string) => Promise<Response>) | null = null;
+
+export function setReplicaImageFetcher(fetcher: typeof fetchReplicaImage): void {
+  fetchReplicaImage = fetcher;
+}
 
 function getImage(raw: string): Promise<ImageResult> {
   const pending = imageRequests.get(raw);
@@ -170,6 +175,18 @@ async function loadImage(raw: string): Promise<ImageResult> {
     if (await cached.exists()) {
       if (!isHtml(new Uint8Array(await cached.slice(0, 512).arrayBuffer()))) return { file: cached };
       rmSync(`${dir}/${key}`);
+    }
+  }
+
+  if (fetchReplicaImage) {
+    try {
+      const response = await fetchReplicaImage(raw);
+      if (!response.ok) return { error: await response.text(), status: response.status };
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (isHtml(bytes)) return { error: "Source returned HTML instead of media", status: 502 };
+      return { file: await storeCached(key, bytes) };
+    } catch (error) {
+      return { error: `Source image download failed: ${String(error)}`, status: 502 };
     }
   }
 

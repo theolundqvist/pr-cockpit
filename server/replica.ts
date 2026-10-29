@@ -1,7 +1,7 @@
 import type { Subprocess } from "bun";
 import { reconnectRendererEventClients } from "./cockpitServer.ts";
 import { getPr, getSetting, listFailedMergeKeys, listPrs, readInboxReplica, replaceInboxReplica, setSetting, type InboxReplica, type PrRow } from "./db.ts";
-import { prefetchDetailImages } from "./imageproxy.ts";
+import { prefetchDetailImages, setReplicaImageFetcher } from "./imageproxy.ts";
 import { observePrNotifications } from "./notifications.ts";
 import { setLastPollAt, lastPollAt } from "./poller.ts";
 import { invalidateInbox, invalidatePr, publishPollCompleted } from "./rendererInvalidation.ts";
@@ -305,10 +305,17 @@ export async function setSourceSafeMergeApproval(enabled: boolean): Promise<void
 export async function startReplicaSync(): Promise<() => void> {
   const host = replicaSshHost();
   state = { ...state, host };
+  setReplicaImageFetcher(async (raw) => {
+    await ensureTunnel();
+    return fetch(sourceUrl(`/api/image?url=${encodeURIComponent(raw)}`), {
+      signal: AbortSignal.timeout(60_000),
+    });
+  });
   for (const row of listPrs()) prefetchDetailImages(JSON.parse(row.detail_json));
   await syncReplica();
   syncTimer = setInterval(() => void syncReplica(), SYNC_INTERVAL_MS);
   return () => {
+    setReplicaImageFetcher(null);
     if (syncTimer) clearInterval(syncTimer);
     syncTimer = null;
     sourceEvents?.close();

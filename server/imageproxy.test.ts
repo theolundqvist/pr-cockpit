@@ -48,7 +48,7 @@ async function imageScenario(scenario: string): Promise<Record<string, any>> {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-images-"));
   try {
     const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", `
-      import { handleImage, prefetchImages } from ${JSON.stringify(new URL("./imageproxy.ts", import.meta.url).href)};
+      import { handleImage, prefetchImages, setReplicaImageFetcher } from ${JSON.stringify(new URL("./imageproxy.ts", import.meta.url).href)};
       const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
       const raw = "https://raw.githubusercontent.com/acme/app/main/image.png";
       const url = new URL("http://localhost/api/image?url=" + encodeURIComponent(raw));
@@ -80,6 +80,34 @@ test("simultaneous image requests share one download and serve intact cached byt
   expect(result.fetches).toBe(1);
   expect(result.bodies).toEqual(Array.from({ length: 20 }, () => Array.from(png)));
   expect(result.cached).toEqual(Array.from(png));
+});
+
+test("replicas cache source images without local GitHub credentials and preserve source errors", async () => {
+  const result = await imageScenario(`
+    let requests = 0;
+    const source = Bun.serve({ port: 0, fetch(request) {
+      requests++;
+      return new URL(request.url).searchParams.get("url") === raw
+        ? new Response(png, { headers: { "content-type": "image/png" } })
+        : new Response("source authentication required", { status: 401 });
+    } });
+    setReplicaImageFetcher((raw) => fetch(source.url + "?url=" + encodeURIComponent(raw)));
+    const first = await handleImage(url);
+    const firstBytes = Array.from(new Uint8Array(await first.arrayBuffer()));
+    const denied = await handleImage(new URL(url + "missing"));
+    source.stop(true);
+    const cached = await handleImage(url);
+    console.log(JSON.stringify({
+      first: first.status, firstBytes, requests,
+      denied: denied.status, error: await denied.text(),
+      cached: cached.status, cachedBytes: Array.from(new Uint8Array(await cached.arrayBuffer())),
+    }));
+  `);
+  expect(result).toEqual({
+    first: 200, firstBytes: Array.from(png), requests: 2,
+    denied: 401, error: "source authentication required",
+    cached: 200, cachedBytes: Array.from(png),
+  });
 });
 
 test("native image prefetch works without gh-img", async () => {
