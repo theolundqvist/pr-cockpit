@@ -127,6 +127,8 @@
   let mutations = $state([]);
   let pendingReview = $state(null);
   let pendingReviewState = $state("idle");
+  // Hide threads only during the first draft read; refreshes keep the last filter.
+  let pendingReviewLoaded = $state(false);
   let pendingReviewError = $state(null);
   let pendingReviewActionError = $state("");
   let rangeKey = $state("all");
@@ -204,6 +206,7 @@
     fileMenu = null;
     pendingReview = null;
     pendingReviewState = "idle";
+    pendingReviewLoaded = false;
     pendingReviewError = null;
     pendingReviewActionError = "";
     verdictError = "";
@@ -312,6 +315,7 @@
       if (token !== activeFetch || !prefs.pendingReviewsEnabled) return;
       const previousId = pendingReview?.id;
       pendingReview = result.review;
+      pendingReviewLoaded = true;
       if (pendingReview?.body && pendingReview.id !== previousId && !verdictBody.trim()) verdictBody = pendingReview.body;
       pendingReviewState = "ready";
     } catch (reason) {
@@ -325,6 +329,7 @@
     if (!prefs.pendingReviewsEnabled) {
       pendingReview = null;
       pendingReviewState = "idle";
+      pendingReviewLoaded = false;
       pendingReviewError = null;
       return;
     }
@@ -1080,7 +1085,7 @@
 
   let pendingReviewCommentIds = $derived(new Set((pendingReview?.comments ?? []).map((comment) => comment.id)));
   let publishedThreads = $derived(
-    prefs.pendingReviewsEnabled && pendingReviewState === "loading"
+    prefs.pendingReviewsEnabled && !pendingReviewLoaded && pendingReviewState === "loading"
       ? []
       : (pr?.reviewThreads.nodes ?? []).filter(
           (thread) => !thread.comments.nodes.some((comment) => pendingReviewCommentIds.has(comment.databaseId)),
