@@ -12,7 +12,9 @@
   import { coalescedRefresh } from "./coalescedRefresh.js";
   import { categoryForPr, normalizePrGrouping, orderQueueUnits, planGroupDrop, PR_TYPES, TYPE_TITLES } from "../../../shared/prGrouping.ts";
   import { assignments, assignPr, syncAssignments, onAssignmentStorage } from "./prAssignments.svelte.js";
-  import { isSetAside, putAside } from "./setAside.svelte.js";
+  import { isSetAside, putAside, remindLater, reconcileReminders } from "./setAside.svelte.js";
+  import RemindPicker from "./RemindPicker.svelte";
+  import { isRecordingShortcut } from "./shortcutCapture.js";
   import { lastViewed } from "./lastViewed.svelte.js";
   import { tick, untrack } from "svelte";
   import { fetchInbox, fetchRecentClosed, fetchAllPrs, fetchPrDetails, fetchPrDetail, fetchPrDetailSnapshot, repoQuickActions, setArchived, saveSettings, reorderPr, setMergeApproval, enqueueMutation, fetchMutations, retryMutation, discardMutation, fetchSettings, fetchRelayStatus, fetchRelayCoverage, autofixAgent, customAgent } from "./api.js";
@@ -174,6 +176,26 @@
   let undo = $state(null);
   const archiveFlash = timedFlag(4000, () => (undo = null));
   let contextMenu = $state(null);
+  let reminder = $state(null);
+
+  function openReminder(pr) {
+    const href = `#/pr/${pr.repo}/${pr.number}`;
+    const row = [...document.querySelectorAll(".inbox a.row")].find((node) => node.getAttribute("href") === href);
+    contextMenu = null;
+    reminder = { pr, anchor: row ?? { left: 24, bottom: 120 } };
+  }
+
+  function closeReminder() {
+    reminder = null;
+    scrollSelectedIntoView(true);
+  }
+
+  function chooseReminder(remindAt) {
+    if (!reminder || !remindLater(reminder.pr, remindAt)) return false;
+    multiAnchor = null;
+    closeReminder();
+    return true;
+  }
   let contextMenuNode = $state();
   let contextMenuRequest = 0;
   let menuQuickActions = $state([]);
@@ -1415,6 +1437,13 @@
   let archivedSet = $derived(new Set(archivedPrs.map((pr) => prKey(pr))));
   const isArchived = (pr) => archivedSet.has(prKey(pr));
   $effect(() => {
+    const snapshots = [...prs, ...allPrs, ...closedPrs, ...archivedPrs];
+    untrack(() => reconcileReminders(snapshots));
+  });
+  $effect(() => {
+    if (!active || view === "whiteboard" || view === "agents") reminder = null;
+  });
+  $effect(() => {
     if (!active || view === "agents" || !loaded) return;
     const sections = new Map(groups.flatMap((group) => group.items.filter((item) => item.pr).map((item) => [prKey(item.pr), group.title])));
     listedPrs.title = activeView ?? (view === "all" ? "All PRs" : view === "closed" ? "Recently merged" : view === "whiteboard" ? "Whiteboard" : "Your queue");
@@ -1439,6 +1468,7 @@
       { key: "⏎", label: "open" },
     ];
     if (pr) keys.push({ key: "b", label: "set aside" });
+    if (pr) keys.push({ key: "h", label: "remind me" });
     if (view === "all" || view === "closed") {
       keys.push({ key: "o", label: "github" });
       keys.push({ key: "Tab", label: view === "all" ? "recently merged" : "back to open" });
@@ -1463,7 +1493,7 @@
   function scrollSelectedIntoView(focusRow = false) {
     requestAnimationFrame(() => {
       const row = document.querySelector(".inbox .row.selected");
-      if (focusRow && !repoPickerOpen) row?.focus({ preventScroll: true });
+      if (focusRow && !repoPickerOpen && !reminder) row?.focus({ preventScroll: true });
       row?.scrollIntoView({ block: "nearest" });
     });
   }
@@ -1536,7 +1566,7 @@
   $effect(() => {
     if (!active) return;
     function onKey(e) {
-      if (e.defaultPrevented) return;
+      if (e.defaultPrevented || isRecordingShortcut() || reminder) return;
       if (view === "whiteboard" || view === "agents") return;
       if (contextMenu) {
         if (e.key === "Escape") {
@@ -1620,6 +1650,11 @@
           multiAnchor = null;
           scrollSelectedIntoView();
         }
+        return;
+      }
+      if (e.key === "h" && !e.shiftKey) {
+        e.preventDefault();
+        if (!e.repeat && pr) openReminder(pr);
         return;
       }
       if (e.key === "g" && !e.shiftKey) {
@@ -2209,6 +2244,9 @@
 </div>
 <RowMediaOverlay list={queueList} prFor={prForMedia} />
 {#if prefs.fileFinderEnabled}<InboxFinder repos={configuredRepos} {active} />{/if}
+{#if reminder}
+  <RemindPicker anchor={reminder.anchor} onSelect={chooseReminder} onClose={closeReminder} />
+{/if}
 {#if contextMenu}
   <div
     class="pr-context-menu"
@@ -2240,6 +2278,7 @@
       <button role="menuitem" onclick={() => archiveFromMenu(contextMenu.pr)}>{isArchived(contextMenu.pr) ? "Unarchive" : "Archive"}</button>
     {/if}
     <button role="menuitem" onclick={() => { putAside(contextMenu.pr); contextMenu = null; }}>Set aside</button>
+    <button role="menuitem" onclick={() => openReminder(contextMenu.pr)}>Remind me…</button>
     {#if menuQuickActionsLoading || menuQuickActionsError || menuQuickActions.length}
       <button
         role="menuitem"

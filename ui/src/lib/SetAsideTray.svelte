@@ -12,6 +12,10 @@
   let returnFocus;
   let openedAtHash;
 
+  const returnTime = (value) => new Date(value).toLocaleString(undefined, {
+    weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+  });
+
   function close(restoreFocus = true) {
     panel?.hidePopover();
     setAside.open = false;
@@ -124,7 +128,7 @@
       <div class="aside-row">
         <a class="pr-link" href={`#/pr/${pr.repo}/${pr.number}`} onclick={() => close(false)}>
           <Avatar login={pr.author} url={pr.author ? `https://github.com/${pr.author}.png?size=64` : undefined} size={30} />
-          <span class="pr-copy"><span class="pr-title" title={pr.title}>{pr.title}</span><span class="pr-meta mono">{pr.repo} <span>#{pr.number}</span></span></span>
+          <span class="pr-copy"><span class="pr-title" title={pr.title}>{pr.title}</span><span class="pr-meta mono">{pr.repo} <span>#{pr.number}</span></span>{#if pr.remindAt}<span class="pr-meta">Until {returnTime(pr.remindAt)}</span>{/if}</span>
         </a>
         <button class="restore" type="button" aria-label={`Bring back ${pr.title}`} title="Bring back to the main view" onclick={() => restore(pr, index)}>
           <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 5-4 4 4 4M4 9h8a4 4 0 0 1 0 8" /></svg>
