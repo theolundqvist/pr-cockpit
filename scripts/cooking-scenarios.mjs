@@ -194,12 +194,14 @@ export function cookingScenarios() {
         const inboxURL = page.url();
         const keys = data.prs.map((pr) => encodeURIComponent(`${pr.repo}#${pr.number}`)).join(",");
         await page.goto(`${inboxURL.split("#")[0]}#/embed?keys=${keys}&overlay=1`);
+        await page.reload();
         await page.locator(".compact .cooking-stage").first().waitFor();
         const durations = page.locator(".compact .kitchen-duration");
         if (await durations.count() !== 2 || (await durations.allTextContents()).some((value) => !value.endsWith(" since ordered"))) {
           throw new Error("Overlay order clocks must omit unknown timestamps and removed orders");
         }
         await page.goto(inboxURL);
+        await page.reload();
         await page.locator(".cooking-toggle").waitFor();
       }
     },
