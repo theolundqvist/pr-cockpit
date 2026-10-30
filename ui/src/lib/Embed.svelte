@@ -1,27 +1,42 @@
 <script>
   import { untrack } from "svelte";
-  import { fetchPrDetail, fetchPrRows, fetchSettings } from "./api.js";
+  import { enqueueMutation, fetchInbox, fetchPrDetail, fetchPrRows, fetchSettings, reorderPr, setArchived, setMergeApproval } from "./api.js";
   import { burstGate } from "./burstGate.js";
   import { connectEvents } from "./events.js";
   import { cookingStage, isBurnt } from "./cookingStage.js";
-  import { setPrefs } from "./prefs.svelte.js";
-  import { prKeyOf } from "./prKey.js";
+  import { flash, showFlash } from "./flash.svelte.js";
+  import { presentMutationError } from "./mutationError.js";
+  import { prefs, setPrefs } from "./prefs.svelte.js";
+  import { prKey, prKeyOf } from "./prKey.js";
+  import { isApprovedForSafeMerge, prRowActionForKey, prRowActions } from "./prRowActions.js";
   import { classify } from "./whoseMove.js";
+  import ConfirmDialog from "./ConfirmDialog.svelte";
+  import FlashBar from "./FlashBar.svelte";
   import Kbd from "./Kbd.svelte";
   import PrRow from "./PrRow.svelte";
+  import PrRowMenu from "./PrRowMenu.svelte";
 
   const MAX_KEYS = 100;
   const KEY_RE = /^([^/\s#]+\/[^/\s#]+)#([1-9]\d*)$/;
   const OVERLAY_RE = /[?&]overlay=1(?:&|$)/;
   const EVENT_BURST_WINDOW_MS = 250;
   const framed = window.parent !== window;
+  // The page that frames this one; host messages from anywhere else are ignored.
+  const hostOrigin = framed ? (location.ancestorOrigins?.[0] ?? (document.referrer ? new URL(document.referrer).origin : null)) : null;
+  // Room a confirmation dialog or flash needs inside a frame that is otherwise only as tall as its rows.
+  const DIALOG_HEIGHT = 220;
+  const FLASH_HEIGHT = 96;
 
   // #/embed?keys=owner%2Frepo%2312,... — each key encoded on its own and joined by commas, in display order.
   // The frame posts {source: "pr-cockpit-embed"} messages to its parent: `size` with its content height and
-  // `open` with a PR's prcockpit:// URL. Adding `&overlay=1` opts into compact rows that show Kitchen state
-  // and, inside a frame, an E control per row (its button, or E on the focused row) posting `hide` with the
+  // `open` with a PR's prcockpit:// or GitHub URL. Adding `&overlay=1` opts into compact rows that show Kitchen
+  // state and, inside a frame, an E control per row (its button, or E on the focused row) posting `hide` with the
   // row's key exactly as requested. Hiding belongs to the host: Cockpit changes nothing on GitHub and keeps
   // showing the row until the host drops its key from the hash, so restoring the key undoes the hide.
+  // Framed overlay rows also offer the inbox's row context menu and row keys. The frame posts `hover` with the
+  // key under the pointer (null once it leaves), so a host whose page holds keyboard focus can forward keys
+  // for that row as {source: "pr-cockpit-host", type: "key", key, shiftKey}; E there still means hide.
+  // Set aside and reminders are left out: they live in Cockpit's own window storage, which a frame cannot reach.
   function parseKeys(hash) {
     const raw = /[?&]keys=([^&]*)/.exec(hash)?.[1] ?? "";
     const keys = [];
@@ -142,10 +157,15 @@
   });
 
   const cockpitUrl = (pr) => `prcockpit://pr/${pr.repo}/${pr.number}`;
+  const githubUrl = (pr) => `https://github.com/${pr.repo}/pull/${pr.number}`;
+
+  function post(message) {
+    window.parent.postMessage({ source: "pr-cockpit-embed", ...message }, "*");
+  }
 
   function open(event, pr) {
     event.preventDefault();
-    if (framed) window.parent.postMessage({ source: "pr-cockpit-embed", type: "open", url: cockpitUrl(pr) }, "*");
+    if (framed) post({ type: "open", url: cockpitUrl(pr) });
     else location.href = cockpitUrl(pr);
   }
 
@@ -159,7 +179,7 @@
     refocus = fromKeyboard && event.currentTarget.parentElement.contains(document.activeElement)
       ? { hidden: key, next: (visible[index + 1] ?? visible[index - 1])?.key ?? null }
       : null;
-    window.parent.postMessage({ source: "pr-cockpit-embed", type: "hide", key }, "*");
+    post({ type: "hide", key });
   }
 
   function hideOnKey(event, key) {
@@ -177,15 +197,165 @@
     if (!next || !shown.includes(next) || !document.hasFocus() || document.activeElement !== document.body) return;
     content?.querySelector(`[data-embed-key="${CSS.escape(next)}"]`)?.focus();
   });
+
+  let hovered = $state(null);
+  let menu = $state(null);
+  let menuRequest = 0;
+  let menuExtent = $state(0);
+  let confirmAction = $state(null);
+  let floorHeight = $derived(Math.max(menu ? menuExtent : 0, confirmAction ? DIALOG_HEIGHT : 0, flash.message ? FLASH_HEIGHT : 0));
+  let rowActionsEnabled = $derived(framed && overlay);
+
+  function hover(key) {
+    if (hovered === key) return;
+    hovered = key;
+    post({ type: "hover", key });
+  }
+
+  $effect(() => {
+    if (hovered && !visible.some((entry) => entry.key === hovered)) hover(null);
+  });
+
+  function refreshRow(pr) {
+    const key = keys.find((wanted) => wanted.toLowerCase() === prKey(pr).toLowerCase());
+    if (key) loadRows([key]).catch(report);
+  }
+
+  async function failSoft(action, run) {
+    try {
+      await run();
+    } catch (error) {
+      showFlash(`Couldn't ${action}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  // Archive state and the next pin slot belong to the inbox, which this view does not load; read them per action.
+  async function isArchivedInInbox(pr) {
+    const { prs } = await fetchInbox(true);
+    return prs.some((item) => prKey(item) === prKey(pr));
+  }
+
+  async function nextPinRank() {
+    const { prs } = await fetchInbox();
+    return Math.max(-1, ...prs.map((item) => item.rank).filter((rank) => rank != null)) + 1;
+  }
+
+  function embedRowActions(pr, key, archived) {
+    const approved = isApprovedForSafeMerge(pr, prefs.safeMergeApprovalEnabled);
+    const actions = prRowActions(pr, {
+      archived,
+      approvalEnabled: prefs.safeMergeApprovalEnabled,
+      // E hides the row from this overlay, so Archive keeps only its menu entry here.
+      keys: { archive: null },
+      open: (target) => post({ type: "open", url: cockpitUrl(target) }),
+      github: (target) => post({ type: "open", url: githubUrl(target) }),
+      pin: (target) => failSoft("update the pin", async () => {
+        await reorderPr(target.repo, target.number, target.rank != null ? null : await nextPinRank());
+        refreshRow(target);
+      }),
+      approve: (target) => failSoft("update safe-merge approval", async () => {
+        await setMergeApproval(target.repo, target.number, !approved);
+        refreshRow(target);
+      }),
+      archive: (target) => failSoft(archived ? "unarchive" : "archive", async () => {
+        await setArchived(target.repo, target.number, !archived);
+        showFlash(`${archived ? "Unarchived" : "Archived"} #${target.number}.`);
+      }),
+      quickActions: true,
+      close: (target) => {
+        confirmAction = {
+          title: `Close #${target.number}?`,
+          confirmLabel: "Close pull request",
+          run: async () => {
+            try {
+              await enqueueMutation(target.repo, target.number, { kind: "close" });
+              showFlash(`Queued closing #${target.number}.`);
+            } catch (error) {
+              showFlash(presentMutationError("close pull request", error).message);
+            }
+          },
+        };
+      },
+    });
+    actions.push({ id: "hide", label: "Hide from this overlay", key: "e", disabled: false, run: () => post({ type: "hide", key }) });
+    return actions;
+  }
+
+  async function openMenu(event, key, pr) {
+    event.preventDefault();
+    const request = ++menuRequest;
+    const anchor = event.currentTarget;
+    const pointer = { x: event.clientX, y: event.clientY };
+    let archived = false;
+    try {
+      archived = await isArchivedInInbox(pr);
+    } catch (error) {
+      report(error);
+    }
+    if (request !== menuRequest || !rows[key]) return;
+    menuExtent = 0;
+    menu = { request, key, pr, anchor, pointer, actions: embedRowActions(pr, key, archived) };
+  }
+
+  function closeMenu() {
+    menu = null;
+  }
+
+  async function runRowKey(key, shiftKey) {
+    const target = hovered;
+    const pr = target && rows[target];
+    if (!pr || menu || confirmAction) return false;
+    const archived = await isArchivedInInbox(pr).catch(() => false);
+    const action = prRowActionForKey(embedRowActions(pr, target, archived), key, shiftKey);
+    action?.run();
+    return Boolean(action);
+  }
+
+  $effect(() => {
+    if (!rowActionsEnabled) return;
+    // Keys typed while the host page holds focus arrive here; keys typed inside this frame are read directly.
+    const fromHost = (event) => {
+      if (event.source !== window.parent || event.origin !== hostOrigin) return;
+      const message = event.data;
+      if (message?.source !== "pr-cockpit-host" || message.type !== "key" || typeof message.key !== "string") return;
+      runRowKey(message.key, message.shiftKey === true).catch(report);
+    };
+    const typed = (event) => {
+      if (event.defaultPrevented || !hovered || menu || confirmAction) return;
+      if (event.altKey || event.ctrlKey || event.metaKey || event.isComposing || event.repeat) return;
+      if (event.key !== "Enter" && event.key.length !== 1) return;
+      event.preventDefault();
+      runRowKey(event.key, event.shiftKey).catch(report);
+    };
+    window.addEventListener("message", fromHost);
+    window.addEventListener("keydown", typed);
+    return () => {
+      window.removeEventListener("message", fromHost);
+      window.removeEventListener("keydown", typed);
+    };
+  });
+
+  function runConfirmAction() {
+    const action = confirmAction;
+    confirmAction = null;
+    action.run();
+  }
 </script>
 
 <div class="embed">
-  <div bind:this={content}>
+  <div bind:this={content} style:min-height={floorHeight ? `${floorHeight}px` : null}>
     {#if visible.length}
       <div class="embed-card">
         {#each visible as { key, pr } (key)}
           {#if overlay}
-            <div class="overlay-row" class:hideable={framed}>
+            <div
+              class="overlay-row"
+              class:hideable={framed}
+              role="presentation"
+              onpointerenter={rowActionsEnabled ? () => hover(key) : undefined}
+              onpointerleave={rowActionsEnabled ? () => { if (hovered === key) hover(null); } : undefined}
+              oncontextmenu={rowActionsEnabled ? (event) => openMenu(event, key, pr) : undefined}
+            >
               <PrRow
                 {pr}
                 compact
@@ -218,6 +388,33 @@
     {/if}
   </div>
 </div>
+{#if menu}
+  {#key menu.request}
+    <PrRowMenu
+      pr={menu.pr}
+      actions={menu.actions}
+      anchor={menu.anchor}
+      pointer={menu.pointer}
+      takenKeys={new Set(prefs.agents.filter((a) => a.trigger === "keybind" && a.enabled && a.keybind).map((a) => a.keybind))}
+      showKeys
+      growable
+      onextent={(bottom) => (menuExtent = bottom)}
+      onClose={closeMenu}
+    />
+  {/key}
+{/if}
+{#if confirmAction}
+  <ConfirmDialog
+    title={confirmAction.title}
+    confirmLabel={confirmAction.confirmLabel}
+    danger
+    onConfirm={runConfirmAction}
+    onCancel={() => (confirmAction = null)}
+  />
+{/if}
+{#if rowActionsEnabled}
+  <FlashBar />
+{/if}
 
 <style>
   .embed {
