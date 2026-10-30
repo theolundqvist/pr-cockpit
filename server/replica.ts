@@ -95,6 +95,9 @@ function parseReplicaSnapshot(value: unknown): ReplicaSnapshot {
   if (typeof safeMergeApproval !== "boolean") throw new Error("Replica source returned an invalid merge approval setting");
   const mergeApprovals = "pr_merge_approvals" in tables ? tables.pr_merge_approvals : [];
   if (!isReplicaRows(mergeApprovals)) throw new Error("Replica source returned invalid merge approvals");
+  // Sources predating review handoffs omit the table; none of their PRs is marked.
+  const reviewHandoffs = "pr_review_handoffs" in tables ? tables.pr_review_handoffs : [];
+  if (!isReplicaRows(reviewHandoffs)) throw new Error("Replica source returned invalid review handoffs");
   return {
     revision: value.revision,
     lastPollAt: value.lastPollAt,
@@ -107,6 +110,7 @@ function parseReplicaSnapshot(value: unknown): ReplicaSnapshot {
       pr_index: tables.pr_index,
       pr_rank: tables.pr_rank,
       pr_merge_approvals: mergeApprovals,
+      pr_review_handoffs: reviewHandoffs,
       repo_users: tables.repo_users,
       fixer_agents: tables.fixer_agents,
     },

@@ -17,7 +17,7 @@
   import { isRecordingShortcut } from "./shortcutCapture.js";
   import { lastViewed } from "./lastViewed.svelte.js";
   import { tick, untrack } from "svelte";
-  import { fetchInbox, fetchRecentClosed, fetchAllPrs, fetchPrDetails, setArchived, saveSettings, reorderPr, setMergeApproval, enqueueMutation, fetchMutations, retryMutation, discardMutation, fetchSettings, fetchRelayStatus, fetchRelayCoverage, autofixAgent, customAgent } from "./api.js";
+  import { fetchInbox, fetchRecentClosed, fetchAllPrs, fetchPrDetails, setArchived, saveSettings, reorderPr, setMergeApproval, clearReviewHandoff, enqueueMutation, fetchMutations, retryMutation, discardMutation, fetchSettings, fetchRelayStatus, fetchRelayCoverage, autofixAgent, customAgent } from "./api.js";
   import { cacheDetail, cachedHeadSha, cachedView, cacheView } from "./detailCache.js";
   import { preloadPr } from "./preload.js";
   import { filterPrs, countMatches, wantsHistory } from "./prFilter.js";
@@ -238,6 +238,7 @@
       github: openGithub,
       rename: prefs.groupDragEnabled ? startRename : null,
       pin: togglePinned,
+      clearReady,
       approve: (target) => applyGroupMove(target, { approve: !isApproved(target) }),
       archive: archiveFromMenu,
       setAside: putAside,
@@ -245,6 +246,16 @@
       quickActions: true,
       close: closeFromMenu,
     });
+  }
+
+  async function clearReady(pr) {
+    try {
+      await clearReviewHandoff(pr.repo, pr.number);
+      showFlash(`Cleared ready for review on #${pr.number}.`);
+    } catch (error) {
+      showFlash(`Couldn't clear ready for review on #${pr.number}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    await loadInbox();
   }
 
   function closeFromMenu(pr) {
@@ -814,10 +825,12 @@
   });
 
   // A burnt Kitchen order or failed merge outranks approval, pinning, and grouping; stacks never pull either
-  // under a healthy ancestor. Cooking labels place only their own PR; pins and approvals retain their saved state.
+  // under a healthy ancestor. An agent's ready-for-review handoff sits just below Burnt and places only its own PR.
+  // Cooking labels place only their own PR; pins and approvals retain their saved state.
   // Approval places only its own PR, never the stack beneath it.
   function groupId(pr) {
     if (cookingActive && isBurnt(pr)) return "burnt";
+    if (view === "open" && pr.readyForReview === true) return "ready-review";
     if (pr.mergeFailed === true) return "merge-failed";
     if (cookingActive && cookingStage(pr)) return "cooking";
     if (isApproved(pr)) return "approved";
@@ -837,6 +850,7 @@
 
   let groups = $derived.by(() => {
     const burnt = [];
+    const ready = [];
     const failed = [];
     const approved = [];
     const pinned = [];
@@ -844,6 +858,7 @@
     for (const pr of filteredPrs) {
       const id = groupId(pr);
       if (id === "burnt") burnt.push(pr);
+      else if (id === "ready-review") ready.push(pr);
       else if (id === "merge-failed") failed.push(pr);
       else if (id === "approved") approved.push(pr);
       else if (id === "pinned") pinned.push(pr);
@@ -878,6 +893,10 @@
     if (burnt.length) {
       const { units, unrankedCount, items } = orderGroup(burnt, sortUnits);
       leading.push({ id: "burnt", title: "Burnt", units, unrankedCount, items });
+    }
+    if (ready.length) {
+      // A handoff has no saved order of its own: pins keep their rank but draw no divider here.
+      leading.push({ id: "ready-review", title: "Ready for review", units: [], unrankedCount: 0, items: [...sortUnits(ready)].map((pr) => ({ pr })) });
     }
     if (failed.length) {
       const { units, unrankedCount, items } = orderGroup(failed, sortUnits);
@@ -1113,7 +1132,7 @@
   // Cross-section drops exist only while group dragging is on, for the dragged row's own section.
   function dropPlan(key, target) {
     const pr = prefs.groupDragEnabled && key ? prs.find((p) => prKey(p) === key) : null;
-    if (!pr || [target, groupId(pr)].some((id) => id === "cooking" || id === "burnt")) return null;
+    if (!pr || [target, groupId(pr)].some((id) => id === "cooking" || id === "burnt" || id === "ready-review")) return null;
     const plan = planGroupDrop({
       from: groupId(pr),
       to: target,
@@ -1157,9 +1176,9 @@
   function onDragOverRow(e, pr) {
     if (!dragKey || prKey(pr) === dragKey) return;
     const target = groupId(pr);
-    // Approved rows have no order of their own, and ranking one there would silently pin it.
+    // Approved and ready-for-review rows have no order of their own, and ranking one there would silently pin it.
     const plan = target === dragGroupId ? null : dropPlan(dragKey, target);
-    if (target === dragGroupId ? target === "approved" : prefs.groupDragEnabled && !plan) return;
+    if (target === dragGroupId ? target === "approved" || target === "ready-review" : prefs.groupDragEnabled && !plan) return;
     e.preventDefault();
     const r = e.currentTarget.getBoundingClientRect();
     const before = e.clientY - r.top < r.height / 2;
@@ -1204,7 +1223,7 @@
       if (plan && pr) applyGroupMove(pr, plan, plan.pin && j >= 0 ? rankAt(group, pr, before ? j : j + 1) : null);
       return;
     }
-    if (j < 0 || group.id === "approved") return;
+    if (j < 0 || group.id === "approved" || group.id === "ready-review") return;
     dropAt(dragged, group, before ? j : j + 1);
   }
 
@@ -1296,6 +1315,7 @@
       return keys;
     }
     if (pr) keys.push({ key: "s", label: pr.rank == null ? "pin" : "unpin" });
+    if (pr?.readyForReview === true) keys.push({ key: "n", label: "clear ready" });
     if (pr) keys.push({ key: "e", label: isArchived(pr) ? "unarchive" : "archive" });
     keys.push({ key: "A", label: showArchived ? "hide archived" : "archived" });
     keys.push({ key: "Tab", label: "all PRs" });
@@ -1519,6 +1539,8 @@
         if (pr) openGithub(pr);
       } else if (view === "open" && e.key === "s") {
         if (pr && !isArchived(pr) && isOpenPr(pr)) togglePinned(pr);
+      } else if (view === "open" && e.key === "n") {
+        if (pr?.readyForReview === true) clearReady(pr);
       } else if (view === "open" && keybindAgents.some((a) => a.id !== "fixer" && a.keybind === e.key)) {
         const def = keybindAgents.find((a) => a.id !== "fixer" && a.keybind === e.key);
         if (def.id === "autofix") openAutofixConfirm();

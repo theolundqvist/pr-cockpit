@@ -66,6 +66,17 @@ export async function setMergeApproval(repo, number, approved) {
   return body.approvedForSafeMerge;
 }
 
+// Agents mark a PR ready for review through the CLI; the app can only withdraw the mark.
+export async function clearReviewHandoff(repo, number) {
+  const res = await fetch(`/api/pr/${repo}/${number}/review-handoff`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ready: false }),
+  });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.error || `review handoff ${res.status}`);
+}
+
 // A stale tracked snapshot comes back immediately and flagged; `fresh` waits for its refresh.
 // `prefetch` reads only what the server already holds locally: 204 (null here) when it has nothing.
 export async function fetchPrDetailSnapshot(repo, number, { fresh = false, prefetch = false, view = true } = {}) {

@@ -186,3 +186,63 @@ export function cookingScenarios() {
     },
   }));
 }
+
+// An agent's ready-for-review handoff leads the queue directly under Burnt, whatever else the PR carries.
+export function readyForReviewScenario() {
+  return {
+    name: "inbox-ready-for-review",
+    route: "#/",
+    ready: ".queue-group",
+    sidebar: true,
+    prepare: async ({ baseURL }) => {
+      const previous = await fetch(`${baseURL}/api/settings`).then((r) => r.json());
+      const update = (body) => fetch(`${baseURL}/api/settings`, {
+        method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+      });
+      await update({ cooking_section_enabled: true, safe_merge_approval_enabled: true });
+      return () => update({
+        cooking_section_enabled: previous.cooking_section_enabled,
+        safe_merge_approval_enabled: previous.safe_merge_approval_enabled,
+      });
+    },
+    beforeGoto: async (page) => {
+      await page.addInitScript(() => localStorage.removeItem("cockpit:cooking-hidden"));
+      await page.route("**/api/inbox", async (route) => {
+        const response = await route.fetch();
+        const data = await response.json();
+        const seed = data.prs[0];
+        // #512 is pinned and approved too: the handoff alone decides its section.
+        data.prs = [
+          [501, "Add workspace search", "kitchen: oven"],
+          [505, "Repair upload validation", "kitchen: burnt"],
+          [508, "Retry failed merge", null],
+          [512, "Explain search ranking", null],
+          [513, "Approve export cleanup", null],
+          [514, "Tidy settings copy", null],
+        ].map(([number, title, label]) => ({ ...seed, number, title,
+          baseRef: "main", headRef: `example-${number}`, rank: number === 512 ? 1 : null,
+          kitchenEnteredAt: "2026-07-15T08:18:00Z", isDraft: false, ciStatus: "SUCCESS",
+          approvedForSafeMerge: number === 512 || number === 513, mergeFailed: number === 508,
+          readyForReview: number === 512,
+          labels: label ? [{ name: label, color: "d99a39" }] : [],
+        }));
+        await route.fulfill({ response, json: data });
+      });
+    },
+    interact: async (page) => {
+      const row = page.locator(".queue-group").nth(1).locator(".row").first();
+      await row.click({ button: "right" });
+      await page.getByRole("menuitem", { name: /^Clear ready for review/ }).waitFor();
+      await page.keyboard.press("Escape");
+      await page.locator(".head-title").click();
+    },
+    verify: async (page) => {
+      const sections = await page.locator(".queue-group .group-label").evaluateAll((labels) => labels.map((label) => label.textContent.replace(/\s+/g, " ").trim()));
+      const expected = ["Burnt 1", "Ready for review 1", "FAILED TO MERGE 1", "Approved for safe merge 1"];
+      if (sections.slice(0, 4).join("|") !== expected.join("|")) throw new Error(`Ready for review is not directly below Burnt: ${sections}`);
+      if (!sections.some((section) => section.startsWith("Cooking"))) throw new Error(`Cooking section missing: ${sections}`);
+      if ((await page.locator(".queue-group").nth(1).locator(".num").allTextContents()).join() !== "#512") throw new Error("Ready for review rows are wrong");
+      if (await page.locator(".queue-list .num").getByText("#512", { exact: true }).count() !== 1) throw new Error("Ready PR is repeated in another section");
+    },
+  };
+}

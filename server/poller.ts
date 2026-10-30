@@ -9,6 +9,7 @@ import {
   listWebhookRegistrations,
   setAutoMergeArmed,
   setSafeMergeApproval,
+  dropStaleReviewHandoff,
   upsertPr,
   upsertPrIndex,
   type PrRow,
@@ -215,6 +216,7 @@ async function refreshPrNow(
     setAutoMergeArmed(repo, number, false);
     setSafeMergeApproval(repo, number, false);
   }
+  dropStaleReviewHandoff(repo, number, detail.state, detail.headRefOid);
   invalidatePr(repo, number);
   invalidateInbox();
 

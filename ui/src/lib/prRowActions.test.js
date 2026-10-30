@@ -54,3 +54,12 @@ test("a row key runs the action bound to it, never a shifted letter or a disable
   expect(prRowActionForKey(actions, "x")).toBeNull();
   expect(prRowActionForKey([{ id: "rename", key: "r", disabled: true, run: handler }], "r")).toBeNull();
 });
+
+test("only a row an agent marked ready offers clearing it, bound to n", () => {
+  const cleared = [];
+  expect(prRowActions(pr, { ...everything, clearReady: handler }).some((action) => action.id === "clear-ready")).toBe(false);
+  const actions = prRowActions({ ...pr, readyForReview: true }, { ...everything, clearReady: (target) => cleared.push(target.number) });
+  expect(actions.map((action) => action.id).slice(3, 6)).toEqual(["pin", "clear-ready", "archive"]);
+  prRowActionForKey(actions, "n")?.run();
+  expect(cleared).toEqual([7]);
+});

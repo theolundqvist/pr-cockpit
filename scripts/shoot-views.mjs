@@ -1,5 +1,5 @@
 import { kitchenCancelScenarios } from "./kitchen-cancel-scenarios.mjs";
-import { cookingScenarios } from "./cooking-scenarios.mjs";
+import { cookingScenarios, readyForReviewScenario } from "./cooking-scenarios.mjs";
 import { groupingScenarios } from "./grouping-scenarios.mjs";
 import { createServer } from "node:net";
 import { inflateSync } from "node:zlib";
@@ -321,6 +321,7 @@ const scenarios = [
   })),
   ...groupingScenarios(),
   ...cookingScenarios(),
+  readyForReviewScenario(),
   ...kitchenCancelScenarios(),
   setAsideScenario(false),
   setAsideScenario(true),

@@ -18,6 +18,8 @@ import {
   getRanks,
   hasSafeMergeApproval,
   listSafeMergeApprovalKeys,
+  listReviewHandoffs,
+  reviewHandoffHead,
   getMergedPrAnalyticsCache,
   upsertMergedPrAnalyticsCache,
   lastWebhookAtForPr,
@@ -43,6 +45,7 @@ import {
   saveFileContents,
   setArchived,
   setSafeMergeApproval,
+  setReviewHandoff,
   queueWorkflowRunRerun,
   setAutoMergeArmed,
   setRank,
@@ -449,6 +452,7 @@ function attributeMerge(runtime: HttpRuntime, row: KitchenHistoryRow): boolean {
 function inboxRows(prs: PrRow[]) {
   const ranks = getRanks();
   const mergeApprovals = safeMergeApprovalEnabled() ? listSafeMergeApprovalKeys() : new Set<string>();
+  const reviewHandoffs = listReviewHandoffs();
   const failedMergeKeys = replicaEnabled() ? replicaFailedMergeKeys() : listFailedMergeKeys();
   const agentByPr = new Map<string, AgentRow>(listFixerAgents().map((a) => [prKey(a), a]));
   const settings = readSettings();
@@ -532,6 +536,7 @@ function inboxRows(prs: PrRow[]) {
       fixerAgentExitReason: agentByPr.get(prKey(pr))?.exit_reason ?? null,
       mergeFailed: pr.state === "OPEN" && failedMergeKeys.has(prKey(pr)),
       approvedForSafeMerge: detail.state === "OPEN" && mergeApprovals.has(prKey(pr)),
+      readyForReview: detail.state === "OPEN" && reviewHandoffs.get(prKey(pr)) === pr.head_sha,
       descriptionDigest: pr.body_digest ?? null,
       labels: Array.isArray(detail.labels?.nodes)
         ? detail.labels.nodes.map((label: { name: string; color?: string }) => ({ name: label.name, color: label.color ?? null }))
@@ -974,6 +979,7 @@ function withBaseBranchPr(
     mergeMethod: mergeMethodFor(repoName, detail.baseRefName),
     mergeMethodSource: mergeMethodSourceFor(repoName, detail.baseRefName),
     approvedForSafeMerge: approvedForSafeMerge(repoName, num, detail.state),
+    readyForReview: readyForReview(repoName, num, detail.state, detail.headRefOid),
   };
 }
 
@@ -981,6 +987,11 @@ function withBaseBranchPr(
 // `state` is GitHub's detail state: tracked rows store every draft, even a closed one, as "draft".
 function approvedForSafeMerge(repo: string, number: number, state: string): boolean {
   return state === "OPEN" && safeMergeApprovalEnabled() && hasSafeMergeApproval(repo, number);
+}
+
+// An agent's handoff covers exactly the head it verified, and only while the PR stays open.
+function readyForReview(repo: string, number: number, state: unknown, headSha: unknown): boolean {
+  return state === "OPEN" && typeof headSha === "string" && headSha !== "" && reviewHandoffHead(repo, number) === headSha;
 }
 
 function cachedPrSnapshot(repoName: string, num: number) {
@@ -1179,6 +1190,7 @@ export interface PrAgentSummary {
   draft: boolean;
   merge: string;
   approvedForSafeMerge: boolean;
+  readyForReview: boolean;
   pinned: boolean;
   labels: string[];
   review: string;
@@ -1304,6 +1316,7 @@ export function buildPrAgentSummary(
     draft: detail.isDraft === true,
     merge: String(detail.mergeStateStatus ?? detail.mergeable ?? "UNKNOWN"),
     approvedForSafeMerge: approvedForSafeMerge(repo, number, String(detail.state ?? "UNKNOWN")),
+    readyForReview: readyForReview(repo, number, detail.state, detail.headRefOid),
     pinned: getRanks().has(`${repo}#${number}`),
     labels: (detail.labels?.nodes ?? []).map((label) => label.name),
     review: String(detail.reviewDecision ?? "NONE"),
@@ -1387,11 +1400,15 @@ function formatPrAgentDigest(summary: PrAgentSummary, includeComments: boolean, 
     }
   }
   if (lines.length === 0) lines.push(`No new comments. CI: ${summary.ci.state} · Review: ${summary.review}.`);
-  return `${mergeApprovalLine(summary)}\n${lines.join("\n")}\n`;
+  return `${mergeApprovalLine(summary)}\n${reviewHandoffLine(summary)}\n${lines.join("\n")}\n`;
 }
 
 function mergeApprovalLine(summary: PrAgentSummary): string {
   return `Merge approval: ${summary.approvedForSafeMerge ? "approved for safe merge" : "not granted"}`;
+}
+
+function reviewHandoffLine(summary: PrAgentSummary): string {
+  return `Review handoff: ${summary.readyForReview ? "ready for review" : "not marked"}`;
 }
 
 function activeAgentQuota(summary: PrAgentSummary) {
@@ -1424,6 +1441,7 @@ export function formatPrAgentSummary(summary: PrAgentSummary, options: AgentSumm
     `Head SHA: ${summary.headSha}`,
     `Merge state: ${summary.merge}`,
     mergeApprovalLine(summary),
+    reviewHandoffLine(summary),
     `Labels: ${summary.labels.length ? summary.labels.join(", ") : "none"}`,
     `Created: ${summary.createdAt}`,
     `Updated: ${summary.updatedAt}`,
@@ -3656,6 +3674,42 @@ async function handleMergeApproval(owner: string, repo: string, number: string, 
   return json({ approvedForSafeMerge: approved });
 }
 
+// Only an agent marks a PR ready for review, at the head it verified; the app may only clear the mark.
+async function handleReviewHandoff(
+  owner: string,
+  repo: string,
+  number: string,
+  req: Request,
+  runtime: HttpRuntime,
+  agent: boolean,
+): Promise<Response> {
+  if (!validPrReference(owner, repo, number)) return json({ error: "invalid PR reference" }, 400);
+  const body: unknown = await req.json().catch(() => null);
+  const ready = body && typeof body === "object" && "ready" in body ? body.ready : null;
+  if (typeof ready !== "boolean") return json({ error: "ready must be a boolean" }, 400);
+  if (ready && !agent) return json({ error: "only an agent marks a PR ready for review" }, 403);
+  const repoName = `${owner}/${repo}`;
+  const num = Number(number);
+  let headSha: string | null = null;
+  if (ready) {
+    if (!getPr(repoName, num)) return json({ error: `${repoName}#${num} is not an open inbox PR` }, 409);
+    // The mark must name the head GitHub has now, not one a lagging cache still holds.
+    try {
+      await runtime.revalidateTrackedPr(repoName, num, "user action");
+    } catch (err) {
+      return githubErrorResponse(err, `GitHub refresh of ${repoName}#${num} failed`);
+    }
+    const pr = getPr(repoName, num);
+    if (!pr || JSON.parse(pr.detail_json).state !== "OPEN") return json({ error: `${repoName}#${num} is not an open inbox PR` }, 409);
+    headSha = pr.head_sha;
+  }
+  if (setReviewHandoff(repoName, num, headSha)) {
+    invalidatePr(repoName, num);
+    invalidateInbox();
+  }
+  return json({ readyForReview: ready, headSha });
+}
+
 function runGit(root: string, args: string[]): { success: boolean; stdout: string; stderr: string } {
   try {
     const proc = Bun.spawnSync(["git", "-C", root, ...args], { stdout: "pipe", stderr: "pipe" });
@@ -3762,7 +3816,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
         || (req.method === "POST" && url.pathname === "/api/notifications/claim")
         || (req.method === "POST" && url.pathname === "/api/system-issues/retry")
         || (req.method === "DELETE" && parts.length === 3 && parts[0] === "api" && parts[1] === "mutations")
-        || (req.method === "POST" && parts.length === 6 && parts[0] === "api" && parts[1] === "pr" && (parts[5] === "merge-method" || parts[5] === "merge-approval"))
+        || (req.method === "POST" && parts.length === 6 && parts[0] === "api" && parts[1] === "pr" && (parts[5] === "merge-method" || parts[5] === "merge-approval" || parts[5] === "review-handoff"))
         || (
           req.method === "POST" && parts.length === 7 &&
           parts[0] === "api" && parts[1] === "actions" && parts[2] === "runs" &&
@@ -4255,6 +4309,19 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     }
     if (
       req.method === "POST" &&
+      parts.length === 7 &&
+      parts[0] === "api" &&
+      parts[1] === "agent" &&
+      parts[2] === "pr" &&
+      parts[6] === "review-handoff"
+    ) {
+      if (!trustedCliHost || req.headers.get("x-pr-cockpit-cli") !== "1") {
+        return json({ error: "trusted CLI request required" }, 403);
+      }
+      return handleReviewHandoff(parts[3]!, parts[4]!, parts[5]!, req, runtime, true);
+    }
+    if (
+      req.method === "POST" &&
       parts.length === 8 &&
       parts[0] === "api" &&
       parts[1] === "agent" &&
@@ -4276,6 +4343,9 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     }
     if (req.method === "POST" && parts.length === 6 && parts[0] === "api" && parts[1] === "pr" && parts[5] === "merge-approval") {
       return handleMergeApproval(parts[2]!, parts[3]!, parts[4]!, req);
+    }
+    if (req.method === "POST" && parts.length === 6 && parts[0] === "api" && parts[1] === "pr" && parts[5] === "review-handoff") {
+      return handleReviewHandoff(parts[2]!, parts[3]!, parts[4]!, req, runtime, false);
     }
     if (req.method === "POST" && parts.length === 6 && parts[0] === "api" && parts[1] === "pr" && parts[5] === "merge-method") {
       const repoName = `${parts[2]!}/${parts[3]!}`;

@@ -51,6 +51,7 @@
         { key: "⇧E", label: "external editor" },
         { key: "v", label: "review" },
         { key: "s", label: "assign / pin from inbox" },
+        { key: "n", label: "clear ready for review" },
         { key: "q", label: "request review" },
         { key: "p", label: "prompt agent" },
         { key: "m", label: "merge" },

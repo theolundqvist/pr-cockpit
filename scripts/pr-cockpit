@@ -30,6 +30,8 @@ Mutation commands:
   convert-to-draft     convert the PR back to a draft
   close                close the PR
   pin, unpin           bookmark or unbookmark the PR in Cockpit's pinned order
+  mark-ready, unmark-ready
+                       queue the verified current head in Cockpit's Ready for review section, or withdraw it
   edit-body            replace the PR body from --body-file
   edit-title           replace the PR title with one quoted positional argument
   auto-merge           enable or disable GitHub auto-merge
@@ -179,7 +181,7 @@ fi
 
 command="read"
 case "${1:-}" in
-  listen|resolve|cache-run|comment|reply|unresolve|dismiss-alert|review|merge|update-branch|ready-for-review|convert-to-draft|close|pin|unpin|edit-body|edit-title|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers|add-labels|remove-labels)
+  listen|resolve|cache-run|comment|reply|unresolve|dismiss-alert|review|merge|update-branch|ready-for-review|convert-to-draft|close|pin|unpin|mark-ready|unmark-ready|edit-body|edit-title|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers|add-labels|remove-labels)
     command="$1"
     shift
     ;;
@@ -187,7 +189,7 @@ esac
 
 mutation_command=0
 case "$command" in
-  comment|reply|unresolve|dismiss-alert|review|merge|update-branch|ready-for-review|convert-to-draft|close|pin|unpin|edit-body|edit-title|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers|add-labels|remove-labels)
+  comment|reply|unresolve|dismiss-alert|review|merge|update-branch|ready-for-review|convert-to-draft|close|pin|unpin|mark-ready|unmark-ready|edit-body|edit-title|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers|add-labels|remove-labels)
     mutation_command=1
     ;;
 esac
@@ -437,23 +439,25 @@ switch (operation) {
     for (const pr of prs) console.log(`- #${pr.number} [${pr.state}] ${pr.title} — @${pr.author} — ${pr.updatedAt}`);
     break;
   case "pr-fingerprint": {
-    // Merge consent, like PR state, wakes every scope so a revocation is never slept through.
+    // Merge consent and the review handoff, like PR state, wake every scope so neither change is slept through.
     const approvedForSafeMerge = input.approvedForSafeMerge ?? false;
+    const readyForReview = input.readyForReview ?? false;
     if (argument === "ci") {
-      console.log(stable({ state: input.state ?? null, approvedForSafeMerge, ci: input.ci ?? null }));
+      console.log(stable({ state: input.state ?? null, approvedForSafeMerge, readyForReview, ci: input.ci ?? null }));
       break;
     }
     if (argument === "comments") {
       console.log(stable({
         state: input.state ?? null,
         approvedForSafeMerge,
+        readyForReview,
         openComments: input.openComments ?? [],
         openCommentsComplete: input.openCommentsComplete ?? false,
       }));
       break;
     }
     if (argument === "conflicts") {
-      console.log(stable({ state: input.state ?? null, approvedForSafeMerge, merge: input.merge ?? null }));
+      console.log(stable({ state: input.state ?? null, approvedForSafeMerge, readyForReview, merge: input.merge ?? null }));
       break;
     }
     delete input.snapshot;
@@ -823,6 +827,11 @@ try {
       exact(0, `${command} takes only a PR reference`);
       payload = { repo, number: Number(numberText), position: null };
       break;
+    case "mark-ready":
+    case "unmark-ready":
+      exact(0, `${command} takes only a PR reference`);
+      payload = { ready: command === "mark-ready" };
+      break;
     case "edit-body":
       exact(0, "edit-body takes only a PR reference");
       payload = { kind: "edit-body", body: await body() };
@@ -921,6 +930,18 @@ try {
     });
     const result = await response.json().catch(() => null);
     if (!response.ok) fail(result?.error || `inbox reorder failed (${response.status})`);
+    console.log(JSON.stringify(result));
+    process.exit(0);
+  }
+
+  if (command === "mark-ready" || command === "unmark-ready") {
+    const response = await fetch(`${baseUrl}/review-handoff`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-pr-cockpit-cli": "1" },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json().catch(() => null);
+    if (!response.ok) fail(result?.error || `review handoff failed (${response.status})`);
     console.log(JSON.stringify(result));
     process.exit(0);
   }

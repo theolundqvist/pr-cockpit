@@ -1,6 +1,6 @@
 <script>
   import { untrack } from "svelte";
-  import { enqueueMutation, fetchInbox, fetchPrDetail, fetchPrRows, fetchSettings, reorderPr, setArchived, setMergeApproval } from "./api.js";
+  import { clearReviewHandoff, enqueueMutation, fetchInbox, fetchPrDetail, fetchPrRows, fetchSettings, reorderPr, setArchived, setMergeApproval } from "./api.js";
   import { burstGate } from "./burstGate.js";
   import { connectEvents } from "./events.js";
   import { cookingStage, isBurnt } from "./cookingStage.js";
@@ -251,6 +251,10 @@
       github: (target) => post({ type: "open", url: githubUrl(target) }),
       pin: (target) => failSoft("update the pin", async () => {
         await reorderPr(target.repo, target.number, target.rank != null ? null : await nextPinRank());
+        refreshRow(target);
+      }),
+      clearReady: (target) => failSoft("clear ready for review", async () => {
+        await clearReviewHandoff(target.repo, target.number);
         refreshRow(target);
       }),
       approve: (target) => failSoft("update safe-merge approval", async () => {

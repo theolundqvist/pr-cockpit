@@ -184,6 +184,15 @@ CREATE TABLE IF NOT EXISTS pr_merge_approvals (
   PRIMARY KEY (repo, number)
 );
 
+-- An agent's "ready for review" handoff for the exact head it verified; see setReviewHandoff.
+CREATE TABLE IF NOT EXISTS pr_review_handoffs (
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  head_sha TEXT NOT NULL,
+  marked_at TEXT NOT NULL,
+  PRIMARY KEY (repo, number)
+);
+
 CREATE TABLE IF NOT EXISTS pr_detail_cache (
   repo TEXT NOT NULL,
   number INTEGER NOT NULL,
@@ -1700,6 +1709,7 @@ const evictReposNotInTxn = db.transaction((repos: string[]) => {
   preservePrDetails(whereSql, repos);
   db.prepare(`DELETE FROM pr_rank WHERE ${whereSql}`).run(...repos);
   db.prepare(`DELETE FROM pr_merge_approvals WHERE ${whereSql}`).run(...repos);
+  db.prepare(`DELETE FROM pr_review_handoffs WHERE ${whereSql}`).run(...repos);
   db.prepare(`DELETE FROM prs WHERE ${whereSql}`).run(...repos);
 });
 
@@ -1724,6 +1734,7 @@ const evictStalePrsTxn = db.transaction((repo: string, keepNumbers: number[]): n
   preservePrDetails(whereSql, params);
   db.prepare(`DELETE FROM pr_rank WHERE ${whereSql}`).run(...params);
   db.prepare(`DELETE FROM pr_merge_approvals WHERE ${whereSql}`).run(...params);
+  db.prepare(`DELETE FROM pr_review_handoffs WHERE ${whereSql}`).run(...params);
   db.prepare(`DELETE FROM prs WHERE ${whereSql}`).run(...params);
   return leftOpen;
 });
@@ -1820,6 +1831,49 @@ const clearSafeMergeApprovalsStmt = db.prepare<{ repo: string; number: number },
 
 export function clearSafeMergeApprovals(): Array<{ repo: string; number: number }> {
   return clearSafeMergeApprovalsStmt.all();
+}
+
+const setReviewHandoffStmt = db.prepare(`
+INSERT INTO pr_review_handoffs (repo, number, head_sha, marked_at) VALUES ($repo, $number, $head_sha, $marked_at)
+ON CONFLICT (repo, number) DO UPDATE SET head_sha = excluded.head_sha, marked_at = excluded.marked_at
+WHERE pr_review_handoffs.head_sha != excluded.head_sha
+`);
+
+const unsetReviewHandoffStmt = db.prepare("DELETE FROM pr_review_handoffs WHERE repo = ? AND number = ?");
+
+// Marks the PR ready for review at `headSha`, or clears the mark when `headSha` is null.
+// Returns whether the stored handoff changed.
+export function setReviewHandoff(repo: string, number: number, headSha: string | null): boolean {
+  const result = headSha === null
+    ? unsetReviewHandoffStmt.run(repo, number)
+    : setReviewHandoffStmt.run({ $repo: repo, $number: number, $head_sha: headSha, $marked_at: new Date().toISOString() });
+  return result.changes > 0;
+}
+
+const dropStaleReviewHandoffStmt = db.prepare(
+  "DELETE FROM pr_review_handoffs WHERE repo = ? AND number = ? AND (? != 'OPEN' OR head_sha != ?)",
+);
+
+// The handoff covers only the verified head of an open PR: a push, close or merge ends it for good.
+export function dropStaleReviewHandoff(repo: string, number: number, state: string, headSha: string): boolean {
+  return dropStaleReviewHandoffStmt.run(repo, number, state, headSha).changes > 0;
+}
+
+const reviewHandoffsStmt = db.prepare<{ repo: string; number: number; head_sha: string }, []>(
+  "SELECT repo, number, head_sha FROM pr_review_handoffs",
+);
+
+// PR key -> the head SHA the handoff was recorded at.
+export function listReviewHandoffs(): Map<string, string> {
+  return new Map(reviewHandoffsStmt.all().map((row) => [prKey(row), row.head_sha]));
+}
+
+const reviewHandoffHeadStmt = db.prepare<{ head_sha: string }, [string, number]>(
+  "SELECT head_sha FROM pr_review_handoffs WHERE repo = ? AND number = ?",
+);
+
+export function reviewHandoffHead(repo: string, number: number): string | null {
+  return reviewHandoffHeadStmt.get(repo, number)?.head_sha ?? null;
 }
 
 export interface CachedPrDetailRow {
@@ -2261,6 +2315,7 @@ const REPLICA_TABLES = [
   "pr_index",
   "pr_rank",
   "pr_merge_approvals",
+  "pr_review_handoffs",
   "repo_users",
   "fixer_agents",
 ] as const;
