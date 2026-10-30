@@ -1,6 +1,6 @@
 import { kitchenCancelScenarios } from "./kitchen-cancel-scenarios.mjs";
 import { commentStabilityScenario } from "./comment-stability-scenarios.mjs";
-import { scrollPerformanceScenario } from "./scroll-performance-scenarios.mjs";
+import { scrollPerformanceScenario, hiddenInboxScenario } from "./scroll-performance-scenarios.mjs";
 import { changeSummaryScenario } from "./change-summary-scenarios.mjs";
 import { historyGestureScenario } from "./history-gesture-scenarios.mjs";
 import { cookingScenarios, readyForReviewScenario } from "./cooking-scenarios.mjs";
@@ -282,6 +282,7 @@ function inboxRefreshBurstScenario() {
 
 const scenarios = [
   commentStabilityScenario(),
+  hiddenInboxScenario(),
   scrollPerformanceScenario(),
   changeSummaryScenario(),
   historyGestureScenario(),

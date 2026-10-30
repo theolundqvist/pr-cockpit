@@ -80,6 +80,7 @@
   import FileTree from "./FileTree.svelte";
   import Kbd from "./Kbd.svelte";
   import Thread from "./Thread.svelte";
+  import { shareSnapshot } from "./shareSnapshot.js";
   import MutationBadge from "./MutationBadge.svelte";
   import PendingReviewComment from "./PendingReviewComment.svelte";
   import MutationFailure from "./MutationFailure.svelte";
@@ -846,7 +847,8 @@
     }
     if (token !== activeFetch) return;
     if (pending !== pendingCommit) return;
-    if (!pending && JSON.stringify(next) === JSON.stringify(pr)) return;
+    next = shareSnapshot(pr, next);
+    if (!pending && next === pr) return;
     if (!applyAsyncPrDetail(next, pending)) return;
     cacheDetail(prKeyOf(repo, number), next);
   }
@@ -1080,17 +1082,21 @@
   }
 
   let pendingReviewCommentIds = $derived(new Set((pendingReview?.comments ?? []).map((comment) => comment.id)));
+  const EMPTY_NODES = [];
+  let reviewThreads = $derived(pr?.reviewThreads.nodes ?? EMPTY_NODES);
+  let conversationComments = $derived(pr?.comments.nodes ?? EMPTY_NODES);
+  let conversationReviews = $derived(pr?.reviews.nodes ?? EMPTY_NODES);
+  let conversationCommits = $derived(pr?.commitList.nodes ?? EMPTY_NODES);
   // Detail responses already exclude unpublished review comments. Keep published cards mounted
   // while the separate draft-review request loads or retries, preserving scroll and reply drafts.
   let publishedThreads = $derived(
-    (pr?.reviewThreads.nodes ?? []).filter(
+    reviewThreads.filter(
       (thread) => !thread.comments.nodes.some((comment) => pendingReviewCommentIds.has(comment.databaseId)),
     ),
   );
 
   let mutationsByThread = $derived.by(() => {
     const map = new Map();
-    if (!pr) return map;
     const commentIdToThreadId = new Map();
     for (const t of publishedThreads) {
       for (const c of t.comments.nodes) {
@@ -2129,12 +2135,11 @@
   }
 
   let timeline = $derived.by(() => {
-    if (!pr) return [];
     const events = [];
-    for (const c of pr.comments.nodes) {
+    for (const c of conversationComments) {
       events.push({ kind: "comment", id: `comment-${c.id}`, databaseId: c.databaseId ?? null, author: c.author?.login, avatarUrl: c.author?.avatarUrl, body: c.body, at: c.createdAt, state: null, reactions: c.reactions });
     }
-    for (const r of pr.reviews.nodes) {
+    for (const r of conversationReviews) {
       if (!r.submittedAt) continue;
       if (!r.body && r.state === "COMMENTED") continue;
       events.push({ kind: "review", id: `review-${r.id}`, databaseId: r.databaseId ?? null, author: r.author?.login, avatarUrl: r.author?.avatarUrl, body: r.body, at: r.submittedAt, state: r.state, reactions: r.reactions });
@@ -2144,7 +2149,7 @@
       if (!at) continue;
       events.push({ kind: "thread", id: `thread-${t.id}`, thread: t, at });
     }
-    for (const { commit } of pr.commitList.nodes) {
+    for (const { commit } of conversationCommits) {
       events.push({
         kind: "commit",
         id: `commit-${commit.oid}`,

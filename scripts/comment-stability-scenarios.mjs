@@ -57,9 +57,16 @@ export function commentStabilityScenario() {
     interact: async (page) => {
       await page.waitForFunction(() => document.querySelectorAll(".conversation-thread").length === 60);
       await page.waitForTimeout(800);
+      assert.equal(await page.locator(".inbox-cache .row").count(), 0, "direct PR open rendered the hidden inbox");
       const reply = page.locator(".conversation-thread textarea").first();
       await reply.fill("Keep this reply while background requests retry.");
       await page.evaluate(() => {
+        window.timelineSorts = 0;
+        const sort = Array.prototype.sort;
+        Array.prototype.sort = function (...args) {
+          if (this[0]?.kind && this[0]?.id && this[0]?.at) window.timelineSorts++;
+          return sort.apply(this, args);
+        };
         window.stableCards = [...document.querySelectorAll(".conversation-thread")];
         window.removedCards = 0;
         window.commentBodyChanges = 0;
@@ -103,9 +110,10 @@ export function commentStabilityScenario() {
       console.log("comment-stability scroll:", await page.evaluate(() => {
         cancelAnimationFrame(window.stableFrame);
         const frames = window.stableFrames.sort((a, b) => a - b);
-        return { frames: frames.length, p95Ms: frames[Math.floor(frames.length * .95)], removedCards: window.removedCards, commentBodyChanges: window.commentBodyChanges };
+        return { frames: frames.length, p95Ms: frames[Math.floor(frames.length * .95)], timelineSorts: window.timelineSorts, removedCards: window.removedCards, commentBodyChanges: window.commentBodyChanges };
       }));
       assert(await page.locator(".page").first().evaluate((node) => node.scrollTop > 0), "scroll did not move");
+      assert.equal(await page.evaluate(() => window.timelineSorts), 0, "metadata refresh rebuilt the unchanged conversation timeline");
       state.recover = true;
       state.changed = true;
       state.socket.send(JSON.stringify({ type: "pr", repo: "fixture/cockpit", number: 103 }));

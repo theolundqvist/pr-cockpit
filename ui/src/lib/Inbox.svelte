@@ -50,7 +50,6 @@
   import { listedPrs } from "./listedPrs.svelte.js";
 
   let { active = true, refreshRevision = 0, pollCompletedAt = null, onFindPr = () => {} } = $props();
-  let handledRefreshRevision = refreshRevision;
 
   const inboxSnapshot = cachedView("inbox");
   let prs = $state(inboxSnapshot?.prs ?? []);
@@ -471,14 +470,15 @@
   }
 
   $effect(() => {
-    loadInbox();
     loadViews();
-    loadRelayLive();
   });
 
   $effect(() => {
-    if (refreshRevision === handledRefreshRevision) return;
-    handledRefreshRevision = refreshRevision;
+    // The inbox stays mounted behind a PR. A direct PR open shouldn't also
+    // build the hidden queue and warm all its details while the reader scrolls.
+    // Returning to the inbox paints the retained rows and catches up once.
+    if (!active) return;
+    refreshRevision;
     untrack(() => {
       loadInbox();
       loadRelayLive();

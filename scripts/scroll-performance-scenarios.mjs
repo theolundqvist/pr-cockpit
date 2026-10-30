@@ -1,5 +1,39 @@
 import assert from "node:assert/strict";
 
+export function hiddenInboxScenario() {
+  let state;
+  return {
+    name: "inbox-background-work",
+    route: "#/",
+    ready: ".inbox-cache .row",
+    description: "The retained inbox stays idle behind a PR and catches up when reopened.",
+    beforeGoto: async (page) => {
+      state = { requests: 0, changed: false, socket: null };
+      await page.routeWebSocket("**/api/events", (socket) => { state.socket = socket; });
+      await page.route((url) => url.pathname === "/api/inbox", async (route) => {
+        state.requests++;
+        const response = await route.fetch();
+        const body = await response.json();
+        if (state.changed) body.prs.find((pr) => pr.number === 103).title = "Updated while reading a discussion";
+        await route.fulfill({ response, json: body });
+      });
+    },
+    interact: async (page) => {
+      await page.evaluate(() => { location.hash = "#/pr/fixture/cockpit/103"; });
+      await page.locator(".conversation-thread textarea").first().waitFor();
+      await page.waitForTimeout(300);
+      const requests = state.requests;
+      state.changed = true;
+      for (let i = 0; i < 3; i++) state.socket.send(JSON.stringify({ type: "inbox" }));
+      await page.waitForTimeout(400);
+      assert.equal(state.requests, requests, "hidden inbox fetched during discussion scrolling");
+      await page.evaluate(() => { history.back(); });
+      await page.getByText("Updated while reading a discussion", { exact: true }).waitFor();
+      assert.equal(state.requests, requests + 1, "return should refresh the retained inbox once");
+    },
+  };
+}
+
 export function scrollPerformanceScenario() {
   return {
     name: "detail-scroll-running-checks",
