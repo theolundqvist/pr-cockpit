@@ -605,7 +605,9 @@
     display: contents;
     white-space: normal;
   }
-  .row.compact .pinned-mark {
+  /* Compact stacked rows show their nesting through the indent and rule alone. */
+  .row.compact .pinned-mark,
+  .row.compact .stack-glyph {
     display: none;
   }
   .row.compact .row-badge-slot {
