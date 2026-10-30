@@ -152,32 +152,10 @@ export function imageFallback(node) {
 }
 
 // GitHub renders an uploaded video as its bare attachment URL on its own line.
-function lineBoundaryBefore(node) {
-  for (let sibling = node.previousSibling; sibling; sibling = sibling.previousSibling) {
-    if (sibling.nodeType === 1 && sibling.tagName === "BR") return true;
-    if (sibling.nodeType !== 3) {
-      if (sibling.textContent?.trim()) return false;
-      continue;
-    }
-    const text = sibling.nodeValue ?? "";
-    const newline = text.lastIndexOf("\n");
-    if (newline >= 0) return !text.slice(newline + 1).trim();
-    if (text.trim()) return false;
-  }
-  return true;
-}
-
-function lineBoundaryAfter(node) {
-  for (let sibling = node.nextSibling; sibling; sibling = sibling.nextSibling) {
-    if (sibling.nodeType === 1 && sibling.tagName === "BR") return true;
-    if (sibling.nodeType !== 3) {
-      if (sibling.textContent?.trim()) return false;
-      continue;
-    }
-    const text = sibling.nodeValue ?? "";
-    const newline = text.indexOf("\n");
-    if (newline >= 0) return !text.slice(0, newline).trim();
-    if (text.trim()) return false;
+function lineBoundary(node, direction) {
+  for (let sibling = node[`${direction}Sibling`]; sibling; sibling = sibling[`${direction}Sibling`]) {
+    if (sibling.nodeType === 1) return sibling.tagName === "BR";
+    if (sibling.nodeType !== 3 || sibling.nodeValue?.trim()) return false;
   }
   return true;
 }
@@ -190,8 +168,8 @@ function embedVideos(doc) {
         a.parentElement !== p ||
         !GH_VIDEO_RE.test(href) ||
         a.textContent.trim() !== href ||
-        !lineBoundaryBefore(a) ||
-        !lineBoundaryAfter(a)
+        !lineBoundary(a, "previous") ||
+        !lineBoundary(a, "next")
       ) continue;
       const player = videoPlayer(doc, `/api/image?url=${encodeURIComponent(href)}`);
       const otherContent = [...p.childNodes].filter((node) => {
@@ -202,7 +180,9 @@ function embedVideos(doc) {
         p.replaceWith(player);
         break;
       }
+      const next = a.nextSibling;
       a.replaceWith(player);
+      if (next?.nodeType === 1 && next.tagName === "BR") next.remove();
     }
   }
 }
