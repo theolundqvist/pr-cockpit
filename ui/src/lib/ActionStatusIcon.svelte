@@ -65,6 +65,10 @@
   }
   .status-spinner circle {
     stroke-dasharray: 24 14;
+  }
+  /* Rotating the inner SVG circle invalidates page layout on every animation frame,
+     including while the checks sidebar is offscreen. Rotate the fixed-size SVG instead. */
+  .status-spinner {
     transform-origin: center;
     animation: status-spin 0.9s linear infinite;
   }
@@ -72,6 +76,6 @@
     to { transform: rotate(360deg); }
   }
   @media (prefers-reduced-motion: reduce) {
-    .status-spinner circle { animation: none; }
+    .status-spinner { animation: none; }
   }
 </style>
