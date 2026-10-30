@@ -1,13 +1,15 @@
 // Labels describe the workflow; draft state and ordinary CI do not imply kitchen activity.
+// Each stage lists the labels that mean it. A bare `order` is the request Kitchen has not yet labelled itself,
+// so it already counts as an order.
 const STAGES = [
-  ["kitchen: serving", "Serving"],
-  ["kitchen: baked", "Baked"],
-  ["kitchen: oven", "In the oven"],
-  ["kitchen: chef", "Chef working"],
-  ["kitchen: prepped", "Waiting for oven"],
-  ["kitchen: prep", "Preparing"],
-  ["kitchen: ordered", "Queued"],
-  ["kitchen: order", "Order requested"],
+  [["kitchen: serving"], "Serving"],
+  [["kitchen: baked"], "Baked"],
+  [["kitchen: oven"], "In the oven"],
+  [["kitchen: chef"], "Chef working"],
+  [["kitchen: prepped"], "Waiting for oven"],
+  [["kitchen: prep"], "Preparing"],
+  [["kitchen: ordered"], "Queued"],
+  [["kitchen: order", "order"], "Order requested"],
 ];
 const BURNT = "kitchen: burnt";
 
@@ -28,6 +30,6 @@ export function cookingStage(pr) {
   const labels = labelSet(pr);
   // A stale active label must never hide a workflow that needs intervention.
   if (labels.has(BURNT)) return null;
-  const rank = STAGES.findIndex(([label]) => labels.has(label));
-  return rank < 0 ? null : { label: STAGES[rank][0], title: STAGES[rank][1], rank };
+  const rank = STAGES.findIndex(([names]) => names.some((name) => labels.has(name)));
+  return rank < 0 ? null : { label: STAGES[rank][0].find((name) => labels.has(name)), title: STAGES[rank][1], rank };
 }
