@@ -119,6 +119,12 @@ test("an agent's ready-for-review mark covers only the open head it was set at a
     result.afterReopen = (await inbox())[8];
 
     await cli("mark-ready", "acme/app#8");
+    // Ordering hands the PR to Kitchen, so it leaves the review queue; so does any Kitchen state label.
+    await refresh(8, { labels: { nodes: [{ name: "order" }] } });
+    result.afterOrder = { inbox: (await inbox())[8], detail: await detailReady(8), cli: await cliState(8) };
+    await refresh(8, { labels: { nodes: [{ name: "kitchen: burnt" }] } });
+    result.afterBurnt = (await inbox())[8];
+    await refresh(8, { labels: { nodes: [] } });
     result.unmark8 = JSON.parse(await cli("unmark-ready", "acme/app#8"));
     result.afterUnmark = { inbox: await inbox(), cli: await cliState(8) };
 
@@ -164,6 +170,8 @@ test("an agent's ready-for-review mark covers only the open head it was set at a
     expect(result.afterClose).toEqual({ inbox: { ready: false, approved: false, rank: 10 }, detail: false, cli: notMarked });
     expect(result.closedMark).toMatchObject({ code: 1, stderr: "pr-cockpit: acme/app#8 is not an open inbox PR" });
     expect(result.afterReopen).toEqual({ ready: false, approved: false, rank: 10 });
+    expect(result.afterOrder).toEqual({ inbox: { ready: false, approved: false, rank: 10 }, detail: false, cli: notMarked });
+    expect(result.afterBurnt).toEqual({ ready: false, approved: false, rank: 10 });
     expect(result.unmark8).toEqual({ readyForReview: false, headSha: null });
     expect(result.afterUnmark).toEqual({
       inbox: { 7: { ready: false, approved: true, rank: null }, 8: { ready: false, approved: false, rank: 10 } },

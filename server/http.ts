@@ -536,7 +536,7 @@ function inboxRows(prs: PrRow[]) {
       fixerAgentExitReason: agentByPr.get(prKey(pr))?.exit_reason ?? null,
       mergeFailed: pr.state === "OPEN" && failedMergeKeys.has(prKey(pr)),
       approvedForSafeMerge: detail.state === "OPEN" && mergeApprovals.has(prKey(pr)),
-      readyForReview: detail.state === "OPEN" && reviewHandoffs.get(prKey(pr)) === pr.head_sha,
+      readyForReview: detail.state === "OPEN" && reviewHandoffs.get(prKey(pr)) === pr.head_sha && !ordered(labelNames(detail)),
       descriptionDigest: pr.body_digest ?? null,
       labels: Array.isArray(detail.labels?.nodes)
         ? detail.labels.nodes.map((label: { name: string; color?: string }) => ({ name: label.name, color: label.color ?? null }))
@@ -979,7 +979,7 @@ function withBaseBranchPr(
     mergeMethod: mergeMethodFor(repoName, detail.baseRefName),
     mergeMethodSource: mergeMethodSourceFor(repoName, detail.baseRefName),
     approvedForSafeMerge: approvedForSafeMerge(repoName, num, detail.state),
-    readyForReview: readyForReview(repoName, num, detail.state, detail.headRefOid),
+    readyForReview: readyForReview(repoName, num, detail.state, detail.headRefOid, labelNames(detail)),
   };
 }
 
@@ -989,9 +989,18 @@ function approvedForSafeMerge(repo: string, number: number, state: string): bool
   return state === "OPEN" && safeMergeApprovalEnabled() && hasSafeMergeApproval(repo, number);
 }
 
-// An agent's handoff covers exactly the head it verified, and only while the PR stays open.
-function readyForReview(repo: string, number: number, state: unknown, headSha: unknown): boolean {
-  return state === "OPEN" && typeof headSha === "string" && headSha !== "" && reviewHandoffHead(repo, number) === headSha;
+// An agent's handoff covers exactly the head it verified, and only while the PR stays open and unordered:
+// once Theo orders it, the PR has left review and belongs to Kitchen.
+function readyForReview(repo: string, number: number, state: unknown, headSha: unknown, labels: string[]): boolean {
+  return state === "OPEN" && !ordered(labels) && typeof headSha === "string" && headSha !== "" && reviewHandoffHead(repo, number) === headSha;
+}
+
+function ordered(labels: string[]): boolean {
+  return labels.some((name) => name === "order" || name.startsWith("kitchen:"));
+}
+
+function labelNames(detail: { labels?: { nodes?: Array<{ name: string }> } }): string[] {
+  return Array.isArray(detail.labels?.nodes) ? detail.labels.nodes.map((label) => label.name) : [];
 }
 
 function cachedPrSnapshot(repoName: string, num: number) {
@@ -1316,7 +1325,7 @@ export function buildPrAgentSummary(
     draft: detail.isDraft === true,
     merge: String(detail.mergeStateStatus ?? detail.mergeable ?? "UNKNOWN"),
     approvedForSafeMerge: approvedForSafeMerge(repo, number, String(detail.state ?? "UNKNOWN")),
-    readyForReview: readyForReview(repo, number, detail.state, detail.headRefOid),
+    readyForReview: readyForReview(repo, number, detail.state, detail.headRefOid, labelNames(detail)),
     pinned: getRanks().has(`${repo}#${number}`),
     labels: (detail.labels?.nodes ?? []).map((label) => label.name),
     review: String(detail.reviewDecision ?? "NONE"),
