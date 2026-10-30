@@ -476,6 +476,8 @@ function inboxRows(prs: PrRow[]) {
     const reviewScore = aggregateReviewScore(perReviewer, pr.greptile_confidence);
     const reviewScoreStale = aggregateReviewStale(perReviewer, reviewScore);
     const key = prKey(pr);
+    const handoff = reviewHandoffs.get(key);
+    const readyAt = detail.state === "OPEN" && handoff?.headSha === pr.head_sha && !ordered(labelNames(detail)) ? handoff.markedAt : null;
     const base = detail.baseRefOid;
     let cachedStats = generatedFileStats.get(key);
     if (!cachedStats || cachedStats.base !== base || cachedStats.head !== pr.head_sha || cachedStats.testSource !== testRe.source) cachedStats = undefined;
@@ -538,7 +540,9 @@ function inboxRows(prs: PrRow[]) {
       fixerAgentExitReason: agentByPr.get(prKey(pr))?.exit_reason ?? null,
       mergeFailed: pr.state === "OPEN" && failedMergeKeys.has(prKey(pr)),
       approvedForSafeMerge: detail.state === "OPEN" && mergeApprovals.has(prKey(pr)),
-      readyForReview: detail.state === "OPEN" && reviewHandoffs.get(prKey(pr)) === pr.head_sha && !ordered(labelNames(detail)),
+      readyForReview: readyAt !== null,
+      // Set-aside entries return once a mark is newer than the set-aside.
+      readyForReviewAt: readyAt,
       descriptionDigest: pr.body_digest ?? null,
       labels: Array.isArray(detail.labels?.nodes)
         ? detail.labels.nodes.map((label: { name: string; color?: string }) => ({ name: label.name, color: label.color ?? null }))

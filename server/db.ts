@@ -1867,13 +1867,13 @@ export function dropStaleReviewHandoff(repo: string, number: number, state: stri
   return dropStaleReviewHandoffStmt.run(repo, number, state, headSha).changes > 0;
 }
 
-const reviewHandoffsStmt = db.prepare<{ repo: string; number: number; head_sha: string }, []>(
-  "SELECT repo, number, head_sha FROM pr_review_handoffs",
+const reviewHandoffsStmt = db.prepare<{ repo: string; number: number; head_sha: string; marked_at: string }, []>(
+  "SELECT repo, number, head_sha, marked_at FROM pr_review_handoffs",
 );
 
-// PR key -> the head SHA the handoff was recorded at.
-export function listReviewHandoffs(): Map<string, string> {
-  return new Map(reviewHandoffsStmt.all().map((row) => [prKey(row), row.head_sha]));
+// PR key -> the head SHA the handoff was recorded at, and when it was recorded.
+export function listReviewHandoffs(): Map<string, { headSha: string; markedAt: string }> {
+  return new Map(reviewHandoffsStmt.all().map((row) => [prKey(row), { headSha: row.head_sha, markedAt: row.marked_at }]));
 }
 
 const reviewHandoffHeadStmt = db.prepare<{ head_sha: string }, [string, number]>(

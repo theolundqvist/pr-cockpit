@@ -4,16 +4,22 @@ import { timestamp } from "./prTime.js";
 // Browsers fire a longer setTimeout delay immediately, so a far reminder wakes early and reschedules.
 export const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
-// A reminder returns at its time, or earlier once its PR shows activity newer than the snapshot
-// taken when it was set aside. Entries without a reminder stay until brought back.
-export function reminderDue(item, now, activity) {
+const NO_MARKS = new Map();
+
+// Any entry returns once an agent marks its PR ready for review after it was set aside; legacy
+// entries without `asideAt` predate every mark. A reminder also returns at its time, or earlier
+// once its PR shows activity newer than the snapshot taken when it was set aside. Other entries
+// stay until brought back.
+export function reminderDue(item, now, activity, marks = NO_MARKS) {
+  const markedAt = marks.get(prKey(item));
+  if (markedAt !== undefined && (item.asideAt === undefined || markedAt > item.asideAt)) return true;
   if (item.remindAt === undefined) return false;
   if (item.remindAt <= now) return true;
   const latest = activity.get(prKey(item));
   return item.reminderActivityAt !== undefined && latest !== undefined && latest > item.reminderActivityAt;
 }
 
-export const pruneDue = (items, now, activity) => items.filter((item) => !reminderDue(item, now, activity));
+export const pruneDue = (items, now, activity, marks) => items.filter((item) => !reminderDue(item, now, activity, marks));
 
 export function nextReminderDelay(items, now) {
   let next = Infinity;
@@ -21,10 +27,10 @@ export function nextReminderDelay(items, now) {
   return next === Infinity ? null : Math.min(Math.max(next - now, 0), MAX_TIMEOUT_MS);
 }
 
-// Keeps the newest `updatedAt` seen per PR; lists may repeat a PR with older copies.
-export function recordActivity(activity, prs) {
+// Keeps the newest timestamp in `field` seen per PR; lists may repeat a PR with older copies.
+export function recordActivity(activity, prs, field = "updatedAt") {
   for (const pr of prs) {
-    const at = timestamp(pr.updatedAt);
+    const at = timestamp(pr[field]);
     const key = prKey(pr);
     if (at !== null && !(activity.get(key) >= at)) activity.set(key, at);
   }

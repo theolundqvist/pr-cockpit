@@ -11,14 +11,17 @@ function readItems() {
   return value.filter((pr) => pr && typeof pr.repo === "string" && /^[^/]+\/[^/]+$/.test(pr.repo)
     && Number.isSafeInteger(pr.number) && pr.number > 0 && typeof pr.title === "string"
     && (pr.remindAt === undefined || Number.isSafeInteger(pr.remindAt))
+    && (pr.asideAt === undefined || Number.isSafeInteger(pr.asideAt))
     && (pr.reminderActivityAt === undefined || Number.isFinite(pr.reminderActivityAt)));
 }
 
 export const setAside = $state({ items: [], open: false });
 export const isSetAside = (pr) => setAside.items.some((item) => prKey(item) === prKey(pr));
 
-// Newest PR activity this window has seen, so a restored or re-read reminder still returns early.
+// Newest PR activity and ready-for-review mark this window has seen, so a restored or re-read
+// entry still returns early.
 const activity = new Map();
+const marks = new Map();
 let timer = null;
 
 // Only the earliest reminder holds a timer; each refresh reschedules from the remaining list. An
@@ -36,10 +39,10 @@ function refreshItems() {
   const now = Date.now();
   let stored;
   try { stored = readItems(); } catch {
-    setItems(pruneDue(setAside.items, now, activity));
+    setItems(pruneDue(setAside.items, now, activity, marks));
     return false;
   }
-  const items = pruneDue(stored, now, activity);
+  const items = pruneDue(stored, now, activity, marks);
   let saved = true;
   if (items.length !== stored.length) {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(items)); } catch {
@@ -56,8 +59,8 @@ function refreshItems() {
 function updateItems(transform, remember = true) {
   try {
     const now = Date.now();
-    const before = pruneDue(readItems(), now, activity);
-    const items = pruneDue(transform(before), now, activity);
+    const before = pruneDue(readItems(), now, activity, marks);
+    const items = pruneDue(transform(before), now, activity, marks);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
     setItems(items);
     if (remember && JSON.stringify(items) !== JSON.stringify(before)) {
@@ -74,6 +77,7 @@ function asideItem(pr) {
   return {
     repo: pr.repo, number: pr.number, title: pr.title,
     author: typeof pr.author === "string" ? pr.author : pr.author?.login ?? "",
+    asideAt: Date.now(),
   };
 }
 
@@ -98,10 +102,12 @@ export function remindLater(pr, remindAt) {
     : [...items, item]);
 }
 
-// Brings reminded PRs back early once they show newer activity; not an undoable action. False
-// when storage couldn't be read or the removal couldn't be saved.
+// Brings set-aside PRs back early once they are marked ready for review after being set aside, and
+// reminded PRs once they show newer activity; not an undoable action. False when storage couldn't
+// be read or the removal couldn't be saved.
 export function reconcileReminders(prs) {
   recordActivity(activity, prs);
+  recordActivity(marks, prs, "readyForReviewAt");
   return refreshItems();
 }
 
@@ -116,7 +122,7 @@ export function bringBackAll() {
 export function syncSetAside(event) {
   if (event.storageArea === localStorage && (event.key === STORAGE_KEY || event.key === null)) {
     // Another window's reminder expiry matches this window's own; only a different list voids undo.
-    const previous = JSON.stringify(pruneDue(setAside.items, Date.now(), activity));
+    const previous = JSON.stringify(pruneDue(setAside.items, Date.now(), activity, marks));
     refreshItems();
     if (JSON.stringify(setAside.items) !== previous) clearUndo(STORAGE_KEY);
   }

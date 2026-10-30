@@ -24,6 +24,18 @@ describe("reminderDue", () => {
   test("a reminder without a snapshot waits for its time", () => {
     expect(reminderDue(pr(1, { remindAt: NOW + 60_000 }), NOW, new Map([["acme/app#1", NOW]]))).toBe(false);
   });
+
+  test("a ready-for-review mark after the set-aside returns it; an earlier mark does not", () => {
+    const marks = new Map();
+    recordActivity(marks, [pr(1, { readyForReviewAt: "2026-10-29T12:00:00Z" }), pr(2, { readyForReviewAt: null })], "readyForReviewAt");
+    expect([...marks]).toEqual([["acme/app#1", NOW]]);
+    expect(reminderDue(pr(1, { asideAt: NOW - 1 }), NOW, new Map(), marks)).toBe(true);
+    expect(reminderDue(pr(1, { asideAt: NOW, remindAt: NOW + 60_000 }), NOW, new Map(), marks)).toBe(false);
+    expect(reminderDue(pr(1), NOW, new Map(), marks)).toBe(true);
+    expect(reminderDue(pr(2), NOW, new Map(), marks)).toBe(false);
+    const items = [pr(1, { asideAt: NOW - 1 }), pr(1, { asideAt: NOW + 1 }), pr(2)];
+    expect(pruneDue(items, NOW, new Map(), marks)).toEqual([pr(1, { asideAt: NOW + 1 }), pr(2)]);
+  });
 });
 
 test("pruneDue keeps indefinite and future entries in order", () => {
