@@ -129,7 +129,7 @@ import { cachedGeneratedPathsFromMirror, generatedFilesFromMirror, generatedPath
 import { checkState, currentChecks, type CheckState } from "./checkState.ts";
 import { currentBaseRef, discardMutation, enqueueMutation, isTaskIntent, mutationsForPr, retryMutation, type MutationPayload } from "./mutations.ts";
 import { isMergeMethod, mergeMethodFor, mergeMethodSourceFor, setMergeMethodPreference } from "./mergeMethod.ts";
-import { AGENT_DEFAULTS, askViewEnabled, pendingReviewsEnabled, quickGenerateEnabled, readSettings, relayConfig, restFallbackEnabled, restUsageEnabled, RELAY_APP_INSTALL_URL, RELAY_APP_SLUG, safeMergeApprovalEnabled, settingsRepos, writeSettings, type AgentSetting, type Settings } from "./settings.ts";
+import { AGENT_DEFAULTS, askViewEnabled, pendingReviewsEnabled, quickGenerateEnabled, readSettings, relayConfig, restFallbackEnabled, restUsageEnabled, RELAY_APP_INSTALL_URL, RELAY_APP_SLUG, REVIEW_HANDOFF_REQUIREMENTS, safeMergeApprovalEnabled, settingsRepos, writeSettings, type AgentSetting, type Settings } from "./settings.ts";
 import { claudeBinPath, codexBinPath, ompBinPath } from "./harness.ts";
 import { CommitMessageError, generateCommitMessage } from "./commitMessage.ts";
 import { askView, parseAskRequest, type AskView } from "./askView.ts";
@@ -3751,6 +3751,53 @@ async function handleMergeApproval(owner: string, repo: string, number: string, 
   return json({ approvedForSafeMerge: approved });
 }
 
+const REVIEW_REQUEST_RE = /(^|[^A-Za-z0-9])@review([^A-Za-z0-9]|$)/;
+
+async function requiredReviewSucceeded(
+  repoName: string,
+  num: number,
+  detail: PrDetail,
+  runtime: HttpRuntime,
+): Promise<boolean> {
+  const requirement = REVIEW_HANDOFF_REQUIREMENTS[repoName];
+  if (!requirement || detail.baseRefName !== requirement.integrationBase) return true;
+
+  const branches = new Set([detail.headRefName, requirement.integrationBase]);
+  const runs = [...branches].flatMap((branch) => workflowRunsForPrBranch(repoName, num, branch));
+  const currentHeadPushRuns = runs.filter((run) =>
+    run.workflow_path === requirement.workflowPath
+    && run.event === "pull_request"
+    && run.head_sha === detail.headRefOid
+    && run.head_branch === detail.headRefName
+    && (run.pr_number === null || run.pr_number === num));
+  const pushCreatedAt = Math.max(...currentHeadPushRuns.map((run) => Date.parse(run.created_at ?? run.event_at)));
+  if (!Number.isFinite(pushCreatedAt)) return false;
+  const comments = await runtime.fetchPrCommentsSince(repoName, num, "1970-01-01T00:00:00.000Z").catch(() => []);
+  const reviewComments = comments.filter((comment) => REVIEW_REQUEST_RE.test(comment.body));
+
+  for (const run of runs) {
+    if (run.workflow_path !== requirement.workflowPath) continue;
+    const jobs = listRunJobsForRun(repoName, run.run_id, run.run_attempt);
+    if (!jobs.some((job) => job.name === requirement.jobName && job.status === "completed" && job.conclusion === "success")) continue;
+
+    // A push-triggered run proves the exact head directly.
+    if (run.head_sha === detail.headRefOid && run.head_branch === detail.headRefName
+      && (run.pr_number === null || run.pr_number === num)) return true;
+
+    // issue_comment runs execute on the base commit. Tie them to this PR's exact
+    // request by actor and the @review comment's narrow creation window.
+    if (run.event !== "issue_comment" || run.head_branch !== requirement.integrationBase
+      || run.pr_number !== null && run.pr_number !== num || run.actor_login === null) continue;
+    const runCreatedAt = Date.parse(run.created_at ?? run.event_at);
+    if (!Number.isFinite(runCreatedAt) || runCreatedAt < pushCreatedAt) continue;
+    if (reviewComments.some((comment) => comment.author === run.actor_login
+      && Number.isFinite(Date.parse(comment.createdAt))
+      && comment.createdAt <= (run.created_at ?? run.event_at)
+      && runCreatedAt - Date.parse(comment.createdAt) <= 2 * 60_000)) return true;
+  }
+  return false;
+}
+
 // Only an agent marks a PR ready for review, at the head it verified; the app may only clear the mark.
 async function handleReviewHandoff(
   owner: string,
@@ -3778,6 +3825,20 @@ async function handleReviewHandoff(
     }
     const pr = getPr(repoName, num);
     if (!pr || JSON.parse(pr.detail_json).state !== "OPEN") return json({ error: `${repoName}#${num} is not an open inbox PR` }, 409);
+    const detail = JSON.parse(pr.detail_json) as PrDetail;
+    const openThreads = detail.reviewThreads.nodes.filter((thread) => !thread.isResolved && !thread.isOutdated);
+    if (openThreads.length > 0) {
+      const handles = openThreads.map((thread) => reviewThreadHandle(thread.id)).join(", ");
+      return json({
+        error: `cannot mark ${repoName}#${num} ready: ${openThreads.length} open review thread${openThreads.length === 1 ? "" : "s"} remain${openThreads.length === 1 ? "s" : ""} (handles: ${handles}); resolve them first`,
+      }, 409);
+    }
+    if (!(await requiredReviewSucceeded(repoName, num, detail, runtime))) {
+      const requirement = REVIEW_HANDOFF_REQUIREMENTS[repoName]!;
+      return json({
+        error: `cannot mark ${repoName}#${num} ready: required review ${requirement.workflowPath} / ${requirement.jobName} has not succeeded for this head; run pr-cockpit comment ${repoName}#${num} with @review`,
+      }, 409);
+    }
     headSha = pr.head_sha;
   }
   if (setReviewHandoff(repoName, num, headSha)) {

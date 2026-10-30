@@ -25,6 +25,22 @@ const ON_BY_DEFAULT = [
   "ask_view_enabled",
 ] as const;
 
+export interface ReviewHandoffRequirement {
+  integrationBase: string;
+  workflowPath: string;
+  jobName: string;
+}
+
+// Repositories whose integration-base PRs need a successful agentic review before handoff.
+// Stacked PRs intentionally bypass this requirement.
+export const REVIEW_HANDOFF_REQUIREMENTS: Readonly<Record<string, ReviewHandoffRequirement>> = {
+  "scape-app/scape": {
+    integrationBase: "staging",
+    workflowPath: ".github/workflows/omp-agentic-review.yml",
+    jobName: "OMP agentic review",
+  },
+};
+
 export type AgentTrigger = "keybind" | "activity";
 export type AgentModel = "opus" | "sonnet";
 export type ThemePreference = "system" | "dark" | "light";
