@@ -24,3 +24,12 @@ test("a bare order label cooks as an order request until Kitchen labels a later 
   expect(cookingStage(pr(["Order", "kitchen: prep"]))?.title).toBe("Preparing");
   expect(cookingStage(pr(["order"], "MERGED"))).toBeNull();
 });
+
+test("a stacked PR with only the bare order label waits for the layers below it", () => {
+  const stacked = (labels, baseIsDefaultBranch) => ({ ...pr(labels), baseIsDefaultBranch });
+  expect(cookingStage(stacked(["order"], false))).toEqual({ label: "order", title: "Waiting for lower layers", rank: cookingStage(pr(["order"])).rank });
+  expect(cookingStage(stacked(["order"], true))?.title).toBe("Order requested");
+  expect(cookingStage(stacked(["order"], null))?.title).toBe("Order requested");
+  expect(cookingStage(stacked(["order", "kitchen: order"], false))?.title).toBe("Order requested");
+  expect(cookingStage(stacked(["order", "kitchen: prep"], false))?.title).toBe("Preparing");
+});

@@ -31,5 +31,9 @@ export function cookingStage(pr) {
   // A stale active label must never hide a workflow that needs intervention.
   if (labels.has(BURNT)) return null;
   const rank = STAGES.findIndex(([names]) => names.some((name) => labels.has(name)));
-  return rank < 0 ? null : { label: STAGES[rank][0].find((name) => labels.has(name)), title: STAGES[rank][1], rank };
+  if (rank < 0) return null;
+  const label = STAGES[rank][0].find((name) => labels.has(name));
+  // Kitchen takes a stacked PR only once the PRs below it land; until then the bare order just waits.
+  const title = label === "order" && pr.baseIsDefaultBranch === false ? "Waiting for lower layers" : STAGES[rank][1];
+  return { label, title, rank };
 }

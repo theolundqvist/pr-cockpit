@@ -1,5 +1,5 @@
 import type { Stats } from "node:fs";
-import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { lstat, mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1177,4 +1177,16 @@ export async function branchesFromMirror(repo: string): Promise<MirrorBranchesRe
     if (!(await Bun.file(`${dir}/HEAD`).exists())) return { status: "no-mirror" };
     return branchesFromGitDir(dir);
   });
+}
+
+// The default branch a mirror was cloned from, read straight from its HEAD so list rendering never
+// spawns git; null without a mirror.
+export function mirrorDefaultBranch(repo: string): string | null {
+  let head: string;
+  try {
+    head = readFileSync(`${mirrorDir(repo)}/HEAD`, "utf8").trim();
+  } catch {
+    return null;
+  }
+  return head.startsWith("ref: refs/heads/") ? head.slice("ref: refs/heads/".length) : null;
 }

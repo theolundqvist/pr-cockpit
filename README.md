@@ -8,7 +8,7 @@ PR Cockpit is a desktop app for GitHub pull requests on **macOS and Linux**. A l
 
 ![PR Cockpit showing the review queue for microsoft/vscode, grouped into ready to merge and waiting](docs/screenshots/landing-inbox.png)
 
-The queue separates **ready to merge**, **your move**, and **waiting**. Failed merge attempts appear under **FAILED TO MERGE** above pinned PRs in every grouping mode, until retried, dismissed, merged, or closed. With **Separate PRs that are cooking** on, open PRs labelled `kitchen: burnt` lead the queue under **Burnt**. Checks, conflicts, unresolved threads, and review state give you the context to decide what to open next. Stacked pull requests stay together.
+The queue separates **ready to merge**, **your move**, and **waiting**. Failed merge attempts appear under **FAILED TO MERGE** above pinned PRs in every grouping mode, until retried, dismissed, merged, or closed. With **Separate PRs that are cooking** on, open PRs labelled `kitchen: burnt` lead the queue under **Burnt**, and a PR labelled `order` cooks before Kitchen labels it; a stacked one shows **Waiting for lower layers**. Checks, conflicts, unresolved threads, and review state give you the context to decide what to open next. Stacked pull requests stay together.
 
 ## Install
 

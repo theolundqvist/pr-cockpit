@@ -119,7 +119,7 @@ import { runtimeSupervisor } from "./supervisor.ts";
 import { withGithubUsageSource, type GithubUsageSource } from "./githubUsage.ts";
 import type { GithubAuthStatus } from "./githubAuth.ts";
 import { handleGithubAppSetup } from "./githubAppSetup.ts";
-import { branchesFromMirror, commitsFromMirror, commitStatsFromMirror, conflictFilesFromMirror, conflictMergeFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError, resolvedMergeFromMirror, summarizeCommitStats, type MirrorDiffResult, type PullRequestCommit } from "./mirror.ts";
+import { branchesFromMirror, commitsFromMirror, commitStatsFromMirror, conflictFilesFromMirror, conflictMergeFromMirror, diffFromMirror, fetchMirror, fileFromMirror, INCREMENTAL_FETCH_TIMEOUT_MS, materializePrWorktree, MirrorFetchError, mirrorDefaultBranch, resolvedMergeFromMirror, summarizeCommitStats, type MirrorDiffResult, type PullRequestCommit } from "./mirror.ts";
 import { cachedGeneratedPathsFromMirror, generatedFilesFromMirror, generatedPathsForCommitsFromMirror } from "./generatedFiles.ts";
 import { checkState, currentChecks, type CheckState } from "./checkState.ts";
 import { currentBaseRef, discardMutation, enqueueMutation, isTaskIntent, mutationsForPr, retryMutation, type MutationPayload } from "./mutations.ts";
@@ -453,6 +453,7 @@ function inboxRows(prs: PrRow[]) {
   const agentByPr = new Map<string, AgentRow>(listFixerAgents().map((a) => [prKey(a), a]));
   const settings = readSettings();
   const testMatchers = new Map<string, RegExp>();
+  const defaultBranches = new Map<string, string | null>();
 
   const rows = prs.map((pr) => {
     let testRe = testMatchers.get(pr.repo);
@@ -460,6 +461,8 @@ function inboxRows(prs: PrRow[]) {
       testRe = testMatcher(settings.test_path_regex, settings.hidden_review_paths[pr.repo]);
       testMatchers.set(pr.repo, testRe);
     }
+    if (!defaultBranches.has(pr.repo)) defaultBranches.set(pr.repo, mirrorDefaultBranch(pr.repo));
+    const defaultBranch = defaultBranches.get(pr.repo) ?? null;
     const greptileStatus = greptileScoreStatus(pr);
     const detail = JSON.parse(pr.detail_json);
     const hasReviewShape = Array.isArray(detail.reviews?.nodes) && Array.isArray(detail.comments?.nodes) && Array.isArray(detail.reviewRequests?.nodes);
@@ -492,6 +495,8 @@ function inboxRows(prs: PrRow[]) {
       state: pr.state,
       isDraft: pr.is_draft === 1,
       baseRef: pr.base_ref,
+      // Null until the repository has a mirror to name its default branch.
+      baseIsDefaultBranch: defaultBranch === null ? null : pr.base_ref === defaultBranch,
       headRef: pr.head_ref,
       headSha: pr.head_sha,
       // Tracked details carry GitHub's creation time; historical stubs and details cached before the field
