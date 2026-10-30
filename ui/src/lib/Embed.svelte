@@ -4,6 +4,8 @@
   import { burstGate } from "./burstGate.js";
   import { connectEvents } from "./events.js";
   import { cookingStage, isBurnt } from "./cookingStage.js";
+  import { inboxGroups, prStack } from "./inboxGroups.js";
+  import { assignments, onAssignmentStorage, syncAssignments } from "./prAssignments.svelte.js";
   import { flash, showFlash } from "./flash.svelte.js";
   import { presentMutationError } from "./mutationError.js";
   import { prefs, setPrefs } from "./prefs.svelte.js";
@@ -29,8 +31,9 @@
 
   // #/embed?keys=owner%2Frepo%2312,... — each key encoded on its own and joined by commas, in display order.
   // The frame posts {source: "pr-cockpit-embed"} messages to its parent: `size` with its content height and
-  // `open` with a PR's prcockpit:// or GitHub URL. Adding `&overlay=1` opts into compact rows that show Kitchen
-  // state and, inside a frame, an E control per row (its button, or E on the focused row) posting `hide` with the
+  // `open` with a PR's prcockpit:// or GitHub URL. Adding `&overlay=1` opts into compact rows in the inbox's
+  // sections, ordered by the user's grouping settings, that show Kitchen state and, inside a frame, an E control
+  // per row (its button, or E on the focused row) posting `hide` with the
   // row's key exactly as requested. Hiding belongs to the host: Cockpit changes nothing on GitHub and keeps
   // showing the row until the host drops its key from the hash, so restoring the key undoes the hide.
   // Framed overlay rows also offer the inbox's row context menu and row keys. The frame posts `hover` with the
@@ -59,6 +62,35 @@
   let viewerLogin = $state(null);
   let content = $state(null);
   let visible = $derived(keys.filter((key) => rows[key]).map((key) => ({ key, pr: rows[key] })));
+  // Overlay rows sit in the inbox's sections, in its order, under the user's grouping settings.
+  let groups = $derived(overlay ? sections(visible) : []);
+  let ordered = $derived(overlay ? groups.flatMap((group) => group.entries) : visible);
+
+  function sections(entries) {
+    const prs = entries.map((entry) => entry.pr);
+    const keyOf = new Map(entries.map(({ key, pr }) => [pr, key]));
+    return inboxGroups(prs, {
+      stack: prStack(prs),
+      grouping: prefs.prGrouping,
+      assignments: assignments.values,
+      viewerLogin,
+      cooking: prefs.cookingSectionEnabled,
+      readyReview: true,
+      safeMergeApproval: prefs.safeMergeApprovalEnabled,
+      listOrder: "queue",
+    }).map(({ id, title, items }) => ({
+      id,
+      title,
+      entries: items.filter((item) => item.pr).map(({ pr, stacked }) => ({ key: keyOf.get(pr), pr, stacked })),
+    }));
+  }
+
+  $effect(() => {
+    if (!overlay || prefs.prGrouping.mode !== "manual") return;
+    syncAssignments();
+    window.addEventListener("storage", onAssignmentStorage);
+    return () => window.removeEventListener("storage", onAssignmentStorage);
+  });
 
   // A key the server holds nothing for gets one ordinary detail read, which stores the PR; later
   // refreshes only read what is stored, so a PR that cannot load costs GitHub one request.
@@ -174,10 +206,10 @@
   let refocus = null;
 
   function hide(event, key) {
-    const index = visible.findIndex((entry) => entry.key === key);
+    const index = ordered.findIndex((entry) => entry.key === key);
     const fromKeyboard = event.type === "keydown" || event.detail === 0;
     refocus = fromKeyboard && event.currentTarget.parentElement.contains(document.activeElement)
-      ? { hidden: key, next: (visible[index + 1] ?? visible[index - 1])?.key ?? null }
+      ? { hidden: key, next: (ordered[index + 1] ?? ordered[index - 1])?.key ?? null }
       : null;
     post({ type: "hide", key });
   }
@@ -348,10 +380,11 @@
 
 <div class="embed">
   <div bind:this={content} style:min-height={floorHeight ? `${floorHeight}px` : null}>
-    {#if visible.length}
-      <div class="embed-card">
-        {#each visible as { key, pr } (key)}
-          {#if overlay}
+    {#if overlay}
+      {#each groups as group (group.id)}
+        <section class="embed-card" aria-label={group.title}>
+          <div class="group-label"><span>{group.title}</span><span class="group-count">{group.entries.length}</span></div>
+          {#each group.entries as { key, pr, stacked } (key)}
             <div
               class="overlay-row"
               class:hideable={framed}
@@ -363,6 +396,7 @@
               <PrRow
                 {pr}
                 compact
+                {stacked}
                 cooking={cookingStage(pr)}
                 burnt={isBurnt(pr)}
                 status={classify(pr, viewerLogin)}
@@ -384,9 +418,13 @@
                 </button>
               {/if}
             </div>
-          {:else}
-            <PrRow {pr} status={classify(pr, viewerLogin)} href={cockpitUrl(pr)} onclick={(event) => open(event, pr)} />
-          {/if}
+          {/each}
+        </section>
+      {/each}
+    {:else if visible.length}
+      <div class="embed-card">
+        {#each visible as { key, pr } (key)}
+          <PrRow {pr} status={classify(pr, viewerLogin)} href={cockpitUrl(pr)} onclick={(event) => open(event, pr)} />
         {/each}
       </div>
     {/if}
@@ -432,6 +470,24 @@
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
+  }
+  .embed-card + .embed-card {
+    margin-top: 8px;
+  }
+  .group-label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 28px;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--border-soft);
+    color: var(--text-dim);
+    font-family: var(--sans);
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .group-count {
+    color: var(--text-faint);
   }
   .embed-card > :global(.row:last-child),
   .embed-card > .overlay-row:last-child > :global(.row) {

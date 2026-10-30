@@ -8,9 +8,10 @@
 
 <script>
   import KitchenNotifications from "./KitchenNotifications.svelte";
-  import { cookingStage, isBurnt } from "./cookingStage.js";
+  import { cookingStage } from "./cookingStage.js";
+  import { inboxGroupId, inboxGroups, prStack, topUnit as topUnitOf } from "./inboxGroups.js";
   import { coalescedRefresh } from "./coalescedRefresh.js";
-  import { categoryForPr, normalizePrGrouping, orderQueueUnits, planGroupDrop, PR_TYPES, TYPE_TITLES } from "../../../shared/prGrouping.ts";
+  import { normalizePrGrouping, orderQueueUnits, planGroupDrop } from "../../../shared/prGrouping.ts";
   import { assignments, assignPr, syncAssignments, onAssignmentStorage } from "./prAssignments.svelte.js";
   import { isSetAside, putAside, remindLater, reconcileReminders } from "./setAside.svelte.js";
   import RemindPicker from "./RemindPicker.svelte";
@@ -22,7 +23,7 @@
   import { preloadPr } from "./preload.js";
   import { filterPrs, countMatches, wantsHistory } from "./prFilter.js";
   import { customOpenedRange, filterByOpened, isRollingRange, OPENED_RANGES, openedBounds, sortByTime, TIME_ORDERS } from "./prTime.js";
-  import { classify, GROUP_ORDER, GROUP_TITLES } from "./whoseMove.js";
+  import { classify } from "./whoseMove.js";
   import { mergeGate } from "./mergeGate.js";
   import { prefs } from "./prefs.svelte.js";
   import { isTypingTarget, shouldCopyPrUrl } from "./dom.js";
@@ -755,66 +756,10 @@
   }
 
 
-  const TRUNK_MIN_BASE_COUNT = 3;
+  let stack = $derived(prStack(filteredPrs));
 
-  // a branch that's the base of many open PRs is trunk, even if a release PR's head equals it
-  let trunkRefs = $derived.by(() => {
-    const counts = new Map();
-    for (const pr of filteredPrs) {
-      const key = `${pr.repo}:${pr.baseRef}`;
-      counts.set(key, (counts.get(key) ?? 0) + 1);
-    }
-    return new Set([...counts].filter(([, n]) => n >= TRUNK_MIN_BASE_COUNT).map(([key]) => key));
-  });
-
-  let stack = $derived.by(() => {
-    const byHead = new Map(filteredPrs.map((pr) => [`${pr.repo}:${pr.headRef}`, pr]));
-    const parentOf = (pr) => {
-      if (trunkRefs.has(`${pr.repo}:${pr.baseRef}`)) return null;
-      return byHead.get(`${pr.repo}:${pr.baseRef}`) ?? null;
-    };
-    const info = new Map();
-    for (const pr of filteredPrs) info.set(prKey(pr), { parent: parentOf(pr) });
-    return info;
-  });
-
-  // walks up to the topmost ancestor still in the list; that PR's status places the whole stack
   function topUnit(pr) {
-    let cur = pr;
-    const visited = new Set();
-    for (;;) {
-      visited.add(prKey(cur));
-      const parent = stack.get(prKey(cur))?.parent;
-      if (!parent || visited.has(prKey(parent))) return cur;
-      cur = parent;
-    }
-  }
-
-  function orderGroup(rows, sortUnits = (units) => units) {
-    const inGroup = new Set(rows.map(prKey));
-    const childrenOf = new Map();
-    const topUnits = [];
-    for (const pr of rows) {
-      const parent = stack.get(prKey(pr)).parent;
-      if (parent && inGroup.has(prKey(parent))) {
-        (childrenOf.get(prKey(parent)) ?? childrenOf.set(prKey(parent), []).get(prKey(parent))).push(pr);
-      } else {
-        topUnits.push(pr);
-      }
-    }
-    // A row indents only beneath its parent; one whose parent sits in another section is a root here.
-    const subtree = (pr, stacked = false) => {
-      const out = [{ pr, stacked }];
-      for (const child of childrenOf.get(prKey(pr)) ?? []) out.push(...subtree(child, true));
-      return out;
-    };
-    const unranked = sortUnits(topUnits.filter((pr) => pr.rank == null));
-    const ranked = topUnits.filter((pr) => pr.rank != null).sort((a, b) => a.rank - b.rank);
-    const items = [];
-    for (const pr of unranked) items.push(...subtree(pr));
-    if (ranked.length > 0) items.push({ divider: true });
-    for (const pr of ranked) items.push(...subtree(pr));
-    return { units: [...unranked, ...ranked], unrankedCount: unranked.length, items };
+    return topUnitOf(stack, pr);
   }
 
   $effect(() => {
@@ -824,20 +769,18 @@
     return () => window.removeEventListener("storage", onAssignmentStorage);
   });
 
-  // A burnt Kitchen order or failed merge outranks approval, pinning, and grouping; stacks never pull either
-  // under a healthy ancestor. An agent's ready-for-review handoff sits just below Burnt and places only its own PR.
-  // Cooking labels place only their own PR; pins and approvals retain their saved state.
-  // Approval places only its own PR, never the stack beneath it.
+  let groupOptions = $derived({
+    stack,
+    grouping: prefs.prGrouping,
+    assignments: assignments.values,
+    viewerLogin,
+    cooking: cookingActive,
+    readyReview: view === "open",
+    safeMergeApproval: prefs.safeMergeApprovalEnabled,
+  });
+
   function groupId(pr) {
-    if (cookingActive && isBurnt(pr)) return "burnt";
-    if (view === "open" && pr.readyForReview === true) return "ready-review";
-    if (pr.mergeFailed === true) return "merge-failed";
-    if (cookingActive && cookingStage(pr)) return "cooking";
-    if (isApproved(pr)) return "approved";
-    if (pr.rank != null) return "pinned";
-    const root = topUnit(pr);
-    return prefs.prGrouping.mode === "status" ? classify(root, viewerLogin).group
-      : categoryForPr(root.title, prefs.prGrouping, assignments.values[prKey(root)]);
+    return inboxGroupId(pr, groupOptions);
   }
 
   function moveToGroup(pr, value, select) {
@@ -848,70 +791,13 @@
     } else select.value = assignments.values[prKey(topUnit(pr))] ?? "";
   }
 
-  let groups = $derived.by(() => {
-    const burnt = [];
-    const ready = [];
-    const failed = [];
-    const approved = [];
-    const pinned = [];
-    const buckets = new Map();
-    for (const pr of filteredPrs) {
-      const id = groupId(pr);
-      if (id === "burnt") burnt.push(pr);
-      else if (id === "ready-review") ready.push(pr);
-      else if (id === "merge-failed") failed.push(pr);
-      else if (id === "approved") approved.push(pr);
-      else if (id === "pinned") pinned.push(pr);
-      else {
-        if (!buckets.has(id)) buckets.set(id, []);
-        buckets.get(id).push(pr);
-      }
-    }
-    const mode = prefs.prGrouping.mode;
-    const categories = mode === "status" ? GROUP_ORDER.map((id) => ({ id, title: GROUP_TITLES[id] }))
-      : [...(mode === "type" ? PR_TYPES.map((type) => ({ id: `type:${type}`, title: TYPE_TITLES[type] }))
-        : mode === "feature" ? [...buckets.keys()].filter((id) => id.startsWith("feature:")).sort().map((id) => ({ id, title: id.slice("feature:".length) }))
-        : prefs.prGrouping.groups.map((group) => ({ id: `group:${group.id}`, title: group.name }))),
-        { id: "other", title: mode === "manual" ? "Ungrouped" : "Other" }];
-    if (cookingActive) categories.push({ id: "cooking", title: "Cooking" });
-    // A stack sorts by its root row; feature groups also order by status, then type. A timestamp order
-    // re-sorts only unpinned roots inside each section, with queue order breaking ties.
-    const statusRank = mode === "feature" ? (pr) => GROUP_ORDER.indexOf(classify(pr, viewerLogin).group) : undefined;
-    const sortUnits = (units) => sortByTime(orderQueueUnits(units, statusRank), listOrder);
-    // An active drag also shows the empty sections it could land in; feature mode offers only scopes that
-    // already exist, plus Other.
-    const shown = (id, rows) => rows.length > 0 || (revealKey !== null && revealKey === dragKey && dropPlan(dragKey, id) !== null);
-    const statusGroups = categories.filter(({ id }) => shown(id, buckets.get(id) ?? [])).map(({ id, title }) => {
-      const rows = buckets.get(id) ?? [];
-      // Kitchen stages sort independently of review categories; hide/show never changes saved ranks.
-      const { units, unrankedCount, items } = id === "cooking"
-        ? { units: [], unrankedCount: 0, items: [...sortUnits(rows)].sort((a, b) => cookingStage(a).rank - cookingStage(b).rank).map((pr) => ({ pr })) }
-        : orderGroup(rows, sortUnits);
-      return { id, title, units, unrankedCount, items };
-    });
-    const leading = [];
-    if (burnt.length) {
-      const { units, unrankedCount, items } = orderGroup(burnt, sortUnits);
-      leading.push({ id: "burnt", title: "Burnt", units, unrankedCount, items });
-    }
-    if (ready.length) {
-      // A handoff has no saved order of its own: pins keep their rank but draw no divider here.
-      leading.push({ id: "ready-review", title: "Ready for review", units: [], unrankedCount: 0, items: [...sortUnits(ready)].map((pr) => ({ pr })) });
-    }
-    if (failed.length) {
-      const { units, unrankedCount, items } = orderGroup(failed, sortUnits);
-      leading.push({ id: "merge-failed", title: "FAILED TO MERGE", units, unrankedCount, items });
-    }
-    if (shown("approved", approved)) {
-      const { units, unrankedCount, items } = orderGroup(approved, sortUnits);
-      leading.push({ id: "approved", title: "Approved for safe merge", units, unrankedCount, items });
-    }
-    if (shown("pinned", pinned)) {
-      const { units, unrankedCount, items } = orderGroup(pinned);
-      leading.push({ id: "pinned", title: "Pinned", units, unrankedCount, items });
-    }
-    return [...leading, ...statusGroups];
-  });
+  // An active drag also shows the empty sections it could land in; feature mode offers only scopes that
+  // already exist, plus Other.
+  let groups = $derived(inboxGroups(filteredPrs, {
+    ...groupOptions,
+    listOrder,
+    reveal: (id) => revealKey !== null && revealKey === dragKey && dropPlan(dragKey, id) !== null,
+  }));
 
   let openOrdered = $derived(groups.filter((g) => g.id !== "cooking" || !cookingHidden).flatMap((g) => g.items.filter((i) => i.pr).map((i) => i.pr)));
 
