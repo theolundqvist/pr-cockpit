@@ -159,7 +159,7 @@ Arming auto-merge approves the feature and delegates safely landing it to the me
 
 Safe-merge approval is also visible in CLI output and as `approvedForSafeMerge` in `--json`; `listen` wakes when it changes. Agents must re-read approval immediately before merging and still satisfy the safety checks above. Approval is granted or revoked in the app, never by an agent approving itself.
 
-`pr-cockpit mark-ready owner/repo#123` lists the PR's current head under **Marked ready**, directly below Burnt, until a push, close, merge, `unmark-ready`, or <kbd>n</kbd> in the app clears it; `--json` shows `readyForReview` and `listen` wakes when it changes.
+`pr-cockpit mark-ready owner/repo#123` lists the PR's current head under **Marked ready**, directly below Burnt, unless a Kitchen label places it in a Kitchen stage first; a push, close, merge, `unmark-ready`, or <kbd>n</kbd> in the app clears it. `--json` shows `readyForReview` and `listen` wakes when it changes.
 
 The PR detail’s Agents tab renders Markdown answers and expandable tool activity, shows an identical final-answer echo only once, and keeps available tool inputs, errors, and log tails inspectable.
 

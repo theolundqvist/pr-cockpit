@@ -1,10 +1,11 @@
-// Cockpit page for a github.com Actions run or job URL, or null when Cockpit has no such page.
+// Cockpit Actions routes use a cache-aware destination; body links start in Cockpit so the cache can be checked.
 export function actionsRunDestination(repo, runId, cached) {
   return cached
     ? `#/actions/run/${repo}/${runId}`
     : `https://github.com/${repo}/actions/runs/${runId}`;
 }
 
+// Cockpit page for a GitHub Actions run URL, or null when Cockpit has no such page.
 export function cockpitActionsHref(value) {
   let url;
   try {
@@ -18,4 +19,8 @@ export function cockpitActionsHref(value) {
     return actionsRunDestination(`${parts[0]}/${parts[1]}`, parts[4], true);
   }
   return null;
+}
+
+export function isMissingActionRunError(error) {
+  return error?.status === 404;
 }

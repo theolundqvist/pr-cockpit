@@ -187,7 +187,7 @@ export function cookingScenarios() {
   }));
 }
 
-// An agent's ready-for-review handoff leads the queue directly under Burnt, whatever else the PR carries.
+// An agent's marked-ready handoff leads the queue directly under Burnt when no higher-precedence state applies.
 export function readyForReviewScenario() {
   return {
     name: "inbox-ready-for-review",
@@ -211,7 +211,7 @@ export function readyForReviewScenario() {
         const response = await route.fetch();
         const data = await response.json();
         const seed = data.prs[0];
-        // #512 is pinned and approved too: the handoff alone decides its section.
+        // #512 is pinned and approved too; the handoff wins only when no Kitchen state applies.
         data.prs = [
           [501, "Add workspace search", "kitchen: oven"],
           [505, "Repair upload validation", "kitchen: burnt"],

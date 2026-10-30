@@ -165,6 +165,7 @@
   .kitchen-duration { flex-shrink: 0; color: var(--text-dim); }
   .cooking-stage { display: inline-flex; align-items: center; gap: 5px; color: var(--text); border: 1px solid color-mix(in srgb, #d99a39 45%, transparent); background: color-mix(in srgb, #d99a39 10%, transparent); border-radius: 4px; padding: 1px 5px; }
   .cooking-indicator { width: 7px; height: 7px; border-radius: 50%; background: #d99a39; flex-shrink: 0; }
+  .cooking-stage.burnt { color: var(--fail); border-color: color-mix(in srgb, var(--fail) 45%, transparent); background: var(--fail-bg); }
   .archived-row {
     opacity: 0.5;
   }
@@ -421,7 +422,7 @@
   }
   @media (max-width: 720px) {
     .row-badge-slot {
-      display: none;
+      display: none !important;
     }
     .row-meta .branch,
     .row-meta .branch + .sep {
@@ -543,6 +544,9 @@
       grid-column: 2;
       grid-row: 2;
       flex: none;
+      width: auto;
+      min-width: 0;
+      max-width: none;
       margin-top: 0;
     }
     .greptile {
@@ -618,6 +622,9 @@
     grid-column: 1;
     grid-row: 2;
     flex: none;
+    width: auto;
+    min-width: 0;
+    max-width: none;
     margin-top: 0;
   }
   .row.compact .row-meta {

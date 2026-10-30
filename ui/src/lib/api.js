@@ -157,7 +157,11 @@ export async function fetchRepoActions(filters = {}, signal = null) {
   const query = params.toString();
   const res = await fetch(`/api/actions/runs${query ? `?${query}` : ""}`, { signal });
   const body = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(body?.error || `actions ${res.status}`);
+  if (!res.ok) {
+    const error = new Error(body?.error || `actions ${res.status}`);
+    error.status = res.status;
+    throw error;
+  }
   return body;
 }
 

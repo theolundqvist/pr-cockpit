@@ -7,6 +7,7 @@
   import ActionStatusIcon from "./ActionStatusIcon.svelte";
   import MultiSelectDropdown from "./MultiSelectDropdown.svelte";
   import { prefetchRepoRun, rememberActionRun } from "./actionPrefetch.js";
+  import { actionsRunDestination } from "./githubLinks.js";
   import { fetchRepoActions, fetchSettings } from "./api.js";
   import { durationText, relativeTime } from "./time.js";
   import { isTypingTarget } from "./dom.js";
@@ -108,7 +109,7 @@
   }
 
   function runHref(run) {
-    return `#/actions/run/${run.repo}/${run.id}`;
+    return actionsRunDestination(run.repo, run.id, true);
   }
 
   function moveStatus(event, index) {

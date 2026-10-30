@@ -145,7 +145,7 @@ test("an agent's ready-for-review mark covers only the open head it was set at a
     ]);
     if (exitCode !== 0) throw new Error(stderr);
     const result = JSON.parse(stdout.trim().split("\n").at(-1)!);
-    const ready = { text: "Review handoff: marked ready", json: true };
+    const ready = { text: "Review handoff: ready for review", json: true };
     const notMarked = { text: "Review handoff: not marked", json: false };
 
     expect(result.before).toEqual({
@@ -153,7 +153,7 @@ test("an agent's ready-for-review mark covers only the open head it was set at a
       8: { ready: false, approved: false, rank: 10 },
     });
     expect(result.mark8).toEqual({ readyForReview: true, headSha: "8".repeat(40) });
-    expect(result.listen).toEqual({ code: 0, line: "Review handoff: marked ready" });
+    expect(result.listen).toEqual({ code: 0, line: "Review handoff: ready for review" });
     expect(result.marked).toEqual({
       inbox: { 7: { ready: false, approved: true, rank: null }, 8: { ready: true, approved: false, rank: 10 } },
       detail: true,

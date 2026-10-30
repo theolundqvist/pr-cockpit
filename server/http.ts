@@ -1417,7 +1417,7 @@ function mergeApprovalLine(summary: PrAgentSummary): string {
 }
 
 function reviewHandoffLine(summary: PrAgentSummary): string {
-  return `Review handoff: ${summary.readyForReview ? "marked ready" : "not marked"}`;
+  return `Review handoff: ${summary.readyForReview ? "ready for review" : "not marked"}`;
 }
 
 function activeAgentQuota(summary: PrAgentSummary) {

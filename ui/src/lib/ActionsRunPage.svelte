@@ -1,7 +1,7 @@
 <script>
   import ActionStatusIcon from "./ActionStatusIcon.svelte";
   import ActionsView from "./ActionsView.svelte";
-  import { actionsRunDestination } from "./githubLinks.js";
+  import { actionsRunDestination, isMissingActionRunError } from "./githubLinks.js";
   import { prefetchRepoRun, rememberedActionRun, rememberActionRun } from "./actionPrefetch.js";
   import { fetchRepoActions, rerunFailedActionJobs } from "./api.js";
   import { isTypingTarget } from "./dom.js";
@@ -17,7 +17,7 @@
   let refreshRevision = $state(0);
 
   function runHref(nextRun) {
-    return `#/actions/run/${nextRun.repo}/${nextRun.id}`;
+    return actionsRunDestination(nextRun.repo, nextRun.id, true);
   }
 
   async function rerunFailed(runToRerun) {
@@ -54,13 +54,13 @@
           prefetchRepoRun(run);
         } else {
           error = "Workflow run not found";
-          window.location.replace(actionsRunDestination(repo, runId, false));
+          window.open(actionsRunDestination(repo, runId, false), "_blank", "noopener,noreferrer");
         }
       },
       (nextError) => {
         if (controller.signal.aborted) return;
         error = nextError instanceof Error ? nextError.message : String(nextError);
-        if (!run) window.location.replace(actionsRunDestination(repo, runId, false));
+        if (!run && isMissingActionRunError(nextError)) window.open(actionsRunDestination(repo, runId, false), "_blank", "noopener,noreferrer");
       },
     ).finally(() => {
       if (!controller.signal.aborted) loading = false;

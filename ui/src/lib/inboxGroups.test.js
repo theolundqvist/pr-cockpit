@@ -21,7 +21,7 @@ const groupsOf = (prs, options = {}) => inboxGroups(prs, {
   viewerLogin: "me",
   cooking: true,
   readyReview: true,
-  safeMergeApproval: false,
+  safeMergeApproval: true,
   listOrder: "queue",
   ...options,
 }).map((group) => [group.id, group.title, group.items.filter((item) => item.pr).map((item) => item.pr.number)]);
@@ -46,7 +46,7 @@ test("Kitchen and handoff sections lead the user's type sections, with Cooking l
   ]);
 });
 
-test("Kitchen takes precedence over a marked-ready handoff and releases it when removed", () => {
+test("Kitchen takes precedence over marked-ready, approval, and pinning", () => {
   const ordered = pr(8, "feat: ordered handoff", {
     readyForReview: true,
     approvedForSafeMerge: true,
@@ -55,6 +55,8 @@ test("Kitchen takes precedence over a marked-ready handoff and releases it when 
   });
   expect(groupsOf([ordered])).toEqual([["cooking", "Cooking", [8]]]);
   expect(groupsOf([{ ...ordered, labels: [] }])).toEqual([["ready-review", "Marked ready", [8]]]);
+  expect(groupsOf([{ ...ordered, labels: [], readyForReview: false }])).toEqual([["approved", "Approved for safe merge", [8]]]);
+  expect(groupsOf([{ ...ordered, labels: [], readyForReview: false, approvedForSafeMerge: false }])).toEqual([["pinned", "Pinned", [8]]]);
 });
 
 test("without the Kitchen section, labelled PRs fall back to their grouping", () => {
