@@ -32,9 +32,11 @@ export function historyGestureScenario() {
         assert.equal(page.url(), detail);
       };
       await phase("begin");
+      const neutralColor = await page.locator('[data-history-gesture="back"]').evaluate((node) => getComputedStyle(node).color);
       assert(await wheel(-75));
       await unchanged(); // Never navigate before release.
       assert.equal(await page.locator('[data-history-gesture="back"]').getAttribute("data-armed"), "true");
+      assert.equal(await page.locator('[data-history-gesture="back"]').evaluate((node) => getComputedStyle(node).color), neutralColor);
       await phase("end");
       await page.waitForURL(/#\/$/);
       // Momentum has no active gesture and must not consume another history entry.

@@ -3,6 +3,7 @@ data.pre-incident/
 node_modules/
 static/
 shell/PR Cockpit.app/
+shell/native/build/
 artifacts/views/
 
 # Internal working documents — kept locally, never published.

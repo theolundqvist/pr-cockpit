@@ -3,9 +3,11 @@
   "private": true,
   "main": "main.js",
   "scripts": {
+    "postinstall": "bun build-trackpad.cjs",
     "start": "electron ."
   },
   "devDependencies": {
-    "electron": "43.8.1"
+    "electron": "43.8.1",
+    "node-api-headers": "1.9.0"
   }
 }

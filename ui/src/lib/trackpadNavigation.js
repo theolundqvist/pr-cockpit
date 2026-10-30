@@ -21,7 +21,7 @@ export function attachHistoryGesture({ subscribe, canNavigate, navigate, progres
   let checkedTarget = false;
   const direction = () => x < 0 ? "back" : "forward";
   const horizontal = () => Math.abs(x) > Math.abs(y) * DOMINANCE;
-  const hide = () => progress(null, 0, false);
+  const hide = (immediate = false) => progress(null, 0, false, immediate);
   const stopWheel = () => window.removeEventListener("wheel", wheel, true);
   function block() {
     blocked = true;
@@ -66,7 +66,10 @@ export function attachHistoryGesture({ subscribe, canNavigate, navigate, progres
       const commit = phase === "end" && active && !blocked && !editing(document.activeElement)
         && horizontal() && Math.abs(x) >= THRESHOLD && canNavigate(next);
       cancel();
-      if (commit) navigate(next);
+      if (commit) {
+        hide(true);
+        navigate(next);
+      }
     }
   });
   const focus = (event) => { if (active && editing(event.target)) block(); };
