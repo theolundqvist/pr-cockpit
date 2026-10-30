@@ -3,6 +3,7 @@
   import { flushSync, onDestroy, tick, untrack } from "svelte";
   import {
     fetchPrDetail,
+    fetchPrRows,
     fetchPendingReview,
     fetchPrDiff,
     fetchGeneratedFiles,
@@ -2229,8 +2230,34 @@
   let testPattern = $derived(testMatcher(prefs.testPathRegex, [...hiddenHere, ...markedGenerated]));
   let excludedFiles = $derived(files.filter((f) => excludedPath(f.path, testPattern, generatedPaths)));
   let includedFiles = $derived(files.filter((f) => !excludedPath(f.path, testPattern, generatedPaths)));
-  let includedAdditions = $derived(includedFiles.reduce((sum, f) => sum + f.additions, 0));
-  let includedDeletions = $derived(includedFiles.reduce((sum, f) => sum + f.deletions, 0));
+  let headerChangeStats = $state(null);
+  // Use the same cached row as the inbox, including generated-file classification. The PR-wide
+  // summary must not depend on opening Files or on the commit range selected in that tab.
+  $effect(() => {
+    if (!pr) return;
+    const key = prKeyOf(repo, number);
+    const head = pr.headRefOid;
+    const additions = pr.additions;
+    const deletions = pr.deletions;
+    void [refreshRevision, prefs.testPathRegex, hiddenHere, markedGenerated];
+    let current = true;
+    fetchPrRows([key]).then(({ rows }) => {
+      const row = rows[key];
+      if (current && row?.headSha === head && row.rawAdditions === additions && row.rawDeletions === deletions) {
+        headerChangeStats = { key, head, additions: row.additions, deletions: row.deletions };
+      }
+    }).catch(() => {});
+    return () => { current = false; };
+  });
+  let headerChanges = $derived.by(() => {
+    if (!pr) return { additions: 0, deletions: 0 };
+    if (headerChangeStats?.key === prKeyOf(repo, number) && headerChangeStats.head === pr.headRefOid) return headerChangeStats;
+    // A direct link can render before its cached row is available. Use complete file metadata
+    // without fetching the diff; incomplete file lists retain GitHub's totals.
+    if (!pr.files?.nodes || pr.files.totalCount > pr.files.nodes.length) return pr;
+    return pr.files.nodes.filter((file) => !excludedPath(file.path, testPattern, generatedPaths))
+      .reduce((sum, file) => ({ additions: sum.additions + file.additions, deletions: sum.deletions + file.deletions }), { additions: 0, deletions: 0 });
+  });
   let excludedFilesHidden = $derived(excludedFiles.length > 0 && excludedFiles.every((f) => collapsedFiles.has(f.path)));
   let treeFiles = $derived(excludedFilesHidden ? includedFiles : files);
 
@@ -3114,12 +3141,8 @@
           <div class="pr-metrics" aria-label="Pull request change summary">
             <div class="pr-metric">
               <span>Changed</span>
-              {#if diffState === "ready"}
-                <strong><b class="add">+{includedAdditions}</b> <b class="del">−{includedDeletions}</b></strong>
-                <em><b class="add">+{pr.additions}</b> <b class="del">−{pr.deletions}</b></em>
-              {:else}
-                <strong><b class="add">+{pr.additions}</b> <b class="del">−{pr.deletions}</b></strong>
-              {/if}
+              <strong title="Changes excluding tests, generated files, and hidden paths"><b class="add">+{headerChanges.additions}</b> <b class="del">−{headerChanges.deletions}</b></strong>
+              <em title="Total changes, including all files"><b class="add">+{pr.additions}</b> <b class="del">−{pr.deletions}</b></em>
             </div>
             <div class="pr-metric">
               <span>Files</span>
@@ -5844,6 +5867,7 @@
     font-style: normal;
     line-height: 1.2;
     white-space: nowrap;
+    opacity: 0.5;
   }
   .pr-metric b {
     font-weight: inherit;
