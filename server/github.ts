@@ -2524,6 +2524,7 @@ type PrDetailShape<Rx> = {
   mergedBy?: { __typename?: string; login: string } | null;
   // Who last added the merge queue's `order` label; read only for bot merges while merge attribution is on.
   orderedBy?: { login: string } | null;
+  // Latest cached `order` label addition, not a Kitchen stage transition.
   kitchenEnteredAt?: string | null;
   closedAt: string | null;
   isDraft: boolean;
@@ -2844,13 +2845,13 @@ query($owner: String!, $name: String!, $number: Int!) {
 
 type OrderLabelEvent = { createdAt?: string; created_at?: string; actor?: { login: string } | null; label?: { name: string } | null };
 
-// Share the ETag-cached label history between merge attribution and the opt-in Kitchen clock.
-// The last order starts a new visit; stage changes, comments and pushes must not reset it.
+// Share the ETag-cached label history between merge attribution and the opt-in order clock.
+// The latest order starts the clock; stage changes, comments and pushes must not reset it.
 async function withLabelHistory(base: PrDetailBase, repo: string, number: number, source: GithubUsageSource): Promise<PrDetailBase> {
   const attribution = base.mergedBy?.__typename === "Bot" && mergeAttributionWanted();
   const cooking = readSettings().cooking_section_enabled && base.state === "OPEN"
-    && base.labels.nodes.some((label) => label.name.trim().toLowerCase().startsWith("kitchen:"));
-  if (!attribution && !cooking) return base;
+    && base.labels.nodes.some((label) => label.name.trim().toLowerCase() === ORDER_LABEL);
+  if (!attribution && !cooking) return { ...base, kitchenEnteredAt: null };
   try {
     let events: OrderLabelEvent[];
     let completeHistory = true;
@@ -2875,7 +2876,7 @@ async function withLabelHistory(base: PrDetailBase, repo: string, number: number
     };
   } catch (error) {
     if (attribution) throw error;
-    console.warn(`Kitchen entry time unavailable for ${repo}#${number}:`, error);
+    console.warn(`Order time unavailable for ${repo}#${number}:`, error);
     return { ...base, kitchenEnteredAt: null };
   }
 }

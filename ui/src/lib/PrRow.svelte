@@ -35,13 +35,14 @@
   } = $props();
 
   let now = $state(Date.now());
-  const kitchenStart = $derived(cooking && !compact && pr.kitchenEnteredAt ? Date.parse(pr.kitchenEnteredAt) : NaN);
-  const kitchenMinutes = $derived(Math.max(0, Math.floor((now - kitchenStart) / 60000)));
-  const kitchenDuration = $derived(kitchenMinutes < 1 ? "<1m" : kitchenMinutes < 60 ? `${kitchenMinutes}m`
-    : kitchenMinutes < 1440 ? `${Math.floor(kitchenMinutes / 60)}h ${kitchenMinutes % 60}m`
-    : `${Math.floor(kitchenMinutes / 1440)}d ${Math.floor(kitchenMinutes % 1440 / 60)}h`);
+  const orderStart = $derived(cooking && pr.labels?.some((label) => label.name.trim().toLowerCase() === "order")
+    && pr.kitchenEnteredAt ? Date.parse(pr.kitchenEnteredAt) : NaN);
+  const orderMinutes = $derived(Math.max(0, Math.floor((now - orderStart) / 60000)));
+  const orderDuration = $derived(orderMinutes < 1 ? "<1m" : orderMinutes < 60 ? `${orderMinutes}m`
+    : orderMinutes < 1440 ? `${Math.floor(orderMinutes / 60)}h ${orderMinutes % 60}m`
+    : `${Math.floor(orderMinutes / 1440)}d ${Math.floor(orderMinutes % 1440 / 60)}h`);
   $effect(() => {
-    if (!Number.isFinite(kitchenStart)) return;
+    if (!Number.isFinite(orderStart)) return;
     now = Date.now();
     const timer = setInterval(() => { now = Date.now(); }, 60000);
     return () => clearInterval(timer);
@@ -110,8 +111,8 @@
           <span class="cooking-stage burnt" title="kitchen: burnt — needs intervention">Burnt</span>
         {:else if cooking}
           <span class="cooking-stage" title={cooking.label}><span class="cooking-indicator" aria-hidden="true"></span>{cooking.title}</span>
-          {#if Number.isFinite(kitchenStart)}
-            <span class="kitchen-duration" title={`In Kitchen since ${new Date(kitchenStart).toLocaleString()}`}>{kitchenDuration} in Kitchen</span>
+          {#if Number.isFinite(orderStart)}
+            <span class="kitchen-duration" title={`Ordered ${new Date(orderStart).toLocaleString()}`}>{orderDuration} since ordered</span>
           {/if}
         {/if}
         <span class="sep">·</span>

@@ -10,6 +10,8 @@ PR Cockpit is a desktop app for GitHub pull requests on **macOS and Linux**. A l
 
 The queue separates **ready to merge**, **your move**, and **waiting**. Failed merge attempts appear under **FAILED TO MERGE** above pinned PRs in every grouping mode, until retried, dismissed, merged, or closed. With **Separate PRs that are cooking** on, open PRs labelled `kitchen: burnt` lead the queue under **Burnt**, and a PR labelled `order` cooks before Kitchen labels it; a stacked one shows **Waiting for lower layers**. Checks, conflicts, unresolved threads, and review state give you the context to decide what to open next. Stacked pull requests stay together.
 
+Cooking rows show **since ordered** in the inbox and compact PR overlays, measured from the latest cached `order` label-addition event (REST `created_at` or timeline `LabeledEvent.createdAt`), not a Kitchen stage change. The clock is omitted when the label is no longer present or its addition time is unknown.
+
 ## Install
 
 Run this in your terminal as your normal user, **not with `sudo`**:

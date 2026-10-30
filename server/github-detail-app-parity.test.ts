@@ -399,11 +399,11 @@ test("a healthy personal GraphQL pool preserves full fidelity when the App reach
 });
 
 for (const mode of ["app", "personal", "graphql-fallback"]) {
-  test(`Kitchen duration follows orders across stage changes (${mode})`, async () => {
+  test(`order clock uses the latest addition while order remains present (${mode})`, async () => {
     const result = await scenario<{ timestamps: Array<string | null>; disabledReads: number }>(`
       state.app = ${mode !== "personal"};
       state.coreBlocked = ${mode === "graphql-fallback"};
-      base.labels.nodes = restPull.labels = [{ name: "kitchen: chef" }];
+      base.labels.nodes = restPull.labels = [{ name: "order" }, { name: "kitchen: chef" }];
       labelEvents = [
         { event: "labeled", label: { name: "order" }, created_at: "2026-09-01T09:00:00Z" },
         { event: "labeled", label: { name: "kitchen: chef" }, created_at: "2026-09-01T09:30:00Z" },
@@ -413,16 +413,21 @@ for (const mode of ["app", "personal", "graphql-fallback"]) {
       const disabledReads = calls.filter((call) => call.path.endsWith("/events") || call.query?.includes("timelineItems")).length;
       settings.writeSettings({ cooking_section_enabled: true });
       const first = await fetchDetail();
-      base.labels.nodes = restPull.labels = [{ name: "kitchen: oven" }];
+      base.labels.nodes = restPull.labels = [{ name: "order" }, { name: "kitchen: oven" }];
       base.updatedAt = restPull.updated_at = "2026-09-01T10:00:00Z";
       const nextStage = await fetchDetail();
+      labelEvents.push({ event: "unlabeled", label: { name: "order" }, created_at: "2026-09-01T10:04:00Z" });
       labelEvents.push({ event: "labeled", label: { name: "order" }, created_at: "2026-09-01T10:05:00Z" });
       const reordered = await fetchDetail();
+      base.labels.nodes = restPull.labels = [{ name: "kitchen: oven" }];
+      const removed = await fetchDetail();
+      base.labels.nodes = restPull.labels = [{ name: "order" }];
+      const bareOrder = await fetchDetail();
       labelEvents = [];
       const unknown = await fetchDetail();
-      console.log(JSON.stringify({ disabledReads, timestamps: [first, nextStage, reordered, unknown].map((detail) => detail.kitchenEnteredAt) }));
+      console.log(JSON.stringify({ disabledReads, timestamps: [first, nextStage, reordered, removed, bareOrder, unknown].map((detail) => detail.kitchenEnteredAt) }));
     `);
     expect(result.disabledReads).toBe(0);
-    expect(result.timestamps).toEqual(["2026-09-01T09:00:00Z", "2026-09-01T09:00:00Z", "2026-09-01T10:05:00Z", null]);
+    expect(result.timestamps).toEqual(["2026-09-01T09:00:00Z", "2026-09-01T09:00:00Z", "2026-09-01T10:05:00Z", null, "2026-09-01T10:05:00Z", null]);
   });
 }

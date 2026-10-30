@@ -2366,6 +2366,7 @@ describe("PR rows", () => {
       lastCommit: { nodes: [{ commit: { statusCheckRollup: { state: "FAILURE", contexts: { nodes: [] } } } }] },
       reviewThreads: { nodes: [{ isResolved: false, isOutdated: false, comments: { nodes: [] } }] },
       labels: { nodes: [{ name: "bug", color: "d73a4a" }] },
+      kitchenEnteredAt: "2026-07-22T09:00:00Z",
     };
     upsertCachedPrDetail({ repo, number: 2, head_sha: linked.headRefOid, detail_json: JSON.stringify(linked), fetched_at: fetchedAt });
     const handler = buildFetchHandler(4820);
@@ -2392,6 +2393,7 @@ describe("PR rows", () => {
         additions: 5,
         deletions: 2,
         labels: [{ name: "bug", color: "d73a4a" }],
+        kitchenEnteredAt: "2026-07-22T09:00:00Z",
         media: [],
       });
       expect((await get(`/api/pr-details?keys=${keys}`)).details).not.toHaveProperty(`${repo}#3`);

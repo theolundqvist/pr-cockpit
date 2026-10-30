@@ -44,7 +44,7 @@ export function cookingScenarios() {
           kitchenEnteredAt: number === 503 ? null : "2026-07-15T08:18:00Z",
           approvedForSafeMerge: false, mergeFailed: number === 508,
           isDraft: number === 506, ciStatus: number === 507 ? "PENDING" : "SUCCESS",
-          labels: label ? [{ name: label, color: "d99a39" }] : [],
+          labels: label ? [{ name: "order", color: "d99a39" }, { name: label, color: "d99a39" }] : [],
         }));
         await route.fulfill({ response, json: data });
       });
@@ -161,14 +161,14 @@ export function cookingScenarios() {
       }
       if (mode === "expanded") {
         const durations = page.locator("#cooking-prs .kitchen-duration");
-        if ((await durations.allTextContents()).join() !== Array(3).fill("1h 42m in Kitchen").join()) throw new Error("Kitchen elapsed time is wrong");
-        if (await page.locator(".queue-list .kitchen-duration").count() !== 3) throw new Error("Non-cooking rows show Kitchen time");
+        if ((await durations.allTextContents()).join() !== Array(3).fill("1h 42m since ordered").join()) throw new Error("Order elapsed time is wrong");
+        if (await page.locator(".queue-list .kitchen-duration").count() !== 3) throw new Error("Non-cooking rows show order time");
         await page.clock.install({ time: new Date("2026-07-15T10:00:00Z") });
         // Remount so the clock owns the interval too.
         await page.locator(".cooking-toggle").click();
         await page.locator(".cooking-toggle").click();
         await page.clock.fastForward(60000);
-        if ((await durations.allTextContents()).some((value) => value !== "1h 43m in Kitchen")) throw new Error("Kitchen clock did not tick");
+        if ((await durations.allTextContents()).some((value) => value !== "1h 43m since ordered")) throw new Error("Order clock did not tick");
         // Clock belongs to the shared browser context; restore the fixture time for later scenarios.
         await page.clock.setFixedTime(new Date("2026-07-15T10:00:00Z"));
         await page.clock.fastForward(60000);
@@ -182,6 +182,25 @@ export function cookingScenarios() {
         if ((await firstGroup.locator(".group-label").textContent()).replace(/\s+/g, "") !== "Burnt1") throw new Error("Burnt is not the first section");
         if ((await firstGroup.locator(".num").allTextContents()).join() !== "#505") throw new Error("Burnt rows are wrong");
         if (await page.locator(".queue-list .num").getByText("#505", { exact: true }).count() !== 1) throw new Error("Burnt PR is duplicated");
+      }
+      if (mode === "expanded") {
+        const data = await page.evaluate(() => fetch("/api/inbox").then((response) => response.json()));
+        // A cached timestamp must not survive removal of the current order label.
+        data.prs.find((pr) => pr.number === 502).labels = [{ name: "kitchen: chef" }];
+        await page.route("**/api/pr-details?*", (route) => route.fulfill({ json: {
+          rows: Object.fromEntries(data.prs.map((pr) => [`${pr.repo}#${pr.number}`, pr])),
+          viewerLogin: data.viewerLogin,
+        } }));
+        const inboxURL = page.url();
+        const keys = data.prs.map((pr) => encodeURIComponent(`${pr.repo}#${pr.number}`)).join(",");
+        await page.goto(`${inboxURL.split("#")[0]}#/embed?keys=${keys}&overlay=1`);
+        await page.locator(".compact .cooking-stage").first().waitFor();
+        const durations = page.locator(".compact .kitchen-duration");
+        if (await durations.count() !== 2 || (await durations.allTextContents()).some((value) => !value.endsWith(" since ordered"))) {
+          throw new Error("Overlay order clocks must omit unknown timestamps and removed orders");
+        }
+        await page.goto(inboxURL);
+        await page.locator(".cooking-toggle").waitFor();
       }
     },
   }));

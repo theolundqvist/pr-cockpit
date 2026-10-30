@@ -343,10 +343,10 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
     const changedHits = hits.filter((hit) => {
       if (!tracked.has(hit.repo) && !registered.has(prKeyOf(hit.repo, hit.number))) return false;
       const cached = deps.getPr(hit.repo, hit.number);
-      // Backfill existing Cooking rows once when the opt-in starts consuming label timestamps.
+      // Backfill existing orders once when the opt-in starts consuming label timestamps.
       if (cookingEnabled && cached) {
         const detail = JSON.parse(cached.detail_json) as PrDetail;
-        if (detail.kitchenEnteredAt === undefined && detail.labels?.nodes.some((label) => label.name.trim().toLowerCase().startsWith("kitchen:"))) return true;
+        if (detail.kitchenEnteredAt === undefined && detail.labels?.nodes.some((label) => label.name.trim().toLowerCase() === "order")) return true;
       }
       // fetched_at deliberately stays put: thread resolution moves none of these fields, so only detail staleness repairs it.
       const unchanged = !!cached && cached.head_sha === hit.headRefOid && cached.updated_at === hit.updatedAt && cached.ci_status === hit.ciState;
