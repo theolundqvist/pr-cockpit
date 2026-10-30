@@ -1,6 +1,7 @@
 // Labels describe the workflow; draft state and ordinary CI do not imply kitchen activity.
 // Each stage lists the labels that mean it. A bare `order` is the request Kitchen has not yet labelled itself,
 // so it already counts as an order.
+/** @type {Array<[string[], string]>} */
 const STAGES = [
   [["kitchen: serving"], "Serving"],
   [["kitchen: baked"], "Baked"],

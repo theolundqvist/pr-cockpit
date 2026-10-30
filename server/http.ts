@@ -1,5 +1,6 @@
 import { handleWhiteboard } from "./whiteboard.ts";
 import { codeScanningAlertNumber, isCodeScanningThread, validateCodeScanningDismissal } from "../shared/codeScanning.js";
+import { cookingStage, isBurnt } from "../shared/cookingStage.js";
 import { realpath } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -14,6 +15,7 @@ import {
   listRunJobsForPrBranch,
   getBodyMedia,
   getPr,
+  getPrIndexEntry,
   getPrByBranch,
   getRanks,
   hasSafeMergeApproval,
@@ -1172,6 +1174,68 @@ async function handlePrRows(url: URL): Promise<Response> {
   const rows = Object.fromEntries(inboxRows(prs).map((row) => [prKey(row), row]));
   const viewerLogin = replicaEnabled() ? replicaViewerLogin() : await getViewerLogin().catch(() => null);
   return json({ rows, viewerLogin });
+}
+
+type PrLinkState = {
+  title: string;
+  state: "open" | "draft" | "ordered" | "merged" | "closed";
+  // Cockpit's Kitchen stage title, or "Burnt" when the order needs intervention.
+  kitchen: string | null;
+  ci: "passing" | "failing" | "running" | null;
+};
+const LINK_CI_STATES: Record<string, PrLinkState["ci"]> = {
+  SUCCESS: "passing",
+  FAILURE: "failing",
+  ERROR: "failing",
+  PENDING: "running",
+  EXPECTED: "running",
+};
+
+// Compact state for PR links shown outside Cockpit, from the cache only: tracked rows carry labels and CI,
+// and the repository index covers merged, closed and other authors' PRs. Unknown keys are omitted, never fetched.
+function handlePrStates(url: URL): Response {
+  const states: Record<string, PrLinkState> = {};
+  const defaultBranches = new Map<string, string | null>();
+  let failedMergeKeys: Set<string> | null = null;
+  for (const { key, repo, number } of bulkDetailKeys(url)) {
+    const tracked = getPr(repo, number);
+    if (tracked) {
+      const labels = labelNames(JSON.parse(tracked.detail_json));
+      if (!defaultBranches.has(repo)) defaultBranches.set(repo, mirrorDefaultBranch(repo));
+      const defaultBranch = defaultBranches.get(repo) ?? null;
+      failedMergeKeys ??= replicaEnabled() ? replicaFailedMergeKeys() : listFailedMergeKeys();
+      const pr = {
+        state: tracked.state,
+        labels,
+        mergeFailed: tracked.state === "OPEN" && failedMergeKeys.has(key),
+        baseIsDefaultBranch: defaultBranch === null ? null : tracked.base_ref === defaultBranch,
+      };
+      const open = tracked.state !== "MERGED" && tracked.state !== "CLOSED";
+      states[key] = {
+        title: tracked.title,
+        state: tracked.state === "MERGED" ? "merged"
+          : tracked.state === "CLOSED" ? "closed"
+          : ordered(labels) ? "ordered"
+          : tracked.is_draft === 1 ? "draft"
+          : "open",
+        kitchen: isBurnt(pr) ? "Burnt" : cookingStage(pr)?.title ?? null,
+        ci: open ? LINK_CI_STATES[tracked.ci_status] ?? null : null,
+      };
+      continue;
+    }
+    const indexed = getPrIndexEntry(repo, number);
+    if (!indexed) continue;
+    states[key] = {
+      title: indexed.title,
+      state: indexed.state === "MERGED" ? "merged"
+        : indexed.state === "CLOSED" ? "closed"
+        : indexed.is_draft === 1 ? "draft"
+        : "open",
+      kitchen: null,
+      ci: null,
+    };
+  }
+  return json({ states });
 }
 
 type PrSummaryCheck = { name: string; state: CheckState; required: boolean; url: string | null; logBytes: number | null };
@@ -3965,6 +4029,9 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     }
     if (req.method === "GET" && url.pathname === "/api/pr-details") {
       return url.searchParams.get("rows") === "1" ? handlePrRows(url) : handlePrDetails(url);
+    }
+    if (req.method === "GET" && url.pathname === "/api/pr-states") {
+      return handlePrStates(url);
     }
     if (
       req.method === "GET" &&

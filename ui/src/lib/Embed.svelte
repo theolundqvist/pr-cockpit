@@ -3,7 +3,7 @@
   import { clearReviewHandoff, enqueueMutation, fetchInbox, fetchPrDetail, fetchPrRows, fetchSettings, reorderPr, setArchived, setMergeApproval } from "./api.js";
   import { burstGate } from "./burstGate.js";
   import { connectEvents } from "./events.js";
-  import { cookingStage, isBurnt } from "./cookingStage.js";
+  import { cookingStage, isBurnt } from "../../../shared/cookingStage.js";
   import { inboxGroups, prStack } from "./inboxGroups.js";
   import { assignments, onAssignmentStorage, syncAssignments } from "./prAssignments.svelte.js";
   import { flash, showFlash } from "./flash.svelte.js";

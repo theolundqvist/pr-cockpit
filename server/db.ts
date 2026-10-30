@@ -1653,6 +1653,14 @@ export function prIndexCreatedAt(repo: string, number: number): string | null {
   return prIndexCreatedAtStmt.get(repo, number)?.created_at ?? null;
 }
 
+const getPrIndexStmt = db.prepare<PrIndexRow, [string, number]>(
+  "SELECT * FROM pr_index WHERE repo = ? AND number = ?",
+);
+
+export function getPrIndexEntry(repo: string, number: number): PrIndexRow | null {
+  return getPrIndexStmt.get(repo, number) ?? null;
+}
+
 const listPrIndexStmt = db.prepare<PrIndexRow, []>(
   "SELECT * FROM pr_index ORDER BY updated_at DESC",
 );

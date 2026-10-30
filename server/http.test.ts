@@ -2402,6 +2402,51 @@ describe("PR rows", () => {
   });
 });
 
+describe("PR states", () => {
+  test("answers a batch of PR links from tracked rows and the repository index without fetching", async () => {
+    const repo = "cockpit-test/pr-states";
+    const fetchedAt = new Date().toISOString();
+    const tracked = (number: number, fields: Record<string, unknown>, labels: string[] = []) => {
+      const row = { ...trackedPrRow({ repo, number, fetchedAt }), ...fields };
+      row.detail_json = JSON.stringify({ ...JSON.parse(row.detail_json), labels: { nodes: labels.map((name) => ({ name })) } });
+      upsertPr(row);
+    };
+    tracked(1, { title: "open", ci_status: "SUCCESS" });
+    tracked(2, { title: "draft", state: "draft", is_draft: 1, ci_status: "PENDING" });
+    tracked(3, { title: "ordered", ci_status: "FAILURE" }, ["kitchen: oven"]);
+    tracked(4, { title: "burnt" }, ["kitchen: burnt"]);
+    const indexed = { repo, author: "octocat", updatedAt: "2026-07-25T00:00:00Z", isDraft: false };
+    upsertPrIndex([
+      { ...indexed, number: 5, title: "merged", state: "MERGED", mergedAt: "2026-07-25T00:00:00Z" },
+      { ...indexed, number: 6, title: "closed", state: "CLOSED", closedAt: "2026-07-25T00:00:00Z" },
+    ]);
+    let githubReads = 0;
+    const handler = buildFetchHandler(4820, {
+      fetchPrDetail: async () => { githubReads++; throw new Error("no GitHub reads"); },
+      refreshPr: async () => { githubReads++; },
+    });
+
+    try {
+      const keys = [1, 2, 3, 4, 5, 6, 7].map((number) => `${repo}#${number}`).concat("not-a-key");
+      const response = await handler(new Request(`http://127.0.0.1:4820/api/pr-states?keys=${encodeURIComponent(keys.join(","))}`));
+      expect(await response.json()).toEqual({
+        states: {
+          [`${repo}#1`]: { title: "open", state: "open", kitchen: null, ci: "passing" },
+          [`${repo}#2`]: { title: "draft", state: "draft", kitchen: null, ci: "running" },
+          [`${repo}#3`]: { title: "ordered", state: "ordered", kitchen: "In the oven", ci: "failing" },
+          [`${repo}#4`]: { title: "burnt", state: "ordered", kitchen: "Burnt", ci: "passing" },
+          [`${repo}#5`]: { title: "merged", state: "merged", kitchen: null, ci: null },
+          [`${repo}#6`]: { title: "closed", state: "closed", kitchen: null, ci: null },
+        },
+      });
+      expect(githubReads).toBe(0);
+    } finally {
+      db.query("DELETE FROM prs WHERE repo = ?").run(repo);
+      db.query("DELETE FROM pr_index WHERE repo = ?").run(repo);
+    }
+  });
+});
+
 describe("PR description media", () => {
   test("lists every stored description attachment in order, beyond the three a row carries", async () => {
     const repo = "cockpit-test/description-media";

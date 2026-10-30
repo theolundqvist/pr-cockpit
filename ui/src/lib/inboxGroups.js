@@ -1,5 +1,5 @@
 import { categoryForPr, orderQueueUnits, PR_TYPES, TYPE_TITLES } from "../../../shared/prGrouping.ts";
-import { cookingStage, isBurnt } from "./cookingStage.js";
+import { cookingStage, isBurnt } from "../../../shared/cookingStage.js";
 import { isApprovedForSafeMerge } from "./prRowActions.js";
 import { prKey } from "./prKey.js";
 import { sortByTime } from "./prTime.js";

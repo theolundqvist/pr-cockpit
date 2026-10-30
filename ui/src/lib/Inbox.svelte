@@ -8,7 +8,7 @@
 
 <script>
   import KitchenNotifications from "./KitchenNotifications.svelte";
-  import { cookingStage } from "./cookingStage.js";
+  import { cookingStage } from "../../../shared/cookingStage.js";
   import { inboxGroupId, inboxGroups, prStack, topUnit as topUnitOf } from "./inboxGroups.js";
   import { coalescedRefresh } from "./coalescedRefresh.js";
   import { normalizePrGrouping, orderQueueUnits, planGroupDrop } from "../../../shared/prGrouping.ts";

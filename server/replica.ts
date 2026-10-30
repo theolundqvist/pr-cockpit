@@ -24,6 +24,7 @@ const LOCAL_API_PATHS = new Set([
   "/api/inbox",
   "/api/closed",
   "/api/pr-details",
+  "/api/pr-states",
   "/api/repo-users",
   "/api/settings",
   "/api/notifications/claim",
