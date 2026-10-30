@@ -1,4 +1,5 @@
 <script>
+  import HistoryGesture from "./lib/HistoryGesture.svelte";
   import SetAsideTray from "./lib/SetAsideTray.svelte";
   import Inbox from "./lib/Inbox.svelte";
   import PrDetail from "./lib/PrDetail.svelte";
@@ -439,6 +440,7 @@
     {/if}
 
     <SetAsideTray />
+    <HistoryGesture />
     <Palette />
     {#if prefs.quickGenerateEnabled}<QuickGenerate />{/if}
     {#if prefs.askViewEnabled}<AskView {route} />{/if}

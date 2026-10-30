@@ -2,6 +2,7 @@ import { kitchenCancelScenarios } from "./kitchen-cancel-scenarios.mjs";
 import { commentStabilityScenario } from "./comment-stability-scenarios.mjs";
 import { scrollPerformanceScenario } from "./scroll-performance-scenarios.mjs";
 import { changeSummaryScenario } from "./change-summary-scenarios.mjs";
+import { historyGestureScenario } from "./history-gesture-scenarios.mjs";
 import { cookingScenarios, readyForReviewScenario } from "./cooking-scenarios.mjs";
 import { groupingScenarios } from "./grouping-scenarios.mjs";
 import { createServer } from "node:net";
@@ -283,6 +284,7 @@ const scenarios = [
   commentStabilityScenario(),
   scrollPerformanceScenario(),
   changeSummaryScenario(),
+  historyGestureScenario(),
   inboxRefreshBurstScenario(),
   ...[false, true].map((expanded) => ({
     name: `inbox-filter-panel-${expanded ? "expanded" : "collapsed"}`,

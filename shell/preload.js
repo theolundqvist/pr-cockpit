@@ -1,6 +1,14 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("cockpitShell", {
+  trackpadNavigationSupported: process.platform === "darwin",
+  onTrackpadNavigationPhase: (callback) => {
+    const listener = (_event, phase) => {
+      if (["begin", "end", "cancel"].includes(phase)) callback(phase);
+    };
+    ipcRenderer.on("cockpit:trackpad-phase", listener);
+    return () => ipcRenderer.removeListener("cockpit:trackpad-phase", listener);
+  },
   openEditor: (repo, number, target, headSha) => ipcRenderer.invoke("cockpit:open-editor", { repo, number, target, headSha }),
   prepareEditor: (repo, number, headSha) => ipcRenderer.invoke("cockpit:prepare-editor", { repo, number, headSha }),
   finishEditor: (sessionId) => ipcRenderer.invoke("cockpit:finish-editor", sessionId),

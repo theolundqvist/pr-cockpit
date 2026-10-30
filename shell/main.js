@@ -10,6 +10,7 @@ const { getNativePalette } = require("./nativePalette");
 const { configuredShortcuts, platformPolicy } = require("./platformPolicy");
 const { deepLinkHash, protocolAction, protocolArgFromArgv } = require("./protocolArgv");
 const { createShellProcessOwnership } = require("./shellProcessOwnership");
+const { attachTrackpadNavigation } = require("./trackpadNavigation");
 app.setName("PR Cockpit");
 const desktopPolicy = platformPolicy();
 if (desktopPolicy.desktopName) app.setDesktopName(desktopPolicy.desktopName);
@@ -292,6 +293,7 @@ if (!app.requestSingleInstanceLock()) {
       show: false,
     });
     extraWindows.add(extra);
+    attachTrackpadNavigation(extra);
     attachZoomShortcuts(extra);
     extra.once("ready-to-show", () => {
       extra.show();
@@ -578,6 +580,7 @@ if (!app.requestSingleInstanceLock()) {
       show: false,
     });
 
+    attachTrackpadNavigation(win);
     win.once("ready-to-show", () => {
       mainWindowReadyToShow = true;
       if (!startHidden || pendingMainShow) showMainWindow();
