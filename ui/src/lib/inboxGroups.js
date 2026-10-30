@@ -66,16 +66,16 @@ function orderGroup(stack, rows, sortUnits = (units) => units) {
 
 // The inbox's section for one PR. `options`: `stack` from prStack, `grouping` (normalized pr_grouping),
 // `assignments` (manual groups by root key), `viewerLogin`, `cooking` (Kitchen sections active),
-// `readyReview` (agent handoffs get their own section), and `safeMergeApproval`.
-// A burnt Kitchen order or failed merge outranks approval, pinning, and grouping; stacks never pull either
-// under a healthy ancestor. An agent's ready-for-review handoff sits just below Burnt and places only its own PR.
-// Cooking labels place only their own PR; pins and approvals retain their saved state.
-// Approval places only its own PR, never the stack beneath it.
+// `readyReview` (marked-ready handoffs get their own section), and `safeMergeApproval`.
+// A burnt Kitchen order, active Kitchen stage, or failed merge outranks a marked-ready handoff,
+// approval, pinning, and grouping; stacks never pull either under a healthy ancestor. Kitchen labels
+// place only their own PR, so removing the order releases it to its remaining state.
+// Pins and approvals retain their saved state; approval places only its own PR, never the stack beneath it.
 export function inboxGroupId(pr, options) {
   if (options.cooking && isBurnt(pr)) return "burnt";
+  if (options.cooking && cookingStage(pr)) return "cooking";
   if (options.readyReview && pr.readyForReview === true) return "ready-review";
   if (pr.mergeFailed === true) return "merge-failed";
-  if (options.cooking && cookingStage(pr)) return "cooking";
   if (isApprovedForSafeMerge(pr, options.safeMergeApproval)) return "approved";
   if (pr.rank != null) return "pinned";
   const root = topUnit(options.stack, pr);
@@ -133,7 +133,7 @@ export function inboxGroups(prs, options) {
   }
   if (ready.length) {
     // A handoff has no saved order of its own: pins keep their rank but draw no divider here.
-    leading.push({ id: "ready-review", title: "Ready for review", units: [], unrankedCount: 0, items: [...sortUnits(ready)].map((pr) => ({ pr })) });
+    leading.push({ id: "ready-review", title: "Marked ready", units: [], unrankedCount: 0, items: [...sortUnits(ready)].map((pr) => ({ pr })) });
   }
   if (failed.length) {
     const { units, unrankedCount, items } = orderGroup(stack, failed, sortUnits);

@@ -28,8 +28,8 @@ export function prRowActions(pr, host) {
   if (view === "open" && (approved || (approvalEnabled && !archived && isOpenPr(pr)))) {
     add("approve", approved ? "Revoke safe-merge approval" : "Approve for safe merge", host.approve);
   }
-  // An agent hands a PR over for review; the reviewer can only withdraw that handoff here.
-  if (pr.readyForReview === true) add("clear-ready", "Clear ready for review", host.clearReady, "n");
+  // An agent hands a PR over as marked ready; the reviewer can only withdraw that handoff here.
+  if (pr.readyForReview === true) add("clear-ready", "Clear marked ready", host.clearReady, "n");
   if (view === "open") add("archive", archived ? "Unarchive" : "Archive", host.archive, "e");
   add("set-aside", "Set aside", host.setAside, "b");
   add("remind", "Remind me…", host.remind, "h");

@@ -31,7 +31,7 @@ Mutation commands:
   close                close the PR
   pin, unpin           bookmark or unbookmark the PR in Cockpit's pinned order
   mark-ready, unmark-ready
-                       queue the verified current head in Cockpit's Ready for review section, or withdraw it
+                       queue the verified current head in Cockpit's Marked ready section, or withdraw it
   edit-body            replace the PR body from --body-file
   edit-title           replace the PR title with one quoted positional argument
   auto-merge           enable or disable GitHub auto-merge

@@ -232,17 +232,17 @@ export function readyForReviewScenario() {
     interact: async (page) => {
       const row = page.locator(".queue-group").nth(1).locator(".row").first();
       await row.click({ button: "right" });
-      await page.getByRole("menuitem", { name: /^Clear ready for review/ }).waitFor();
+      await page.getByRole("menuitem", { name: /^Clear marked ready/ }).waitFor();
       await page.keyboard.press("Escape");
       await page.locator(".head-title").click();
     },
     verify: async (page) => {
       const sections = await page.locator(".queue-group .group-label").evaluateAll((labels) => labels.map((label) => label.textContent.replace(/\s+/g, " ").trim()));
-      const expected = ["Burnt 1", "Ready for review 1", "FAILED TO MERGE 1", "Approved for safe merge 1"];
-      if (sections.slice(0, 4).join("|") !== expected.join("|")) throw new Error(`Ready for review is not directly below Burnt: ${sections}`);
+      const expected = ["Burnt 1", "Marked ready 1", "FAILED TO MERGE 1", "Approved for safe merge 1"];
+      if (sections.slice(0, 4).join("|") !== expected.join("|")) throw new Error(`Marked ready is not directly below Burnt: ${sections}`);
       if (!sections.some((section) => section.startsWith("Cooking"))) throw new Error(`Cooking section missing: ${sections}`);
-      if ((await page.locator(".queue-group").nth(1).locator(".num").allTextContents()).join() !== "#512") throw new Error("Ready for review rows are wrong");
-      if (await page.locator(".queue-list .num").getByText("#512", { exact: true }).count() !== 1) throw new Error("Ready PR is repeated in another section");
+      if ((await page.locator(".queue-group").nth(1).locator(".num").allTextContents()).join() !== "#512") throw new Error("Marked ready rows are wrong");
+      if (await page.locator(".queue-list .num").getByText("#512", { exact: true }).count() !== 1) throw new Error("Marked-ready PR is repeated in another section");
     },
   };
 }

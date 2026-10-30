@@ -109,7 +109,7 @@
         {#if burnt}
           <span class="cooking-stage burnt" title="kitchen: burnt — needs intervention">Burnt</span>
         {:else if cooking}
-          <span class="cooking-stage" title={cooking.label}>{cooking.title}</span>
+          <span class="cooking-stage" title={cooking.label}><span class="cooking-indicator" aria-hidden="true"></span>{cooking.title}</span>
           {#if Number.isFinite(kitchenStart)}
             <span class="kitchen-duration" title={`In Kitchen since ${new Date(kitchenStart).toLocaleString()}`}>{kitchenDuration} in Kitchen</span>
           {/if}
@@ -163,8 +163,8 @@
 
 <style>
   .kitchen-duration { flex-shrink: 0; color: var(--text-dim); }
-  .cooking-stage { color: var(--text); border: 1px solid color-mix(in srgb, #d99a39 45%, transparent); background: color-mix(in srgb, #d99a39 10%, transparent); border-radius: 4px; padding: 1px 5px; }
-  .cooking-stage.burnt { color: var(--fail); border-color: color-mix(in srgb, var(--fail) 45%, transparent); background: var(--fail-bg); }
+  .cooking-stage { display: inline-flex; align-items: center; gap: 5px; color: var(--text); border: 1px solid color-mix(in srgb, #d99a39 45%, transparent); background: color-mix(in srgb, #d99a39 10%, transparent); border-radius: 4px; padding: 1px 5px; }
+  .cooking-indicator { width: 7px; height: 7px; border-radius: 50%; background: #d99a39; flex-shrink: 0; }
   .archived-row {
     opacity: 0.5;
   }
@@ -462,7 +462,10 @@
   }
   .row-badge-slot {
     display: flex;
-    flex: 0 0 88px;
+    flex: 0 0 120px;
+    width: 120px;
+    min-width: 120px;
+    max-width: 120px;
     align-items: flex-start;
     margin-top: 2px;
   }

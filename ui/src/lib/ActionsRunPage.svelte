@@ -1,6 +1,7 @@
 <script>
   import ActionStatusIcon from "./ActionStatusIcon.svelte";
   import ActionsView from "./ActionsView.svelte";
+  import { actionsRunDestination } from "./githubLinks.js";
   import { prefetchRepoRun, rememberedActionRun, rememberActionRun } from "./actionPrefetch.js";
   import { fetchRepoActions, rerunFailedActionJobs } from "./api.js";
   import { isTypingTarget } from "./dom.js";
@@ -47,15 +48,19 @@
     void fetchRepoActions({ repo: [repo], runId }, controller.signal).then(
       (snapshot) => {
         if (key !== `${repo}:${runId}`) return;
-        run = snapshot.selectedRun;
+        run = snapshot.selectedRun ?? remembered;
         if (run) {
           rememberActionRun(run);
           prefetchRepoRun(run);
+        } else {
+          error = "Workflow run not found";
+          window.location.replace(actionsRunDestination(repo, runId, false));
         }
-        error = run ? "" : "Workflow run not found";
       },
       (nextError) => {
-        if (!controller.signal.aborted) error = nextError instanceof Error ? nextError.message : String(nextError);
+        if (controller.signal.aborted) return;
+        error = nextError instanceof Error ? nextError.message : String(nextError);
+        if (!run) window.location.replace(actionsRunDestination(repo, runId, false));
       },
     ).finally(() => {
       if (!controller.signal.aborted) loading = false;

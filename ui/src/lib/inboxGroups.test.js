@@ -38,12 +38,23 @@ test("Kitchen and handoff sections lead the user's type sections, with Cooking l
   ];
   expect(groupsOf(prs)).toEqual([
     ["burnt", "Burnt", [4]],
-    ["ready-review", "Ready for review", [5]],
+    ["ready-review", "Marked ready", [5]],
     ["pinned", "Pinned", [6]],
     ["type:feat", "Features", [3]],
     ["type:fix", "Fixes", [1]],
     ["cooking", "Cooking", [2, 7]],
   ]);
+});
+
+test("Kitchen takes precedence over a marked-ready handoff and releases it when removed", () => {
+  const ordered = pr(8, "feat: ordered handoff", {
+    readyForReview: true,
+    approvedForSafeMerge: true,
+    rank: 0,
+    labels: [{ name: "kitchen: chef" }],
+  });
+  expect(groupsOf([ordered])).toEqual([["cooking", "Cooking", [8]]]);
+  expect(groupsOf([{ ...ordered, labels: [] }])).toEqual([["ready-review", "Marked ready", [8]]]);
 });
 
 test("without the Kitchen section, labelled PRs fall back to their grouping", () => {

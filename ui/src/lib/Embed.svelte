@@ -285,7 +285,7 @@
         await reorderPr(target.repo, target.number, target.rank != null ? null : await nextPinRank());
         refreshRow(target);
       }),
-      clearReady: (target) => failSoft("clear ready for review", async () => {
+      clearReady: (target) => failSoft("clear marked ready", async () => {
         await clearReviewHandoff(target.repo, target.number);
         refreshRow(target);
       }),

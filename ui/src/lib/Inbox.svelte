@@ -252,9 +252,9 @@
   async function clearReady(pr) {
     try {
       await clearReviewHandoff(pr.repo, pr.number);
-      showFlash(`Cleared ready for review on #${pr.number}.`);
+      showFlash(`Cleared marked ready on #${pr.number}.`);
     } catch (error) {
-      showFlash(`Couldn't clear ready for review on #${pr.number}: ${error instanceof Error ? error.message : String(error)}`);
+      showFlash(`Couldn't clear marked ready on #${pr.number}: ${error instanceof Error ? error.message : String(error)}`);
     }
     await loadInbox();
   }
@@ -1201,7 +1201,7 @@
       return keys;
     }
     if (pr) keys.push({ key: "s", label: pr.rank == null ? "pin" : "unpin" });
-    if (pr?.readyForReview === true) keys.push({ key: "n", label: "clear ready" });
+    if (pr?.readyForReview === true) keys.push({ key: "n", label: "clear marked ready" });
     if (pr) keys.push({ key: "e", label: isArchived(pr) ? "unarchive" : "archive" });
     keys.push({ key: "A", label: showArchived ? "hide archived" : "archived" });
     keys.push({ key: "Tab", label: "all PRs" });
