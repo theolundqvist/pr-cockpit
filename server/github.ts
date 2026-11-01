@@ -2547,6 +2547,8 @@ type PrDetailShape<Rx> = {
   headRepository?: { nameWithOwner: string } | null;
   headRefOid: string;
   body: string;
+  // absent from REST fallbacks and snapshots cached before it was fetched; null while the body was never edited
+  lastEditedAt?: string | null;
   additions: number;
   deletions: number;
   changedFiles: number;
@@ -2769,6 +2771,7 @@ query($owner: String!, $name: String!, $number: Int!) {
       headRepository { nameWithOwner }
       headRefOid
       body
+      lastEditedAt
       additions
       deletions
       changedFiles

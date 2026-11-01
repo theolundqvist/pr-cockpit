@@ -466,7 +466,7 @@ function sameGithubText(left: string, right: string): boolean {
   return left.replaceAll("\r\n", "\n").trimEnd() === right.replaceAll("\r\n", "\n").trimEnd();
 }
 
-function mutationReflected(row: Pick<MutationRow, "repo" | "number" | "payload_json">): boolean {
+function mutationReflected(row: Pick<MutationRow, "repo" | "number" | "payload_json" | "created_at">): boolean {
   const payload: unknown = JSON.parse(row.payload_json);
   assertMutationPayload(payload);
   if (payload.kind !== "comment" && payload.kind !== "edit-body" && payload.kind !== "resolve-thread") return true;
@@ -479,9 +479,14 @@ function mutationReflected(row: Pick<MutationRow, "repo" | "number" | "payload_j
     const thread = detail.reviewThreads?.nodes.find((candidate) => candidate.id === payload.threadId);
     return !thread || thread.isResolved === payload.resolved;
   }
-  // A republished description may legitimately differ, so a task edit confirms by its tasks' states.
+  // A republished description may legitimately differ, so a task edit confirms by its tasks' states. A whole-body
+  // edit also confirms once GitHub records a later edit: a newer description replaced it, while a stale read still
+  // carries the edit time from before this mutation was queued.
   if (payload.kind === "edit-body") {
-    if (!payload.tasks) return sameGithubText(detail.body, payload.body);
+    if (!payload.tasks) {
+      return sameGithubText(detail.body, payload.body)
+        || (!!detail.lastEditedAt && Date.parse(detail.lastEditedAt) > Date.parse(row.created_at));
+    }
     const { body, missing } = setTasksByKey(detail.body, payload.tasks);
     return !missing.length && body === detail.body;
   }
@@ -505,7 +510,7 @@ const mutationCompletionDependencies: MutationCompletionDependencies = {
 };
 
 export async function finalizeMutation(
-  row: Pick<MutationRow, "id" | "repo" | "number" | "kind" | "payload_json">,
+  row: Pick<MutationRow, "id" | "repo" | "number" | "kind" | "payload_json" | "created_at">,
   merged: boolean,
   dependencies = mutationCompletionDependencies,
 ): Promise<void> {

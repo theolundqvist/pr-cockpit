@@ -74,10 +74,17 @@ test("applied mutations remain pending through refresh without becoming retryabl
     const refreshFailureRow = insert(103);
     await processMutation(refreshFailureRow, dependencies(async () => { throw new Error("refresh unavailable"); }));
     const refreshFailure = db.listMutationsForPr(repo, 103)[0];
-    cache(106, { body: "old body", comments: { nodes: [] } });
+    // A stale read carries the edit time from before the mutation was queued.
+    cache(106, { body: "old body", lastEditedAt: "2026-01-01T00:00:00Z", comments: { nodes: [] } });
     const unconfirmedEditRow = insert(106, { kind: "edit-body", body: "new body" });
     await processMutation(unconfirmedEditRow, dependencies(async () => {}));
     const unconfirmedEdit = db.listMutationsForPr(repo, 106)[0];
+    // A later description edit replaced the accepted one, so nothing remains to confirm.
+    const supersededEditRow = insert(113, { kind: "edit-body", body: "replaced body" });
+    await processMutation(supersededEditRow, dependencies(async () => {
+      cache(113, { body: "later body", lastEditedAt: new Date(Date.now() + 1_000).toISOString(), comments: { nodes: [] } });
+    }));
+    const supersededEditCount = db.listMutationsForPr(repo, 113).length;
     cache(112, { body: "body", comments: { nodes: [] }, reviewThreads: { nodes: [{ id: "thread-1", isResolved: false }] } });
     const unconfirmedResolveRow = insert(112);
     await processMutation(unconfirmedResolveRow, dependencies(async () => {}));
@@ -139,6 +146,7 @@ test("applied mutations remain pending through refresh without becoming retryabl
       scheduledRetryId: scheduledRetry.id,
       refreshFailure: { state: refreshFailure?.state, error: refreshFailure?.error },
       unconfirmedEdit: { state: unconfirmedEdit?.state, error: unconfirmedEdit?.error },
+      supersededEditCount,
       unconfirmedResolve: { state: unconfirmedResolve?.state, error: unconfirmedResolve?.error },
       confirmedCommentCount,
       freshEditCount, publishedBody,
@@ -176,6 +184,7 @@ test("applied mutations remain pending through refresh without becoming retryabl
     expect(result.scheduledRetryId).toBeGreaterThan(0);
     expect(result.refreshFailure).toEqual({ state: "refreshing", error: "GitHub accepted resolve-thread, but cache refresh failed: refresh unavailable" });
     expect(result.unconfirmedEdit).toEqual({ state: "refreshing", error: "GitHub accepted edit-body, but cache refresh failed: refreshed cache does not contain the accepted change" });
+    expect(result.supersededEditCount).toBe(0);
     expect(result.unconfirmedResolve).toEqual({ state: "refreshing", error: "GitHub accepted resolve-thread, but cache refresh failed: refreshed cache does not contain the accepted change" });
     expect(result.confirmedCommentCount).toBe(0);
     expect(result.freshEditCount).toBe(0);
