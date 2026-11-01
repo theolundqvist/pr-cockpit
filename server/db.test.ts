@@ -167,8 +167,9 @@ test("older refreshes cannot replace newer pull request snapshots", async () => 
     replica.prs = [];
     replaceInboxReplica(replica);
     const replicaEvicted = getCachedPrDetail(repo, 1);
+    const replicaRemoved = getPr(repo, 1);
     upsertPr(base);
-    console.log(JSON.stringify({ tracked: getPr(repo, 1), cached: getCachedPrDetail(repo, 2), evictedCache: getCachedPrDetail(repo, 3), freshCacheAt, replicaTracked, replicaEvicted }));
+    console.log(JSON.stringify({ tracked: getPr(repo, 1), cached: getCachedPrDetail(repo, 2), evictedCache: getCachedPrDetail(repo, 3), freshCacheAt, replicaTracked, replicaEvicted, replicaRemoved }));
     db.close();
   `;
 
@@ -190,6 +191,7 @@ test("older refreshes cannot replace newer pull request snapshots", async () => 
     expect(result.evictedCache).toMatchObject({ head_sha: "new-head", detail_json: JSON.stringify({ title: "new cache" }), fetched_at: result.freshCacheAt });
     expect(result.replicaTracked).toMatchObject({ title: "new", fetched_at: "2026-09-05T12:50:15.868Z" });
     expect(result.replicaEvicted).toMatchObject({ detail_json: JSON.stringify({ title: "new" }), fetched_at: "2026-09-05T12:50:15.868Z" });
+    expect(result.replicaRemoved).toBeNull();
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }

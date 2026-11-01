@@ -2345,25 +2345,30 @@ const replaceInboxReplicaTxn = db.transaction((snapshot: InboxReplica) => {
   // Inbox membership is authoritative, but removing/replacing a tracked row must
   // not discard the newest detail already observed by this replica.
   preservePrDetails("1", []);
-  const previousPrs = new Map(listPrs().map((row) => [`${row.repo}#${row.number}`, row]));
-  // Creation time never changes, so a source that has not learned it (or predates the column) cannot erase it.
-  const previousCreatedAt = new Map(
-    db.query<{ repo: string; number: number; created_at: string }, []>(
-      "SELECT repo, number, created_at FROM pr_index WHERE created_at IS NOT NULL",
-    ).all().map((row) => [`${row.repo}#${row.number}`, row.created_at]),
-  );
+  // Snapshots arrive every few seconds and mostly repeat the last one, so only changed rows are written: rewriting
+  // every table blocked the server for most of each sync.
   for (const table of REPLICA_TABLES) {
-    const columns = db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().map((column) => column.name);
-    const insert = db.prepare(`INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`);
-    db.exec(`DELETE FROM ${table}`);
+    const info = db.query<{ name: string; pk: number }, []>(`PRAGMA table_info(${table})`).all();
+    const columns = info.map((column) => column.name);
+    const keys = info.filter((column) => column.pk > 0).sort((a, b) => a.pk - b.pk).map((column) => column.name);
+    const keyOf = (row: Record<string, unknown>) => JSON.stringify(keys.map((key) => row[key]));
+    const current = new Map(db.query<Record<string, unknown>, []>(`SELECT * FROM ${table}`).all().map((row) => [keyOf(row), row]));
+    const upsert = db.prepare(`INSERT OR REPLACE INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`);
+    const remove = db.prepare(`DELETE FROM ${table} WHERE ${keys.map((key) => `${key} = ?`).join(" AND ")}`);
     for (const row of snapshot[table]) {
-      const previous = table === "prs" ? previousPrs.get(`${row.repo}#${row.number}`) : undefined;
-      let next = (previous && previous.fetched_at > String(row.fetched_at) ? previous : row) as Record<string, unknown>;
+      const key = keyOf(row);
+      const previous = current.get(key);
+      current.delete(key);
+      let next = (table === "prs" && previous && String(previous.fetched_at) > String(row.fetched_at) ? previous : row) as Record<string, unknown>;
+      // Creation time never changes, so a source that has not learned it (or predates the column) cannot erase it.
       if (table === "pr_index" && typeof row.created_at !== "string") {
-        next = { ...row, created_at: previousCreatedAt.get(`${row.repo}#${row.number}`) ?? null };
+        next = { ...row, created_at: typeof previous?.created_at === "string" ? previous.created_at : null };
       }
-      insert.run(...columns.map((column) => replicaBinding(next[column] ?? null)));
+      const values = columns.map((column) => replicaBinding(next[column] ?? null));
+      if (previous && columns.every((column, index) => previous[column] === values[index])) continue;
+      upsert.run(...values);
     }
+    for (const row of current.values()) remove.run(...keys.map((key) => replicaBinding(row[key])));
   }
   // An older source's index lacks the column even though its tracked details, now in prs, carry the time.
   db.exec(BACKFILL_PR_INDEX_CREATED_AT_SQL);
