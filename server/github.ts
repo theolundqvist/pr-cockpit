@@ -1483,8 +1483,9 @@ export interface SearchHit {
 // queued runs it answers PENDING where the detail query sees FAILURE, and the mismatch
 // refreshed such PRs on every poll. Selecting one context makes both agree at the same cost.
 const SEARCH_QUERY = `
-query($searchQuery: String!) {
-  search(query: $searchQuery, type: ISSUE, first: 50) {
+query($searchQuery: String!, $after: String) {
+  search(query: $searchQuery, type: ISSUE, first: 50, after: $after) {
+    pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
         number
@@ -1506,30 +1507,40 @@ function repositorySearchUnavailable(error: unknown): error is GithubRequestErro
     || /repositories cannot be searched/i.test(error.message);
 }
 
+// GitHub search returns at most 1,000 results; past that the inbox is incomplete.
+const SEARCH_RESULT_LIMIT = 1000;
+
 async function searchOpenPrsGraphql(searchQuery: string): Promise<SearchHit[]> {
-  const data = await graphql<{
-    search: {
-      nodes: Array<{
-        number: number;
-        title: string;
-        updatedAt: string;
-        headRefOid: string;
-        repository: { nameWithOwner: string };
-        commits: { nodes: Array<{ commit: { statusCheckRollup: { state: string } | null } }> };
-      }>;
-    };
-  }>(SEARCH_QUERY, { searchQuery }, "background poll", "open PR search");
-  if (data.search.nodes.length === 50) {
-    console.warn(`search hit the 50-result cap, PRs may be missing: ${searchQuery}`);
-  }
-  return data.search.nodes.map((node) => ({
-    repo: node.repository.nameWithOwner,
-    number: node.number,
-    title: node.title,
-    updatedAt: node.updatedAt,
-    headRefOid: node.headRefOid,
-    ciState: node.commits.nodes[0]?.commit.statusCheckRollup?.state ?? "NONE",
-  }));
+  const hits: SearchHit[] = [];
+  let after: string | null = null;
+  do {
+    const data: {
+      search: {
+        pageInfo: { hasNextPage: boolean; endCursor: string | null };
+        nodes: Array<{
+          number: number;
+          title: string;
+          updatedAt: string;
+          headRefOid: string;
+          repository: { nameWithOwner: string };
+          commits: { nodes: Array<{ commit: { statusCheckRollup: { state: string } | null } }> };
+        }>;
+      };
+    } = await graphql(SEARCH_QUERY, { searchQuery, after }, "background poll", "open PR search");
+    for (const node of data.search.nodes) {
+      hits.push({
+        repo: node.repository.nameWithOwner,
+        number: node.number,
+        title: node.title,
+        updatedAt: node.updatedAt,
+        headRefOid: node.headRefOid,
+        ciState: node.commits.nodes[0]?.commit.statusCheckRollup?.state ?? "NONE",
+      });
+    }
+    after = data.search.pageInfo.hasNextPage ? data.search.pageInfo.endCursor : null;
+  } while (after !== null && hits.length < SEARCH_RESULT_LIMIT);
+  if (after !== null) console.warn(`search hit GitHub's ${SEARCH_RESULT_LIMIT}-result limit, PRs may be missing: ${searchQuery}`);
+  return hits;
 }
 
 // Head and CI for a PR whose update time is unchanged, when something other than the poll keeps them current.

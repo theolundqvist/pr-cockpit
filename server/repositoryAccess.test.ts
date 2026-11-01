@@ -22,7 +22,7 @@ test("an inaccessible repository is isolated and skipped until retry", async () 
         if (query.includes("repo:acme/private")) {
           return Response.json({ errors: [{ type: "VALIDATION", message: "The listed users and repositories cannot be searched because you do not have permission." }] });
         }
-        return Response.json({ data: { search: { nodes: [{
+        return Response.json({ data: { search: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{
           number: 7,
           title: "Visible pull request",
           updatedAt: "2026-09-22T00:00:00Z",
@@ -66,6 +66,52 @@ test("an inaccessible repository is isolated and skipped until retry", async () 
       issue: { kind: "repository-access", repo: "acme/private" },
       availableAfterRetry: true,
     });
+  } finally {
+    rmSync(fakeGhDir, { recursive: true, force: true });
+  }
+});
+
+test("open PRs past the first search page stay in the inbox", async () => {
+  const fakeGhDir = mkdtempSync(join(tmpdir(), "pr-cockpit-search-pages-"));
+  const fakeGh = join(fakeGhDir, "gh");
+  writeFileSync(fakeGh, "#!/bin/sh\nprintf 'fixture-token\\n'\n");
+  chmodSync(fakeGh, 0o755);
+  try {
+    const script = `
+      const github = await import(${JSON.stringify(githubModuleUrl)});
+      const node = (number) => ({
+        number,
+        title: "PR " + number,
+        updatedAt: "2026-09-22T00:00:00Z",
+        headRefOid: "a".repeat(40),
+        repository: { nameWithOwner: "acme/busy" },
+        commits: { nodes: [{ commit: { statusCheckRollup: null } }] },
+      });
+      const pages = [
+        { pageInfo: { hasNextPage: true, endCursor: "c1" }, nodes: Array.from({ length: 50 }, (_, index) => node(index + 1)) },
+        { pageInfo: { hasNextPage: false, endCursor: "c2" }, nodes: [node(51), node(52)] },
+      ];
+      const cursors = [];
+      globalThis.fetch = async (_input, init) => {
+        const { after } = JSON.parse(init.body).variables;
+        cursors.push(after ?? null);
+        return Response.json({ data: { search: after === "c1" ? pages[1] : pages[0] } });
+      };
+      const hits = await github.searchOpenPrs(["acme/busy"]);
+      console.log(JSON.stringify({ count: hits.length, last: hits.at(-1)?.number, cursors }));
+    `;
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", "-e", script], {
+      env: { ...Bun.env, COCKPIT_GH_BIN: fakeGh, COCKPIT_MOCK: "", COCKPIT_MOCK_DATA: "" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      process.exited,
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+    ]);
+    expect(exitCode, stderr).toBe(0);
+    expect(JSON.parse(stdout)).toEqual({ count: 52, last: 52, cursors: [null, "c1"] });
   } finally {
     rmSync(fakeGhDir, { recursive: true, force: true });
   }

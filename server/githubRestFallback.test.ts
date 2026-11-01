@@ -300,7 +300,7 @@ test("GraphQL's own quota reading, not /rate_limit's, moves background reads to 
           if (rateLimited) return Response.json({ errors: [{ type: "RATE_LIMIT", message: "API rate limit already exceeded" }] }, { headers });
           return Response.json({ data: {
             __prCockpitRateLimit: { cost: 1, used: 5000 - graphqlRemaining, remaining: graphqlRemaining, resetAt: new Date(reset * 1000).toISOString() },
-            search: { nodes: [] },
+            search: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
           } }, { headers });
         }
         if (url.pathname === "/search/issues") {
