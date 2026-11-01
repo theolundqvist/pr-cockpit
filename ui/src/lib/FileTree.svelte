@@ -100,11 +100,16 @@
     return iconByExtension[name.split(".").pop().toLowerCase()] ?? "file";
   }
 
+  function scrollGeometry(root) {
+    const rootRect = root.getBoundingClientRect();
+    const scale = rootRect.height / root.offsetHeight || 1;
+    return { rootRect, scale, treeTop: (treeEl.getBoundingClientRect().top - rootRect.top) / scale + root.scrollTop };
+  }
+
   function updateWindow() {
     if (!treeEl) return;
     const root = treeEl.parentElement;
-    const treeTop = treeEl.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop;
-    const top = Math.max(0, root.scrollTop - treeTop);
+    const top = Math.max(0, root.scrollTop - scrollGeometry(root).treeTop);
     const start = Math.max(0, Math.floor(top / ROW_HEIGHT) - OVERSCAN);
     const end = Math.min(rows.length, Math.ceil((top + root.clientHeight) / ROW_HEIGHT) + OVERSCAN);
     if (start !== windowStart) windowStart = start;
@@ -155,7 +160,7 @@
     requestAnimationFrame(async () => {
       if (!treeEl) return;
       const root = treeEl.parentElement;
-      const treeTop = treeEl.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop;
+      const { treeTop } = scrollGeometry(root);
       const top = treeTop + index * ROW_HEIGHT;
       if (top < root.scrollTop) root.scrollTop = top;
       else if (top + ROW_HEIGHT > root.scrollTop + root.clientHeight) root.scrollTop = top + ROW_HEIGHT - root.clientHeight;
@@ -164,9 +169,9 @@
       const row = treeEl.querySelector(".file.selected");
       if (!row) return;
       const rowRect = row.getBoundingClientRect();
-      const rootRect = root.getBoundingClientRect();
-      if (rowRect.top < rootRect.top) root.scrollTop -= rootRect.top - rowRect.top;
-      else if (rowRect.bottom > rootRect.bottom) root.scrollTop += rowRect.bottom - rootRect.bottom;
+      const { rootRect, scale } = scrollGeometry(root);
+      if (rowRect.top < rootRect.top) root.scrollTop -= (rootRect.top - rowRect.top) / scale;
+      else if (rowRect.bottom > rootRect.bottom) root.scrollTop += (rowRect.bottom - rootRect.bottom) / scale;
     });
   });
 </script>
