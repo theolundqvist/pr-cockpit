@@ -291,8 +291,13 @@
   $effect(() => {
     const page = document.querySelector(".page");
     if (!page) return;
+    let frame = 0;
     const onScroll = () => {
-      if (!scrollRestore) rememberScroll(page.scrollTop);
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        if (!scrollRestore) rememberScroll(page.scrollTop);
+      });
     };
     const stopRestore = () => (scrollRestore = null);
     page.addEventListener("scroll", onScroll, { passive: true });
@@ -302,6 +307,7 @@
       page.removeEventListener("scroll", onScroll);
       for (const type of ["wheel", "touchstart", "pointerdown"]) page.removeEventListener(type, stopRestore);
       window.removeEventListener("keydown", stopRestore, true);
+      cancelAnimationFrame(frame);
     };
   });
 

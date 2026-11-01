@@ -1,6 +1,6 @@
 <script>
   import { flushSync, tick, untrack } from "svelte";
-  import { SvelteMap, SvelteSet } from "svelte/reactivity";
+  import { KeyedMap, KeyedSet } from "./keyedState.svelte.js";
   import Thread from "./Thread.svelte";
   import MutationBadge from "./MutationBadge.svelte";
   import PendingReviewComment from "./PendingReviewComment.svelte";
@@ -176,7 +176,7 @@
     let frames = 8;
     const settle = () => {
       const delta = head.getBoundingClientRect().top - target;
-      if (delta) scroller.scrollTop += delta;
+      if (delta) scroller.scrollTop += delta / generalLayoutScale;
       if (--frames > 0) requestAnimationFrame(settle);
     };
     settle();
@@ -537,7 +537,7 @@
     if (!commentable && openKey) cancelInline();
   });
 
-  const rowTokens = new SvelteMap();
+  const rowTokens = new KeyedMap();
   const splitRowsCache = new WeakMap();
   function pairedRows(rows) {
     let pairs = splitRowsCache.get(rows);
@@ -547,8 +547,10 @@
     }
     return pairs;
   }
-  const VIRTUAL_ROW_THRESHOLD = 600;
-  const ROW_CHUNK_SIZE = 200;
+  const VIRTUAL_ROW_THRESHOLD = 150;
+  const ROW_CHUNK_SIZE = 50;
+  const FILE_MARGIN = 1.5;
+  const ROW_MARGIN = 1.5;
   const rowChunksCache = new WeakMap();
   function rowChunks(rows) {
     let chunks = rowChunksCache.get(rows);
@@ -561,12 +563,21 @@
     }
     return chunks;
   }
+  // A long hunk, or every hunk of a long file, mounts chunk by chunk as it nears the viewport.
+  function displayedChunks(file, displayed, split) {
+    return displayed.length > ROW_CHUNK_SIZE || displayedRowCount(file, split) > VIRTUAL_ROW_THRESHOLD ? rowChunks(displayed) : null;
+  }
+  function displayedRowCount(file, split) {
+    let rows = 0;
+    for (const hunk of file.hunks) rows += split ? (hunk.splitRowCount ?? pairedRows(hunk.rows).length) : (hunk.rowCount ?? hunk.rows.length);
+    return rows;
+  }
 
-  const hotRowChunks = new SvelteSet();
+  const hotRowChunks = new KeyedSet();
   let measuredRowChunks = new WeakMap();
   const observedRowChunks = new Map();
-  const measuredFiles = new SvelteMap();
-  const hydratedFiles = new SvelteMap();
+  const measuredFiles = new KeyedMap();
+  const hydratedFiles = new KeyedMap();
   let filesIdentity = null;
   let rowObserver;
   let rowResizeObserver;
@@ -574,11 +585,12 @@
   function rowChunkHeight(chunk) {
     return measuredRowChunks.get(chunk) ?? chunk.rows.length * LINE_H * diffLayoutScale;
   }
-  function visibleHighlightRows(rows, split, hotChunks) {
+  function visibleHighlightRows(file, rows, split, hotChunks) {
     const displayed = split ? pairedRows(rows) : rows;
-    if (displayed.length <= VIRTUAL_ROW_THRESHOLD) return rows;
+    const chunks = displayedChunks(file, displayed, split);
+    if (!chunks) return rows;
     const selected = new Set();
-    for (const chunk of rowChunks(displayed)) {
+    for (const chunk of chunks) {
       if (!hotChunks.has(chunk)) continue;
       if (split) {
         for (const pair of chunk.rows) {
@@ -638,10 +650,7 @@
     if (whole?.status === "ready") {
       return HEAD_H + (split ? pairedRows(whole.rows).length : whole.rows.length) * LINE_H * diffLayoutScale;
     }
-    let rows = 0;
-    for (const hunk of file.hunks) {
-      rows += split ? (hunk.splitRowCount ?? pairedRows(hunk.rows).length) : (hunk.rowCount ?? hunk.rows.length);
-    }
+    const rows = displayedRowCount(file, split);
     return (
       HEAD_H +
       rows * LINE_H * diffLayoutScale +
@@ -735,7 +744,7 @@
   }
 
   function anchorOf(node) {
-    return node && { node, top: node.getBoundingClientRect().top + observerRoot.scrollTop };
+    return node && { node, top: node.getBoundingClientRect().top / generalLayoutScale + observerRoot.scrollTop };
   }
 
   function holdVisibleSection() {
@@ -752,7 +761,7 @@
 
   function keepHeldSection() {
     if (!heldSection?.node.isConnected) return;
-    const top = heldSection.node.getBoundingClientRect().top + observerRoot.scrollTop;
+    const top = heldSection.node.getBoundingClientRect().top / generalLayoutScale + observerRoot.scrollTop;
     if (top !== heldSection.top) observerRoot.scrollTop += top - heldSection.top;
     heldSection.top = top;
   }
@@ -816,10 +825,10 @@
     for (const [first, end, height] of spans) {
       const before = observedFileNodes[first - 1];
       if (first >= end || !before) continue;
-      const top = before.getBoundingClientRect().bottom + FILE_GAP;
-      if (top >= rootRect.bottom + rootRect.height || top + height <= rootRect.top - rootRect.height) continue;
+      const top = before.getBoundingClientRect().bottom + FILE_GAP * generalLayoutScale;
+      if (top >= rootRect.bottom + rootRect.height || top + height * generalLayoutScale <= rootRect.top - rootRect.height) continue;
       let index = first;
-      for (let bottom = top + sectionHeight(files[index]); index < end - 1 && bottom <= rootRect.top; ) bottom += sectionHeight(files[++index]);
+      for (let bottom = top + sectionHeight(files[index]) * generalLayoutScale; index < end - 1 && bottom <= rootRect.top; ) bottom += sectionHeight(files[++index]) * generalLayoutScale;
       remount(windowAround(index));
       return;
     }
@@ -1243,7 +1252,7 @@
   }
 
 
-  const hotPaths = new SvelteSet();
+  const hotPaths = new KeyedSet();
   const observedFiles = new Map();
   const observedFileNodes = [];
   let observer;
@@ -1267,18 +1276,21 @@
     hydratedFiles.delete(path);
     onReleaseFile?.(path);
   }
+  function viewportBounds() {
+    const rootRect = observerRoot.getBoundingClientRect();
+    return { top: Math.max(rootRect.top, 0), bottom: Math.min(rootRect.bottom, window.innerHeight) };
+  }
+
   function warmVisibleFiles() {
     if (!observerRoot || observedFiles.size === 0) return;
-
-    const rootRect = observerRoot.getBoundingClientRect();
-    const top = Math.max(rootRect.top, 0);
-    const bottom = Math.min(rootRect.bottom, window.innerHeight);
+    const { top, bottom } = viewportBounds();
     const visible = [];
     for (const [from, to] of mountedRanges()) {
       for (let index = firstSectionBelow(from, to, top); index < to && observedFileNodes[index]?.getBoundingClientRect().top < bottom; index++) visible.push(files[index].path);
     }
     if (visible.every((path) => hotPaths.has(path) && hydratedFiles.has(path))) return;
     for (const path of visible) {
+      pendingPaths.delete(path);
       hotPaths.add(path);
       retainFile(path, true);
     }
@@ -1286,29 +1298,93 @@
 
   function warmVisibleRowChunks() {
     if (!observerRoot || observedRowChunks.size === 0) return;
-    const first = observedFiles.keys().next().value;
-    const diffRect = first.closest(".diff").getBoundingClientRect();
-    const rootRect = observerRoot.getBoundingClientRect();
-    const x = Math.min(diffRect.right - 1, diffRect.left + 20);
-    const top = Math.max(rootRect.top, 0);
-    const bottom = Math.min(rootRect.bottom, window.innerHeight);
-    const center = document.elementFromPoint(x, (top + bottom) / 2)?.closest?.(".row-chunk");
-    const centerChunk = observedRowChunks.get(center);
-    if (!centerChunk || hotRowChunks.has(centerChunk)) return;
-    for (const y of [top + 1, Math.max(top + 1, bottom - 1)]) {
-      const node = document.elementsFromPoint(x, y).map((element) => element.closest?.(".row-chunk")).find(Boolean);
-      const chunk = observedRowChunks.get(node);
-      if (chunk) hotRowChunks.add(chunk);
+    const { top, bottom } = viewportBounds();
+    for (const [from, to] of mountedRanges()) {
+      for (let index = firstSectionBelow(from, to, top); index < to; index++) {
+        const section = observedFileNodes[index];
+        if (!section || section.getBoundingClientRect().top >= bottom) break;
+        for (const node of section.getElementsByClassName("row-chunk")) {
+          const chunk = observedRowChunks.get(node);
+          if (!chunk || hotRowChunks.has(chunk)) continue;
+          const rect = node.getBoundingClientRect();
+          if (rect.top >= bottom) break;
+          if (rect.bottom > top) {
+            pendingRowChunks.delete(node);
+            hotRowChunks.add(chunk);
+          }
+        }
+      }
     }
+  }
+
+  // Rows entering the observer margins mount a bounded number per frame, nearest first, so a scroll
+  // or a jump never builds screens of rows in one frame; rows in the viewport still mount at once.
+  const MOUNT_ROWS_PER_FRAME = 100;
+  const pendingPaths = new Set();
+  const pendingRowChunks = new Map();
+  const freshRowChunks = [];
+  let mountFrame = 0;
+
+  function queueMounts() {
+    if (!mountFrame && (pendingPaths.size || pendingRowChunks.size)) mountFrame = requestAnimationFrame(mountPending);
+  }
+
+  function viewportDistance(node, rootRect) {
+    const rect = node.getBoundingClientRect();
+    return Math.max(rootRect.top - rect.bottom, rect.top - rootRect.bottom, 0);
+  }
+
+  function mountedRows(path) {
+    const file = files[fileIndexes.get(path)];
+    if (!file || collapsed.has(path)) return 1;
+    const rows = displayedRowCount(file, usesSplitLayout(file));
+    return rows > VIRTUAL_ROW_THRESHOLD ? file.hunks.length : rows;
+  }
+
+  function mountPending() {
+    mountFrame = 0;
+    if (!observerRoot) return;
+    const rootRect = observerRoot.getBoundingClientRect();
+    const queue = [];
+    for (const path of pendingPaths) {
+      const node = observedFileNodes[fileIndexes.get(path)];
+      if (node && !hotPaths.has(path)) queue.push({ distance: viewportDistance(node, rootRect), path });
+      else pendingPaths.delete(path);
+    }
+    for (const [node, chunk] of pendingRowChunks) {
+      if (!hotRowChunks.has(chunk)) queue.push({ distance: viewportDistance(node, rootRect), node, chunk });
+      else pendingRowChunks.delete(node);
+    }
+    queue.sort((a, b) => a.distance - b.distance);
+    let rows = 0;
+    for (const item of queue) {
+      if (rows >= MOUNT_ROWS_PER_FRAME) break;
+      if (item.chunk) {
+        pendingRowChunks.delete(item.node);
+        hotRowChunks.add(item.chunk);
+        rows += item.chunk.rows.length;
+      } else {
+        pendingPaths.delete(item.path);
+        hotPaths.add(item.path);
+        retainFile(item.path, false);
+        rows += mountedRows(item.path);
+      }
+    }
+    queueMounts();
   }
 
   function updateHotRowChunks(entries) {
     for (const entry of entries) {
       const chunk = observedRowChunks.get(entry.target);
       if (!chunk) continue;
-      if (entry.isIntersecting) hotRowChunks.add(chunk);
-      else hotRowChunks.delete(chunk);
+      if (entry.isIntersecting) {
+        if (!hotRowChunks.has(chunk)) pendingRowChunks.set(entry.target, chunk);
+      } else {
+        pendingRowChunks.delete(entry.target);
+        hotRowChunks.delete(chunk);
+      }
     }
+    queueMounts();
   }
 
   function measureRowChunks(entries) {
@@ -1322,29 +1398,46 @@
     observedRowChunks.set(node, chunk);
     rowObserver?.observe(node);
     rowResizeObserver?.observe(node);
-    if (observerRoot) {
-      const rootRect = observerRoot.getBoundingClientRect();
-      const rect = node.getBoundingClientRect();
-      const margin = rootRect.height * 5;
-      if (rect.bottom >= rootRect.top - margin && rect.top <= rootRect.bottom + margin) hotRowChunks.add(chunk);
-    }
+    if (freshRowChunks.push(node) === 1) queueMicrotask(warmFreshRowChunks);
     return {
       destroy() {
         rowObserver?.unobserve(node);
         rowResizeObserver?.unobserve(node);
         hotRowChunks.delete(chunk);
+        pendingRowChunks.delete(node);
         observedRowChunks.delete(node);
       },
     };
   }
 
+  // The chunks of a file that just mounted in the viewport fill in before the frame paints.
+  function warmFreshRowChunks() {
+    const nodes = freshRowChunks.splice(0);
+    if (!observerRoot) return;
+    const { top, bottom } = viewportBounds();
+    for (const node of nodes) {
+      const chunk = observedRowChunks.get(node);
+      if (!chunk || hotRowChunks.has(chunk)) continue;
+      const rect = node.getBoundingClientRect();
+      if (rect.bottom > top && rect.top < bottom) {
+        pendingRowChunks.delete(node);
+        hotRowChunks.add(chunk);
+      }
+    }
+  }
+
+  let scrollFrame = 0;
   function onDiffScroll() {
+    if (!scrollFrame) scrollFrame = requestAnimationFrame(afterDiffScroll);
+  }
+
+  function afterDiffScroll() {
+    scrollFrame = 0;
     if (heldSection) heldSection = anchorOf(visibleSection());
     revealScrolledFiles();
     warmVisibleFiles();
     warmVisibleRowChunks();
   }
-
 
   function measureFiles(entries) {
     for (const entry of entries) {
@@ -1358,13 +1451,14 @@
     for (const entry of entries) {
       const path = observedFiles.get(entry.target);
       if (entry.isIntersecting) {
-        hotPaths.add(path);
-        retainFile(path, false);
+        if (!hotPaths.has(path)) pendingPaths.add(path);
       } else {
+        pendingPaths.delete(path);
         hydratedFiles.delete(path);
         hotPaths.delete(path);
       }
     }
+    queueMounts();
   }
 
   function updatePrefetchPaths(entries) {
@@ -1382,9 +1476,9 @@
     observerSetup = false;
     if (observer || observedFiles.size === 0) return;
     observerRoot = scrollParent(observedFiles.keys().next().value);
-    observer = new IntersectionObserver(updateHotPaths, { root: observerRoot, rootMargin: "400% 0px" });
+    observer = new IntersectionObserver(updateHotPaths, { root: observerRoot, rootMargin: `${FILE_MARGIN * 100}% 0px` });
     prefetchObserver = new IntersectionObserver(updatePrefetchPaths, { root: observerRoot, rootMargin: "2000% 0px" });
-    rowObserver = new IntersectionObserver(updateHotRowChunks, { root: observerRoot, rootMargin: "300% 0px" });
+    rowObserver = new IntersectionObserver(updateHotRowChunks, { root: observerRoot, rootMargin: `${ROW_MARGIN * 100}% 0px` });
     rowResizeObserver = new ResizeObserver(measureRowChunks);
     fileResizeObserver = new ResizeObserver(measureFiles);
     for (const node of observedFiles.keys()) {
@@ -1413,6 +1507,7 @@
         observer?.unobserve(node);
         prefetchObserver?.unobserve(node);
         fileResizeObserver?.unobserve(node);
+        pendingPaths.delete(observedFiles.get(node));
         hotPaths.delete(observedFiles.get(node));
         releaseFile(observedFiles.get(node));
         observedFileNodes[Number(node.id.slice("diff-file-".length))] = null;
@@ -1692,6 +1787,7 @@
     if (file?.path !== match.path) return null;
     revealFile(match.index);
     if (!hotPaths.has(file.path) || (onWarmFile && !hydratedFiles.has(file.path))) {
+      pendingPaths.delete(file.path);
       hotPaths.add(file.path);
       retainFile(file.path, true);
       flushSync();
@@ -1700,8 +1796,9 @@
     if (seg) {
       const shown = hydratedFiles.get(file.path) ?? file;
       const rows = seg.whole ? wholeFile.get(file.path)?.rows : seg.gap !== undefined ? gapRows.get(gapKey(file, seg.gap)) : shown.hunks[seg.hunk]?.rows;
-      const displayed = rows && (usesSplitLayout(shown) ? pairedRows(rows) : rows);
-      const chunk = displayed?.length > VIRTUAL_ROW_THRESHOLD ? rowChunks(displayed)[Math.floor(pos / ROW_CHUNK_SIZE)] : null;
+      const split = usesSplitLayout(shown);
+      const displayed = rows && (split ? pairedRows(rows) : rows);
+      const chunk = displayed && displayedChunks(shown, displayed, split)?.[Math.floor(pos / ROW_CHUNK_SIZE)];
       if (chunk && !hotRowChunks.has(chunk)) {
         hotRowChunks.add(chunk);
         flushSync();
@@ -1720,6 +1817,8 @@
     rowObserver?.disconnect();
     rowResizeObserver?.disconnect();
     observerRoot?.removeEventListener("scroll", onDiffScroll);
+    cancelAnimationFrame(mountFrame);
+    cancelAnimationFrame(scrollFrame);
   });
   $effect(() => {
     const nextIdentity = diffIdentity;
@@ -1742,6 +1841,8 @@
 
   $effect(() => {
     if (files.length !== 0) return;
+    pendingPaths.clear();
+    pendingRowChunks.clear();
     hotPaths.clear();
     hotRowChunks.clear();
     measuredFiles.clear();
@@ -1753,12 +1854,12 @@
     const hydratedSnapshot = new Map(hydratedFiles);
     const hotSnapshot = new Set(hotPaths);
     const chunkSnapshot = new Set(hotRowChunks);
-    const layoutSnapshot = layout;
+    const layoutSnapshot = compactLayout ? "unified" : layout;
     const wholeSnapshot = wholeFile;
     const gapSnapshot = gapRows;
     const themeName = theme.shiki;
     let cancelled = false;
-    (async () => {
+    untrack(async () => {
       const seen = new Set();
       const runs = [];
       const apply = (block, tokens, deletionsOnly) => {
@@ -1768,8 +1869,8 @@
         });
       };
       // Blocks run from the start of a side through its last visible row; cached blocks paint now.
-      const collect = (rows, split, lang) => {
-        const visible = visibleHighlightRows(rows, split, chunkSnapshot);
+      const collect = (file, rows, split, lang) => {
+        const visible = visibleHighlightRows(file, rows, split, chunkSnapshot);
         for (const { rows: side, deletionsOnly } of highlightSides(rows)) {
           const last = visible === rows ? side.length - 1 : side.findLastIndex((row) => visible.has(row));
           if (last < 0) continue;
@@ -1792,12 +1893,12 @@
         const lang = langForPath(file.path);
         if (!lang) continue;
         const split = fileUsesSplitLayout(file, layoutSnapshot);
-        for (const hunk of file.hunks) collect(hunk.rows, split, lang);
+        for (const hunk of file.hunks) collect(file, hunk.rows, split, lang);
         const whole = wholeSnapshot.get(file.path);
-        if (whole?.status === "ready") collect(whole.rows, split, lang);
+        if (whole?.status === "ready") collect(file, whole.rows, split, lang);
         for (let hi = 0; hi <= file.hunks.length; hi++) {
           const g = gapSnapshot.get(gapKey(file, hi));
-          if (Array.isArray(g)) collect(g, split, lang);
+          if (Array.isArray(g)) collect(file, g, split, lang);
         }
       }
       for (const row of [...rowTokens.keys()]) {
@@ -1815,7 +1916,7 @@
           after = result.state;
         }
       }
-    })();
+    });
     return () => {
       cancelled = true;
     };
@@ -2023,26 +2124,11 @@
 {/snippet}
 
 {#snippet diffRows(file, rows, hunkIndex)}
-  {#if usesSplitLayout(file)}
-    {@const pairs = pairedRows(rows)}
-    {#if pairs.length > VIRTUAL_ROW_THRESHOLD}
-      {#each rowChunks(pairs) as chunk}
-        <div
-          class="row-chunk"
-          class:cold={!hotRowChunks.has(chunk)}
-          style:height={hotRowChunks.has(chunk) ? undefined : `${rowChunkHeight(chunk)}px`}
-          use:nearRowViewport={chunk}
-        >
-          {#if hotRowChunks.has(chunk)}
-            {#each chunk.rows as pair}{@render splitPair(file, pair, hunkIndex)}{/each}
-          {/if}
-        </div>
-      {/each}
-    {:else}
-      {#each pairs as pair}{@render splitPair(file, pair, hunkIndex)}{/each}
-    {/if}
-  {:else if rows.length > VIRTUAL_ROW_THRESHOLD}
-    {#each rowChunks(rows) as chunk}
+  {@const split = usesSplitLayout(file)}
+  {@const displayed = split ? pairedRows(rows) : rows}
+  {@const chunks = displayedChunks(file, displayed, split)}
+  {#if chunks}
+    {#each chunks as chunk}
       <div
         class="row-chunk"
         class:cold={!hotRowChunks.has(chunk)}
@@ -2050,10 +2136,16 @@
         use:nearRowViewport={chunk}
       >
         {#if hotRowChunks.has(chunk)}
-          {#each chunk.rows as row}{@render lineRow(file, row, hunkIndex)}{/each}
+          {#if split}
+            {#each chunk.rows as pair}{@render splitPair(file, pair, hunkIndex)}{/each}
+          {:else}
+            {#each chunk.rows as row}{@render lineRow(file, row, hunkIndex)}{/each}
+          {/if}
         {/if}
       </div>
     {/each}
+  {:else if split}
+    {#each displayed as pair}{@render splitPair(file, pair, hunkIndex)}{/each}
   {:else}
     {#each rows as row}{@render lineRow(file, row, hunkIndex)}{/each}
   {/if}
@@ -2072,7 +2164,7 @@
       class="file"
       class:collapsed={isCollapsed}
       id="diff-file-{fileIndexes.get(indexedFile.path)}"
-      style="--est-h:{fileHeight(file, isCollapsed, whole)}px"
+      style:contain-intrinsic-size="auto {fileHeight(file, isCollapsed, whole)}px"
       use:nearViewport={file.path}
       onmouseenter={(event) => hoverFile(file.path, event.currentTarget)}
       onmouseleave={(event) => {
@@ -2354,7 +2446,7 @@
     min-width: 0;
     max-width: 100%;
     content-visibility: auto;
-    contain-intrinsic-size: auto var(--est-h, 400px);
+    contain-intrinsic-size: auto 400px;
   }
   .file-head-row {
     display: flex;
