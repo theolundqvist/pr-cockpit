@@ -77,6 +77,8 @@ test("a local server imports inbox state and proxies GitHub-backed APIs through 
       env: {
         ...Bun.env,
         PATH: `${bin}:${Bun.env.PATH}`,
+        // The fake ssh never exits, so the update check (git fetch over SSH) would hang past the test.
+        COCKPIT_UPDATE_DISABLED: "1",
         GH_TOKEN: "",
         GITHUB_TOKEN: "",
         COCKPIT_PORT: String(replicaPort),

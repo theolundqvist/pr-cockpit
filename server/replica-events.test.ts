@@ -68,7 +68,8 @@ test("replica details follow source events outside the inbox, after merge, and a
     let server = serve();
     console.log("source-ready");
   `;
-  const env = { ...Bun.env, PATH: `${bin}:${Bun.env.PATH}` };
+  // The fake ssh never exits, so a real server's update check (git fetch over SSH) would hang past the test.
+  const env = { ...Bun.env, PATH: `${bin}:${Bun.env.PATH}`, COCKPIT_UPDATE_DISABLED: "1" };
   const source = Bun.spawn([process.execPath, "-e", script], {
     env: { ...env, COCKPIT_DATA_DIR: join(root, "source"), COCKPIT_MOCK: "1", COCKPIT_REPLICA_SSH_HOST: "" },
     stdout: "pipe", stderr: "pipe",
