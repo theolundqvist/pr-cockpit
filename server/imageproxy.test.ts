@@ -237,35 +237,40 @@ test.skipIf(!Bun.which("ffmpeg"))("GIFs requested as video are transcoded to see
   expect(result).toEqual({ video: [206, "video/mp4"], original: [206, 12], still: 415 });
 });
 
-// Looping cards kept the compositor redrawing an idle list, so every card and poster is one frame, and the
-// retired animated variants never fall back to the full-size original.
-test.skipIf(!Bun.which("ffmpeg"))("row cards and posters of a GIF are single-frame stills that name their source", async () => {
+// Looping tiles kept the compositor redrawing an idle list, so every tile and still is one frame, scaled down
+// from the original, and retired variants never fall back to the full-size original.
+test.skipIf(!Bun.which("ffmpeg"))("row tiles and stills are scaled single-frame images that name their source", async () => {
   const result = await imageScenario(`
     const gifPath = ${JSON.stringify(join(tmpdir(), `pr-cockpit-card-${process.pid}.gif`))};
-    Bun.spawnSync(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=10:duration=1", gifPath]);
+    Bun.spawnSync(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=1600x900:rate=10:duration=1", gifPath]);
     const gif = new Uint8Array(await Bun.file(gifPath).arrayBuffer());
     const pngPath = ${JSON.stringify(join(tmpdir(), `pr-cockpit-card-${process.pid}.png`))};
-    Bun.spawnSync(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180", "-frames:v", "1", pngPath]);
+    Bun.spawnSync(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=1600x900", "-frames:v", "1", pngPath]);
     const still = new Uint8Array(await Bun.file(pngPath).arrayBuffer());
     globalThis.fetch = async (input) => new Response(String(input).endsWith(".gif") ? gif : still);
     const variant = async (as, name) => {
       const response = await handleImage(new URL("http://localhost/api/image?as=" + as + "&url=" + encodeURIComponent("https://raw.githubusercontent.com/acme/app/main/" + name)));
-      const head = new TextDecoder("latin1").decode(new Uint8Array(await response.arrayBuffer()).subarray(0, 64));
-      return [response.status, response.headers.get("content-type"), response.headers.get("x-media-kind"), head.includes("ANIM")];
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      const head = new TextDecoder("latin1").decode(bytes.subarray(0, 64));
+      const ihdr = new DataView(bytes.buffer, bytes.byteOffset);
+      const size = head.slice(1, 4) === "PNG" ? ihdr.getUint32(16) + "x" + ihdr.getUint32(20) : null;
+      return [response.status, response.headers.get("content-type"), response.headers.get("x-media-kind"), size, head.includes("acTL")];
     };
     console.log(JSON.stringify({
-      card: await variant("card", "flow.gif"),
-      poster: await variant("poster", "flow.gif"),
-      cachedCard: await variant("card", "flow.gif"),
-      image: await variant("card", "shot.png"),
-      retired: (await variant("thumb", "flow.gif"))[0],
+      tile: await variant("tile", "flow.gif"),
+      still: await variant("still", "flow.gif"),
+      cachedTile: await variant("tile", "flow.gif"),
+      image: await variant("tile", "shot.png"),
+      imageStill: await variant("still", "shot.png"),
+      retired: [(await variant("thumb", "flow.gif"))[0], (await variant("card", "shot.png"))[0], (await variant("poster", "shot.png"))[0]],
     }));
   `);
   expect(result).toEqual({
-    card: [200, "image/webp", "gif", false],
-    poster: [200, "image/webp", "gif", false],
-    cachedCard: [200, "image/webp", "gif", false],
-    image: [200, "image/webp", "image", false],
-    retired: 400,
+    tile: [200, "image/png", "gif", "208x128", false],
+    still: [200, "image/png", "gif", "832x468", false],
+    cachedTile: [200, "image/png", "gif", "208x128", false],
+    image: [200, "image/png", "image", "208x128", false],
+    imageStill: [200, "image/png", "image", "832x468", false],
+    retired: [400, 400, 400],
   });
 });

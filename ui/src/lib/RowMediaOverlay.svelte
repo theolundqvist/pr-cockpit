@@ -9,8 +9,8 @@
   // `prFor` names the PR behind a hovered or clicked `.row-media` stack.
   let { list = null, prFor } = $props();
 
-  // The peek shows the whole front attachment in its own aspect ratio, 8x the 52 px card on its long side,
-  // from the as=poster variant (832 px long side, so it stays sharp on Retina). Like the cards it is the first
+  // The peek shows the whole front attachment in its own aspect ratio, 8x the 52 px tile on its long side,
+  // from the as=still variant (832 px long side, so it stays sharp on Retina). Like the tiles it is the first
   // frame; a GIF or video plays only in the viewer.
   const CARD_WIDTH = 52;
   const PEEK_LONG_SIDE = 416;
@@ -40,7 +40,7 @@
     // The aspect ratio is unknown until the image arrives, so nothing shows before it and a peek already up
     // stays until its successor is ready: the box never opens at a guessed size and jumps.
     const image = new Image();
-    image.src = mediaSrc(url, "poster");
+    image.src = mediaSrc(url, "still");
     peekLoading = image;
     image.decode().then(() => {
       peekSizes.set(url, [image.naturalWidth, image.naturalHeight]);
@@ -187,7 +187,7 @@
     let pending = probes.get(url);
     if (pending) return pending;
     const seq = viewerSeq;
-    pending = fetch(mediaSrc(url, "poster"))
+    pending = fetch(mediaSrc(url, "still"))
       .then(async (response) => {
         // Reading the body completes the cache entry the poster and <img> then paint from.
         await response.blob();
@@ -408,7 +408,7 @@
     style:transform-origin="{peek.originX}px {peek.originY}px"
     aria-hidden="true"
   >
-    <img src={mediaSrc(peek.url, "poster")} alt="" />
+    <img src={mediaSrc(peek.url, "still")} alt="" />
     {#if peek.moving}<span class="play-glyph"></span>{/if}
   </div>
 {/if}
@@ -449,7 +449,7 @@
                 class="mv-media"
                 class:zoomed={zoom.scale > 1}
                 src={mediaSrc(url, "video")}
-                poster={mediaSrc(url, "poster")}
+                poster={mediaSrc(url, "still")}
                 style:transform="translate({zoom.x / zoom.unit}px, {zoom.y / zoom.unit}px) scale({zoom.scale})"
                 autoplay
                 muted

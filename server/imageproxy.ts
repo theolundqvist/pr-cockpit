@@ -274,20 +274,22 @@ async function convertGif(gif: Bun.BunFile | Uint8Array, path: string): Promise<
   return { file: Bun.file(path) };
 }
 
-// Queue rows show media in a 52x32 CSS px card, cover-cropped. Hovering a stack peeks at the whole front
-// attachment in its own aspect ratio at 8x the card, 416 CSS px on its long side, from the poster, which is
+// Queue rows show media in a 52x32 CSS px tile, cover-cropped. Hovering a stack peeks at the whole front
+// attachment in its own aspect ratio at 8x the tile, 416 CSS px on its long side, from the still, which is
 // also what the viewer shows while an item loads. Each variant is dense enough to stay sharp on Retina without
-// shipping originals, and the poster never upscales a small original. Both are the first frame: GIFs and
-// videos move only in the viewer. They replaced the animated as=thumb and as=peek, whose immutable responses
-// renderers still cache under those URLs.
+// shipping originals, and the still never upscales a small original. Both are the first frame: GIFs and
+// videos move only in the viewer. PNG because every ffmpeg build encodes it; Homebrew's ffmpeg dropped
+// libwebp. They replaced as=card and as=poster (and before them the animated as=thumb and as=peek), whose
+// immutable responses renderers still cache under those URLs, including full originals served while the
+// WebP encoder was missing.
 const THUMB_VARIANTS: Record<string, { name: string; filter: string }> = {
-  card: { name: "card208x128", filter: "scale=208:128:force_original_aspect_ratio=increase,crop=208:128" },
-  poster: { name: "poster832", filter: "scale='min(832,iw)':'min(832,ih)':force_original_aspect_ratio=decrease" },
+  tile: { name: "tile208x128", filter: "scale=208:128:force_original_aspect_ratio=increase,crop=208:128" },
+  still: { name: "still832", filter: "scale='min(832,iw)':'min(832,ih)':force_original_aspect_ratio=decrease" },
 };
 const thumbnailConversions = new Map<string, Promise<ImageResult>>();
 
 function thumbnail(raw: string, source: Bun.BunFile | Uint8Array, variant: { name: string; filter: string }): Promise<ImageResult> {
-  const path = `${thumbnailCacheDir}/${cacheKey(raw)}-${variant.name}.webp`;
+  const path = `${thumbnailCacheDir}/${cacheKey(raw)}-${variant.name}.png`;
   const pending = thumbnailConversions.get(path);
   if (pending) return pending;
   const conversion = convertThumbnail(source, path, variant.filter).finally(() => thumbnailConversions.delete(path));
@@ -305,13 +307,13 @@ async function convertThumbnail(source: Bun.BunFile | Uint8Array, path: string, 
   const ffmpeg = Bun.which("ffmpeg");
   if (!ffmpeg || type === "image/svg+xml" || type === "application/octet-stream") return fallback;
   mkdirSync(thumbnailCacheDir, { recursive: true });
-  const tmp = `${path}.${process.pid}.tmp.webp`;
+  const tmp = `${path}.${process.pid}.tmp.png`;
   const input = source instanceof Uint8Array ? `${tmp}.source` : source.name!;
   if (source instanceof Uint8Array) await Bun.write(input, source);
   const [code, stderr] = await conversionSlots(async () => {
     const proc = Bun.spawn([
       ...niced, ffmpeg, "-loglevel", "error", "-y", "-i", input, "-an", "-threads", "1",
-      "-frames:v", "1", "-vf", filter, "-c:v", "libwebp", "-q:v", "85", tmp,
+      "-frames:v", "1", "-vf", filter, "-c:v", "png", tmp,
     ], { stdout: "ignore", stderr: "pipe" });
     return Promise.all([proc.exited, new Response(proc.stderr).text()]);
   });
@@ -331,14 +333,14 @@ async function serveResult(result: ImageResult, range: string | null): Promise<R
   return serveBody(result.file, range, result.kind ? { "x-media-kind": result.kind } : {});
 }
 
-// `as=video` plays a GIF or video in the viewer; `as=card` and `as=poster` serve the queue-row card and the
+// `as=video` plays a GIF or video in the viewer; `as=tile` and `as=still` serve the queue-row tile and the
 // still for the hover peek and viewer, with `x-media-kind` naming what the still was taken from.
 function convertedImage(raw: string, as: string | null, source: Bun.BunFile | Uint8Array): Promise<ImageResult> | null {
   if (as === null) return null;
   if (as === "video") return playableVideo(raw, source);
   const variant = Object.hasOwn(THUMB_VARIANTS, as) ? THUMB_VARIANTS[as] : undefined;
   if (variant) return thumbnail(raw, source, variant);
-  // An unknown or retired variant must not fall back to the full-size original a card exists to avoid.
+  // An unknown or retired variant must not fall back to the full-size original a tile exists to avoid.
   return Promise.resolve({ error: `unknown image variant: ${as}`, status: 400 });
 }
 

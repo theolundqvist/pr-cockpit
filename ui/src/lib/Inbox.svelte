@@ -1648,7 +1648,7 @@
         <!-- No title: its native tooltip would cover the hover peek, and "+N" already counts the rest. -->
         <span class="row-media" style:--cards={pr.media.length}>
           {#if mediaReady}
-            {#each pr.media as url (url)}<img alt="" width="52" height="32" decoding="async" draggable="false" use:lazyThumbnail={`/api/image?as=card&url=${encodeURIComponent(url)}`} />{/each}
+            {#each pr.media as url (url)}<img alt="" width="52" height="32" decoding="async" draggable="false" use:lazyThumbnail={`/api/image?as=tile&url=${encodeURIComponent(url)}`} />{/each}
           {/if}
           {#if pr.mediaCount > pr.media.length}<span class="media-more mono">+{pr.mediaCount - pr.media.length}</span>{/if}
         </span>
