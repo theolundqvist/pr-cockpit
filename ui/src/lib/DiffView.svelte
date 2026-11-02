@@ -150,7 +150,7 @@
     // An IntersectionObserver root outside a fixed overlay's containing block never intersects it.
     for (let node = el.parentElement; node; node = node.parentElement) {
       const style = getComputedStyle(node);
-      if ((style.overflowY === "auto" || style.overflowY === "scroll") && node.scrollHeight > node.clientHeight) return node;
+      if (style.overflowY === "auto" || style.overflowY === "scroll") return node;
       if (style.position === "fixed") return node;
     }
     return null;

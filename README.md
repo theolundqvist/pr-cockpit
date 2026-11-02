@@ -51,7 +51,7 @@ The search panel uses its own connection pool, so pending main-window requests c
 
 ### Read the change, then follow the details
 
-Diffs, threads, checks, and file history live in the same review workspace. The header shows Closed or Merged even if the PR retains its draft flag. The PR check summary uses the latest workflow run and job attempt; earlier runs remain in Actions history. Press <kbd>x</kbd> to fold tests and generated files when you want to see the implementation first; press it again to bring them back. Generated files include `.generated.` names and committed `.gitattributes` rules marked `linguist-generated`; nested rules and overrides follow the reviewed revision. The same group can be hidden by default in Settings.
+Diffs, threads, checks, and file history live in the same review workspace. Short diffs render without scrolling, including in tall windows. The header shows Closed or Merged even if the PR retains its draft flag. The PR check summary uses the latest workflow run and job attempt; earlier runs remain in Actions history. Press <kbd>x</kbd> to fold tests and generated files when you want to see the implementation first; press it again to bring them back. Generated files include `.generated.` names and committed `.gitattributes` rules marked `linguist-generated`; nested rules and overrides follow the reviewed revision. The same group can be hidden by default in Settings.
 
 Syntax highlighting covers Shiki's bundled languages in diffs, file previews, editors, and Markdown code blocks, including Swift, C/C++ headers, Objective-C, Kotlin, and C#. Grammars load on demand; unrecognized formats remain plain text.
 
