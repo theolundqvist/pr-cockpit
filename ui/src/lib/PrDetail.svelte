@@ -443,7 +443,7 @@
     diffDocument = diff.document;
     syncViewedFiles(diff.files);
     displayedDiffKey = diff.dkey;
-    files = diff.files;
+    files = [...diff.files].sort((left, right) => left.path.localeCompare(right.path));
     generatedPaths = diff.generated;
     classifiedDiffKey = diff.classifiedKey;
     fileIndex = 0;
