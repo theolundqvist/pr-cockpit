@@ -1,37 +1,8 @@
 import { tokenizeCodeBlock } from "./offThreadHighlight.js";
+import { langForName } from "./highlight.js";
 
 // Rendered markdown reads revision, so blocks that were pending re-render once their tokens land.
 export const codeHl = $state({ revision: 0 });
-
-// values must stay a subset of getHighlighter's loaded langs — an unloaded grammar throws and kills the whole render
-const FENCE_LANG = {
-  ts: "typescript",
-  typescript: "typescript",
-  tsx: "tsx",
-  js: "javascript",
-  javascript: "javascript",
-  jsx: "javascript",
-  mjs: "javascript",
-  cjs: "javascript",
-  svelte: "svelte",
-  rust: "rust",
-  rs: "rust",
-  go: "go",
-  py: "python",
-  python: "python",
-  json: "json",
-  yaml: "yaml",
-  yml: "yaml",
-  md: "markdown",
-  markdown: "markdown",
-  css: "css",
-  html: "html",
-  sql: "sql",
-  sh: "bash",
-  bash: "bash",
-  shell: "bash",
-  diff: "diff",
-};
 
 // Fenced code is tokenized off the main thread. Until a block's tokens arrive it renders as
 // plain text, and the caller must not cache that rendering.
@@ -55,7 +26,7 @@ function publishBlock(key, tokens) {
 
 // Returns tokens per line, null when the block cannot be highlighted, or HIGHLIGHT_PENDING.
 export function highlightFencedCode(code, fenceLang, themeName) {
-  const lang = FENCE_LANG[fenceLang?.toLowerCase()];
+  const lang = langForName(fenceLang);
   if (!lang) return null;
   const key = `${themeName}\n${lang}\n${code}`;
   if (blocks.has(key)) return blocks.get(key);
