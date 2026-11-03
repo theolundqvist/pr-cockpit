@@ -203,7 +203,7 @@ test("an agent's ready-for-review mark covers only the open head it was set at a
     rmSync(dataDir, { recursive: true, force: true });
   }
 }, 60_000);
-test("mark-ready requires the configured OMP review on integration-base PRs", async () => {
+test("mark-ready requires the configured OMP review to have succeeded once for the PR on integration-base PRs", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-review-gate-"));
   const scenario = `
     import { mock } from "bun:test";
@@ -252,47 +252,60 @@ test("mark-ready requires the configured OMP review on integration-base PRs", as
       details.set(42, detail(overrides));
       await refreshPr(repo, 42, "relay", "all");
     };
-    const seed = (id, conclusion, kind = "comment", at = conclusion === "success" ? "2026-09-24T10:01:00Z" : "2026-09-24T10:00:30Z") => {
+    const seed = (id, conclusion, { kind = "comment", at = "2026-09-24T10:01:00Z", pr = kind === "push" ? 42 : null,
+      sha = kind === "push" ? "a".repeat(40) : "b".repeat(40), branch = kind === "push" ? "feature-42" : "staging" } = {}) => {
       const push = kind === "push";
       upsertWorkflowRun({
-        repo, run_id: id, run_attempt: 1, pr_number: push ? 42 : null,
-        head_sha: push ? "a".repeat(40) : "b".repeat(40), head_branch: push ? "feature-42" : "staging",
+        repo, run_id: id, run_attempt: 1, pr_number: pr, head_sha: sha, head_branch: branch,
         workflow_name: "OMP Agentic PR Review", workflow_path: ".github/workflows/omp-agentic-review.yml",
         display_title: "feat: review gate", event: push ? "pull_request" : "issue_comment",
         actor_login: push ? "github-actions[bot]" : "reviewer", status: "completed", conclusion: "success",
         event_at: at, created_at: at, updated_at: at, run_started_at: at, run_number: id, html_url: null,
       });
       upsertRunJob({
-        repo, job_id: id + 1000, run_id: id, run_attempt: 1,
-        head_sha: push ? "a".repeat(40) : "b".repeat(40), head_branch: push ? "feature-42" : "staging",
+        repo, job_id: id + 1000, run_id: id, run_attempt: 1, head_sha: sha, head_branch: branch,
         workflow_name: "OMP Agentic PR Review", name: "OMP agentic review", status: "completed",
         conclusion, started_at: at, completed_at: at, html_url: null, runner_name: null, runner_group_name: null,
         labels_json: "[]", failed_step: null,
       });
     };
+    const mark = async () => {
+      const marked = await run("mark-ready", repo + "#42");
+      if (marked.code !== 0) return marked;
+      await run("unmark-ready", repo + "#42");
+      return JSON.parse(marked.stdout);
+    };
+    const noThreads = { reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } };
+    const openThread = { reviewThreads: { nodes: [{ id: "open-thread", isResolved: false, isOutdated: false,
+      path: "src/app.ts", line: 42, comments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } }],
+      pageInfo: { hasNextPage: false, endCursor: null } } };
     comments.set(42, [{ kind: "comment", author: "reviewer", body: "@review", createdAt: "2026-09-24T10:00:00Z",
       path: null, line: null, state: null, url: "https://github.com/scape-app/scape/pull/42" }]);
-    await refresh({ reviewThreads: { nodes: [{ id: "open-thread", isResolved: false, isOutdated: false,
-      path: "src/app.ts", line: 42, comments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } }],
-      pageInfo: { hasNextPage: false, endCursor: null } } });
-    const result = { thread: await run("mark-ready", repo + "#42") };
-    await refresh({ reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } });
-    result.missing = await run("mark-ready", repo + "#42");
+    await refresh(openThread);
+    const result = { thread: await mark() };
+    await refresh(noThreads);
+    result.missing = await mark();
     seed(100, "skipped");
-    result.skipped = await run("mark-ready", repo + "#42");
+    result.skipped = await mark();
+    // Successful reviews that belong to another PR: claimed by #43, or older than #42 on a reused branch name.
+    seed(300, "success", { kind: "push", pr: 43, sha: "d".repeat(40) });
+    seed(301, "success", { kind: "push", pr: null, sha: "e".repeat(40), at: "2026-09-24T06:00:00Z" });
+    seed(302, "success", { pr: 43 });
+    result.otherPr = await mark();
+    seed(103, "success", { at: "2026-09-24T10:03:00Z" });
+    result.lateComment = await mark();
     seed(101, "success");
-    seed(200, "skipped", "push", "2026-09-24T10:02:00Z");
-    result.stale = await run("mark-ready", repo + "#42");
-    comments.get(42).push({ kind: "comment", author: "reviewer", body: "@review", createdAt: "2026-09-24T10:02:30Z",
-      path: null, line: null, state: null, url: "https://github.com/scape-app/scape/pull/42" });
-    seed(102, "success", "comment", "2026-09-24T10:03:00Z");
-    const succeeded = await run("mark-ready", repo + "#42");
-    if (succeeded.code !== 0) throw new Error(succeeded.stderr);
-    result.succeeded = JSON.parse(succeeded.stdout);
-    await run("unmark-ready", repo + "#42");
-    await refresh({ baseRefName: "feature-41" });
-    const stacked = await run("mark-ready", repo + "#42");
-    result.stacked = JSON.parse(stacked.stdout);
+    result.commentTied = await mark();
+    seed(101, "skipped");
+    // A fix push after the settled round: the review succeeded on an earlier head of this PR.
+    seed(200, "success", { kind: "push", sha: "c".repeat(40), at: "2026-09-24T08:00:00Z" });
+    seed(201, "skipped", { kind: "push", at: "2026-09-24T10:02:00Z" });
+    result.earlierHead = await mark();
+    await refresh(openThread);
+    result.threadAfterReview = await mark();
+    await refresh({ ...noThreads, baseRefName: "feature-41" });
+    seed(200, "skipped", { kind: "push", sha: "c".repeat(40), at: "2026-09-24T08:00:00Z" });
+    result.stacked = await mark();
     server.stop(true);
     console.log(JSON.stringify(result));
     process.exit(0);
@@ -306,23 +319,16 @@ test("mark-ready requires the configured OMP review on integration-base PRs", as
     ]);
     if (exitCode !== 0) throw new Error(stderr);
     const result = JSON.parse(stdout.trim().split("\n").at(-1)!);
-    expect(result.thread).toMatchObject({
-      code: 1,
-      stderr: expect.stringContaining("open review thread"),
-    });
-    expect(result.missing).toMatchObject({
-      code: 1,
-      stderr: expect.stringContaining("required review .github/workflows/omp-agentic-review.yml / OMP agentic review"),
-    });
-    expect(result.skipped).toMatchObject({
-      code: 1,
-      stderr: expect.stringContaining("has not succeeded for this head"),
-    });
-    expect(result.stale).toMatchObject({
-      code: 1,
-      stderr: expect.stringContaining("has not succeeded for this head"),
-    });
-    expect(result.succeeded).toEqual({ readyForReview: true, headSha: "a".repeat(40) });
+    const refused = { code: 1, stderr: expect.stringContaining(
+      "required review .github/workflows/omp-agentic-review.yml / OMP agentic review has not succeeded for this PR") };
+    expect(result.thread).toMatchObject({ code: 1, stderr: expect.stringContaining("open review thread") });
+    expect(result.missing).toMatchObject(refused);
+    expect(result.skipped).toMatchObject(refused);
+    expect(result.otherPr).toMatchObject(refused);
+    expect(result.lateComment).toMatchObject(refused);
+    expect(result.commentTied).toEqual({ readyForReview: true, headSha: "a".repeat(40) });
+    expect(result.earlierHead).toEqual({ readyForReview: true, headSha: "a".repeat(40) });
+    expect(result.threadAfterReview).toMatchObject({ code: 1, stderr: expect.stringContaining("open review thread") });
     expect(result.stacked).toEqual({ readyForReview: true, headSha: "a".repeat(40) });
   } finally {
     rmSync(dataDir, { recursive: true, force: true });

@@ -1301,6 +1301,25 @@ export function workflowRunsForPrBranch(repo: string, number: number, headBranch
   `).all(repo, headBranch, number);
 }
 
+// A PR branch's retained runs (30-day sweep) of one workflow created since the PR opened.
+// The review gate counts a success on any earlier head, which can predate the 72-hour
+// Actions window above; a run older than the PR cannot belong to it. event_at, which
+// GitHub sets at or after creation, bounds the branch-index range scan.
+export function workflowRunsForPrBranchSince(
+  repo: string,
+  number: number,
+  headBranch: string,
+  workflowPath: string,
+  since: string,
+): WorkflowRunRow[] {
+  return db.query<WorkflowRunRow, [string, string, number, string, string, string]>(`
+    SELECT * FROM workflow_runs
+    WHERE repo = ? AND head_branch = ? AND (pr_number IS NULL OR pr_number = ?)
+      AND workflow_path = ? AND event_at >= ? AND COALESCE(created_at, event_at) >= ?
+    ORDER BY event_at DESC, run_id DESC, run_attempt DESC
+  `).all(repo, headBranch, number, workflowPath, since, since);
+}
+
 const claimWorkflowRunForPrTxn = db.transaction((
   repo: string,
   runId: number,

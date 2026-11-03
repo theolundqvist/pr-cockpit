@@ -41,6 +41,7 @@ import {
   listRunJobsForRun,
   workflowRunAttempt,
   workflowRunsForPrBranch,
+  workflowRunsForPrBranchSince,
   listWorkflowRuns,
   workflowRunsForLease,
   saveDiff,
@@ -3753,6 +3754,8 @@ async function handleMergeApproval(owner: string, repo: string, number: string, 
 
 const REVIEW_REQUEST_RE = /(^|[^A-Za-z0-9])@review([^A-Za-z0-9]|$)/;
 
+// One settled review per PR: a success on any earlier head of this PR satisfies the
+// gate, so ordinary fix pushes after that round never demand another review.
 async function requiredReviewSucceeded(
   repoName: string,
   num: number,
@@ -3762,40 +3765,28 @@ async function requiredReviewSucceeded(
   const requirement = REVIEW_HANDOFF_REQUIREMENTS[repoName];
   if (!requirement || detail.baseRefName !== requirement.integrationBase) return true;
 
-  const branches = new Set([detail.headRefName, requirement.integrationBase]);
-  const runs = [...branches].flatMap((branch) => workflowRunsForPrBranch(repoName, num, branch));
-  const currentHeadPushRuns = runs.filter((run) =>
-    run.workflow_path === requirement.workflowPath
-    && run.event === "pull_request"
-    && run.head_sha === detail.headRefOid
-    && run.head_branch === detail.headRefName
-    && (run.pr_number === null || run.pr_number === num));
-  const pushCreatedAt = Math.max(...currentHeadPushRuns.map((run) => Date.parse(run.created_at ?? run.event_at)));
-  if (!Number.isFinite(pushCreatedAt)) return false;
+  // A push-triggered run on this PR's branch reviews one of its heads; issue_comment runs
+  // execute on the base commit, so tie them to an @review comment on this PR by actor and
+  // the comment's narrow creation window. Runs older than the PR never count, so an
+  // earlier PR that reused the branch name cannot satisfy the gate.
+  const prCreatedAt = detail.createdAt ?? prIndexCreatedAt(repoName, num);
+  if (!prCreatedAt) return false;
   const comments = await runtime.fetchPrCommentsSince(repoName, num, "1970-01-01T00:00:00.000Z").catch(() => []);
   const reviewComments = comments.filter((comment) => REVIEW_REQUEST_RE.test(comment.body));
-
-  for (const run of runs) {
-    if (run.workflow_path !== requirement.workflowPath) continue;
-    const jobs = listRunJobsForRun(repoName, run.run_id, run.run_attempt);
-    if (!jobs.some((job) => job.name === requirement.jobName && job.status === "completed" && job.conclusion === "success")) continue;
-
-    // A push-triggered run proves the exact head directly.
-    if (run.head_sha === detail.headRefOid && run.head_branch === detail.headRefName
-      && (run.pr_number === null || run.pr_number === num)) return true;
-
-    // issue_comment runs execute on the base commit. Tie them to this PR's exact
-    // request by actor and the @review comment's narrow creation window.
-    if (run.event !== "issue_comment" || run.head_branch !== requirement.integrationBase
-      || run.pr_number !== null && run.pr_number !== num || run.actor_login === null) continue;
+  const pushRuns = workflowRunsForPrBranchSince(repoName, num, detail.headRefName, requirement.workflowPath, prCreatedAt)
+    .filter((run) => run.event !== "issue_comment");
+  const commentRuns = reviewComments.length === 0 ? [] : workflowRunsForPrBranchSince(
+    repoName, num, requirement.integrationBase, requirement.workflowPath, prCreatedAt,
+  ).filter((run) => {
+    if (run.event !== "issue_comment" || run.actor_login === null) return false;
     const runCreatedAt = Date.parse(run.created_at ?? run.event_at);
-    if (!Number.isFinite(runCreatedAt) || runCreatedAt < pushCreatedAt) continue;
-    if (reviewComments.some((comment) => comment.author === run.actor_login
+    return Number.isFinite(runCreatedAt) && reviewComments.some((comment) => comment.author === run.actor_login
       && Number.isFinite(Date.parse(comment.createdAt))
       && comment.createdAt <= (run.created_at ?? run.event_at)
-      && runCreatedAt - Date.parse(comment.createdAt) <= 2 * 60_000)) return true;
-  }
-  return false;
+      && runCreatedAt - Date.parse(comment.createdAt) <= 2 * 60_000);
+  });
+  return [...pushRuns, ...commentRuns].some((run) => listRunJobsForRun(repoName, run.run_id, run.run_attempt)
+    .some((job) => job.name === requirement.jobName && job.status === "completed" && job.conclusion === "success"));
 }
 
 // Only an agent marks a PR ready for review, at the head it verified; the app may only clear the mark.
@@ -3836,7 +3827,7 @@ async function handleReviewHandoff(
     if (!(await requiredReviewSucceeded(repoName, num, detail, runtime))) {
       const requirement = REVIEW_HANDOFF_REQUIREMENTS[repoName]!;
       return json({
-        error: `cannot mark ${repoName}#${num} ready: required review ${requirement.workflowPath} / ${requirement.jobName} has not succeeded for this head; run pr-cockpit comment ${repoName}#${num} with @review`,
+        error: `cannot mark ${repoName}#${num} ready: required review ${requirement.workflowPath} / ${requirement.jobName} has not succeeded for this PR; run pr-cockpit comment ${repoName}#${num} with @review`,
       }, 409);
     }
     headSha = pr.head_sha;
