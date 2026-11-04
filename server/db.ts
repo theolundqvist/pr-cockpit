@@ -1357,9 +1357,6 @@ const recentRepoRunsStmt = db.prepare<WorkflowRunRow, [string, number]>(
 const recentPathRunsStmt = db.prepare<WorkflowRunRow, [string, string, number]>(
   `SELECT * FROM workflow_runs WHERE repo = ? AND ${STATIC_WORKFLOW_PATH_SQL} = ? ORDER BY ${RECENT_RUN_ORDER} LIMIT ?`,
 );
-const recentBranchRunsStmt = db.prepare<WorkflowRunRow, [string, string, number]>(
-  `SELECT * FROM workflow_runs WHERE repo = ? AND head_branch = ? ORDER BY ${RECENT_RUN_ORDER} LIMIT ?`,
-);
 const pathHasRunsStmt = db.prepare<{ found: number }, [string, string]>(
   `SELECT 1 AS found FROM workflow_runs WHERE repo = ? AND ${STATIC_WORKFLOW_PATH_SQL} = ? LIMIT 1`,
 );
@@ -1381,8 +1378,20 @@ export function listWorkflowRunsForPaths(repos: string[], paths: string[], limit
   return runs.sort(newestRunFirst).slice(0, limit);
 }
 
-export function listWorkflowRunsForBranch(repo: string, branch: string, limit = 200): WorkflowRunRow[] {
-  return recentBranchRunsStmt.all(repo, branch, limit);
+export function listWorkflowRunsMatching(
+  { repo, branch, workflows }: { repo: string; branch: string; workflows: string[] },
+  limit = 200,
+): WorkflowRunRow[] {
+  const lowered = workflows.map((workflow) => workflow.toLowerCase());
+  const marks = lowered.map(() => "?").join(", ");
+  const clauses = [
+    "repo = ?",
+    ...(branch ? ["head_branch = ?"] : []),
+    ...(marks ? [`(lower(workflow_name) IN (${marks}) OR lower(${STATIC_WORKFLOW_PATH_SQL}) IN (${marks}))`] : []),
+  ];
+  return db.query<WorkflowRunRow, Array<string | number>>(
+    `SELECT * FROM workflow_runs WHERE ${clauses.join(" AND ")} ORDER BY ${RECENT_RUN_ORDER} LIMIT ?`,
+  ).all(repo, ...(branch ? [branch] : []), ...lowered, ...lowered, limit);
 }
 
 export function hasWorkflowRunsForPath(repo: string, path: string): boolean {

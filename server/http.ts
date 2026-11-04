@@ -54,7 +54,7 @@ import {
   setRank,
   unsetRank,
   listWorkflowRunsForPaths,
-  listWorkflowRunsForBranch,
+  listWorkflowRunsMatching,
   hasWorkflowRunsForPath,
   upsertPr,
   upsertCachedPrDetail,
@@ -2747,14 +2747,10 @@ async function handleAgentRepoRuns(owner: string, name: string, url: URL): Promi
   const repo = `${owner}/${name}`;
   if (!(await trackedRepos()).includes(repo)) return json({ error: "repo is not tracked" }, 404);
   const branch = url.searchParams.get("branch") ?? "";
-  const workflows = url.searchParams.getAll("workflow").filter(Boolean).map((value) => value.toLocaleLowerCase());
+  const workflows = url.searchParams.getAll("workflow").filter(Boolean);
   const status = url.searchParams.get("status") ?? "all";
   const rawRunId = url.searchParams.get("runId");
-  const cached = latestActionRunAttempts(branch ? listWorkflowRunsForBranch(repo, branch, 1000) : listWorkflowRuns([repo], 1000));
-  const runs = cached
-    .filter((run) => workflows.length === 0
-      || workflows.includes(run.workflow_name.toLocaleLowerCase())
-      || workflows.includes(staticWorkflowPath(run.workflow_path).toLocaleLowerCase()))
+  const runs = latestActionRunAttempts(listWorkflowRunsMatching({ repo, branch, workflows }, 1000))
     .filter((run) => actionRunMatchesStatus(run, status))
     .slice(0, AGENT_RUN_ROWS);
   const scope = `${branch ? `branch ${branch} in ` : ""}${repo}`;
