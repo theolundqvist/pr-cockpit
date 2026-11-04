@@ -44,6 +44,7 @@ Mutation commands:
 Other commands:
   listen [REF]         wait for substantive cached state to change, print it, then exit
   cache-run REF RUN_ID fetch one Actions run and retain its unsuccessful logs
+  runs OWNER/REPO      cached Actions runs outside PRs (deploys, branch pushes), newest first
   update               update and reconcile the installed app
   status               report the process supervising the local server
 
@@ -51,6 +52,9 @@ Options:
   --jobs              cached Actions jobs, including queued and running state
   --run RUN_ID        with --jobs/--logs, select a run; with listen, wait for completion
   --attempt NUMBER   with --run and --jobs/--logs, select a cached rerun attempt
+  --branch NAME       with runs, only runs on this branch
+  --workflow NAME     with runs, only this workflow name or path; repeatable
+  --status STATUS     with runs, only running, succeeded, failed, or cancelled runs
   --json              machine-readable Cockpit status
   --diff              cached unified diff
   --file PATH         file contents at the PR head
@@ -181,7 +185,7 @@ fi
 
 command="read"
 case "${1:-}" in
-  listen|resolve|cache-run|comment|reply|unresolve|dismiss-alert|review|merge|update-branch|ready-for-review|convert-to-draft|close|pin|unpin|mark-ready|unmark-ready|edit-body|edit-title|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers|add-labels|remove-labels)
+  listen|runs|resolve|cache-run|comment|reply|unresolve|dismiss-alert|review|merge|update-branch|ready-for-review|convert-to-draft|close|pin|unpin|mark-ready|unmark-ready|edit-body|edit-title|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers|add-labels|remove-labels)
     command="$1"
     shift
     ;;
@@ -213,6 +217,9 @@ start_line=""
 start_side=""
 positionals=()
 proxy_arg=""
+run_branch=""
+run_workflows=()
+run_status=""
 while (($#)); do
   case "$1" in
     --json)
@@ -251,6 +258,21 @@ while (($#)); do
       [[ $# -gt 1 && "$2" =~ ^[1-9][0-9]*$ ]] || usage
       shift
       run_attempt="$1"
+      ;;
+    --branch)
+      [[ "$command" = "runs" && $# -gt 1 ]] || usage
+      shift
+      run_branch="$1"
+      ;;
+    --workflow)
+      [[ "$command" = "runs" && $# -gt 1 ]] || usage
+      shift
+      run_workflows+=("$1")
+      ;;
+    --status)
+      [[ "$command" = "runs" && $# -gt 1 && "$2" =~ ^(running|succeeded|failed|cancelled)$ ]] || usage
+      shift
+      run_status="$1"
       ;;
     --new-since)
       [[ $# -gt 1 ]] || usage
@@ -326,7 +348,7 @@ done
 
 [[ -z "$since" || "$mode" = "summary" || "$mode" = "json" ]] || usage
 [[ "$comments" = "1" || "$mode" = "summary" || "$mode" = "json" ]] || usage
-[[ -z "$run_id" || "$mode" = "jobs" || "$mode" = "logs" || "$command" = "listen" ]] || usage
+[[ -z "$run_id" || "$mode" = "jobs" || "$mode" = "logs" || "$command" = "listen" || "$command" = "runs" ]] || usage
 [[ -z "$run_attempt" || ( -n "$run_id" && ( "$mode" = "jobs" || "$mode" = "logs" ) && "$command" != "listen" ) ]] || usage
 if [[ "$command" = "listen" && -n "$run_id" ]]; then
   [[ "$listen_scope" = "all" && -z "$since" && "$comments" = "1" && ( "$mode" = "summary" || "$mode" = "jobs" ) ]] || usage
@@ -334,6 +356,8 @@ if [[ "$command" = "listen" && -n "$run_id" ]]; then
 fi
 if [[ "$command" = "resolve" ]]; then
   [[ -n "$ref" && "$mode" = "summary" && -z "$since" && "$comments" = "1" && "${#positionals[@]}" -eq 1 && "${positionals[0]}" =~ ^[0-9a-f]{10}$ ]] || usage
+elif [[ "$command" = "runs" ]]; then
+  [[ "$ref" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && ( "$mode" = "summary" || "$mode" = "json" ) && -z "$since" && "$comments" = "1" && -z "$run_attempt" && "${#positionals[@]}" -eq 0 ]] || usage
 elif [[ "$command" = "cache-run" ]]; then
   [[ -n "$ref" && "$mode" = "summary" && -z "$since" && "$comments" = "1" && "${#positionals[@]}" -eq 1 && "${positionals[0]}" =~ ^[1-9][0-9]*$ ]] || usage
 elif [[ "$mutation_command" = "1" ]]; then
@@ -539,6 +563,18 @@ index_fingerprint() {
     json_transform detail-batches "$repo" <<<"$index"
   )
 }
+
+if [[ "$command" = "runs" ]]; then
+  args=(--get)
+  [[ -z "$run_branch" ]] || args+=(--data-urlencode "branch=$run_branch")
+  for workflow in "${run_workflows[@]+"${run_workflows[@]}"}"; do args+=(--data-urlencode "workflow=$workflow"); done
+  [[ -z "$run_status" ]] || args+=(--data-urlencode "status=$run_status")
+  [[ -z "$run_id" ]] || args+=(--data-urlencode "runId=$run_id")
+  [[ "$mode" != "json" ]] || args+=(--data-urlencode "format=json")
+  curl --noproxy '*' -sS --fail-with-body "${args[@]}" "http://127.0.0.1:$port/api/agent/repo/$ref/runs"
+  [[ "$mode" != "json" ]] || printf '\n'
+  exit
+fi
 
 if [[ -z "$ref" ]]; then
   [[ "$mode" = "summary" && -z "$since" && "$comments" = "1" ]] || usage

@@ -1357,6 +1357,9 @@ const recentRepoRunsStmt = db.prepare<WorkflowRunRow, [string, number]>(
 const recentPathRunsStmt = db.prepare<WorkflowRunRow, [string, string, number]>(
   `SELECT * FROM workflow_runs WHERE repo = ? AND ${STATIC_WORKFLOW_PATH_SQL} = ? ORDER BY ${RECENT_RUN_ORDER} LIMIT ?`,
 );
+const recentBranchRunsStmt = db.prepare<WorkflowRunRow, [string, string, number]>(
+  `SELECT * FROM workflow_runs WHERE repo = ? AND head_branch = ? ORDER BY ${RECENT_RUN_ORDER} LIMIT ?`,
+);
 const pathHasRunsStmt = db.prepare<{ found: number }, [string, string]>(
   `SELECT 1 AS found FROM workflow_runs WHERE repo = ? AND ${STATIC_WORKFLOW_PATH_SQL} = ? LIMIT 1`,
 );
@@ -1376,6 +1379,10 @@ export function listWorkflowRuns(repos: string[], limit = 200): WorkflowRunRow[]
 export function listWorkflowRunsForPaths(repos: string[], paths: string[], limit = 200): WorkflowRunRow[] {
   const runs = repos.flatMap((repo) => paths.flatMap((path) => recentPathRunsStmt.all(repo, path, limit)));
   return runs.sort(newestRunFirst).slice(0, limit);
+}
+
+export function listWorkflowRunsForBranch(repo: string, branch: string, limit = 200): WorkflowRunRow[] {
+  return recentBranchRunsStmt.all(repo, branch, limit);
 }
 
 export function hasWorkflowRunsForPath(repo: string, path: string): boolean {

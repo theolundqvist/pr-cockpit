@@ -2926,6 +2926,51 @@ describe("Actions viewer API", () => {
       db.run("DELETE FROM prs WHERE repo = ? AND number = ?", [repo, number]);
     }
   });
+
+  test("agent repo runs list one branch's newest attempts and its jobs outside any PR", async () => {
+    const repo = "http-actions/deploys";
+    const previousRepos = getSetting("repos") ?? "";
+    setSetting("repos", [previousRepos, repo].filter(Boolean).join(","));
+    const runs = [
+      { id: 80, attempt: 1, branch: "staging", workflow: "Release", path: ".github/workflows/release.yml", status: "completed", conclusion: "failure", at: "2026-11-04T10:00:00Z" },
+      { id: 80, attempt: 2, branch: "staging", workflow: "Release", path: ".github/workflows/release.yml", status: "in_progress", conclusion: null, at: "2026-11-04T10:05:00Z" },
+      { id: 81, attempt: 1, branch: "staging", workflow: "Release", path: ".github/workflows/release.yml", status: "completed", conclusion: "success", at: "2026-11-04T09:00:00Z" },
+      { id: 82, attempt: 1, branch: "staging", workflow: "Lint", path: ".github/workflows/lint.yml", status: "completed", conclusion: "success", at: "2026-11-04T11:00:00Z" },
+      { id: 83, attempt: 1, branch: "main", workflow: "Release", path: ".github/workflows/release.yml", status: "completed", conclusion: "success", at: "2026-11-04T12:00:00Z" },
+    ];
+    for (const run of runs) {
+      upsertWorkflowRun({
+        repo, run_id: run.id, run_attempt: run.attempt, pr_number: null, head_sha: String(run.id).repeat(20),
+        head_branch: run.branch, workflow_name: run.workflow, event: "push", workflow_path: `${run.path}@refs/heads/${run.branch}`,
+        status: run.status, conclusion: run.conclusion, event_at: run.at, html_url: null,
+      });
+    }
+    upsertRunJob({
+      repo, job_id: 802, run_id: 80, run_attempt: 2, head_sha: "80".repeat(20), head_branch: "staging", workflow_name: "Release",
+      name: "deploy", status: "in_progress", conclusion: null, started_at: "2026-11-04T10:05:00Z", completed_at: null,
+      html_url: null, runner_name: null, runner_group_name: null, labels_json: "[]", failed_step: null,
+    });
+    const fetchHandler = buildFetchHandler(4820);
+    const read = (query: string) => fetchHandler(new Request(`http://127.0.0.1:4820/api/agent/repo/${repo}/runs?format=json&${query}`));
+    const listed = async (query: string) => expect(await (await read(query)).json());
+    const runRef = (id: number, attempt = 1) => ({ id, attempt });
+
+    try {
+      (await listed("branch=staging")).toMatchObject({ runs: [runRef(82), runRef(80, 2), runRef(81)] });
+      (await listed("branch=staging&workflow=release")).toMatchObject({ runs: [runRef(80, 2), runRef(81)] });
+      (await listed("branch=staging&workflow=.github/workflows/release.yml&status=succeeded")).toMatchObject({ runs: [runRef(81)] });
+      (await listed("status=succeeded&workflow=Release")).toMatchObject({ runs: [runRef(83), runRef(81)] });
+      const selected = await read("branch=staging&runId=80");
+      expect(selected.status).toBe(200);
+      expect(await selected.json()).toMatchObject({ selectedRun: { id: 80, attempt: 2 }, jobs: [{ id: 802, name: "deploy" }] });
+      expect((await read("branch=staging&runId=83")).status).toBe(404);
+      expect((await read("runId=0")).status).toBe(400);
+    } finally {
+      setSetting("repos", previousRepos);
+      db.run("DELETE FROM run_jobs WHERE repo = ?", [repo]);
+      db.run("DELETE FROM workflow_runs WHERE repo = ?", [repo]);
+    }
+  });
 });
 
 describe("repository settings refresh", () => {

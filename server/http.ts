@@ -54,6 +54,7 @@ import {
   setRank,
   unsetRank,
   listWorkflowRunsForPaths,
+  listWorkflowRunsForBranch,
   hasWorkflowRunsForPath,
   upsertPr,
   upsertCachedPrDetail,
@@ -2734,6 +2735,57 @@ async function handleAgentPrLogs(owner: string, repo: string, number: string, ur
   });
 }
 
+const AGENT_RUN_ROWS = 30;
+
+function formatAgentRun(run: WorkflowRunRow): string {
+  const title = run.display_title && run.display_title !== run.workflow_name ? ` — ${run.display_title.slice(0, 100)}` : "";
+  return `- ${run.workflow_name} · run ${run.run_id}, attempt ${run.run_attempt} · ${run.conclusion ?? run.status} · ${run.head_branch} ${run.head_sha.slice(0, 11)} · ${run.event} · ${run.event_at}${title}`;
+}
+
+// Branch runs (staging and production deploys among them) that belong to no PR.
+async function handleAgentRepoRuns(owner: string, name: string, url: URL): Promise<Response> {
+  const repo = `${owner}/${name}`;
+  if (!(await trackedRepos()).includes(repo)) return json({ error: "repo is not tracked" }, 404);
+  const branch = url.searchParams.get("branch") ?? "";
+  const workflows = url.searchParams.getAll("workflow").filter(Boolean).map((value) => value.toLocaleLowerCase());
+  const status = url.searchParams.get("status") ?? "all";
+  const rawRunId = url.searchParams.get("runId");
+  const cached = latestActionRunAttempts(branch ? listWorkflowRunsForBranch(repo, branch, 1000) : listWorkflowRuns([repo], 1000));
+  const runs = cached
+    .filter((run) => workflows.length === 0
+      || workflows.includes(run.workflow_name.toLocaleLowerCase())
+      || workflows.includes(staticWorkflowPath(run.workflow_path).toLocaleLowerCase()))
+    .filter((run) => actionRunMatchesStatus(run, status))
+    .slice(0, AGENT_RUN_ROWS);
+  const scope = `${branch ? `branch ${branch} in ` : ""}${repo}`;
+  if (rawRunId === null) {
+    if (url.searchParams.get("format") === "json") return json({ repo, branch: branch || null, runs: runs.map((run) => serializeActionRun(run)) });
+    const body = runs.length === 0
+      ? `No cached Actions runs match for ${scope}.\n`
+      : `Cached Actions runs for ${scope}, newest first\n\n${runs.map(formatAgentRun).join("\n")}\n`;
+    return new Response(body, { headers: { "content-type": "text/plain; charset=utf-8" } });
+  }
+  const runId = Number(rawRunId);
+  if (!Number.isSafeInteger(runId) || runId <= 0) return json({ error: "valid Actions run ID required" }, 400);
+  const run = latestWorkflowRunAttempt(repo, runId);
+  if (!run || (branch && run.head_branch !== branch)) return json({ error: `Actions run is not cached for ${scope}` }, 404);
+  // Webhooks keep active runs' jobs current; a completed run is fetched once if none arrived.
+  if (run.status === "completed" && run.jobs_fetched_at === null) {
+    try {
+      await cacheRepoActionsRunJobs(run);
+    } catch (error) {
+      return json({ error: error instanceof Error ? error.message : String(error) }, 502);
+    }
+  }
+  const jobs = listRunJobsForRun(repo, run.run_id, run.run_attempt);
+  if (url.searchParams.get("format") === "json") {
+    return json({ repo, branch: branch || null, selectedRun: serializeActionRun(run), jobs: jobs.map(serializeActionJob) });
+  }
+  return new Response(`${formatAgentRun(run)}\n\n${formatRunJobs(run.head_sha, jobs)}`, {
+    headers: { "content-type": "text/plain; charset=utf-8" },
+  });
+}
+
 async function handleAgentPrFile(owner: string, repo: string, number: string, url: URL): Promise<Response> {
   if (!validPrReference(owner, repo, number)) return json({ error: "invalid PR reference" }, 400);
   const path = url.searchParams.get("path") ?? "";
@@ -4398,6 +4450,16 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       if (parts[6] === "jobs") return handleAgentPrJobs(parts[3]!, parts[4]!, parts[5]!, url);
       if (parts[6] === "logs") return handleAgentPrLogs(parts[3]!, parts[4]!, parts[5]!, url);
       if (parts[6] === "file") return handleAgentPrFile(parts[3]!, parts[4]!, parts[5]!, url);
+    }
+    if (
+      req.method === "GET" &&
+      parts.length === 6 &&
+      parts[0] === "api" &&
+      parts[1] === "agent" &&
+      parts[2] === "repo" &&
+      parts[5] === "runs"
+    ) {
+      return handleAgentRepoRuns(parts[3]!, parts[4]!, url);
     }
     if (
       req.method === "POST" &&
