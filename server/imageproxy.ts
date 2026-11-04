@@ -57,6 +57,16 @@ function ghImgAvailable(): boolean {
 
 // github.com answers an authenticated attachment request with a signed redirect into its asset bucket.
 const GITHUB_ASSET_BUCKET_RE = /^github-production-user-asset-[0-9a-f]+\.s3\.amazonaws\.com$/;
+// Private repository files under github.com/<owner>/<repo>/raw/… need a browser session and answer a token with 404;
+// raw.githubusercontent.com serves the same file to the token.
+const GITHUB_REPO_RAW_RE = /^\/([^/]+)\/([^/]+)\/(?:raw\/(.+)|blob\/(.+))$/;
+
+function tokenRawUrl(target: URL): URL {
+  if (target.host !== "github.com") return target;
+  const match = target.pathname.match(GITHUB_REPO_RAW_RE);
+  if (!match || (match[4] && target.searchParams.get("raw") !== "true")) return target;
+  return new URL(`https://raw.githubusercontent.com/${match[1]}/${match[2]}/${match[3] ?? match[4]}`);
+}
 
 export async function fetchAllowedImage(raw: string, fetcher: typeof fetch = fetch, token: string | null = null): Promise<Uint8Array | null> {
   let target: URL;
@@ -65,11 +75,13 @@ export async function fetchAllowedImage(raw: string, fetcher: typeof fetch = fet
   } catch {
     return null;
   }
+  if (token) target = tokenRawUrl(target);
   for (let redirect = 0; redirect < 4; redirect++) {
     const allowed = GITHUB_MEDIA_HOSTS.has(target.host) || (redirect > 0 && GITHUB_ASSET_BUCKET_RE.test(target.host));
     if (target.protocol !== "https:" || !allowed) return null;
-    // Only github.com gets the token; the signed bucket URL must not carry other credentials.
-    const headers: Record<string, string> = token && target.host === "github.com" ? { accept: "image/*", authorization: `Bearer ${token}` } : { accept: "image/*" };
+    // Only GitHub's own hosts get the token; the signed bucket URL must not carry other credentials.
+    const authorized = token && (target.host === "github.com" || target.host === "raw.githubusercontent.com");
+    const headers: Record<string, string> = authorized ? { accept: "image/*", authorization: `Bearer ${token}` } : { accept: "image/*" };
     const response = await fetcher(target, { redirect: "manual", headers });
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get("location");

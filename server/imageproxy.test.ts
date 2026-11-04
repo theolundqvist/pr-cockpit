@@ -44,6 +44,19 @@ test("a token reaches only github.com and unlocks its signed attachment redirect
   expect(await fetchAllowedImage(asset, fetcher as typeof fetch, "secret")).toBeNull();
 });
 
+test("a token fetches a private repository's github.com raw file from raw.githubusercontent.com", async () => {
+  const seen: Array<[string, string | null]> = [];
+  const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    seen.push([url, new Headers(init?.headers).get("authorization")]);
+    return url.startsWith("https://raw.githubusercontent.com/") ? new Response(png) : new Response(null, { status: 404 });
+  };
+  const file = "https://raw.githubusercontent.com/owner/repo/0123abc/docs/shot.png";
+  expect(await fetchAllowedImage("https://github.com/owner/repo/raw/0123abc/docs/shot.png", fetcher as typeof fetch, "secret")).toEqual(png);
+  expect(await fetchAllowedImage("https://github.com/owner/repo/blob/0123abc/docs/shot.png?raw=true", fetcher as typeof fetch, "secret")).toEqual(png);
+  expect(seen).toEqual([[file, "Bearer secret"], [file, "Bearer secret"]]);
+});
+
 async function imageScenario(scenario: string): Promise<Record<string, any>> {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-images-"));
   try {
