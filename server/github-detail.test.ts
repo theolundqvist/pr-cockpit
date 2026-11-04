@@ -401,7 +401,7 @@ test("the open-PR search asks for the rollup state the way the detail query does
   let query = "";
   globalThis.fetch = (async (_input, init) => {
     query = JSON.parse(String(init?.body)).query;
-    return Response.json({ data: { search: { nodes: [] } } });
+    return Response.json({ data: { search: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } });
   }) as typeof fetch;
   try {
     await searchOpenPrs(["acme/repo"]);

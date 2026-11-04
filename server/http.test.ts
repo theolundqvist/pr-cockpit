@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, setSystemTime, spyOn, test } from "bun:test";
 import { buildFetchHandler as buildLiveFetchHandler, buildPrAgentSummary, checkoutTargetFor, formatPrAgentSummary, mergeabilityNeedsRefresh, normalizeAgentMutation, reviewThreadHandle, snapshotStatus, statsExcludingFiles, trackedDetailIsStale } from "./http.ts";
-import { GithubRequestError, StalePrHeadError, type PrDetail } from "./github.ts";
+import { GithubRequestError, StalePrHeadError, githubUserFallbacks, type PrDetail } from "./github.ts";
 import { db, getCachedPrDetail, getPr, getSetting, listRunJobs, markActionsLeaseBootstrapped, markWorkflowRunJobsFetched, recordPrWebhookActivity, renewActionsLease, saveDiff, saveFileContents, saveRunJobLog, setSetting, upsertCachedPrDetail, upsertPr, upsertPrIndex, upsertRunJob, upsertWorkflowRun } from "./db.ts";
 import { testMatcher } from "../ui/src/lib/testPath.js";
 import { setRendererInvalidationPublisher, type RendererInvalidation } from "./rendererInvalidation.ts";
@@ -79,6 +79,16 @@ function trackedPrRow({
     fetched_at: fetchedAt,
   } as unknown as Parameters<typeof upsertPr>[0];
 }
+
+test("quota responses expose always-on user fallback accounting", async () => {
+  const resetAt = new Date(Date.now() + 3_600_000).toISOString();
+  const resource = { limit: 5_000, used: 0, remaining: 5_000, resetAt };
+  const quota = { rest: resource, graphql: resource, fetchedAt: new Date().toISOString() };
+  const handler = buildFetchHandler(4820, { fetchGithubQuota: async () => quota });
+  const response = await handler(new Request("http://127.0.0.1:4820/api/quota"));
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ ...quota, userFallbacks: githubUserFallbacks() });
+});
 
 describe("statsExcludingFiles", () => {
   test("sums review files without double-counting tests or generated files", () => {
@@ -1021,7 +1031,8 @@ describe("agent PR summary", () => {
     });
     const resolvedIds: string[] = [];
     const fetchHandler = buildFetchHandler(4820, {
-      resolveReviewThread: async (id) => {
+      resolveReviewThread: async (repository, id) => {
+        expect(repository).toBe(repo);
         resolvedIds.push(id);
       },
       fetchPrDetail: async () => ({

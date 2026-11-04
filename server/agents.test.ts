@@ -371,7 +371,7 @@ test("cached PRs launch prompt, auto-fix, and custom agents while GitHub's API q
   const { result, ghCalls, clones } = await liveAgentScenario(`
     const { getViewerLogin } = await import(${JSON.stringify(new URL("./github.ts", import.meta.url).href)});
     const { buildFetchHandler } = await import(${JSON.stringify(new URL("./http.ts", import.meta.url).href)});
-    // the screenshot's state: the first 403 records core as exhausted, and later core reads fail fast on that record
+    // Identity falls back from exhausted core to GraphQL; both are exhausted in this fixture.
     await getViewerLogin().catch(() => {});
     const blocked = await getViewerLogin().then(() => null, (err) => String(err));
     githubCalls.length = 0;
@@ -398,7 +398,7 @@ test("cached PRs launch prompt, auto-fix, and custom agents while GitHub's API q
     console.log(JSON.stringify({ blocked, launches, githubCalls }));
   `);
   const { blocked, launches, githubCalls } = result as { blocked: string; launches: unknown[]; githubCalls: string[] };
-  expect(blocked).toContain("GitHub core quota exhausted until");
+  expect(blocked).toContain("GitHub graphql quota exhausted until");
   expect(launches).toEqual([
     { path: "prompt", status: 200, body: { ok: true }, launchCalls: [], state: "exited", exitReason: "done" },
     { path: "autofix", status: 200, body: { ok: true }, launchCalls: [], state: "exited", exitReason: "gave-up" },

@@ -42,6 +42,7 @@
   import { setTasksByKey, taskMarkers } from "../../../shared/taskList.js";
   import { rememberScroll, rememberedScroll } from "./history.svelte.js";
   import { presentMutationError } from "./mutationError.js";
+  import { mutationAffectsPendingReview } from "./pendingReviewRefresh.js";
   import { isCodeScanningThread } from "../../../shared/codeScanning.js";
   import { loadPrIndex, prSummary } from "./prIndex.svelte.js";
   import { prKeyOwner, shouldCopyPrCockpitUrl, shouldCopyPrUrl } from "./dom.js";
@@ -864,7 +865,6 @@
     handledRefreshRevision = refreshRevision;
     untrack(() => {
       refreshDetail();
-      if (prefs.pendingReviewsEnabled) loadPendingReview();
     });
   });
 
@@ -876,14 +876,16 @@
 
   $effect(() => {
     if (!mutations.some((m) => m.state === "pending")) return;
-    const pendingBefore = new Set(mutations.filter((m) => m.state === "pending").map((m) => m.id));
+    const pendingBefore = mutations.filter((m) => m.state === "pending");
     const timer = setTimeout(async () => {
       const rows = await fetchMutations(repo, number);
       const stillPresent = new Set(rows.map((m) => m.id));
-      const anyCompleted = [...pendingBefore].some((id) => !stillPresent.has(id));
+      const anyCompleted = pendingBefore.some((mutation) => !stillPresent.has(mutation.id));
       if (anyCompleted) {
         await reloadPr();
-        if (prefs.pendingReviewsEnabled) await loadPendingReview();
+        if (prefs.pendingReviewsEnabled && pendingBefore.some((mutation) => !stillPresent.has(mutation.id) && mutationAffectsPendingReview(mutation.kind))) {
+          await loadPendingReview();
+        }
       }
       mutations = rows;
     }, 2000);

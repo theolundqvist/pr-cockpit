@@ -84,6 +84,7 @@ import {
   fetchPrCommentsSince,
   fetchPendingReview,
   fetchGithubQuota,
+  githubUserFallbacks,
   fetchMergedPrAnalytics,
   fetchRepositoryOpenPrs,
   GithubRequestError,
@@ -684,7 +685,7 @@ const defaultHttpDependencies: HttpDependencies = {
 };
 async function handleGithubQuota(runtime: HttpRuntime): Promise<Response> {
   try {
-    return json(await runtime.fetchGithubQuota());
+    return json({ ...await runtime.fetchGithubQuota(), userFallbacks: githubUserFallbacks() });
   } catch (err) {
     // The renderer polls quota; while offline a stack trace per poll buries everything else.
     if (isTransportFailure(err)) console.warn(`GitHub quota fetch failed: ${(err as Error).message}`);
@@ -818,6 +819,7 @@ async function handleGithubUsage(runtime: HttpRuntime): Promise<Response> {
       quota: resources.graphql,
       rest: resources.rest,
       search: resources.search,
+      userFallbacks: githubUserFallbacks(),
       usage: githubGraphqlUsage(resources.graphql.used, resources.graphql.limit, resources.graphql.resetAt, Date.now(), credential),
       // null while REST usage recording is off for this installation.
       restUsage: recording ? githubRestUsage(resources.rest.used, resources.rest.resetAt, credential) : null,
@@ -1900,7 +1902,7 @@ async function handleResolveReviewThread(
         ?? await findCodeScanningAlert(repoName, num, thread.path, thread.line);
       await setCodeScanningAlertResolved(repoName, alert, true, dismissal);
     }
-    await runtime.resolveReviewThread(thread.id);
+    await runtime.resolveReviewThread(repoName, thread.id);
   } catch (err) {
     return githubErrorResponse(err, "GitHub thread resolution failed");
   }

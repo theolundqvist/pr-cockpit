@@ -63,8 +63,6 @@ export type GithubRequestErrorKind = "http" | "graphql" | "quota" | "transport";
 
 export class GithubRequestError extends Error {
   credential?: string;
-  // An allowed missing PR alias proves App repository access even though routing still falls back.
-  appReadSucceeded?: boolean;
   constructor(
     message: string,
     readonly status: number,
@@ -126,6 +124,48 @@ type AppReadObservation = GithubAppReadHealth["repositories"][number] & {
 const appReadObservations = new Map<string, AppReadObservation>();
 // Dispatch order, not completion order, determines which completed outcome is current.
 let appReadSequence = 0;
+
+export type GithubUserFallbackReason =
+  // The App has no installation for the repository.
+  | "installation"
+  // The installation refused the request: repository access or an App permission is missing.
+  | "permission"
+  // Account-wide work no single installation can scope.
+  | "account"
+  // State only the person can see: their login and their pending reviews.
+  | "viewer";
+export interface GithubUserFallback {
+  // owner/repo, or "account" for work outside any one repository
+  scope: string;
+  reason: GithubUserFallbackReason;
+  resource: GithubQuotaResourceName;
+  operation: string;
+  source: GithubUsageSource | "unknown";
+  count: number;
+  lastAt: string;
+}
+const USER_FALLBACK_LIMIT = 256;
+const userFallbacks = new Map<string, GithubUserFallback>();
+
+// Counted whether or not REST usage recording is on; logged once per kind of fallback.
+function recordUserFallback(
+  scope: string, reason: GithubUserFallbackReason, resource: GithubQuotaResourceName, operation: string,
+): void {
+  scope = scope.toLowerCase();
+  const source = currentGithubUsageSource();
+  const key = JSON.stringify([scope, reason, resource, operation, source]);
+  const previous = userFallbacks.get(key);
+  if (!previous) console.warn(`GitHub ${operation} for ${scope} (${source}) uses the personal token: ${reason}`);
+  userFallbacks.delete(key);
+  userFallbacks.set(key, {
+    scope, reason, resource, operation, source, count: (previous?.count ?? 0) + 1, lastAt: new Date(Date.now()).toISOString(),
+  });
+  if (userFallbacks.size > USER_FALLBACK_LIMIT) userFallbacks.delete(userFallbacks.keys().next().value!);
+}
+
+export function githubUserFallbacks(): GithubUserFallback[] {
+  return [...userFallbacks.values()].map((entry) => ({ ...entry }));
+}
 
 // A status snapshot is observational: no discovery, token issuance, quota fetch, or probe.
 export function githubAppReadHealth(appId: string | null): GithubAppReadHealth {
@@ -217,11 +257,7 @@ async function appRepositoryRead<T>(
     rememberAppRead(repo, appId, authentication.state.identity, sequence, null);
     return value;
   } catch (error) {
-    if (error instanceof GithubRequestError && error.appReadSucceeded) {
-      rememberAppRead(repo, appId, authentication.state.identity, sequence, null);
-    } else {
-      rememberAppReadFailure(repo, error, appId, authentication.state.identity, sequence);
-    }
+    rememberAppReadFailure(repo, error, appId, authentication.state.identity, sequence);
     throw error;
   }
 }
@@ -249,7 +285,11 @@ async function userAuthentication(): Promise<Authentication> {
     state.token = token;
     userCredentials.set(token, state);
   }
-  if (userQuota !== state) endGithubRestCoverage("user");
+  if (userQuota !== state) {
+    endGithubRestCoverage("user");
+    cachedViewerLogin = null;
+    cachedViewerId = undefined;
+  }
   userQuota = state;
   return { token, state };
 }
@@ -267,7 +307,8 @@ async function appAuthentication(repo: string): Promise<Authentication | null> {
     const appId = error.appId ?? observedGithubAppId();
     const credential = appId && error.installationId ? `app:${appId}:installation:${error.installationId}` : null;
     rememberAppReadFailure(repo, error, appId, credential, sequence);
-    if (!error.secondaryRateLimited && (error.status === 403 || error.status === 404)) {
+    if (!error.secondaryRateLimited && (error.status === 403 || error.status === 404)
+      && error.headers.get("x-ratelimit-remaining") !== "0") {
       authentication = null;
     } else {
       const response = new Response(null, { status: error.status ?? 502, headers: error.headers });
@@ -278,6 +319,9 @@ async function appAuthentication(repo: string): Promise<Authentication | null> {
           ?? (rateLimitHeader(response, "x-ratelimit-remaining") === 0 ? primaryResetDeadline(response) : null)
           ?? { status: response.status, until, resetAt: new Date(until).toISOString() };
         updateSecondaryQuota("core", deadline);
+      } else if (rateLimitHeader(response, "x-ratelimit-remaining") === 0) {
+        // The App's own budget is spent; the personal token never stands in for it.
+        deadline = primaryResetDeadline(response);
       }
       const requestError = new GithubRequestError(
         error.message, response.status, [], deadline ? "quota" : "http",
@@ -580,53 +624,70 @@ async function refreshAppAuthentication(repo: string, rejected: Authentication):
   return refresh;
 }
 
-async function withRepositoryRead<T>(
+// Repository work runs on the repository's installation. The personal token stands in only where
+// the App has no installation or the installation refuses the request; a low or exhausted App
+// pool waits for its own reset, and transport or credential failures stay explicit. Writes are
+// not reads, so their outcomes stay out of the App read health.
+async function withRepositoryCredential<T>(
   repo: string | undefined,
   resource: GithubQuotaResourceName,
-  read: (authentication: Authentication) => Promise<T>,
+  operation: string,
+  request: (authentication: Authentication) => Promise<T>,
+  write = false,
 ): Promise<T> {
   // Check before discovery/token issuance too: changing credentials cannot evade a cooldown.
   assertQuotaAvailable(resource, false);
-  let app = repo === undefined ? null : await appAuthentication(repo);
-  if (app && isBackgroundSource(currentGithubUsageSource())) {
-    const reading = resource === "graphql" ? liveGraphqlReading(Date.now(), app.state) : liveRestReading(resource, Date.now(), app.state);
-    if (reading !== null && !backgroundQuotaAvailable(reading)
-      && personalBackgroundAvailable(resource) === true) app = null;
-  }
-  if (app && !activeQuotaBlock(resource, app.state)) {
+  if (repo === undefined) return request(await userAuthentication());
+  const attempt = (authentication: Authentication) => write ? request(authentication) : appRepositoryRead(repo, authentication, request);
+  let app = await appAuthentication(repo);
+  let reason: GithubUserFallbackReason = "installation";
+  if (app) {
+    assertQuotaAvailable(resource, true, app.state);
     try {
-      return await appRepositoryRead(repo!, app, read);
+      return await attempt(app);
     } catch (firstError) {
       let error = firstError;
       if (error instanceof GithubRequestError && error.status === 401) {
         assertQuotaAvailable(resource, false, app.state);
-        app = await refreshAppAuthentication(repo!, app);
-        if (!app) return read(await userAuthentication());
-        try {
-          return await appRepositoryRead(repo!, app, read);
-        } catch (refreshedError) {
-          error = refreshedError;
+        app = await refreshAppAuthentication(repo, app);
+        if (app) {
+          try {
+            return await attempt(app);
+          } catch (refreshedError) {
+            error = refreshedError;
+          }
         }
       }
-      if (!(error instanceof GithubRequestError) || activeSecondaryCooldown()) throw error;
-      const primary = error.kind === "quota" && error.resource === resource;
-      const permission = error.kind !== "quota" && (
-        error.status === 403 || error.status === 404
-        || (error.graphqlErrors.length > 0 && error.graphqlErrors.every((item) =>
-          item.type === "FORBIDDEN" || item.type === "NOT_FOUND" || item.type === "INSUFFICIENT_SCOPES"))
-      );
-      if (!primary && !permission) throw error;
+      if (app) {
+        if (!(error instanceof GithubRequestError) || activeSecondaryCooldown()) throw error;
+        const permission = error.kind !== "quota" && (
+          error.status === 403 || error.status === 404
+          || (error.graphqlErrors.length > 0 && error.graphqlErrors.every((item) =>
+            item.type === "FORBIDDEN" || item.type === "NOT_FOUND" || item.type === "INSUFFICIENT_SCOPES"))
+        );
+        if (!permission) throw error;
+        reason = "permission";
+      }
     }
   }
-  // One user attempt only, including after an app refresh. Transport/auth failures stay explicit.
-  return read(await userAuthentication());
+  // One personal attempt only, including after an app refresh.
+  if (reason === "permission" || observedGithubAppId() !== null) recordUserFallback(repo, reason, resource, operation);
+  return request(await userAuthentication());
 }
 
+function restOperation(method: string, path: string): string {
+  return `${method} ${normalizeGithubRestEndpoint(path)}`;
+}
+
+// A search is scoped by its repo: qualifier, every other request by its /repos path.
 function assertRepositoryPath(repo: string, path: string): void {
+  const url = new URL(path, "https://api.github.com");
+  if (url.pathname === "/search/issues"
+    && (url.searchParams.get("q") ?? "").toLowerCase().split(/\s+/).includes(`repo:${repo.toLowerCase()}`)) return;
   const match = /^\/repos\/([^/?#]+)\/([^/?#]+)(?:[/?]|$)/.exec(path);
   if (!match || `${decodeURIComponent(match[1]!)}/${decodeURIComponent(match[2]!)}`.toLowerCase() !== repo.toLowerCase()
-    || new URL(path, "https://api.github.com").pathname !== path.split("?")[0]) {
-    throw new Error("GitHub read does not match its repository scope");
+    || url.pathname !== path.split("?")[0]) {
+    throw new Error("GitHub request does not match its repository scope");
   }
 }
 
@@ -637,7 +698,7 @@ async function repositoryApiRead<T>(
   options: { accept?: string; redirect?: RequestInit["redirect"] } = {},
 ): Promise<T> {
   assertRepositoryPath(repo, path);
-  return withRepositoryRead(repo, quotaResource(path), async (authentication) => {
+  return withRepositoryCredential(repo, quotaResource(path), restOperation("GET", path), async (authentication) => {
     const response = await githubApiResponse("GET", path, { ...options, authentication });
     if (!response.ok && response.status !== 302) throw await githubResponseError("GitHub repository read failed", response);
     return read(response);
@@ -779,9 +840,12 @@ export async function ghToken(): Promise<string> {
   return liveGithubToken();
 }
 
+// The person behind the personal token; a token switch forgets it.
 let cachedViewerLogin: string | null = null;
 // Undefined until REST /user answered; GraphQL viewer reads carry no id.
 let cachedViewerId: number | null | undefined;
+let viewerLoginRead: Promise<string> | null = null;
+let viewerGraphqlLoginRead: Promise<string> | null = null;
 
 const VIEWER_LOGIN_QUERY = `
 query {
@@ -789,7 +853,7 @@ query {
 }`;
 
 // REST while core has room; a fresh process with core exhausted would otherwise have no viewer
-// until the core window resets, so GraphQL answers then.
+// until the core window resets, so GraphQL answers then. Concurrent callers share each read.
 export async function getViewerLogin(source: GithubUsageSource = "app detail"): Promise<string> {
   if (mockGithub) return mockGithub.viewerLogin;
   try {
@@ -798,19 +862,31 @@ export async function getViewerLogin(source: GithubUsageSource = "app detail"): 
     if (!coreQuotaExhausted(error)) throw error;
   }
   if (cachedViewerLogin) return cachedViewerLogin;
-  const data = await graphql<{ viewer: { login: string } }>(VIEWER_LOGIN_QUERY, {}, source, "viewer login");
-  cachedViewerLogin = data.viewer.login;
-  return cachedViewerLogin;
+  viewerGraphqlLoginRead ??= (async () => {
+    recordUserFallback("account", "viewer", "graphql", "viewer login");
+    const data = await graphql<{ viewer: { login: string } }>(VIEWER_LOGIN_QUERY, {}, source, "viewer login");
+    cachedViewerLogin = data.viewer.login;
+    return cachedViewerLogin;
+  })().finally(() => {
+    viewerGraphqlLoginRead = null;
+  });
+  return viewerGraphqlLoginRead;
 }
 
 // A login learned through GraphQL lacks the id the relay records usage under, so REST reads the
 // viewer once more when core allows.
 async function restViewerLogin(): Promise<string> {
   if (cachedViewerLogin && cachedViewerId !== undefined) return cachedViewerLogin;
-  const viewer = await restJson<{ login: string; id?: number }>("/user");
-  cachedViewerLogin = viewer.login;
-  cachedViewerId = typeof viewer.id === "number" && Number.isSafeInteger(viewer.id) ? viewer.id : null;
-  return cachedViewerLogin;
+  viewerLoginRead ??= (async () => {
+    recordUserFallback("account", "viewer", "core", "GET /user");
+    const viewer = await restJson<{ login: string; id?: number }>("/user");
+    cachedViewerLogin = viewer.login;
+    cachedViewerId = typeof viewer.id === "number" && Number.isSafeInteger(viewer.id) ? viewer.id : null;
+    return cachedViewerLogin;
+  })().finally(() => {
+    viewerLoginRead = null;
+  });
+  return viewerLoginRead;
 }
 
 export interface GithubViewer {
@@ -837,11 +913,11 @@ async function graphql<T>(
   operation: string,
   // Opt-in for batched aliases: NOT_FOUND errors on accepted paths leave those fields null instead of rejecting siblings.
   missingAllowed?: (path: readonly (string | number)[]) => boolean,
+  // Repository-scoped queries and the non-attributed mutations run on the repository's installation.
   repo?: string,
 ): Promise<T> {
-  if (repo !== undefined && !/^\s*query\b/.test(query)) throw new Error("Only repository queries may use GitHub App authentication");
-  return withRepositoryRead(repo, "graphql", (authentication) =>
-    graphqlRequest<T>(query, variables, source, operation, authentication, missingAllowed));
+  return withRepositoryCredential(repo, "graphql", operation, (authentication) =>
+    graphqlRequest<T>(query, variables, source, operation, authentication, missingAllowed), /^\s*mutation\b/.test(query));
 }
 
 async function graphqlRequest<T>(
@@ -930,9 +1006,8 @@ async function graphqlRequest<T>(
   if (body.data) delete body.data[RATE_LIMIT_ALIAS];
   const missingFields = !!missingAllowed && !!body.data && !!body.errors?.length
     && body.errors.every((error) => error.type === "NOT_FOUND" && !!error.path && missingAllowed(error.path));
-  const partial = credential.kind === "user" && missingFields;
-  record(rateLimit ?? null, body.errors?.length && !partial ? "error" : "ok");
-  if (body.errors?.length && !partial) {
+  record(rateLimit ?? null, body.errors?.length && !missingFields ? "error" : "ok");
+  if (body.errors?.length && !missingFields) {
     const missing = body.errors.every((error) => error.type === "NOT_FOUND");
     const exhausted = body.errors.some((error) => error.type === "RATE_LIMIT" || error.type === "RATE_LIMITED");
     const resetAt = rateLimit?.resetAt
@@ -951,8 +1026,6 @@ async function graphqlRequest<T>(
       secondary ? activeSecondaryCooldown()!.resetAt : exhausted ? resetAt : null,
     );
     error.credential = credential.ledgerIdentity;
-    error.appReadSucceeded = credential.kind === "app" && missingFields
-      && body.data?.repository !== null && typeof body.data?.repository === "object" && !Array.isArray(body.data?.repository);
     throw error;
   }
   if (!body.data) throw new GithubRequestError("GraphQL response missing data", 502, [], "graphql", "graphql");
@@ -976,24 +1049,6 @@ export function backgroundQuotaAvailable(quota: GithubQuotaResource, now = Date.
   return quota.remaining > Math.max(GRAPHQL_BACKGROUND_RESERVE, pacedReserve);
 }
 
-function personalBackgroundAvailable(resource: GithubQuotaResourceName): boolean | null {
-  const reading = resource === "graphql"
-    ? liveGraphqlReading(Date.now()) ?? userQuota.cachedQuota?.graphql
-    : liveRestReading(resource, Date.now()) ?? userQuota.cachedQuota?.[resource === "core" ? "rest" : "search"];
-  if (!reading || Date.parse(reading.resetAt) <= Date.now()) return null;
-  return !activeQuotaBlock(resource) && backgroundQuotaAvailable(reading);
-}
-
-function assertPersonalGraphqlReserve(source: GithubUsageSource): void {
-  if (!BACKGROUND_SOURCES.has(source) || personalBackgroundAvailable("graphql") !== false) return;
-  const reading = liveGraphqlReading(Date.now()) ?? userQuota.cachedQuota?.graphql;
-  const error = new GithubRequestError(
-    "Personal GitHub GraphQL quota reserved for interactive actions", 403, [], "quota", "graphql", reading?.resetAt ?? null,
-  );
-  error.credential = "user";
-  throw error;
-}
-
 // Reads made on Cockpit's own schedule rather than for someone looking at the screen.
 const BACKGROUND_SOURCES: ReadonlySet<GithubUsageSource> = new Set([
   "background poll",
@@ -1004,18 +1059,17 @@ const BACKGROUND_SOURCES: ReadonlySet<GithubUsageSource> = new Set([
   "webhook",
 ]);
 
-// With the REST fallback on, a read takes GitHub's separate REST pool while GraphQL is
-// exhausted, and a background read also while GraphQL is below its background reserve.
+// With the REST fallback on, a read takes its credential's separate REST pool while that
+// credential's GraphQL is exhausted, and a background read also while it is below its reserve.
 async function graphqlReadOnRest(source: GithubUsageSource, repo?: string): Promise<boolean> {
   if (mockGithub || !restFallbackEnabled()) return false;
   assertQuotaAvailable("graphql", false);
   const app = repo === undefined ? null : await appAuthentication(repo);
-  const credential = app && !activeQuotaBlock("graphql", app.state) ? app.state : (await userAuthentication()).state;
+  const credential = app?.state ?? (await userAuthentication()).state;
   if (activeQuotaBlock("graphql", credential)) return true;
   if (!BACKGROUND_SOURCES.has(source)) return false;
   const reading = liveGraphqlReading(Date.now(), credential);
-  if (reading === null || backgroundQuotaAvailable(reading)) return false;
-  return !(credential.kind === "app" && personalBackgroundAvailable("graphql") === true);
+  return reading !== null && !backgroundQuotaAvailable(reading);
 }
 
 export function isBackgroundSource(source: GithubUsageSource | "unknown"): boolean {
@@ -1409,7 +1463,9 @@ export async function fetchGithubQuota(): Promise<GithubQuota> {
   return quotaWithIdentities(currentQuota(await state.quotaFetchInFlight, Date.now(), state), state);
 }
 
-// Null is unobserved; undefined means no installation pool is available for this work.
+// The pool a repository's reads spend: an installation's whatever it has left, since those reads
+// never move to the personal pool. Null is unobserved; undefined means no installation pool is
+// available for this work.
 export async function repositoryReadQuota(
   repo: string,
   resource: "core" | "graphql",
@@ -1418,17 +1474,17 @@ export async function repositoryReadQuota(
   if (!mockGithub) {
     assertQuotaAvailable(resource, false);
     const app = await appAuthentication(repo);
-    if (requireInstallation && !app) return undefined;
-    if (app && !activeQuotaBlock(resource, app.state)) {
+    if (app) {
       const reading = resource === "core" ? liveRestReading("core", Date.now(), app.state) : liveGraphqlReading(Date.now(), app.state);
-      if (reading === null || backgroundQuotaAvailable(reading)) return reading;
+      return reading && { ...reading, blockedUntil: activeQuotaBlock(resource, app.state)?.resetAt ?? null };
     }
-    if (requireInstallation) return undefined;
-  } else if (requireInstallation) {
-    return undefined;
   }
-  const quota = await backgroundGithubQuota();
-  return resource === "core" ? quota.rest : quota.graphql;
+  if (requireInstallation) return undefined;
+  const now = Date.now();
+  const cached = userQuota.cachedQuota?.[resource === "core" ? "rest" : "graphql"] ?? null;
+  const reading = (resource === "core" ? liveRestReading("core", now, userQuota) : liveGraphqlReading(now, userQuota))
+    ?? (cached && Date.parse(cached.resetAt) > now ? cached : null);
+  return reading && { ...reading, blockedUntil: activeQuotaBlock(resource, userQuota)?.resetAt ?? null };
 }
 
 export async function backgroundGithubQuota(): Promise<GithubQuota> {
@@ -1510,7 +1566,22 @@ function repositorySearchUnavailable(error: unknown): error is GithubRequestErro
 // GitHub search returns at most 1,000 results; past that the inbox is incomplete.
 const SEARCH_RESULT_LIMIT = 1000;
 
-async function searchOpenPrsGraphql(searchQuery: string): Promise<SearchHit[]> {
+// A search sees only its own token's repositories, so one spanning installations would silently
+// drop the PRs outside the token's reach: each installation searches its own repositories, and
+// the repositories no installation covers search on the personal token.
+async function installationGroups(repos: string[]): Promise<{ app: boolean; repos: string[] }[]> {
+  const credentials = await Promise.all(repos.map((repo) => appAuthentication(repo)));
+  const groups = new Map<string, { app: boolean; repos: string[] }>();
+  repos.forEach((repo, index) => {
+    const identity = credentials[index]?.state.identity ?? "user";
+    const group = groups.get(identity) ?? { app: identity !== "user", repos: [] };
+    group.repos.push(repo);
+    groups.set(identity, group);
+  });
+  return [...groups.values()];
+}
+
+async function searchOpenPrsGraphql(searchQuery: string, scope: string): Promise<SearchHit[]> {
   const hits: SearchHit[] = [];
   let after: string | null = null;
   do {
@@ -1526,7 +1597,7 @@ async function searchOpenPrsGraphql(searchQuery: string): Promise<SearchHit[]> {
           commits: { nodes: Array<{ commit: { statusCheckRollup: { state: string } | null } }> };
         }>;
       };
-    } = await graphql(SEARCH_QUERY, { searchQuery, after }, "background poll", "open PR search");
+    } = await graphql(SEARCH_QUERY, { searchQuery, after }, "background poll", "open PR search", undefined, scope);
     for (const node of data.search.nodes) {
       hits.push({
         repo: node.repository.nameWithOwner,
@@ -1548,8 +1619,8 @@ export type KnownSearchHit = (repo: string, number: number, updatedAt: string) =
 
 // REST search finds the PRs; each one's head and CI come from its own conditional reads, which
 // cost quota whenever CI moved, so a PR the caller already knows skips them.
-async function searchOpenPrsRest(searchQuery: string, known: KnownSearchHit): Promise<SearchHit[]> {
-  const items = await searchPullRequests(searchQuery, 100, "background poll");
+async function searchOpenPrsRest(searchQuery: string, scope: string, known: KnownSearchHit): Promise<SearchHit[]> {
+  const items = await searchPullRequests(searchQuery, 100, "background poll", scope);
   if (items.length === 100) console.warn(`search hit the 100-result cap, PRs may be missing: ${searchQuery}`);
   const limit = createConcurrencyLimit(REST_FANOUT);
   return Promise.all(items.map((item) => limit(async () => {
@@ -1568,11 +1639,14 @@ async function searchOpenPrsRest(searchQuery: string, known: KnownSearchHit): Pr
   })));
 }
 
-async function searchOpenPrBatch(repos: string[], search: (searchQuery: string) => Promise<SearchHit[]>): Promise<SearchHit[]> {
+// Every repository in a batch shares one credential, so any of them scopes the search.
+async function searchOpenPrBatch(
+  repos: string[], me: string, search: (searchQuery: string, scope: string) => Promise<SearchHit[]>,
+): Promise<SearchHit[]> {
   const repoFilter = repos.map((repo) => `repo:${repo}`).join(" ");
-  const searchQuery = `is:open is:pr archived:false involves:@me ${repoFilter}`;
+  const searchQuery = `is:open is:pr archived:false involves:${me} ${repoFilter}`;
   try {
-    const hits = await search(searchQuery);
+    const hits = await search(searchQuery, repos[0]!);
     for (const repo of repos) clearRepositoryUnavailable(repo);
     return hits;
   } catch (error) {
@@ -1584,8 +1658,8 @@ async function searchOpenPrBatch(repos: string[], search: (searchQuery: string) 
     }
     const midpoint = Math.ceil(repos.length / 2);
     const searches = await Promise.allSettled([
-      searchOpenPrBatch(repos.slice(0, midpoint), search),
-      searchOpenPrBatch(repos.slice(midpoint), search),
+      searchOpenPrBatch(repos.slice(0, midpoint), me, search),
+      searchOpenPrBatch(repos.slice(midpoint), me, search),
     ]);
     const hits: SearchHit[] = [];
     for (const search of searches) {
@@ -1600,11 +1674,18 @@ export async function searchOpenPrs(repos: string[], known: KnownSearchHit = () 
   if (mockGithub) return mockGithub.searchOpenPrs(repos);
   const available = repos.filter(repositoryAvailable);
   if (available.length === 0) return [];
-  return readWithRestFallback(
-    "background poll",
-    () => searchOpenPrBatch(available, searchOpenPrsGraphql),
-    () => searchOpenPrBatch(available, (searchQuery) => searchOpenPrsRest(searchQuery, known)),
-  );
+  const groups = await installationGroups(available);
+  const hits = await Promise.all(groups.map(async (group) => {
+    // An installation has no person behind @me.
+    const me = group.app ? await getViewerLogin("background poll") : "@me";
+    return readWithRestFallback(
+      "background poll",
+      () => searchOpenPrBatch(group.repos, me, searchOpenPrsGraphql),
+      () => searchOpenPrBatch(group.repos, me, (searchQuery, scope) => searchOpenPrsRest(searchQuery, scope, known)),
+      group.repos[0],
+    );
+  }));
+  return hits.flat();
 }
 
 export interface RepositoryOpenPr {
@@ -1714,9 +1795,12 @@ export interface PaletteHit {
 
 export async function searchPrs(repos: string[], q: string): Promise<PaletteHit[]> {
   if (mockGithub) return mockGithub.searchPrs(repos, q);
-  const repoFilter = repos.map((repo) => `repo:${repo}`).join(" ");
-  const searchQuery = `is:pr ${repoFilter} in:title ${q}`;
-  const items = await searchPullRequests(searchQuery, 15, "search");
+  // Without repositories the search spans the account, which only the personal token can scope.
+  const groups = repos.length === 0 ? [{ app: false, repos }] : await installationGroups(repos);
+  const items = (await Promise.all(groups.map((group) => {
+    const repoFilter = group.repos.map((repo) => `repo:${repo}`).join(" ");
+    return searchPullRequests(`is:pr ${repoFilter} in:title ${q}`, 15, "search", group.repos[0]);
+  }))).flat().slice(0, 15);
   return items.map((item) => ({
     repo: restSearchRepo(item),
     number: item.number,
@@ -1750,9 +1834,10 @@ type RestPrSearchItem = {
   pull_request: { merged_at: string | null };
 };
 
-async function restSearchPrs(query: string, perPage: number): Promise<RestPrSearchItem[]> {
+async function restSearchPrs(query: string, perPage: number, repo?: string): Promise<RestPrSearchItem[]> {
   const result = await restJson<{ items: RestPrSearchItem[] }>(
     `/search/issues?q=${encodeURIComponent(query)}&per_page=${perPage}`,
+    repo,
   );
   return result.items;
 }
@@ -1764,17 +1849,17 @@ const SEARCH_BACKGROUND_RESERVE = 10;
 // a parallel index sweep otherwise spends the whole window before the first answer arrives.
 const backgroundSearchLimit = createConcurrencyLimit(1);
 
-function searchPoolAvailable(source: GithubUsageSource): boolean {
-  if (activeQuotaBlock("search")) return false;
+function searchPoolAvailable(source: GithubUsageSource, credential: CredentialState): boolean {
+  if (activeQuotaBlock("search", credential)) return false;
   if (!BACKGROUND_SOURCES.has(source)) return true;
-  const reading = liveRestReading("search");
+  const reading = liveRestReading("search", Date.now(), credential);
   return reading === null || reading.remaining > SEARCH_BACKGROUND_RESERVE;
 }
 
-function graphqlPoolAvailable(source: GithubUsageSource): boolean {
-  if (activeQuotaBlock("graphql")) return false;
+function graphqlPoolAvailable(source: GithubUsageSource, credential: CredentialState): boolean {
+  if (activeQuotaBlock("graphql", credential)) return false;
   if (!BACKGROUND_SOURCES.has(source)) return true;
-  const reading = liveGraphqlReading();
+  const reading = liveGraphqlReading(Date.now(), credential);
   return reading === null || backgroundQuotaAvailable(reading);
 }
 
@@ -1805,12 +1890,14 @@ type GraphqlPrSearchNode = {
 };
 
 // The same search over the GraphQL pool, shaped like REST search items for the shared callers.
-async function graphqlSearchPrs(query: string, perPage: number, source: GithubUsageSource): Promise<RestPrSearchItem[]> {
+async function graphqlSearchPrs(query: string, perPage: number, source: GithubUsageSource, repo?: string): Promise<RestPrSearchItem[]> {
   const data = await graphql<{ search: { nodes: GraphqlPrSearchNode[] } }>(
     PR_SEARCH_QUERY,
     { searchQuery: query, first: perPage },
     source,
     "PR search",
+    undefined,
+    repo,
   );
   return data.search.nodes.flatMap((node) => node.number === undefined ? [] : [{
     number: node.number,
@@ -1827,27 +1914,32 @@ async function graphqlSearchPrs(query: string, perPage: number, source: GithubUs
 }
 
 // REST search while its window has room for this caller, otherwise the GraphQL pool, otherwise
-// a quota error naming search so background work waits for the minute to turn over.
-async function searchOnAvailablePool(query: string, perPage: number, source: GithubUsageSource): Promise<RestPrSearchItem[]> {
-  await userAuthentication();
-  if (!searchPoolAvailable(source)) {
-    if (graphqlPoolAvailable(source)) return graphqlSearchPrs(query, perPage, source);
-    assertQuotaAvailable("search");
-    const resetAt = liveRestReading("search")?.resetAt ?? null;
+// a quota error naming search so background work waits for the minute to turn over. `repo`
+// scopes the search to that repository's installation; without one it spans the account.
+async function searchOnAvailablePool(
+  query: string, perPage: number, source: GithubUsageSource, repo?: string,
+): Promise<RestPrSearchItem[]> {
+  const app = repo === undefined ? null : await appAuthentication(repo);
+  const credential = app?.state ?? (await userAuthentication()).state;
+  if (repo === undefined) recordUserFallback("account", "account", "search", "PR search");
+  if (!searchPoolAvailable(source, credential)) {
+    if (graphqlPoolAvailable(source, credential)) return graphqlSearchPrs(query, perPage, source, repo);
+    assertQuotaAvailable("search", true, credential);
+    const resetAt = liveRestReading("search", Date.now(), credential)?.resetAt ?? null;
     throw new GithubRequestError(`GitHub search quota is held for interactive searches until ${resetAt}`, 429, [], "quota", "search", resetAt);
   }
   try {
-    return await withGithubUsageSource(source, () => restSearchPrs(query, perPage));
+    return await withGithubUsageSource(source, () => restSearchPrs(query, perPage, repo));
   } catch (error) {
     const searchExhausted = error instanceof GithubRequestError && error.kind === "quota" && error.resource === "search";
-    if (!searchExhausted || !graphqlPoolAvailable(source)) throw error;
-    return graphqlSearchPrs(query, perPage, source);
+    if (!searchExhausted || !graphqlPoolAvailable(source, credential)) throw error;
+    return graphqlSearchPrs(query, perPage, source, repo);
   }
 }
 
-function searchPullRequests(query: string, perPage: number, source: GithubUsageSource): Promise<RestPrSearchItem[]> {
-  if (!BACKGROUND_SOURCES.has(source)) return searchOnAvailablePool(query, perPage, source);
-  return backgroundSearchLimit(() => searchOnAvailablePool(query, perPage, source));
+function searchPullRequests(query: string, perPage: number, source: GithubUsageSource, repo?: string): Promise<RestPrSearchItem[]> {
+  if (!BACKGROUND_SOURCES.has(source)) return searchOnAvailablePool(query, perPage, source, repo);
+  return backgroundSearchLimit(() => searchOnAvailablePool(query, perPage, source, repo));
 }
 
 function restSearchRepo(item: RestPrSearchItem): string {
@@ -1967,7 +2059,7 @@ export async function searchRecentPrs(repo: string): Promise<PrIndexEntry[]> {
   if (!repositoryAvailable(repo)) return [];
   const searchQuery = `repo:${repo} is:pr sort:updated-desc`;
   try {
-    const items = await searchPullRequests(searchQuery, 100, "index sync");
+    const items = await searchPullRequests(searchQuery, 100, "index sync", repo);
     clearRepositoryUnavailable(repo);
     return items.map((item) => ({
       repo: restSearchRepo(item),
@@ -2015,9 +2107,11 @@ export async function searchClosedPrs(repos: string[], updatedSince: string | nu
     }
     if (!repositoryAvailable(repo)) continue;
     const updatedFilter = updatedSince === null ? "" : ` updated:>=${updatedSince.replace(/\.\d{3}Z$/, "Z")}`;
-    const searchQuery = `is:pr is:closed involves:@me archived:false repo:${repo}${updatedFilter} sort:updated-desc`;
     try {
-      const repoItems = await searchPullRequests(searchQuery, CLOSED_SEARCH_PAGE, "index sync");
+      // An installation has no person behind @me.
+      const me = await appAuthentication(repo) ? await getViewerLogin("index sync") : "@me";
+      const searchQuery = `is:pr is:closed involves:${me} archived:false repo:${repo}${updatedFilter} sort:updated-desc`;
+      const repoItems = await searchPullRequests(searchQuery, CLOSED_SEARCH_PAGE, "index sync", repo);
       if (updatedSince !== null && repoItems.length === CLOSED_SEARCH_PAGE) {
         console.warn(`search hit the ${CLOSED_SEARCH_PAGE}-result cap, PRs may be missing: ${searchQuery}`);
       }
@@ -2066,11 +2160,12 @@ export interface ViewerRepo {
 }
 
 
+// Account discovery spans every repository the person can reach, beyond any one installation.
 export async function viewerRepos(): Promise<ViewerRepo[]> {
   if (mockGithub) return mockGithub.viewerRepos();
-  const repos = await restJson<Array<{ full_name: string; pushed_at: string | null; private: boolean }>>(
-    "/user/repos?affiliation=owner,collaborator,organization_member&sort=pushed&direction=desc&per_page=30",
-  );
+  const path = "/user/repos?affiliation=owner,collaborator,organization_member&sort=pushed&direction=desc&per_page=30";
+  recordUserFallback("account", "account", "core", restOperation("GET", path));
+  const repos = await restJson<Array<{ full_name: string; pushed_at: string | null; private: boolean }>>(path);
   return repos.map((repo) => ({
     nameWithOwner: repo.full_name,
     pushedAt: repo.pushed_at,
@@ -2193,6 +2288,8 @@ query {
     nodes { ... on PullRequest { ${REVIEW_SEARCH_FIELDS} } }
   }
 }`;
+  // The person's review requests span GitHub, beyond any one installation.
+  recordUserFallback("account", "account", "graphql", "review inbox");
   const data = await graphql<{
     rateLimit: { cost: number; remaining: number } | null;
     reviewRequested: { nodes: ReviewSearchNode[] };
@@ -2246,7 +2343,7 @@ export async function fetchAssignableUsers(repo: string): Promise<AssignableUser
 
 export async function addAssignees(repo: string, number: number, logins: string[]): Promise<void> {
   if (mockGithub) return;
-  await restRequest("POST", `/repos/${repo}/issues/${number}/assignees`, { assignees: logins });
+  await restRequest("POST", `/repos/${repo}/issues/${number}/assignees`, { assignees: logins }, repo);
 }
 
 export type RepoLabel = { name: string; color: string };
@@ -2309,20 +2406,20 @@ async function fetchRepoLabelsGraphql(repo: string, owner: string, name: string)
 
 export async function addLabels(repo: string, number: number, labels: string[]): Promise<void> {
   if (mockGithub) return;
-  await restRequest("POST", `/repos/${repo}/issues/${number}/labels`, { labels });
+  await restRequest("POST", `/repos/${repo}/issues/${number}/labels`, { labels }, repo);
 }
 
 export async function removeLabels(repo: string, number: number, labels: string[]): Promise<void> {
   if (mockGithub) return;
   for (const label of labels) {
-    await restRequest("DELETE", `/repos/${repo}/issues/${number}/labels/${encodeURIComponent(label)}`, undefined);
+    await restRequest("DELETE", `/repos/${repo}/issues/${number}/labels/${encodeURIComponent(label)}`, undefined, repo);
   }
 }
 
 
 export async function requestReviewers(repo: string, number: number, logins: string[]): Promise<void> {
   if (mockGithub) return;
-  await restRequest("POST", `/repos/${repo}/pulls/${number}/requested_reviewers`, { reviewers: logins });
+  await restRequest("POST", `/repos/${repo}/pulls/${number}/requested_reviewers`, { reviewers: logins }, repo);
 }
 
 const RESOLVE_REVIEW_THREAD_MUTATION = `
@@ -2332,19 +2429,19 @@ mutation($threadId: ID!) {
   }
 }`;
 
-export async function resolveReviewThread(threadId: string): Promise<void> {
+export async function resolveReviewThread(repo: string, threadId: string): Promise<void> {
   if (mockGithub) return;
-  await graphql(RESOLVE_REVIEW_THREAD_MUTATION, { threadId }, "user action", "resolve review thread");
+  await graphql(RESOLVE_REVIEW_THREAD_MUTATION, { threadId }, "user action", "resolve review thread", undefined, repo);
 }
 
 export async function removeAssignees(repo: string, number: number, logins: string[]): Promise<void> {
   if (mockGithub) return;
-  await restRequest("DELETE", `/repos/${repo}/issues/${number}/assignees`, { assignees: logins });
+  await restRequest("DELETE", `/repos/${repo}/issues/${number}/assignees`, { assignees: logins }, repo);
 }
 
 export async function removeRequestedReviewers(repo: string, number: number, logins: string[]): Promise<void> {
   if (mockGithub) return;
-  await restRequest("DELETE", `/repos/${repo}/pulls/${number}/requested_reviewers`, { reviewers: logins });
+  await restRequest("DELETE", `/repos/${repo}/pulls/${number}/requested_reviewers`, { reviewers: logins }, repo);
 }
 
 
@@ -2471,8 +2568,8 @@ query($owner: String!, $name: String!, $number: Int!) {
   }
 }`;
 
-// Keep the repository and personal documents structurally identical; only the viewer's
-// fields move to the personal overlay. The PR id joins that overlay without another read.
+// Keep the repository and personal documents structurally identical; an installation has no
+// viewer, so its document drops the viewer's fields and reads the PR id for the reactor lookup.
 const DETAIL_REPOSITORY_REVIEW_QUERY = DETAIL_REVIEW_QUERY
   .replace("viewerCanMergeAsAdmin", "id")
   .replaceAll("viewerHasReacted", "");
@@ -3133,6 +3230,11 @@ async function fetchDetailReview(
   previousThreadCount: number,
   repositoryOnly = false,
 ): Promise<(RawPrDetailReview & { id?: string }) | null> {
+  // The personal detail carries viewer fields, so it never runs on an installation; it is read
+  // only where the repository has none.
+  if (!repositoryOnly && observedGithubAppId() !== null) {
+    recordUserFallback(`${owner}/${name}`, "installation", "graphql", "PR review detail");
+  }
   // A PR that already had a full first page of threads very likely has more, so its later
   // pages start beside the first instead of after it.
   const laterPages = previousThreadCount >= REVIEW_THREADS_PER_PAGE
@@ -3277,25 +3379,39 @@ async function completeThreadComments(thread: RawThread, source: GithubUsageSour
   }
 }
 
-const DETAIL_VIEWER_QUERY = `
-query($ids: [ID!]!) {
-  viewer { login }
+// Who reacted, read on the installation; the person's own reactions are matched by their login.
+const DETAIL_REACTORS_QUERY = `
+query($ids: [ID!]!, $after: String) {
   nodes(ids: $ids) {
     id
-    ... on Reactable { reactionGroups { content viewerHasReacted } }
-    ... on PullRequest { viewerCanMergeAsAdmin }
+    ... on Reactable {
+      reactions(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes { content user { login } }
+      }
+    }
   }
 }`;
-const DETAIL_VIEWER_BATCH = 100;
+type ReactorPage = {
+  pageInfo: { hasNextPage: boolean; endCursor: string | null };
+  nodes: Array<{ content: string; user: { login: string } | null } | null>;
+};
+const DETAIL_REACTORS_BATCH = 100;
 
+// The installation reads the review, and the person's flags come from their login: reactions from
+// the reactor logins, admin merge from their repository role. No personal read accompanies it.
 async function fetchRepositoryDetailReview(
+  repo: string,
   owner: string,
   name: string,
   number: number,
   source: GithubUsageSource,
   previousThreadCount: number,
 ): Promise<{ review: RawPrDetailReview; viewerLogin: string } | null> {
-  const review = await fetchDetailReview(owner, name, number, source, previousThreadCount, true);
+  const [review, viewerLogin] = await Promise.all([
+    fetchDetailReview(owner, name, number, source, previousThreadCount, true),
+    getViewerLogin(source),
+  ]);
   if (!review) return null;
   if (!review.id) throw new GithubRequestError("PR review detail returned no id", 502);
   const targets = [
@@ -3303,42 +3419,46 @@ async function fetchRepositoryDetailReview(
     ...review.reviews.nodes,
     ...review.comments.nodes,
     ...review.reviewThreads.nodes.flatMap((thread) => thread.comments.nodes),
-  ].filter((target) => target.id === review.id || target.reactionGroups.some((group) => group.reactors.totalCount > 0));
-  let viewerLogin = "";
-  for (let start = 0; start < targets.length; start += DETAIL_VIEWER_BATCH) {
-    const batch = targets.slice(start, start + DETAIL_VIEWER_BATCH);
-    // No repository routing here: an installation's viewer state is never the person's.
-    const data = await graphql<{
-      viewer: { login: string };
-      nodes: Array<{
-        id: string;
-        reactionGroups: Array<Pick<RawReactionGroup, "content" | "viewerHasReacted">>;
-        viewerCanMergeAsAdmin?: boolean;
-      } | null>;
-    }>(DETAIL_VIEWER_QUERY, { ids: batch.map((target) => target.id) }, source, "PR viewer state");
-    if (!data.viewer?.login) throw new GithubRequestError("PR viewer state returned no viewer", 502);
-    viewerLogin = data.viewer.login;
-    const nodes = new Map(data.nodes.filter((node) => node !== null).map((node) => [node.id, node]));
-    for (const target of batch) {
-      const node = nodes.get(target.id);
-      if (!node) throw new GithubRequestError("PR viewer state returned no node", 502);
-      if (target.id === review.id) {
-        if (typeof node.viewerCanMergeAsAdmin !== "boolean") {
-          throw new GithubRequestError("PR viewer state returned no merge permission", 502);
+  ].filter((target) => target.reactionGroups.some((group) => group.reactors.totalCount > 0));
+  const login = viewerLogin.toLowerCase();
+  const reactions = async () => {
+    for (let start = 0; start < targets.length; start += DETAIL_REACTORS_BATCH) {
+      const batch = targets.slice(start, start + DETAIL_REACTORS_BATCH);
+      const data = await graphql<{
+        nodes: Array<{
+          id: string;
+          reactions: ReactorPage;
+        } | null>;
+      }>(DETAIL_REACTORS_QUERY, { ids: batch.map((target) => target.id) }, source, "PR reactors", undefined, repo);
+      const nodes = new Map(data.nodes.filter((node) => node !== null).map((node) => [node.id, node]));
+      for (const target of batch) {
+        const node = nodes.get(target.id);
+        if (!node?.reactions?.pageInfo) throw new GithubRequestError("PR reactors returned no node or page", 502);
+        for (const group of target.reactionGroups) group.viewerHasReacted = false;
+        let page = node.reactions;
+        let after: string | null = null;
+        for (;;) {
+          for (const reaction of page.nodes) {
+            if (reaction?.user?.login.toLowerCase() !== login) continue;
+            const group = target.reactionGroups.find((item) => item.content === reaction.content);
+            if (group) group.viewerHasReacted = true;
+          }
+          if (!page.pageInfo.hasNextPage) break;
+          const cursor = page.pageInfo.endCursor;
+          if (!cursor || cursor === after) throw new GithubRequestError("PR reactors returned no next cursor", 502);
+          after = cursor;
+          const next = await graphql<{ nodes: Array<{ id: string; reactions: ReactorPage } | null> }>(
+            DETAIL_REACTORS_QUERY, { ids: [target.id], after }, source, "PR reactors", undefined, repo,
+          );
+          const connection = next.nodes.find((item) => item?.id === target.id)?.reactions;
+          if (!connection?.pageInfo) throw new GithubRequestError("PR reactors returned no page", 502);
+          page = connection;
         }
-        review.viewerCanMergeAsAdmin = node.viewerCanMergeAsAdmin;
-      }
-      for (const group of target.reactionGroups) {
-        if (group.reactors.totalCount === 0) continue;
-        const personal = node.reactionGroups.find((item) => item.content === group.content);
-        if (typeof personal?.viewerHasReacted !== "boolean") {
-          throw new GithubRequestError("PR viewer state returned no reaction state", 502);
-        }
-        group.viewerHasReacted = personal.viewerHasReacted;
       }
     }
-  }
-  cachedViewerLogin = viewerLogin;
+  };
+  const [permission] = await Promise.all([viewerRepositoryPermission(repo, source), reactions()]);
+  review.viewerCanMergeAsAdmin = permission === "admin";
   return { review, viewerLogin };
 }
 
@@ -3409,14 +3529,10 @@ export async function fetchPrDetail(
   assertQuotaAvailable("graphql", false);
   const app = await appAuthentication(repo);
   return readWithRestFallback<PrDetail>(source, async () => {
-    // The personal viewer overlay is required in either mode. Gate it before starting
-    // concurrent repository reads, especially REST metadata in the no-app path.
-    await requireQuota("graphql");
     if (app) {
-      assertPersonalGraphqlReserve(source);
       const [checks, detailReview, base] = await Promise.all([
         fetchDetailChecks(owner, name, number, previous, source),
-        fetchRepositoryDetailReview(owner, name, number, source, previous?.reviewThreads?.nodes.length ?? 0),
+        fetchRepositoryDetailReview(repo, owner, name, number, source, previous?.reviewThreads?.nodes.length ?? 0),
         fetchRepositoryPrDetailMetadata(repo, owner, name, number, source),
       ]);
       if (!checks || !detailReview) throw new GithubRequestError(`${repo}#${number} was not found`, 404);
@@ -3428,6 +3544,9 @@ export async function fetchPrDetail(
         ...normalizeReviewDetail(review, viewerLogin, review.author, base.reviewRequests),
       };
     }
+    // The personal detail carries its viewer fields; gate it before starting concurrent reads,
+    // especially its REST metadata.
+    await requireQuota("graphql");
     const [checks, review, { base, viewerLogin }] = await Promise.all([
       fetchDetailChecks(owner, name, number, previous, source),
       fetchDetailReview(owner, name, number, source, previous?.reviewThreads?.nodes.length ?? 0),
@@ -3444,22 +3563,29 @@ export async function fetchPrDetail(
   }, () => fetchRestPrDetail(repo, number, previous, source), repo);
 }
 
-async function fetchViewerMergePermission(repo: string, number: number, source: GithubUsageSource): Promise<boolean> {
+const knownPermissions = new Map<string, string>();
+
+// The person's role, read by their login on the installation: installation responses carry no
+// viewer permissions. admin, write, read, or none (maintain reads as write, triage as read); a
+// repository that does not know the person answers 404.
+async function viewerRepositoryPermission(repo: string, source: GithubUsageSource): Promise<string> {
+  const login = await getViewerLogin(source);
+  const key = `${repo.toLowerCase()}#${login.toLowerCase()}`;
+  let permission: string;
   try {
-    const repository = await restJson<{ permissions?: { admin?: boolean } }>(`/repos/${repo}`);
-    return repository.permissions?.admin === true;
+    ({ permission } = await githubRestJson<{ permission: string }>(
+      "GET", `/repos/${encodedRepo(repo)}/collaborators/${encodeURIComponent(login)}/permission`, undefined, repo,
+    ));
+    if (typeof permission !== "string") throw new GithubRequestError("GitHub returned no repository permission", 502);
   } catch (error) {
-    if (!coreQuotaExhausted(error) || activeQuotaBlock("graphql", userQuota)) throw error;
+    if (error instanceof GithubRequestError && error.status === 404) permission = "none";
+    else if (coreQuotaExhausted(error) && knownPermissions.has(key)) return knownPermissions.get(key)!;
+    else throw error;
   }
-  const [owner, name] = repo.split("/");
-  const data = await graphql<{
-    repository: { pullRequest: { viewerCanMergeAsAdmin: boolean } | null } | null;
-  }>(`query($owner: String!, $name: String!, $number: Int!) {
-    repository(owner: $owner, name: $name) {
-      pullRequest(number: $number) { viewerCanMergeAsAdmin }
-    }
-  }`, { owner, name, number }, source, "PR viewer merge permission");
-  return data.repository?.pullRequest?.viewerCanMergeAsAdmin === true;
+  knownPermissions.delete(key);
+  knownPermissions.set(key, permission);
+  if (knownPermissions.size > 256) knownPermissions.delete(knownPermissions.keys().next().value!);
+  return permission;
 }
 
 // The whole detail over REST. Every list goes through the ETag cache, so rereading an
@@ -3475,7 +3601,7 @@ async function fetchRestPrDetail(
     base.then((pull) => withLabelHistory(pull, repo, number, source)),
     getViewerLogin(source),
     restJson<{ reactions?: RestReactions }>(`/repos/${repo}/issues/${number}`, repo),
-    fetchViewerMergePermission(repo, number, source),
+    viewerRepositoryPermission(repo, source).then((permission) => permission === "admin"),
     restList<RestPrCommit>(`/repos/${repo}/pulls/${number}/commits`, 3, undefined, repo),
     restList<RestReview>(`/repos/${repo}/pulls/${number}/reviews`, 10, undefined, repo),
     restList<RestIssueComment>(`/repos/${repo}/issues/${number}/comments`, 10, undefined, repo),
@@ -3588,9 +3714,7 @@ async function fetchPrDetailPartGraphql(
     };
   }
   if (repositoryReview) {
-    await requireQuota("graphql");
-    assertPersonalGraphqlReserve(source);
-    const detailReview = await fetchRepositoryDetailReview(owner, name, number, source, current.reviewThreads?.nodes.length ?? 0);
+    const detailReview = await fetchRepositoryDetailReview(repo, owner, name, number, source, current.reviewThreads?.nodes.length ?? 0);
     if (!detailReview) throw new GithubRequestError(`${repo}#${number} was not found`, 404);
     const { review, viewerLogin } = detailReview;
     return {
@@ -3832,33 +3956,33 @@ export async function rerunFailedJobs(repo: string, runId: number): Promise<void
   if (!/^[^/]+\/[^/]+$/.test(repo) || !Number.isSafeInteger(runId) || runId <= 0) {
     throw new RestRequestError("Invalid repository or workflow run", 400);
   }
-  const response = await githubRestResponse(
-    "POST",
-    `/repos/${encodedRepo(repo)}/actions/runs/${runId}/rerun-failed-jobs`,
-  );
-  if (response.ok) return;
-  const responseCopy = response.clone();
-  const credential = responseCredentials.get(response);
-  if (credential !== undefined) responseCredentials.set(responseCopy, credential);
-  const resource = responseQuotaResources.get(response);
-  if (resource !== undefined) responseQuotaResources.set(responseCopy, resource);
-  const classified = await githubResponseError("GitHub REST request failed", responseCopy);
-  const body = await response.text();
-  let detail = body;
-  try {
-    const parsed = JSON.parse(body);
-    if (typeof parsed?.message === "string") detail = parsed.message;
-  } catch {
-    // GitHub occasionally returns a plain-text proxy response.
-  }
-  throw new RestRequestError(
-    `Could not re-run failed jobs${detail ? `: ${detail}` : ` (GitHub ${response.status})`}`,
-    response.status,
-    classified.kind,
-    classified.resource,
-    classified.resetAt,
-    classified,
-  );
+  const path = `/repos/${encodedRepo(repo)}/actions/runs/${runId}/rerun-failed-jobs`;
+  await withRepositoryCredential(repo, "core", restOperation("POST", path), async (authentication) => {
+    const response = await githubApiResponse("POST", path, { authentication });
+    if (response.ok) return;
+    const responseCopy = response.clone();
+    const credential = responseCredentials.get(response);
+    if (credential !== undefined) responseCredentials.set(responseCopy, credential);
+    const resource = responseQuotaResources.get(response);
+    if (resource !== undefined) responseQuotaResources.set(responseCopy, resource);
+    const classified = await githubResponseError("GitHub REST request failed", responseCopy);
+    const body = await response.text();
+    let detail = body;
+    try {
+      const parsed = JSON.parse(body);
+      if (typeof parsed?.message === "string") detail = parsed.message;
+    } catch {
+      // GitHub occasionally returns a plain-text proxy response.
+    }
+    throw new RestRequestError(
+      `Could not re-run failed jobs${detail ? `: ${detail}` : ` (GitHub ${response.status})`}`,
+      response.status,
+      classified.kind,
+      classified.resource,
+      classified.resetAt,
+      classified,
+    );
+  }, true);
 }
 
 export interface WorkflowRun {
@@ -4125,7 +4249,8 @@ function forgetRestEtag(path: string): void {
 
 async function githubRestJson<T>(method: string, path: string, body?: unknown, repo?: string): Promise<T> {
   if (repo !== undefined) assertRepositoryPath(repo, path);
-  return withRepositoryRead(method === "GET" || method === "HEAD" ? repo : undefined, quotaResource(path), async (authentication) => {
+  const write = method !== "GET" && method !== "HEAD";
+  return withRepositoryCredential(repo, quotaResource(path), restOperation(method, path), async (authentication) => {
     // Validators and bodies are credential-scoped, including the user fallback of an app read.
     const key = `${authentication.state.identity}:${path}`;
     const cached = method === "GET" ? restEtags.get(key) : undefined;
@@ -4147,7 +4272,7 @@ async function githubRestJson<T>(method: string, path: string, body?: unknown, r
       }
     }
     return JSON.parse(text) as T;
-  });
+  }, write);
 }
 
 function encodedRepo(repo: string): string {
@@ -4175,7 +4300,7 @@ async function writePrFile(input: PrFileWrite): Promise<string | null> {
   const [owner, name] = input.repo.split("/");
   if (!owner || !name) throw new GithubRequestError(`Invalid repository: ${input.repo}`, 404);
   const baseRepo = encodedRepo(input.repo);
-  const pullRequest = await githubRestJson<RestPull>("GET", `/repos/${baseRepo}/pulls/${input.number}`);
+  const pullRequest = await githubRestJson<RestPull>("GET", `/repos/${baseRepo}/pulls/${input.number}`, undefined, input.repo);
   if (pullRequest.state !== "open") throw new StalePrHeadError("PR is no longer open");
   if (!pullRequest.head?.ref || !pullRequest.head.repo?.full_name) {
     throw new StalePrHeadError("PR head is unavailable");
@@ -4183,10 +4308,14 @@ async function writePrFile(input: PrFileWrite): Promise<string | null> {
   const headOid = input.expectedHeadOid?.toLowerCase() ?? pullRequest.head.sha.toLowerCase();
   if (pullRequest.head.sha.toLowerCase() !== headOid) throw new StalePrHeadError();
 
-  const headRepo = encodedRepo(pullRequest.head.repo.full_name);
+  // Reads of the head run on its installation; the commit and ref writes stay the person's.
+  const headName = pullRequest.head.repo.full_name;
+  const headRepo = encodedRepo(headName);
   const commit = await githubRestJson<{ tree: { sha: string } }>(
     "GET",
     `/repos/${headRepo}/git/commits/${headOid}`,
+    undefined,
+    headName,
   );
   const segments = input.path.split("/");
   let blobSha: string | null = commit.tree.sha;
@@ -4194,6 +4323,8 @@ async function writePrFile(input: PrFileWrite): Promise<string | null> {
     const tree: { tree: RestTreeEntry[] } = await githubRestJson<{ tree: RestTreeEntry[] }>(
       "GET",
       `/repos/${headRepo}/git/trees/${encodeURIComponent(blobSha)}`,
+      undefined,
+      headName,
     );
     const entry = tree.tree.find((candidate) => candidate.path === segments[index]);
     const isFile = index === segments.length - 1;
@@ -4207,6 +4338,8 @@ async function writePrFile(input: PrFileWrite): Promise<string | null> {
     const currentBlob = await githubRestJson<{ content: string; encoding: string }>(
       "GET",
       `/repos/${headRepo}/git/blobs/${encodeURIComponent(blobSha)}`,
+      undefined,
+      headName,
     );
     if (currentBlob.encoding !== "base64") throw new StalePrHeadError("PR file is no longer editable");
     try {
@@ -4287,18 +4420,20 @@ export async function markPrPathGenerated(repo: string, number: number, pattern:
 
 export type PrHeadPushAccess = { allowed: boolean; reason: string | null };
 
-/** Whether the viewer can push to the PR's head branch. Permissions GitHub leaves out defer to the push itself. */
+/** Whether the viewer can push to the PR's head branch, by their role in the head and base repositories. */
 export async function prHeadPushAccess(repo: string, number: number): Promise<PrHeadPushAccess> {
   if (mockGithub) return { allowed: true, reason: null };
-  const pullRequest = await githubRestJson<RestPull>("GET", `/repos/${encodedRepo(repo)}/pulls/${number}`);
+  const pullRequest = await githubRestJson<RestPull>("GET", `/repos/${encodedRepo(repo)}/pulls/${number}`, undefined, repo);
   if (pullRequest.state !== "open") return { allowed: false, reason: "This pull request is not open." };
   const head = pullRequest.head.repo;
   if (!head) return { allowed: false, reason: "The head repository was deleted." };
-  if (head.permissions?.push !== false) return { allowed: true, reason: null };
+  // Installation responses carry no viewer permissions, so the person's role answers instead.
+  const canPush = async (target: string) => ["admin", "write"].includes(await viewerRepositoryPermission(target, "user action"));
+  if (await canPush(head.full_name)) return { allowed: true, reason: null };
   if (head.full_name === pullRequest.base.repo.full_name) return { allowed: false, reason: `You can't push to ${head.full_name}.` };
   // A fork's head branch takes pushes from base-repository writers only while it allows maintainer edits.
   if (!pullRequest.maintainer_can_modify) return { allowed: false, reason: `${head.full_name} doesn't allow edits from maintainers.` };
-  if (pullRequest.base.repo.permissions?.push === false) return { allowed: false, reason: `You can't push to ${head.full_name}.` };
+  if (!await canPush(pullRequest.base.repo.full_name)) return { allowed: false, reason: `You can't push to ${head.full_name}.` };
   return { allowed: true, reason: null };
 }
 
@@ -4311,7 +4446,7 @@ export type PrMergeCommit = ResolvedMerge & {
 
 /** Commits `baseOid` merged into the PR head with GitHub's default merge message, as its conflict editor does. */
 export async function commitPrMerge(input: PrMergeCommit): Promise<{ commitOid: string }> {
-  const pullRequest = await githubRestJson<RestPull>("GET", `/repos/${encodedRepo(input.repo)}/pulls/${input.number}`);
+  const pullRequest = await githubRestJson<RestPull>("GET", `/repos/${encodedRepo(input.repo)}/pulls/${input.number}`, undefined, input.repo);
   if (pullRequest.state !== "open") throw new StalePrHeadError("PR is no longer open");
   if (!pullRequest.head?.ref || !pullRequest.head.repo?.full_name) throw new StalePrHeadError("PR head is unavailable");
   if (pullRequest.head.sha.toLowerCase() !== input.expectedHeadOid) throw new StalePrHeadError();
@@ -4362,13 +4497,17 @@ export class RestRequestError extends GithubRequestError {
   }
 }
 
-async function restRequest(method: string, path: string, body: unknown): Promise<void> {
+// `repo` runs a write that carries no personal attribution on the repository's installation.
+async function restRequest(method: string, path: string, body: unknown, repo?: string): Promise<void> {
   if (mockGithub) return;
-  const response = await githubRestResponse(method, path, body);
-  if (!response.ok) {
-    const error = await githubResponseError(`${method} ${path} failed`, response);
-    throw new RestRequestError(error.message, error.status, error.kind, error.resource, error.resetAt, error);
-  }
+  if (repo !== undefined) assertRepositoryPath(repo, path);
+  await withRepositoryCredential(repo, quotaResource(path), restOperation(method, path), async (authentication) => {
+    const response = await githubApiResponse(method, path, { body, authentication });
+    if (!response.ok) {
+      const error = await githubResponseError(`${method} ${path} failed`, response);
+      throw new RestRequestError(error.message, error.status, error.kind, error.resource, error.resetAt, error);
+    }
+  }, true);
 }
 
 async function restJson<T>(path: string, repo?: string): Promise<T> {
@@ -4440,6 +4579,7 @@ function pendingComment(comment: RestPendingReviewComment): PendingReviewComment
   return pending;
 }
 
+// Only the author sees a pending review, so these reads stay on the person's token.
 async function viewerPendingReviewRecord(
   repo: string,
   number: number,
@@ -4447,20 +4587,21 @@ async function viewerPendingReviewRecord(
 ): Promise<(PendingReview & { nodeId: string }) | null> {
   if (mockGithub) return mockGithub.pendingReview(repo, number);
   const encoded = encodedRepo(repo);
+  const reviewsPath = `/repos/${encoded}/pulls/${number}/reviews`;
+  recordUserFallback(repo, "viewer", "core", restOperation("GET", reviewsPath));
   const [viewer, reviews] = await Promise.all([
     getViewerLogin(),
-    fetchRestPages<RestPendingReview>(
-      `https://api.github.com/repos/${encoded}/pulls/${number}/reviews?per_page=100`,
-      "GitHub pending reviews request failed",
-    ),
+    fetchRestPages<RestPendingReview>(`https://api.github.com${reviewsPath}?per_page=100`, "GitHub pending reviews request failed"),
   ]);
   const review = reviews.find((candidate) =>
     candidate.state === "PENDING" && candidate.user?.login.toLowerCase() === viewer.toLowerCase()
   );
   if (!review) return null;
+  const commentsPath = `${reviewsPath}/${review.id}/comments`;
+  if (includeComments) recordUserFallback(repo, "viewer", "core", restOperation("GET", commentsPath));
   const comments = includeComments
     ? await fetchRestPages<RestPendingReviewComment>(
-        `https://api.github.com/repos/${encoded}/pulls/${number}/reviews/${review.id}/comments?per_page=100`,
+        `https://api.github.com${commentsPath}?per_page=100`,
         "GitHub pending review comments request failed",
       )
     : [];
@@ -4473,11 +4614,41 @@ async function viewerPendingReviewRecord(
   };
 }
 
+// A draft review changes only when its author writes it, so one read per pull request and token
+// serves a minute of detail refreshes; every pending write drops it.
+const PENDING_REVIEW_TTL_MS = 60_000;
+const pendingReviewReads = new Map<string, { identity: string; at: number; read: Promise<PendingReview | null> }>();
+
 export async function fetchPendingReview(repo: string, number: number): Promise<PendingReview | null> {
-  const review = await viewerPendingReviewRecord(repo, number);
-  if (!review) return null;
-  const { nodeId: _nodeId, ...pending } = review;
-  return pending;
+  const read = async () => {
+    const review = await viewerPendingReviewRecord(repo, number);
+    if (!review) return null;
+    const { nodeId: _nodeId, ...pending } = review;
+    return pending;
+  };
+  if (mockGithub) return read();
+  const key = `${repo.toLowerCase()}#${number}`;
+  const { identity } = (await userAuthentication()).state;
+  const cached = pendingReviewReads.get(key);
+  if (cached?.identity === identity && Date.now() - cached.at < PENDING_REVIEW_TTL_MS) return cached.read;
+  const entry = { identity, at: Date.now(), read: read() };
+  pendingReviewReads.delete(key);
+  pendingReviewReads.set(key, entry);
+  if (pendingReviewReads.size > 256) pendingReviewReads.delete(pendingReviewReads.keys().next().value!);
+  // A failed read is not shared.
+  entry.read.catch(() => {
+    if (pendingReviewReads.get(key) === entry) pendingReviewReads.delete(key);
+  });
+  return entry.read;
+}
+
+// Whether or not GitHub applied the write, the shared read no longer describes the draft.
+async function writePendingReview(repo: string, number: number, write: () => Promise<unknown>): Promise<void> {
+  try {
+    await write();
+  } finally {
+    pendingReviewReads.delete(`${repo.toLowerCase()}#${number}`);
+  }
 }
 
 async function latestPrHead(repo: string, number: number): Promise<string> {
@@ -4485,6 +4656,8 @@ async function latestPrHead(repo: string, number: number): Promise<string> {
   const pull = await githubRestJson<{ state: string; head?: { sha?: string } }>(
     "GET",
     `/repos/${encodedRepo(repo)}/pulls/${number}`,
+    undefined,
+    repo,
   );
   if (pull.state !== "open" || !pull.head?.sha) throw new StalePrHeadError("PR head is unavailable because the pull request is no longer open");
   return pull.head.sha;
@@ -4513,7 +4686,7 @@ export async function addPendingInlineComment(
     return;
   }
   if (!review) {
-    await restRequest("POST", `/repos/${encodedRepo(repo)}/pulls/${number}/reviews`, {
+    await writePendingReview(repo, number, () => restRequest("POST", `/repos/${encodedRepo(repo)}/pulls/${number}/reviews`, {
       commit_id: headSha,
       comments: [{
         body: comment.body,
@@ -4524,10 +4697,10 @@ export async function addPendingInlineComment(
           ? {}
           : { start_line: comment.startLine, start_side: comment.startSide ?? comment.side }),
       }],
-    });
+    }));
     return;
   }
-  await graphql(
+  await writePendingReview(repo, number, () => graphql(
     `mutation($input: AddPullRequestReviewThreadInput!) {
       addPullRequestReviewThread(input: $input) { thread { id } }
     }`,
@@ -4545,7 +4718,7 @@ export async function addPendingInlineComment(
     },
     "user action",
     "add pending review thread",
-  );
+  ));
 }
 
 async function requirePendingReview(
@@ -4569,7 +4742,7 @@ export async function editPendingReviewComment(
   const review = await requirePendingReview(repo, number, reviewId, true);
   if (!review.comments.some((comment) => comment.id === commentId)) throw new RestRequestError("Pending review comment not found", 404);
   if (mockGithub) return mockGithub.editPendingComment(repo, number, reviewId, commentId, body);
-  await restRequest("PATCH", `/repos/${encodedRepo(repo)}/pulls/comments/${commentId}`, { body });
+  await writePendingReview(repo, number, () => restRequest("PATCH", `/repos/${encodedRepo(repo)}/pulls/comments/${commentId}`, { body }));
 }
 
 export async function deletePendingReviewComment(
@@ -4581,13 +4754,13 @@ export async function deletePendingReviewComment(
   const review = await requirePendingReview(repo, number, reviewId, true);
   if (!review.comments.some((comment) => comment.id === commentId)) throw new RestRequestError("Pending review comment not found", 404);
   if (mockGithub) return mockGithub.deletePendingComment(repo, number, reviewId, commentId);
-  await restRequest("DELETE", `/repos/${encodedRepo(repo)}/pulls/comments/${commentId}`, undefined);
+  await writePendingReview(repo, number, () => restRequest("DELETE", `/repos/${encodedRepo(repo)}/pulls/comments/${commentId}`, undefined));
 }
 
 export async function discardPendingReview(repo: string, number: number, reviewId: number): Promise<void> {
   await requirePendingReview(repo, number, reviewId);
   if (mockGithub) return mockGithub.discardPendingReview(repo, number, reviewId);
-  await restRequest("DELETE", `/repos/${encodedRepo(repo)}/pulls/${number}/reviews/${reviewId}`, undefined);
+  await writePendingReview(repo, number, () => restRequest("DELETE", `/repos/${encodedRepo(repo)}/pulls/${number}/reviews/${reviewId}`, undefined));
 }
 
 export async function submitPendingReview(
@@ -4601,7 +4774,9 @@ export async function submitPendingReview(
   const currentHead = await latestPrHead(repo, number);
   if (review.headSha.toLowerCase() !== currentHead.toLowerCase()) throw stalePendingReview(review.headSha, currentHead);
   if (mockGithub) return mockGithub.submitPendingReview(repo, number, reviewId, event, body);
-  await restRequest("POST", `/repos/${encodedRepo(repo)}/pulls/${number}/reviews/${reviewId}/events`, { event, body });
+  await writePendingReview(
+    repo, number, () => restRequest("POST", `/repos/${encodedRepo(repo)}/pulls/${number}/reviews/${reviewId}/events`, { event, body }),
+  );
 }
 
 export async function postIssueComment(repo: string, number: number, body: string): Promise<string> {
@@ -4704,16 +4879,19 @@ export async function setCodeScanningAlertResolved(repo: string, alertNumber: nu
   const choice = resolved ? validateCodeScanningDismissal(dismissal) : undefined;
   const path = `/repos/${encodedRepo(repo)}/code-scanning/alerts/${alertNumber}`;
   if (!mockGithub) {
-    const { state } = await restJson<{ state: string }>(path);
+    const { state } = await restJson<{ state: string }>(path, repo);
     if (state !== (resolved ? "open" : "dismissed")) return;
   }
   await restRequest("PATCH", path,
-    choice ? { state: "dismissed", dismissed_reason: choice.reason, ...(choice.comment !== undefined ? { dismissed_comment: choice.comment } : {}) } : { state: "open" });
+    choice ? { state: "dismissed", dismissed_reason: choice.reason, ...(choice.comment !== undefined ? { dismissed_comment: choice.comment } : {}) } : { state: "open" }, repo);
 }
 
-export async function setThreadResolved(threadId: string, resolved: boolean): Promise<void> {
+export async function setThreadResolved(repo: string, threadId: string, resolved: boolean): Promise<void> {
   if (mockGithub) return;
-  await graphql(resolved ? RESOLVE_THREAD_MUTATION : UNRESOLVE_THREAD_MUTATION, { threadId }, "user action", resolved ? "resolve review thread" : "unresolve review thread");
+  await graphql(
+    resolved ? RESOLVE_THREAD_MUTATION : UNRESOLVE_THREAD_MUTATION, { threadId }, "user action",
+    resolved ? "resolve review thread" : "unresolve review thread", undefined, repo,
+  );
 }
 
 
@@ -4727,9 +4905,9 @@ mutation($pullRequestId: ID!) {
   markPullRequestReadyForReview(input: { pullRequestId: $pullRequestId }) { pullRequest { isDraft } }
 }`;
 
-export async function markPullRequestReadyForReview(pullRequestId: string): Promise<void> {
+export async function markPullRequestReadyForReview(repo: string, pullRequestId: string): Promise<void> {
   if (mockGithub) return;
-  await graphql(MARK_READY_MUTATION, { pullRequestId }, "user action", "mark PR ready");
+  await graphql(MARK_READY_MUTATION, { pullRequestId }, "user action", "mark PR ready", undefined, repo);
 }
 
 const CONVERT_TO_DRAFT_MUTATION = `
@@ -4737,15 +4915,15 @@ mutation($pullRequestId: ID!) {
   convertPullRequestToDraft(input: { pullRequestId: $pullRequestId }) { pullRequest { isDraft } }
 }`;
 
-export async function convertPullRequestToDraft(pullRequestId: string): Promise<void> {
+export async function convertPullRequestToDraft(repo: string, pullRequestId: string): Promise<void> {
   if (mockGithub) return;
-  await graphql(CONVERT_TO_DRAFT_MUTATION, { pullRequestId }, "user action", "convert PR to draft");
+  await graphql(CONVERT_TO_DRAFT_MUTATION, { pullRequestId }, "user action", "convert PR to draft", undefined, repo);
 }
 
 
 export async function closePullRequest(repo: string, number: number): Promise<void> {
   if (mockGithub) return;
-  await restRequest("PATCH", `/repos/${repo}/pulls/${number}`, { state: "closed" });
+  await restRequest("PATCH", `/repos/${repo}/pulls/${number}`, { state: "closed" }, repo);
 }
 
 
@@ -4757,11 +4935,11 @@ export async function fetchPullRequestBody(repo: string, number: number): Promis
 
 export async function updatePullRequestBody(repo: string, number: number, body: string): Promise<void> {
   if (mockGithub) return mockGithub.updatePullRequestBody(repo, number, body);
-  await restRequest("PATCH", `/repos/${repo}/pulls/${number}`, { body });
+  await restRequest("PATCH", `/repos/${repo}/pulls/${number}`, { body }, repo);
 }
 
 
 export async function updatePullRequestTitle(repo: string, number: number, title: string): Promise<void> {
   if (mockGithub) return mockGithub.updatePullRequestTitle(repo, number, title);
-  await restRequest("PATCH", `/repos/${repo}/pulls/${number}`, { title });
+  await restRequest("PATCH", `/repos/${repo}/pulls/${number}`, { title }, repo);
 }

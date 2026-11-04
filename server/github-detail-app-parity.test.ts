@@ -24,7 +24,8 @@ async function scenario<T>(code: string): Promise<T> {
     const assert = (condition, message) => { if (!condition) throw new Error(message); };
     const state = { app: true, coreBlocked: false, appGraphqlBlocked: false, userGraphqlBlocked: false,
       appGraphqlRemaining: 4000, userGraphqlRemaining: 4000,
-      missingReaction: false, missingPermission: false, secondary: false, refresh: false, invalidCursor: false };
+      missingReaction: false, missingPermission: false, secondary: false, refresh: false, invalidCursor: false,
+      paginatedReactions: false };
     const reset = Math.ceil(Date.now() / 1000) + 1800;
     const headers = (resource, remaining = 4000) => ({
       "x-ratelimit-resource": resource, "x-ratelimit-remaining": String(remaining),
@@ -105,14 +106,22 @@ async function scenario<T>(code: string): Promise<T> {
           nodes: labelEvents.map(({ created_at, ...event }) => ({ ...event, createdAt: created_at })),
         } } } } }, "graphql");
         if (query.includes("nodes(ids: $ids)")) {
-          assert(token === "personal-token", "Viewer overlay used App identity");
-          return ok({ data: { viewer: { login: "viewer" }, nodes: variables.ids.map((id) => ({ id,
-            ...(id === "PR_7" && !state.missingPermission ? { viewerCanMergeAsAdmin: false } : {}),
-            reactionGroups: state.missingReaction ? [] : groups(true, id).map(({ content, viewerHasReacted }) => ({ content, viewerHasReacted })),
-          })).reverse() } }, "graphql");
+          assert(token === "app-token", "Reactor identities used the personal token");
+          return ok({ data: { nodes: variables.ids.map((id) => {
+            const more = state.paginatedReactions && id === "PR_7" && !variables.after;
+            return { id, reactions: state.missingReaction ? null : {
+              pageInfo: more ? { hasNextPage: true, endCursor: "reactions-100" } : page,
+              nodes: more ? Array.from({ length: 100 }, (_, index) => ({ content: "THUMBS_UP", user: { login: "other" + index } }))
+                : groups(true, id).flatMap(({ content, reactors, viewerHasReacted }) =>
+                  Array.from({ length: reactors.totalCount }, (_, index) => ({
+                    content, user: { login: viewerHasReacted && index === 1 ? "Viewer" : "reactor" + index },
+                  }))),
+            } };
+          }).reverse() } }, "graphql");
         }
         if (query.includes("mergeStateStatus")) return ok({ data: { repository: { pullRequest: base },
           ...(query.includes("viewer { login }") ? { viewer: { login: "viewer" } } : {}) } }, "graphql");
+        if (query.includes("viewer { login }")) return ok({ data: { viewer: { login: "viewer" } } }, "graphql");
         if (query.includes("commitList:")) return ok({ data: { repository: { pullRequest: {
           lastCommit: { nodes: [{ commit: { statusCheckRollup: null } }] }, commitList: { nodes: [{ commit }] },
         } } } }, "graphql");
@@ -136,7 +145,7 @@ async function scenario<T>(code: string): Promise<T> {
       if (state.coreBlocked) return exhausted("core");
       if (url.pathname.endsWith("/issues/7/events")) return ok(labelEvents);
       if (url.pathname === "/user") return ok({ login: "viewer", id: 1 });
-      if (url.pathname === "/repos/acme/repo") return ok({ permissions: { admin: true } });
+      if (url.pathname === "/repos/acme/repo/collaborators/viewer/permission") return ok(state.missingPermission ? {} : { permission: "write" });
       if (url.pathname.endsWith("/pulls/7")) return ok(restPull);
       if (url.pathname.endsWith("/pulls/7/files")) return ok([{ filename: "a.ts", additions: 5, deletions: 2 }]);
       if (url.pathname.endsWith("/issues/7")) return ok({ reactions: { "+1": 3 } });
@@ -218,21 +227,33 @@ function expectReviewParity(detail: PrDetail): void {
   expect(detail.reviewThreads.nodes[100]).toMatchObject({ id: "T_100", isResolved: false });
 }
 
-test("App detail preserves GraphQL thread identity, resolution, reactions, and personal bypass ability", async () => {
+test("App detail preserves GraphQL thread identity, resolution, reactions, and bypass ability from the person's login and role", async () => {
   const result = await scenario<{ detail: PrDetail; calls: Call[] }>(`
     const detail = await fetchDetail();
     console.log(JSON.stringify({ detail, calls }));
   `);
   expectReviewParity(result.detail);
-  expect(result.calls.every((call) => call.path === "/graphql")).toBe(true);
   const repository = result.calls.filter((call) => call.token === "app-token");
+  expect(repository.every((call) => call.path === "/graphql" || call.path === "/repos/acme/repo/collaborators/viewer/permission")).toBe(true);
   expect(repository.some((call) => call.query?.includes("mergeStateStatus"))).toBe(true);
   expect(repository.some((call) => call.variables.threadId === "T_0")).toBe(true);
-  expect(repository.every((call) => !/viewerHasReacted|viewerCanMergeAsAdmin|\bviewer\s*\{/.test(call.query!))).toBe(true);
-  const personal = result.calls.filter((call) => call.token === "personal-token");
-  expect(personal).toHaveLength(2);
-  expect(personal.map((call) => call.variables.ids?.length)).toEqual([100, 6]);
-  expect(personal.every((call) => call.query?.includes("nodes(ids: $ids)") && !call.query.includes("reactors") && !call.query.includes("body"))).toBe(true);
+  expect(repository.every((call) => !/viewerHasReacted|viewerCanMergeAsAdmin|\bviewer\s*\{/.test(call.query ?? ""))).toBe(true);
+  const reactors = repository.filter((call) => call.query?.includes("nodes(ids: $ids)"));
+  expect(reactors.map((call) => call.variables.ids?.length)).toEqual([100, 6]);
+  expect(reactors.every((call) => call.query?.includes("reactions(first: 100, after: $after)") && !call.query.includes("body"))).toBe(true);
+  // Only the person's login is theirs to read; reactions and role come from the installation.
+  expect(result.calls.filter((call) => call.token === "personal-token").map((call) => call.path)).toEqual(["/user"]);
+});
+
+test("App reaction identity remains exact beyond the first hundred reactions", async () => {
+  const result = await scenario<{ detail: PrDetail; calls: Call[] }>(`
+    state.paginatedReactions = true;
+    const detail = await fetchDetail();
+    console.log(JSON.stringify({ detail, calls }));
+  `);
+  expectReviewParity(result.detail);
+  expect(result.calls.some((call) => call.variables.after === "reactions-100" && call.token === "app-token")).toBe(true);
+  expect(result.calls.filter((call) => call.token === "personal-token").map((call) => call.path)).toEqual(["/user"]);
 });
 
 test("scoped review refresh retains full parity and pagination without fetching metadata or checks", async () => {
@@ -249,7 +270,9 @@ test("scoped review refresh retains full parity and pagination without fetching 
   expect(result.detail.comments.nodes[0]!.body).toBe("updated IC_1");
   expect(result.unchangedChecks).toBe(true);
   expect(result.unchangedFiles).toBe(true);
-  expect(result.calls.every((call) => call.path === "/graphql" && !/mergeStateStatus|commitList:/.test(call.query!))).toBe(true);
+  expect(result.calls.every((call) => call.token === "app-token")).toBe(true);
+  expect(result.calls.every((call) => call.path === "/repos/acme/repo/collaborators/viewer/permission"
+    || (call.path === "/graphql" && !/mergeStateStatus|commitList:/.test(call.query!)))).toBe(true);
   expect(result.calls.some((call) => call.variables.after === "threads-100" && call.query?.includes("isResolved"))).toBe(true);
 });
 
@@ -267,59 +290,80 @@ test("no-App detail keeps its personal review document and REST metadata with id
   expect(result.calls.some((call) => call.query?.includes("nodes(ids:"))).toBe(false);
 });
 
-test("both exhausted core pools still allow full and scoped detail over GraphQL", async () => {
-  const result = await scenario<{ detail: PrDetail; refreshed: PrDetail; calls: Call[]; seed: { error: Failure } }>(`
+test("exhausted App core reuses an observed role without reading personal permissions", async () => {
+  const result = await scenario<{ detail: PrDetail; refreshed: PrDetail; calls: Call[] }>(`
+    await fetchDetail();
     state.coreBlocked = true;
-    const seed = await capture(() => github.fetchActionWorkflows("acme/repo"));
+    await capture(() => github.fetchActionWorkflows("acme/repo"));
     calls.length = 0;
     const detail = await fetchDetail();
     const refreshed = await github.fetchPrDetailPart("acme/repo", 7, detail, "review", "webhook");
-    console.log(JSON.stringify({ detail, refreshed, calls, seed }));
+    console.log(JSON.stringify({ detail, refreshed, calls }));
   `);
-  expect(result.seed.error).toMatchObject({ kind: "quota", resource: "core" });
   expectReviewParity(result.detail);
   expectReviewParity(result.refreshed);
-  expect(result.calls.every((call) => call.path === "/graphql")).toBe(true);
+  expect(result.calls.every((call) => call.token === "app-token" && call.path === "/graphql")).toBe(true);
 });
 
-test("App GraphQL primary exhaustion uses bounded personal GraphQL fallback without degraded REST", async () => {
-  const result = await scenario<{ detail: PrDetail; refreshed: PrDetail; calls: Call[]; refreshCalls: Call[] }>(`
-    state.appGraphqlBlocked = true;
-    const detail = await fetchDetail();
-    const before = calls.length;
-    const refreshed = await github.fetchPrDetailPart("acme/repo", 7, detail, "review", "webhook");
-    console.log(JSON.stringify({ detail, refreshed, calls, refreshCalls: calls.slice(before) }));
+test("exhausted App core without an observed role never falls back to personal permission reads", async () => {
+  const result = await scenario<{ outcome: { error: Failure }; calls: Call[] }>(`
+    state.coreBlocked = true;
+    await capture(() => github.fetchActionWorkflows("acme/repo"));
+    calls.length = 0;
+    const outcome = await capture(fetchDetail);
+    console.log(JSON.stringify({ outcome, calls }));
   `);
-  expectReviewParity(result.detail);
-  expectReviewParity(result.refreshed);
-  expect(result.calls.every((call) => call.path === "/graphql")).toBe(true);
-  expect(result.calls.some((call) => call.token === "app-token")).toBe(true);
-  expect(result.calls.some((call) => call.token === "personal-token" && call.query?.includes("reviewDecision"))).toBe(true);
-  expect(result.refreshCalls.every((call) => call.token === "personal-token")).toBe(true);
-  const attempted = result.calls.filter((call) => call.token === "app-token").map((call) => JSON.stringify([call.query, call.variables]));
+  expect(result.outcome.error).toMatchObject({ kind: "quota", resource: "core" });
+  expect(result.calls.filter((call) => call.path === "/graphql" && call.token === "personal-token")
+    .every((call) => call.query?.includes("viewer { login }"))).toBe(true);
+});
+
+test("App GraphQL primary exhaustion waits for the installation instead of personal GraphQL or degraded REST", async () => {
+  const result = await scenario<{ full: { error: Failure }; refreshed: { error: Failure }; calls: Call[] }>(`
+    const detail = await fetchDetail();
+    state.appGraphqlBlocked = true;
+    calls.length = 0;
+    const full = await capture(fetchDetail);
+    const refreshed = await capture(() => github.fetchPrDetailPart("acme/repo", 7, detail, "review", "webhook"));
+    console.log(JSON.stringify({ full, refreshed, calls }));
+  `);
+  expect(result.full.error).toMatchObject({ kind: "quota", resource: "graphql" });
+  expect(result.refreshed.error).toMatchObject({ kind: "quota", resource: "graphql" });
+  expect(result.calls.every((call) => call.path === "/graphql" && call.token === "app-token")).toBe(true);
+  const attempted = result.calls.map((call) => JSON.stringify([call.query, call.variables]));
   expect(new Set(attempted).size).toBe(attempted.length);
 });
 
-for (const app of [false, true]) {
-  test(`${app ? "App" : "no-App"} detail gates exhausted personal GraphQL before parallel metadata spending when REST fallback is off`, async () => {
-    const result = await scenario<{ outcome: { error: Failure }; calls: Call[] }>(`
-      state.app = ${app};
-      state.userGraphqlBlocked = true;
-      await capture(() => github.resolveReviewThread("T_0"));
-      calls.length = 0;
-      const outcome = await capture(fetchDetail);
-      console.log(JSON.stringify({ outcome, calls }));
-    `);
-    expect(result.outcome.error).toMatchObject({ kind: "quota", resource: "graphql" });
-    expect(result.calls).toEqual([]);
-  });
-}
+test("no-App detail gates exhausted personal GraphQL before parallel metadata spending when REST fallback is off", async () => {
+  const result = await scenario<{ outcome: { error: Failure }; calls: Call[] }>(`
+    state.app = false;
+    state.userGraphqlBlocked = true;
+    await capture(() => github.resolveReviewThread("acme/repo", "T_0"));
+    calls.length = 0;
+    const outcome = await capture(fetchDetail);
+    console.log(JSON.stringify({ outcome, calls }));
+  `);
+  expect(result.outcome.error).toMatchObject({ kind: "quota", resource: "graphql" });
+  expect(result.calls).toEqual([]);
+});
 
-test("explicit REST fallback preference permits degraded full and scoped reads after personal GraphQL exhaustion", async () => {
+test("App detail spends no personal GraphQL, so personal exhaustion leaves it whole", async () => {
+  const result = await scenario<{ detail: PrDetail; calls: Call[] }>(`
+    state.userGraphqlBlocked = true;
+    await capture(() => github.fetchReviewItems());
+    calls.length = 0;
+    const detail = await fetchDetail();
+    console.log(JSON.stringify({ detail, calls }));
+  `);
+  expectReviewParity(result.detail);
+  expect(result.calls.some((call) => call.path === "/graphql" && call.token === "personal-token")).toBe(false);
+});
+
+test("explicit REST fallback preference permits degraded full and scoped reads after App GraphQL exhaustion", async () => {
   const result = await scenario<{ detail: PrDetail; refreshed: PrDetail; calls: Call[] }>(`
     settings.writeSettings({ rest_fallback_enabled: true });
-    state.userGraphqlBlocked = true;
-    await capture(() => github.resolveReviewThread("T_0"));
+    state.appGraphqlBlocked = true;
+    await capture(() => github.resolveReviewThread("acme/repo", "T_0"));
     calls.length = 0;
     const detail = await fetchDetail();
     const refreshed = await github.fetchPrDetailPart("acme/repo", 7, detail, "review", "webhook");
@@ -329,11 +373,12 @@ test("explicit REST fallback preference permits degraded full and scoped reads a
   expect(result.refreshed.comments.nodes[0]!.body).toBe("degraded REST");
   expect(result.calls.every((call) => call.path !== "/graphql")).toBe(true);
   expect(result.calls.filter((call) => call.path.endsWith("/issues/7/comments")).every((call) => call.token === "app-token")).toBe(true);
-  expect(result.calls.find((call) => call.path === "/repos/acme/repo")?.token).toBe("personal-token");
+  expect(result.calls.find((call) => call.path === "/repos/acme/repo/collaborators/viewer/permission")?.token).toBe("app-token");
+  expect(result.calls.filter((call) => call.token === "personal-token").map((call) => call.path)).toEqual(["/user"]);
 });
 
 for (const field of ["missingReaction", "missingPermission"]) {
-  test(`missing personal ${field === "missingReaction" ? "reaction state" : "bypass ability"} fails explicitly instead of inventing false`, async () => {
+  test(`missing ${field === "missingReaction" ? "reactor identities" : "repository role"} fails explicitly instead of inventing false`, async () => {
     const result = await scenario<{ outcome: { error: Failure }; calls: Call[] }>(`
       state.${field} = true;
       settings.writeSettings({ rest_fallback_enabled: true });
@@ -341,7 +386,8 @@ for (const field of ["missingReaction", "missingPermission"]) {
       console.log(JSON.stringify({ outcome, calls }));
     `);
     expect(result.outcome.error.status).toBe(502);
-    expect(result.calls.every((call) => call.path === "/graphql")).toBe(true);
+    expect(result.calls.every((call) => call.path === "/graphql" || call.path === "/user"
+      || call.path === "/repos/acme/repo/collaborators/viewer/permission")).toBe(true);
   });
 }
 
@@ -368,24 +414,21 @@ test("secondary cooldown never becomes a REST fallback or another-identity retry
   expect(result.calls).toEqual([]);
 });
 
-test("background viewer overlays preserve the personal reserve while foreground detail remains available", async () => {
-  const result = await scenario<{ full: { error: Failure }; review: { error: Failure }; blockedCalls: Call[]; foreground: PrDetail }>(`
+test("background App detail spends no personal GraphQL reserve", async () => {
+  const result = await scenario<{ full: PrDetail; review: PrDetail; calls: Call[] }>(`
     state.userGraphqlRemaining = 50;
     const initial = await fetchDetail();
     calls.length = 0;
-    const full = await capture(() => github.fetchPrDetail("acme/repo", 7, "webhook", previous));
-    const review = await capture(() => github.fetchPrDetailPart("acme/repo", 7, initial, "review", "webhook"));
-    const blockedCalls = calls.slice();
-    const foreground = await fetchDetail();
-    console.log(JSON.stringify({ full, review, blockedCalls, foreground }));
+    const full = await github.fetchPrDetail("acme/repo", 7, "webhook", previous);
+    const review = await github.fetchPrDetailPart("acme/repo", 7, initial, "review", "webhook");
+    console.log(JSON.stringify({ full, review, calls }));
   `);
-  expect(result.full.error).toMatchObject({ kind: "quota", resource: "graphql" });
-  expect(result.review.error).toMatchObject({ kind: "quota", resource: "graphql" });
-  expect(result.blockedCalls).toEqual([]);
-  expectReviewParity(result.foreground);
+  expectReviewParity(result.full);
+  expectReviewParity(result.review);
+  expect(result.calls.every((call) => call.token === "app-token")).toBe(true);
 });
 
-test("a healthy personal GraphQL pool preserves full fidelity when the App reaches its background reserve", async () => {
+test("an App at its background GraphQL reserve reads background detail over its own REST pool, never personal GraphQL", async () => {
   const result = await scenario<{ detail: PrDetail; calls: Call[] }>(`
     state.appGraphqlRemaining = 50;
     await fetchDetail();
@@ -394,14 +437,15 @@ test("a healthy personal GraphQL pool preserves full fidelity when the App reach
     const detail = await github.fetchPrDetail("acme/repo", 7, "webhook", previous);
     console.log(JSON.stringify({ detail, calls }));
   `);
-  expectReviewParity(result.detail);
-  expect(result.calls.every(call => call.path === "/graphql" && call.token === "personal-token")).toBe(true);
+  expect(result.detail.comments.nodes[0]!.body).toBe("degraded REST");
+  expect(result.calls.every(call => call.path !== "/graphql" && call.token === "app-token")).toBe(true);
 });
 
 for (const mode of ["app", "personal", "graphql-fallback"]) {
   test(`order clock uses the latest addition while order remains present (${mode})`, async () => {
     const result = await scenario<{ timestamps: Array<string | null>; disabledReads: number }>(`
       state.app = ${mode !== "personal"};
+      if (${mode === "graphql-fallback"}) await fetchDetail();
       state.coreBlocked = ${mode === "graphql-fallback"};
       base.labels.nodes = restPull.labels = [{ name: "order" }, { name: "kitchen: chef" }];
       labelEvents = [

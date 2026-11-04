@@ -162,7 +162,7 @@ test("an exhausted GraphQL pool reads PRs over REST unless the fallback is turne
       };
       const routes = {
         "/user": { login: "viewer" },
-        "/repos/acme/app": { permissions: { admin: true } },
+        "/repos/acme/app/collaborators/viewer/permission": { permission: "admin" },
         "/repos/acme/app/pulls/7": pull,
         "/repos/acme/app/pulls/7/files": [{ filename: "a.ts", additions: 1, deletions: 0 }],
         "/repos/acme/app/issues/7": { reactions: { "+1": 2 } },

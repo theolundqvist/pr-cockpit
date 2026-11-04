@@ -3,7 +3,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { GithubAppReadHealth, GithubCredentialQuota, GithubQuota, GithubQuotaResource } from "./github.ts";
+import type { GithubAppReadHealth, GithubCredentialQuota, GithubQuota, GithubQuotaResource, GithubUserFallback } from "./github.ts";
 import type { GithubGraphqlUsageEvent, GithubRestUsageEvent } from "./githubUsage.ts";
 
 type Call = { path: string; token: string; method: string; etag?: string | null; query?: string | null };
@@ -133,8 +133,8 @@ async function scenario<T>(code: string, enabled = true): Promise<T> {
   }
 }
 
-test("repository reads use independent installations while writes, viewer, permissions, and pending reviews remain personal", async () => {
-  const result = await scenario<{ calls: Call[]; quota: Report; restEvents: GithubRestUsageEvent[]; graphqlEvents: GithubGraphqlUsageEvent[]; issuances: [number, number][] }>(`
+test("repository reads and non-attributed writes use independent installations while attributed writes, viewer identity, and pending reviews remain personal", async () => {
+  const result = await scenario<{ calls: Call[]; quota: Report; restEvents: GithubRestUsageEvent[]; graphqlEvents: GithubGraphqlUsageEvent[]; issuances: [number, number][]; push: unknown; fallbacks: GithubUserFallback[]; maintenance: Call[] }>(`
     const actionsBoth = Promise.withResolvers();
     let actionsStarted = 0;
     respond = async (request, token, url, body) => {
@@ -149,7 +149,8 @@ test("repository reads use independent installations while writes, viewer, permi
         return graphqlData(openPrs, 44, 9000);
       }
       if (request.method === "POST") return json({ node_id: "comment-id" }, "core", used, limit);
-      if (url.pathname.endsWith("/pulls/1")) return json({ state: "open", head: { repo: { full_name: "acme/one", permissions: { push: false } } }, base: { repo: { full_name: "acme/one" } } }, "core", used, limit);
+      if (url.pathname.endsWith("/pulls/1")) return json({ state: "open", head: { repo: { full_name: "acme/one" } }, base: { repo: { full_name: "acme/one" } } }, "core", used, limit);
+      if (url.pathname.endsWith("/collaborators/viewer/permission")) return json({ permission: "read" }, "core", used, limit);
       if (url.pathname.includes("/actions/")) {
         if (++actionsStarted === 2) actionsBoth.resolve();
         await actionsBoth.promise;
@@ -157,34 +158,50 @@ test("repository reads use independent installations while writes, viewer, permi
       }
       return json([], "core", used, limit);
     };
-    await Promise.all([
+    const [, , , , , , push] = await Promise.all([
       github.fetchActionWorkflows("acme/one"), github.fetchActionWorkflows("acme/two"),
       github.fetchRepositoryOpenPrs("acme/one"), github.getViewerLogin(),
-      github.postIssueComment("acme/one", 1, "hello"), github.resolveReviewThread("T"),
+      github.postIssueComment("acme/one", 1, "hello"), github.resolveReviewThread("acme/one", "T"),
       github.prHeadPushAccess("acme/one", 1), github.fetchPendingReview("acme/one", 1),
       github.fetchPrCommentsSince("acme/one", 1, "2026-01-01T00:00:00Z"),
     ]);
     const quota = await github.fetchGithubQuota();
-    console.log(JSON.stringify({ calls, quota, restEvents, graphqlEvents, issuances: [...issuances] }));
+    const maintenanceStart = calls.length;
+    await github.closePullRequest("acme/one", 1);
+    await github.markPullRequestReadyForReview("acme/one", "PR_1");
+    await github.convertPullRequestToDraft("acme/one", "PR_1");
+    const maintenance = calls.splice(maintenanceStart);
+    console.log(JSON.stringify({ calls, quota, restEvents, graphqlEvents, issuances: [...issuances], push, fallbacks: github.githubUserFallbacks(), maintenance }));
   `);
   const dataCalls = result.calls.filter((call) => call.token !== "jwt");
   expect(dataCalls.filter((call) => call.path.includes("/actions/")).map((call) => call.token).sort()).toEqual(["app-41-1", "app-42-1"]);
-  expect(dataCalls.filter((call) => call.method !== "GET" && !call.query?.trim().startsWith("query")).every((call) => call.token === "personal-one")).toBe(true);
-  expect(dataCalls.find((call) => call.path === "/user")?.token).toBe("personal-one");
-  expect(dataCalls.find((call) => call.path.endsWith("/pulls/1"))?.token).toBe("personal-one");
+  const writes = dataCalls.filter((call) => call.method !== "GET" && !call.query?.trim().startsWith("query"));
+  expect(writes.filter((call) => call.path.endsWith("/issues/1/comments")).map((call) => call.token)).toEqual(["personal-one"]);
+  expect(writes.filter((call) => call.path === "/graphql").map((call) => call.token)).toEqual(["app-41-1"]);
+  expect(dataCalls.filter((call) => call.path === "/user").map((call) => call.token)).toEqual(["personal-one"]);
+  expect(dataCalls.find((call) => call.path.endsWith("/pulls/1"))?.token).toBe("app-41-1");
+  expect(dataCalls.find((call) => call.path.endsWith("/collaborators/viewer/permission"))?.token).toBe("app-41-1");
+  expect(result.push).toEqual({ allowed: false, reason: "You can't push to acme/one." });
   expect(dataCalls.filter((call) => call.path.endsWith("/pulls/1/reviews")).map((call) => call.token).sort()).toEqual(["app-41-1", "personal-one"]);
   expect(dataCalls.find((call) => call.path.endsWith("/issues/1/comments") && call.method === "GET")?.token).toBe("app-41-1");
+  expect(result.fallbacks.map((entry) => entry.reason)).toEqual(["viewer", "viewer"]);
+  expect(result.fallbacks).toContainEqual(expect.objectContaining({ scope: "acme/one", reason: "viewer", resource: "core", count: 1 }));
+  expect(result.maintenance.map((call) => [call.method, call.path, call.token])).toEqual([
+    ["PATCH", "/repos/acme/one/pulls/1", "app-41-1"],
+    ["POST", "/graphql", "app-41-1"],
+    ["POST", "/graphql", "app-41-1"],
+  ]);
   expect(result.quota.rest.used).toBe(33);
   expect(result.quota.identities.find((item) => item.installationId === 41)).toMatchObject({ rest: { used: 11, limit: 9000 }, graphql: { used: 44, limit: 9000 }, repositories: ["acme/one"] });
   expect(result.quota.identities.find((item) => item.installationId === 42)).toMatchObject({ rest: { used: 22, limit: 7000 }, graphql: null, repositories: ["acme/two"] });
   expect(result.restEvents.filter((event) => event.credentialKind === "app").every((event) => event.credential?.startsWith("app:123:installation:"))).toBe(true);
   expect(result.graphqlEvents.find((event) => event.operation === "all PRs")?.credential).toBe("app:123:installation:41");
-  expect(result.graphqlEvents.find((event) => event.operation === "resolve review thread")?.credential).toBe(result.quota.identity);
+  expect(result.graphqlEvents.find((event) => event.operation === "resolve review thread")?.credential).toBe("app:123:installation:41");
   expect(result.issuances.sort()).toEqual([[41, 1], [42, 1]]);
 });
 
-test("app primary exhaustion falls back once and user exhaustion cannot suppress another installation", async () => {
-  const result = await scenario<{ calls: Call[]; quota: Report; write: Outcome; available: GithubQuotaResource }>(`
+test("app primary exhaustion waits for the installation's reset without personal fallback and user exhaustion cannot suppress another installation", async () => {
+  const result = await scenario<{ calls: Call[]; quota: Report; first: Outcome; second: Outcome; write: Outcome; available: GithubQuotaResource; fallbacks: GithubUserFallback[] }>(`
     let userExhausted = false;
     respond = async (request, token, url) => {
       if (url.pathname === "/rate_limit") return Response.json(rateData());
@@ -193,17 +210,20 @@ test("app primary exhaustion falls back once and user exhaustion cannot suppress
       }
       return json({ workflows: [], node_id: "comment-id" }, "core", token.startsWith("app-42-") ? 7 : 20);
     };
-    await github.fetchActionWorkflows("acme/one");
-    await github.fetchActionWorkflows("acme/one");
+    const first = await capture(() => github.fetchActionWorkflows("acme/one"));
+    const second = await capture(() => github.fetchActionWorkflows("acme/one"));
     userExhausted = true;
     const write = await capture(() => github.postIssueComment("acme/one", 1, "hello"));
     await github.fetchActionWorkflows("acme/two");
     const available = await github.repositoryReadQuota("acme/two", "core");
     const quota = await github.fetchGithubQuota();
-    console.log(JSON.stringify({ calls, write, available, quota }));
+    console.log(JSON.stringify({ calls, first, second, write, available, quota, fallbacks: github.githubUserFallbacks() }));
   `);
   expect(result.calls.filter((call) => call.token === "app-41-1")).toHaveLength(1);
-  expect(result.calls.filter((call) => call.path === "/repos/acme/one/actions/workflows" && call.token === "personal-one")).toHaveLength(2);
+  expect(result.calls.some((call) => call.path === "/repos/acme/one/actions/workflows" && call.token === "personal-one")).toBe(false);
+  expect(result.first).toMatchObject({ status: 403, kind: "quota", credential: "app:123:installation:41" });
+  expect(result.second).toMatchObject({ status: 403, kind: "quota", credential: "app:123:installation:41" });
+  expect(result.fallbacks).toEqual([]);
   expect(result.write).toMatchObject({ status: 403, kind: "quota" });
   expect(result.available.remaining).toBe(4993);
   expect(result.quota.rest.remaining).toBe(0);
@@ -218,7 +238,7 @@ test("secondary throttling blocks all identities and APIs without a fallback or 
     const first = await capture(() => github.fetchActionWorkflows("acme/one"));
     const count = calls.length;
     const second = await capture(() => github.fetchActionWorkflows("acme/two"));
-    const write = await capture(() => github.resolveReviewThread("T"));
+    const write = await capture(() => github.resolveReviewThread("acme/one", "T"));
     console.log(JSON.stringify({ first, second, write, count, finalCount: calls.length, issuances: [...issuances] }));
   `);
   expect(result.first).toMatchObject({ status: 403, kind: "quota" });
@@ -252,8 +272,8 @@ test("expired app tokens refresh single-flight without resetting the installatio
   expect(result.quota.identities.find((item) => item.kind === "app")).toMatchObject({ identity: "app:123:installation:41", rest: { used: 77 }, graphql: { used: 123 } });
 });
 
-test("permission fallback never reuses another identity's conditional body and missing installations stay personal", async () => {
-  const result = await scenario<{ first: { id: number }[]; second: { id: number }[]; cached: { id: number }[]; outside: { id: number }[]; calls: Call[] }>(`
+test("permission fallback never reuses another identity's conditional body, missing installations stay personal, and both are counted", async () => {
+  const result = await scenario<{ first: { id: number }[]; second: { id: number }[]; cached: { id: number }[]; outside: { id: number }[]; calls: Call[]; fallbacks: GithubUserFallback[] }>(`
     let phase = "personal";
     respond = async (request, token, url) => {
       if (url.pathname === "/rate_limit") return Response.json(rateData());
@@ -270,7 +290,7 @@ test("permission fallback never reuses another identity's conditional body and m
     const second = await github.fetchActionWorkflows("acme/one");
     const cached = await github.fetchActionWorkflows("acme/one");
     const outside = await github.fetchActionWorkflows("acme/outside");
-    console.log(JSON.stringify({ first, second, cached, outside, calls }));
+    console.log(JSON.stringify({ first, second, cached, outside, calls, fallbacks: github.githubUserFallbacks() }));
   `);
   expect(result.first).toEqual([{ id: 1 }]);
   expect(result.second).toEqual([{ id: 41 }]);
@@ -279,10 +299,14 @@ test("permission fallback never reuses another identity's conditional body and m
   const appCalls = result.calls.filter((call) => call.path.endsWith("/actions/workflows") && call.token === "app-41-1");
   expect(appCalls.map((call) => call.etag)).toEqual([null, null, '"41"']);
   expect(result.calls.find((call) => call.path === "/repos/acme/outside/actions/workflows")?.token).toBe("personal-one");
+  expect(result.fallbacks.map(({ scope, reason, resource, count }) => ({ scope, reason, resource, count }))).toEqual([
+    { scope: "acme/one", reason: "permission", resource: "core", count: 1 },
+    { scope: "acme/outside", reason: "installation", resource: "core", count: 1 },
+  ]);
 });
 
-test("GraphQL primary and permission fallbacks are bounded and transport or repeated bad credentials stay explicit", async () => {
-  const result = await scenario<{ calls: Call[]; invalid: Outcome; invalidCalls: Call[]; transport: Outcome; transportCalls: Call[] }>(`
+test("GraphQL primary exhaustion stays on the installation, permission fallback is bounded, and transport or repeated bad credentials stay explicit", async () => {
+  const result = await scenario<{ calls: Call[]; primary: Outcome[]; invalid: Outcome; invalidCalls: Call[]; transport: Outcome; transportCalls: Call[] }>(`
     let phase = "primary";
     respond = async (request, token, url) => {
       if (url.pathname === "/rate_limit") return Response.json(rateData());
@@ -297,8 +321,10 @@ test("GraphQL primary and permission fallbacks are bounded and transport or repe
       if (phase === "invalid") return new Response("Bad credentials", { status: 401 });
       return json({ workflows: [] });
     };
-    await github.fetchRepositoryOpenPrs("acme/one");
-    await github.fetchRepositoryOpenPrs("acme/one");
+    const primary = [
+      await capture(() => github.fetchRepositoryOpenPrs("acme/one")),
+      await capture(() => github.fetchRepositoryOpenPrs("acme/one")),
+    ];
     phase = "permission";
     await github.fetchRepositoryOpenPrs("acme/two");
     phase = "invalid";
@@ -308,10 +334,14 @@ test("GraphQL primary and permission fallbacks are bounded and transport or repe
     server.stop(true);
     const transportStart = calls.length;
     const transport = await capture(() => github.fetchActionWorkflows("acme/two"));
-    console.log(JSON.stringify({ calls, invalid, invalidCalls, transport, transportCalls: calls.slice(transportStart) }));
+    console.log(JSON.stringify({ calls, primary, invalid, invalidCalls, transport, transportCalls: calls.slice(transportStart) }));
   `);
   expect(result.calls.filter((call) => call.path === "/graphql" && call.token.startsWith("app-41-"))).toHaveLength(1);
-  expect(result.calls.filter((call) => call.path === "/graphql" && call.token === "personal-one")).toHaveLength(3);
+  expect(result.primary).toEqual([
+    expect.objectContaining({ kind: "quota", credential: "app:123:installation:41" }),
+    expect.objectContaining({ kind: "quota", credential: "app:123:installation:41" }),
+  ]);
+  expect(result.calls.filter((call) => call.path === "/graphql" && call.token === "personal-one")).toHaveLength(1);
   expect(result.invalid).toMatchObject({ status: 401, kind: "http" });
   expect(result.invalidCalls).toHaveLength(2);
   expect(result.invalidCalls.every((call) => call.token.startsWith("app-42-"))).toBe(true);
@@ -406,21 +436,27 @@ test("absent app configuration adds no authentication traffic or installation UI
   expect(result.issuances).toEqual([]);
 });
 
-test("personal GraphQL exhaustion leaves repository GraphQL reads on the app budget", async () => {
-  const result = await scenario<{ failure: Outcome; calls: Call[]; quota: Report }>(`
+test("personal GraphQL exhaustion leaves repository GraphQL reads and installation searches on the app budget", async () => {
+  const result = await scenario<{ failure: Outcome; hits: unknown[]; calls: Call[]; quota: Report }>(`
     respond = async (request, token, url, body) => {
       if (url.pathname === "/rate_limit") return Response.json(rateData());
+      if (url.pathname === "/user") return json({ login: "viewer", id: 1 });
       if (token === "personal-one") return Response.json({ message: "API rate limit exceeded" }, {
         status: 403, headers: headers("graphql", 5000),
       });
+      if (url.pathname === "/graphql" && body.query.includes("search(")) {
+        return json({ data: { search: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } }, "graphql", 25, 9000);
+      }
       return graphqlData(openPrs, 25, 9000);
     };
-    const failure = await capture(() => github.searchOpenPrs(["acme/one"]));
+    const failure = await capture(() => github.fetchReviewItems());
+    const hits = await github.searchOpenPrs(["acme/one"]);
     await github.fetchRepositoryOpenPrs("acme/one");
-    console.log(JSON.stringify({ failure, calls, quota: await github.fetchGithubQuota() }));
+    console.log(JSON.stringify({ failure, hits, calls, quota: await github.fetchGithubQuota() }));
   `);
   expect(result.failure).toMatchObject({ kind: "quota", status: 403 });
-  expect(result.calls.filter((call) => call.path === "/graphql").map((call) => call.token)).toEqual(["personal-one", "app-41-1"]);
+  expect(result.hits).toEqual([]);
+  expect(result.calls.filter((call) => call.path === "/graphql").map((call) => call.token)).toEqual(["personal-one", "app-41-1", "app-41-1"]);
   expect(result.quota.graphql.remaining).toBe(0);
   expect(result.quota.identities.find((item) => item.kind === "app")?.graphql?.remaining).toBe(8975);
 });
@@ -482,35 +518,26 @@ test("secondary limits during App authentication stop personal requests too", as
   expect(result.calls.map(call => call.path)).toEqual(["/repos/acme/one/installation"]);
 });
 
-test("disabled-App background reads do not wait for a quota refresh after a quiet minute", async () => {
+test("disabled-App background admission reuses observed quota without starting personal quota reads", async () => {
   const result = await scenario<{ remaining: number; requests: number; installationRequired: boolean }>(`
     let now = Date.now();
     Date.now = () => now;
     let requests = 0;
-    const refreshStarted = Promise.withResolvers();
-    const release = Promise.withResolvers();
     respond = async (request, token, url) => {
       if (url.pathname !== "/rate_limit") throw new Error("Unexpected quota request");
       requests++;
-      if (requests > 1) {
-        refreshStarted.resolve();
-        await release.promise;
-      }
       return Response.json(rateData());
     };
     await github.fetchGithubQuota();
     now += 61000;
     const quota = await github.repositoryReadQuota("acme/one", "core");
     const installationRequired = await github.repositoryReadQuota("acme/one", "core", true) === undefined;
-    await refreshStarted.promise;
-    release.resolve();
-    await github.fetchGithubQuota();
     console.log(JSON.stringify({ remaining: quota.remaining, requests, installationRequired }));
   `, false);
-  expect(result).toEqual({ remaining: 5000, requests: 2, installationRequired: true });
+  expect(result).toEqual({ remaining: 5000, requests: 1, installationRequired: true });
 });
 
-test("background reads use healthy personal quota when an installation reaches its reserve", async () => {
+test("background reads stay on an installation at its reserve instead of spending personal quota", async () => {
   const result = await scenario<{ remaining: number; installationOnly: boolean; tokens: string[] }>(`
     respond = async (request, token, url) => url.pathname === "/rate_limit"
       ? Response.json(rateData())
@@ -524,7 +551,7 @@ test("background reads use healthy personal quota when an installation reaches i
     console.log(JSON.stringify({ remaining: available.remaining, installationOnly,
       tokens: calls.filter(call => call.path.endsWith("/actions/workflows")).map(call => call.token) }));
   `);
-  expect(result).toEqual({ remaining: 5000, installationOnly: true, tokens: ["app-41-1", "personal-one", "app-41-1"] });
+  expect(result).toEqual({ remaining: 100, installationOnly: false, tokens: ["app-41-1", "app-41-1", "app-41-1"] });
 });
 
 test("uninstalling an App preserves PR lookup through personal authentication", async () => {
@@ -600,7 +627,7 @@ test("quota App status is passive and only completed repository reads establish 
 test("personal fallback cannot report App success and GraphQL body failures retain the last actual success", async () => {
   const result = await scenario<{
     fallback: GithubAppReadHealth; recovered: GithubAppReadHealth; malformed: GithubAppReadHealth[];
-    failures: Outcome[]; tokens: string[]; quota: GithubAppReadHealth; exposed: string;
+    failures: Outcome[]; exhausted: Outcome; tokens: string[]; quota: GithubAppReadHealth; exposed: string;
   }>(`
     let phase = "forbidden";
     respond = async (_request, token, url) => {
@@ -628,10 +655,10 @@ test("personal fallback cannot report App success and GraphQL body failures reta
       malformed.push((await appStatus()).app.health);
     }
     phase = "quota";
-    await github.fetchRepositoryOpenPrs("acme/two");
+    const exhausted = await capture(() => github.fetchRepositoryOpenPrs("acme/two"));
     const quota = (await appStatus()).app.health;
     const exposed = JSON.stringify({ fallback, recovered, malformed, quota });
-    console.log(JSON.stringify({ fallback, recovered, malformed, failures, quota, exposed,
+    console.log(JSON.stringify({ fallback, recovered, malformed, failures, exhausted, quota, exposed,
       tokens: calls.filter(call => call.path === "/graphql").map(call => call.token) }));
   `);
   expect(result.fallback.repositories).toEqual([
@@ -648,7 +675,8 @@ test("personal fallback cannot report App success and GraphQL body failures reta
     lastSuccessAt: null, error: { kind: "quota", resetAt: expect.any(String) },
   });
   expect(result.tokens.slice(0, 3)).toEqual(["app-41-1", "personal-one", "app-41-1"]);
-  expect(result.tokens.slice(-2)).toEqual(["app-42-1", "personal-one"]);
+  expect(result.exhausted).toMatchObject({ kind: "quota", credential: "app:123:installation:42" });
+  expect(result.tokens.slice(-2)).toEqual(["app-41-1", "app-42-1"]);
   expect(result.exposed).not.toContain("private-secret");
 });
 
@@ -846,8 +874,8 @@ test("successful reads that drain an installation pool expose a passive quota is
       const drained = (await appStatus()).app.health;
       await appStatus();
       const after = calls.length;
-      await read("acme/one");
-      await read("acme/another");
+      await capture(() => read("acme/one"));
+      await capture(() => read("acme/another"));
       const fallback = (await appStatus()).app.health;
       now = reset * 1000 + 1;
       const expired = (await appStatus()).app.health;
@@ -862,7 +890,7 @@ test("successful reads that drain an installation pool expose a passive quota is
       }
     }
     for (const repo of result.expired.repositories) expect(repo.error).toBeNull();
-    expect(result.tokens).toEqual(["app-41-1", "app-41-1", "app-41-1", "personal-one", "personal-one"]);
+    expect(result.tokens).toEqual(["app-41-1", "app-41-1", "app-41-1"]);
     expect(result.after).toBe(result.before);
   }
 });
@@ -918,7 +946,7 @@ test("an older delayed success cannot clear a newer request failure, provider fa
   expect(result.after[2]?.repositories[0]?.lastSuccessAt).toBeNull();
 });
 
-test("missing PR aliases establish App access without changing the existing personal fallback", async () => {
+test("missing PR aliases are an App answer that needs no personal fallback", async () => {
   const result = await scenario<{ lookup: unknown; health: GithubAppReadHealth; tokens: string[] }>(`
     respond = async () => Response.json({
       data: { repository: { pr0: null } },
@@ -932,7 +960,7 @@ test("missing PR aliases establish App access without changing the existing pers
   expect(result.health.repositories).toEqual([
     { repo: "acme/one", lastSuccessAt: expect.any(String), error: null },
   ]);
-  expect(result.tokens).toEqual(["app-41-1", "personal-one"]);
+  expect(result.tokens).toEqual(["app-41-1"]);
 });
 
 test("missing installations on untracked links stay out of health while tracked misses and real provider failures remain visible", async () => {

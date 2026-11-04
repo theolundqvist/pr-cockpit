@@ -6,7 +6,7 @@ import { githubAppReadHealth, type GithubAppReadHealth } from "./github.ts";
 
 const SETUP_PATH = "/api/github-app/quota";
 const COOKIE = "cockpit_quota_app_setup";
-const READ_PERMISSIONS = { actions: "read", checks: "read", contents: "read", issues: "read", metadata: "read", pull_requests: "read", statuses: "read" };
+const APP_PERMISSIONS = { actions: "write", checks: "read", contents: "read", issues: "write", metadata: "read", pull_requests: "write", security_events: "write", statuses: "read" };
 const LAUNCH_TTL_MS = 5 * 60_000;
 const SETUP_TTL_MS = 60 * 60_000;
 const MAX_PENDING = 16;
@@ -113,7 +113,7 @@ export async function handleGithubAppSetup(request: Request): Promise<Response> 
         public: false,
         redirect_url: `${launch.origin}${SETUP_PATH}/callback`,
         setup_url: `${launch.origin}${SETUP_PATH}/installed`,
-        default_permissions: READ_PERMISSIONS,
+        default_permissions: APP_PERMISSIONS,
         default_events: [],
       };
       const registration = launch.owner ? `https://github.com/organizations/${encodeURIComponent(launch.owner)}/settings/apps/new` : "https://github.com/settings/apps/new";

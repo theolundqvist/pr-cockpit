@@ -792,7 +792,7 @@
               </form>
               {#if quotaAppLaunchUrl}<a class="btn" href={quotaAppLaunchUrl} target="_blank" rel="noopener noreferrer">Continue in browser</a>{/if}
             {/if}
-            <span class="hint">Reads use the app quota first. Your account keeps its own quota and handles your actions. GitHub's secondary rate limits still pause all reads.</span>
+            <span class="hint">Reads and maintenance actions use App quota first. Comments, reviews, commits, and merges keep your identity. Existing read-only Apps need Actions, issues, pull-request, and code-scanning write permissions approved on GitHub. Secondary limits pause both identities.</span>
           </div>
 
           <div class="field field-wide">

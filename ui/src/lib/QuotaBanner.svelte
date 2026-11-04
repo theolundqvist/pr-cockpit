@@ -80,7 +80,7 @@
         {#if quotaApp === null}
           <li class="qb-app">
             <span class="qb-pool mono">app</span>
-            <span>A GitHub App adds its own read quota. It does not restore your quota for actions or lift GitHub's secondary limits.</span>
+            <span>A GitHub App adds quota for reads and maintenance actions. Comments, reviews, and merges still use your identity; secondary limits apply to both.</span>
             <a href="#/settings/general" onclick={requestQuotaAppSetup}>Add GitHub App</a>
           </li>
         {:else if quotaApp}

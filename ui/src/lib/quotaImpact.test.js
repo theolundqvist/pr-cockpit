@@ -87,7 +87,7 @@ describe("quotaImpact", () => {
     expect(impact.level).toBe("out");
     expect(impact.mergeBlocked).toBe(false);
     expect(impact.pools[0].effect).toContain("over REST");
-    expect(quotaImpact(empty).mergeBlocked).toBe(true);
+    expect(quotaImpact(empty).mergeBlocked).toBe(false);
     const bothEmpty = quotaImpact({ ...empty, rest: { limit: 5000, remaining: 0, resetAt: LATE } }, { restFallback: true });
     expect(bothEmpty.mergeBlocked).toBe(true);
   });
@@ -152,13 +152,13 @@ describe("quotaImpact", () => {
     expect(impact.pools[0].effect).toContain("User quota is independent");
   });
 
-  test("installation GraphQL cannot pay personal merge permission preflights", () => {
+  test("read exhaustion never disables the user-attributed merge PUT", () => {
     const personal = quota({ graphql: { limit: 5000, remaining: 0, resetAt: EARLY } });
     const impact = quotaImpact(independentQuota(personal, [appQuota()]));
-    expect(impact.mergeBlocked).toBe(true);
+    expect(impact.mergeBlocked).toBe(false);
     expect(quotaImpact(independentQuota(personal, [appQuota()]), { restFallback: true }).mergeBlocked).toBe(false);
     expect(quotaImpact(independentQuota(personal, [appQuota()]), { repo: "owner/repo" }).mergeBlocked).toBe(false);
-    expect(quotaImpact(independentQuota(personal, [appQuota()]), { repo: "elsewhere/repo" }).mergeBlocked).toBe(true);
+    expect(quotaImpact(independentQuota(personal, [appQuota()]), { repo: "elsewhere/repo" }).mergeBlocked).toBe(false);
     expect(quotaImpact(independentQuota(
       quota({ rest: { limit: 5000, remaining: 0, resetAt: EARLY } }),
       [appQuota()],

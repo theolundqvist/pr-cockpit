@@ -316,7 +316,7 @@ async function executeMutation(row: MutationRow): Promise<boolean> {
       const alertNumber = codeScanningAlertNumber(thread, row.repo)
         ?? (isCodeScanningThread(thread) && thread ? await findCodeScanningAlert(row.repo, row.number, thread.path, thread.line) : null);
       if (alertNumber) await setCodeScanningAlertResolved(row.repo, alertNumber, payload.resolved, payload.codeScanningDismissal);
-      await setThreadResolved(payload.threadId, payload.resolved);
+      await setThreadResolved(row.repo, payload.threadId, payload.resolved);
       return false;
     }
     case "review-verdict": {
@@ -352,11 +352,11 @@ async function executeMutation(row: MutationRow): Promise<boolean> {
       await updatePullRequestBranch(row.repo, row.number);
       return false;
     case "ready-for-review": {
-      await markPullRequestReadyForReview(requirePrRef(row.repo, row.number).nodeId);
+      await markPullRequestReadyForReview(row.repo, requirePrRef(row.repo, row.number).nodeId);
       return false;
     }
     case "convert-to-draft":
-      await convertPullRequestToDraft(requirePrRef(row.repo, row.number).nodeId);
+      await convertPullRequestToDraft(row.repo, requirePrRef(row.repo, row.number).nodeId);
       return false;
     case "close":
       await closePullRequest(row.repo, row.number);

@@ -55,7 +55,7 @@ function poolState(api, quota, restFallback, now) {
 
 // level "out": a pool is unavailable and the actions it powers fail outright.
 // level "reserved": background work slowed or moved to another pool; the screen still works.
-// restFallback: GraphQL reads fall back to REST, so an empty GraphQL pool no longer blocks merges.
+// Reads use their repository's App credential; only the attributed merge PUT needs User REST.
 function credentialImpact(quota, { restFallback = false, now = Date.now() } = {}) {
   const pools = [];
   for (const api of ["graphql", "rest", "search"]) {
@@ -76,9 +76,7 @@ function credentialImpact(quota, { restFallback = false, now = Date.now() } = {}
   return {
     level: out.length > 0 ? "out" : pools.length > 0 ? "reserved" : "ok",
     pools,
-    // a merge refreshes the PR over GraphQL, then merges over REST: either pool being
-    // empty means the merge cannot happen, so Cockpit refuses instead of queueing a failure
-    mergeBlocked: out.some((p) => p.api === "rest" || (p.api === "graphql" && !restFallback)),
+    mergeBlocked: out.some((p) => p.api === "rest"),
     restoresAt: pools.reduce((latest, p) => (latest && latest > p.resetAt ? latest : p.resetAt), null),
   };
 }
@@ -108,11 +106,7 @@ function identityEffect(identity, pool) {
 }
 
 export function quotaImpact(quota, options = {}) {
-  const appDetailRead = !!options.repo && quota?.identities?.some((identity) =>
-    identity.kind === "app" && identity.repositories?.some((repo) => repo.toLowerCase() === options.repo.toLowerCase()));
-  // An opted-in repository's detail uses app-first REST even when the general fallback is off.
-  // Only its read protocol changes: merging and viewer permissions still require User quota.
-  const personal = credentialImpact(quota, { ...options, restFallback: options.restFallback || appDetailRead });
+  const personal = credentialImpact(quota, options);
   if (!quota?.identities) return personal;
   const pools = [];
   for (const identity of quota.identities) {
@@ -131,8 +125,7 @@ export function quotaImpact(quota, options = {}) {
     independent: true,
     level: pools.some((pool) => pool.level === "out") ? "out" : pools.length ? "reserved" : "ok",
     pools,
-    // Mutations and their viewer/permission preflights always use the personal credential.
-    // Its merge block and restoration must never inherit an installation's quota window.
+    // The merge PUT stays user-attributed; read budgets must not disable its control.
   };
 }
 

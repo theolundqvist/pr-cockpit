@@ -1076,7 +1076,7 @@ test("usage HTTP reports and agent hot PRs preserve independent nullable identit
   expect(result.disabled.restRecordingEnabled).toBe(false);
   expect(result.disabled.restUsage).toBeNull();
   expect(result.disabled.identities.every((identity: { restUsage: unknown }) => identity.restUsage === null)).toBe(true);
-  expect(Object.keys(result.legacy).sort()).toEqual(["quota", "rest", "restUsage", "search", "usage"]);
+  expect(Object.keys(result.legacy).sort()).toEqual(["quota", "rest", "restUsage", "search", "usage", "userFallbacks"]);
   expect(result.legacy.usage.localPoints).toBe(2);
   expect(result.legacy.restUsage).toBeNull();
   expect(result.summary.quota.hotPrs).toEqual([{ pr: "acme/app#1", calls: 1, source: "background poll" }]);

@@ -289,10 +289,12 @@ test("selected workflows wait on GitHub only until each has been cached or fetch
         await ingestActionsState("acme/app", { run: run(id, ".github/workflows/busy.yml", "2026-08-28T00:00:00Z") });
       }
       const fetched = [];
+      const backgroundStarted = Promise.withResolvers();
       let githubAnswers = true;
       globalThis.fetch = async (input) => {
         const workflowId = Number(new URL(String(input)).pathname.match(/workflows\\/(\\d+)\\/runs/)?.[1]);
         fetched.push(workflowId);
+        if (fetched.length === 5) backgroundStarted.resolve();
         if (!githubAnswers) return new Promise(() => {});
         if (workflowId !== 4) return Response.json({ workflow_runs: [] });
         return Response.json({ workflow_runs: [{
@@ -318,6 +320,7 @@ test("selected workflows wait on GitHub only until each has been cached or fetch
       clockOffset = 120_000;
       const neverAgain = await load("never.yml");
       const cachedOutsideRecentWindow = await load("busy.yml", "quiet.yml");
+      await backgroundStarted.promise;
       console.log(JSON.stringify({ uncachedFirst, neverFirst, neverAgain, cachedOutsideRecentWindow, fetched }));
       process.exit(0);
     `;

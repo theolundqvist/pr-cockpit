@@ -3,7 +3,7 @@ import { relativeTime } from "./time.js";
 const WORKING_WINDOW_MS = 10 * 60_000;
 
 const ISSUE_TEXT = {
-  quota: "App quota used up; reads need available quota on your account",
+  quota: "App quota used up; reads wait for its reset without spending your User quota",
   access: "App cannot read this repository; add it under Manage repositories",
   authentication: "GitHub rejected the App credentials; check the installation under Manage repositories",
   connection: "Could not reach GitHub with the App; retrying with the next read",

@@ -78,7 +78,10 @@ test("nonce-launched browser-bound app registration stores credentials once and 
         assert.equal(new URL(manifest.setup_url).hash, "");
         assert.equal(manifest.public, false);
         assert.deepEqual(manifest.default_events, []);
-        assert.ok(Object.values(manifest.default_permissions).every(value => value === "read"));
+        assert.deepEqual(manifest.default_permissions, {
+          actions: "write", checks: "read", contents: "read", issues: "write",
+          metadata: "read", pull_requests: "write", security_events: "write", statuses: "read",
+        });
         return { state, cookie: cookiePair, manifest };
       }
       const start = async (owner = "acme-org") => launch(await mint(owner), owner);
