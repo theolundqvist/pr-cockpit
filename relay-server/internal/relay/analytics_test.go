@@ -404,7 +404,10 @@ func TestAnalyticsLabelsAreHumanNames(t *testing.T) {
 		{"key", "slash", "Search / filter"},
 		{"key", "cmd+comma", "Settings"},
 		{"key", "cmd+shift+y", "⌘⇧Y"},
+		{"key", "cmd+r", "Reload"},
 		{"cli", "listen", "pr-cockpit listen"},
+		{"cli", "get:pr", "Older CLI · GET pr"},
+		{"cli", "post:repo/runs", "Older CLI · POST repo runs"},
 	} {
 		if got := analyticsLabel(label.kind, label.action); got != label.want {
 			t.Errorf("label(%s, %s) = %q, want %q", label.kind, label.action, got, label.want)

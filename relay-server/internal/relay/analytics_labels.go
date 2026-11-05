@@ -108,6 +108,7 @@ var analyticsKeyLabels = map[string]string{
 	"cmd+2":             "Files",
 	"cmd+3":             "Agents",
 	"cmd+z":             "Undo",
+	"cmd+r":             "Reload",
 	"ctrl+z":            "Undo",
 	"cmd+alt+c":         "Copy GitHub PR URL",
 	"cmd+shift+c":       "Copy PR Cockpit link",
@@ -199,6 +200,10 @@ func analyticsLabel(kind, action string) string {
 	case "screen":
 		return screenLabel(action)
 	case "cli":
+		// CLIs from before command names arrive as their request, such as "get:pr" or "post:repo/runs".
+		if method, route, ok := strings.Cut(action, ":"); ok {
+			return "Older CLI · " + strings.ToUpper(method) + " " + strings.ReplaceAll(route, "/", " ")
+		}
 		return "pr-cockpit " + action
 	}
 	return humanizeName(action)
