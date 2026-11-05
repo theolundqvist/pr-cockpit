@@ -17,6 +17,7 @@ import { replicaEnabled, startReplicaSync } from "./replica.ts";
 import { captureFatal, startSentry } from "./sentry.ts";
 import { startTailscaleServe } from "./tailscaleServe.ts";
 import { conflictingSupervisor } from "./supervisor.ts";
+import { startUsageStats } from "./usageStats.ts";
 
 const port = Number(Bun.env.COCKPIT_PORT ?? 4820);
 const supervisorConflict = conflictingSupervisor(port);
@@ -45,6 +46,7 @@ try {
   startCockpitServer(port, fetchHandler, mergeRendererOrigins(Bun.env.COCKPIT_ALLOWED_ORIGINS, serve.origin));
 
   if (!isMockGithub && !replicaEnabled()) {
+    startUsageStats();
     startForwarders(port);
     startPoller();
     startDaemonWatch();

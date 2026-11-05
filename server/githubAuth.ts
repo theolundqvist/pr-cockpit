@@ -1,4 +1,5 @@
 import { beginUnmeteredGithubCliOperation } from "./githubUsage.ts";
+import { trackStep } from "./usageStats.ts";
 
 const DEFAULT_SCOPES = ["repo", "workflow"] as const;
 const ALLOWED_SCOPES: Record<string, true> = { repo: true, workflow: true };
@@ -222,6 +223,7 @@ export async function startGithubSetup(scopes: readonly string[] = DEFAULT_SCOPE
   if (authorization?.state === "authorizing") return githubAuthStatus(authorization.requiredScopes);
 
   authorization = { state: "authorizing", requiredScopes };
+  trackStep("auth-setup", status.state === "missing-auth" ? "login" : "refresh");
   void authorizeGithub(status);
   return { ...status, state: "authorizing", error: null };
 }

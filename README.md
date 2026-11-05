@@ -194,7 +194,7 @@ Cockpit is a client for your existing GitHub workflow, not a second place to mai
 - **Keeping it current:** the hosted relay is enabled by default. It receives GitHub webhooks and delivers compact change markers and Actions run/job state, including runner assignment—not full PR contents or job logs—to Cockpit. Cockpit never sends the relay your GitHub token; it proves read access to each repository with commit data only readers can look up, and that proof rotates daily. Branch pushes refresh open PRs whose head or base matches, including recently viewed PRs outside the inbox. A direct GitHub poller repairs missed events.
 - **Your relay, if you prefer:** you can configure a different relay URL. See [Self-hosting](docs/self-host-relay.md) for deployment and connection instructions.
 
-Local caching does **not** mean the app makes no external connections. Besides GitHub and the relay, the backend has [Sentry error reporting enabled by default](server/sentry.ts).
+Local caching does **not** mean the app makes no external connections. Besides GitHub and the relay, the backend has [Sentry error reporting enabled by default](server/sentry.ts) and sends [usage statistics](#usage-statistics).
 
 <details>
 <summary><strong>Updates, diagnostics, and configuration</strong></summary>
@@ -223,6 +223,18 @@ Use Settings for day-to-day configuration. Optional shell overrides live in `~/.
 | `COCKPIT_TAILSCALE_HTTPS_PORT` | Tailscale HTTPS port; defaults to `443` |
 
 </details>
+
+### Usage statistics
+
+Cockpit counts how it is found, installed, and used. These statistics are not anonymous: events carry a random install id, and the relay links that id to the GitHub account id and login of the install's live-update sessions.
+
+- **Sent:** names of the screens, controls, and keyboard shortcuts you use; named outcome steps such as first launch, GitHub sign-in state, repositories configured, PR opened, safe-merge approval and Marked ready changes, and the kind of each queued PR action (for example `comment` or `merge`) with whether it succeeded; `pr-cockpit` command names with whether they succeeded and a random per-run id; counts and timestamps; the install id, the install script's random run id, a short app version, and the OS family.
+- **Never sent:** PR titles or bodies, comment or other typed text, file paths, branch names, repository names in events, or tokens.
+- **Where:** about once a minute to the configured relay. Nothing is sent while the relay is off, and a replica sends nothing; its source install reports for it.
+- **Retention:** raw daily counts for 180 days and active days for 400 days. Separately, the relay already keeps, per account per day, the login, session count, and repositories of live-update sessions for 89 days.
+- **Turning it off:** **Settings → Usage**, or `COCKPIT_USAGE_STATS=0` or `DO_NOT_TRACK=1` in the server's environment, which keeps it off regardless of the setting.
+
+prcockpit.com counts visits, where they came from (`utm_source` or the referring site), the OS family, and which of its links and buttons are pressed and whether the install command is copied, per browser tab without cookies; it honours Do Not Track and Global Privacy Control. The install script reports when it starts, finishes, or fails, with the failed stage, under a random run id; `DO_NOT_TRACK=1` or `COCKPIT_USAGE_STATS=0` turns that off.
 
 ## Contribute
 

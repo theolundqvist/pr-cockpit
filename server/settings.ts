@@ -157,6 +157,12 @@ export function normalizeReplicaSshHost(value: unknown): string {
   return /^([A-Za-z0-9._-]+@)?[A-Za-z0-9._-]+$/.test(host) ? host : "";
 }
 
+export function configuredReplicaSshHost(): string {
+  if (Bun.env.COCKPIT_REPLICA_OVERRIDE === "1") return normalizeReplicaSshHost(envReplicaSshHost);
+  const stored = getSetting("replica_ssh_host");
+  return normalizeReplicaSshHost(stored === null ? envReplicaSshHost : stored);
+}
+
 export function seedSettings(): void {
   if (getSetting("repos") === null) setSetting("repos", envRepos);
   if (getSetting("poll_interval_s") === null) setSetting("poll_interval_s", String(DEFAULT_POLL_INTERVAL_S));
@@ -240,6 +246,12 @@ export const RELAY_APP_INSTALL_URL = `https://github.com/apps/${RELAY_APP_SLUG}/
 export function relayConfig(): { url: string } {
   const url = (getSetting("relay_url") ?? Bun.env.COCKPIT_RELAY_URL ?? DEFAULT_RELAY_URL).replace(/\/+$/, "");
   return { url: url === LEGACY_RELAY_URL ? DEFAULT_RELAY_URL : url };
+}
+
+// The environment's opt-out wins over the stored choice.
+export function usageStatsForcedOff(): boolean {
+  const flag = Bun.env.COCKPIT_USAGE_STATS?.trim().toLowerCase();
+  return flag === "0" || flag === "off" || flag === "false" || Bun.env.DO_NOT_TRACK === "1";
 }
 
 export function forceMergeEnabled(repo: string): boolean {
@@ -411,19 +423,18 @@ export interface Settings {
   pr_grouping: PrGrouping;
   agent_harness: Harness;
   relay_url: string;
+  usage_stats: boolean;
+  usage_stats_forced_off: boolean;
   notifications: NotificationSettings;
 }
 
 export function readSettings(): Settings {
-  const storedReplicaSshHost = getSetting("replica_ssh_host");
   return {
     desktop_platform: process.platform,
     repos: getSetting("repos") ?? envRepos,
     default_repo: getSetting("default_repo") ?? "",
     poll_interval_s: clampInterval(Number(getSetting("poll_interval_s"))),
-    replica_ssh_host: Bun.env.COCKPIT_REPLICA_OVERRIDE === "1"
-      ? normalizeReplicaSshHost(envReplicaSshHost)
-      : normalizeReplicaSshHost(storedReplicaSshHost === null ? envReplicaSshHost : storedReplicaSshHost),
+    replica_ssh_host: configuredReplicaSshHost(),
     per_view_window_size: getSetting("per_view_window_size") === "true",
     per_view_window_position: getSetting("per_view_window_position") === "true",
     theme: normalizeThemePreference(getSetting("theme")),
@@ -472,6 +483,8 @@ export function readSettings(): Settings {
     pr_grouping: readPrGrouping(),
     agent_harness: normalizeHarness(getSetting("agent_harness")),
     relay_url: relayConfig().url,
+    usage_stats: getSetting("usage_stats") !== "off",
+    usage_stats_forced_off: usageStatsForcedOff(),
     notifications: notificationSettings(),
   };
 }
@@ -531,6 +544,7 @@ export function writeSettings(
     pr_grouping: PrGrouping;
     agent_harness: string;
     relay_url: string;
+    usage_stats: boolean;
     notifications: NotificationSettings;
   }>,
 ): Settings {
@@ -713,6 +727,13 @@ export function writeSettings(
   }
   if (patch.agent_harness !== undefined) setSetting("agent_harness", normalizeHarness(patch.agent_harness));
   if (patch.relay_url !== undefined) setSetting("relay_url", patch.relay_url.trim());
+  if (patch.usage_stats !== undefined) {
+    const value = patch.usage_stats === true ? "on" : "off";
+    if ((getSetting("usage_stats") ?? "on") !== value) {
+      setSetting("usage_stats", value);
+      invalidateSettings();
+    }
+  }
   if (notifications !== undefined) {
     const previous = notificationSettings();
     const changed = JSON.stringify(previous) !== JSON.stringify(notifications);

@@ -127,8 +127,16 @@ root="$(cd "$(dirname "$source_path")/.." && pwd -P)"
 # shellcheck source=scripts/private-bun.sh
 source "$root/scripts/private-bun.sh"
 
+# Every request names the subcommand and this run for Cockpit's usage statistics.
+cli_command=""
+printf -v cli_session '%04x%04x%04x%04x' "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM"
+curl() {
+  command curl -H "X-PR-Cockpit-Command: $cli_command" -H "X-PR-Cockpit-Session: $cli_session" "$@"
+}
+
 
 if [[ "${1:-}" = "status" ]]; then
+  cli_command="status"
   [[ "$#" -eq 1 ]] || usage
   bun_bin=$(cockpit_bun)
   [[ -n "$bun_bin" ]] || { echo "pr-cockpit: bun is required" >&2; exit 1; }
@@ -145,6 +153,7 @@ console.log(`pr-cockpit: port ${process.argv[1]} is served by ${health.superviso
 fi
 
 if [[ "${1:-}" = "update" ]]; then
+  cli_command="update"
   [[ "$#" -eq 1 ]] || usage
   bun_bin=$(cockpit_bun)
   [[ -n "$bun_bin" ]] || { echo "pr-cockpit: bun is required" >&2; exit 1; }
@@ -365,6 +374,8 @@ elif [[ "$mutation_command" = "1" ]]; then
 else
   [[ "${#positionals[@]}" -eq 0 && -z "$body_file" && -z "$mutation_method" && "$force" = "0" && -z "$comment_path" && -z "$comment_line" && -z "$comment_side" && -z "$start_line" && -z "$start_side" ]] || usage
 fi
+cli_command="$command"
+[[ "$command" != "read" || "$mode" = "summary" ]] || cli_command="$mode"
 
 config_file="$HOME/.config/pr-cockpit/config"
 env_port="${COCKPIT_PORT:-}"
@@ -746,7 +757,7 @@ if [[ "$command" = "cache-run" ]]; then
 fi
 
 if [[ "$mutation_command" = "1" ]]; then
-  "$bun_bin" -e '
+  PR_COCKPIT_CLI_SESSION="$cli_session" "$bun_bin" -e '
 const [
   baseUrl,
   repo,
@@ -762,6 +773,11 @@ const [
   startSideText,
   ...args
 ] = process.argv.slice(1);
+// Every request names the subcommand and this run for Cockpit usage statistics.
+const fetch = (url, init = {}) => globalThis.fetch(url, {
+  ...init,
+  headers: { ...init.headers, "x-pr-cockpit-command": command, "x-pr-cockpit-session": process.env.PR_COCKPIT_CLI_SESSION },
+});
 
 const fail = (message) => {
   throw new Error(message);

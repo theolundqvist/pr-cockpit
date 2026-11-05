@@ -52,6 +52,7 @@ import { refreshRepoUsers } from "./repoUsers.ts";
 import { isMergeMethod, isMergeMethodSource, mergeAllowedNow, MERGEABLE_NOW_STATES, mergeWithLearning, mergeWithSelection, type MergeMethod, type MergeMethodSource } from "./mergeMethod.ts";
 import { pendingReviewsEnabled } from "./settings.ts";
 import { invalidateInbox } from "./rendererInvalidation.ts";
+import { trackStep } from "./usageStats.ts";
 
 export type TaskIntent = { key: string; checked: boolean };
 
@@ -214,12 +215,15 @@ function assertMutationPayload(value: unknown): asserts value is MutationPayload
   }
 }
 
+// Mutations the CLI queued in this process; the origin is not persisted, so it is unknown after a restart.
+const cliMutations = new Set<number>();
 
 export function enqueueMutation(params: {
   repo: string;
   number: number;
   payload: MutationPayload;
   allowPendingReviews?: boolean;
+  cli?: boolean;
 }): number {
   assertMutationPayload(params.payload);
   if ((PENDING_KINDS[params.payload.kind]
@@ -241,6 +245,7 @@ export function enqueueMutation(params: {
     payload_json: JSON.stringify(params.payload),
     created_at: new Date().toISOString(),
   });
+  if (params.cli) cliMutations.add(id);
   if (params.payload.kind === "merge") {
     deleteSupersededFailedMerges(params.repo, params.number, id);
     invalidateInbox();
@@ -263,6 +268,7 @@ export function retryMutation(id: number): void {
 
 export function discardMutation(id: number): void {
   cancelMutationRefresh(id);
+  cliMutations.delete(id);
   deleteMutation(id);
   invalidateInbox();
 }
@@ -560,6 +566,7 @@ export async function processMutation(row: MutationRow, dependencies = mutationP
     // Queued writes are labeled "user action" like their GraphQL mutations; refreshes inside name their own source.
     merged = await withGithubUsageSource("user action", () => dependencies.executeMutation(row));
   } catch (err) {
+    trackStep(`mutation:${row.kind}`, "failed", cliMutations.has(row.id) ? { client: "cli" } : {});
     dependencies.setMutationState(row.id, "failed", String(err));
     const payload: unknown = JSON.parse(row.payload_json);
     const taskEdit = row.kind === "edit-body" && !!payload && typeof payload === "object" && "tasks" in payload;
@@ -577,6 +584,8 @@ export async function processMutation(row: MutationRow, dependencies = mutationP
     }
     return;
   }
+  trackStep(`mutation:${row.kind}`, "ok", cliMutations.has(row.id) ? { client: "cli" } : {});
+  cliMutations.delete(row.id);
   dependencies.setMutationRefreshing(row.id, row.payload_json);
   await finalizeMutation(row, merged, dependencies);
 }

@@ -1124,6 +1124,58 @@ test("mutation commands enqueue every PR operation under the system Bash and wai
   }
 });
 
+test("every request names its subcommand and run for usage statistics", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pr-cockpit-cli-usage-"));
+  const bodyPath = join(root, "body.txt");
+  writeFileSync(bodyPath, "looks good\n");
+  const seen: Array<{ method: string; path: string; command: string | null; session: string | null }> = [];
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const url = new URL(request.url);
+      seen.push({
+        method: request.method,
+        path: url.pathname,
+        command: request.headers.get("x-pr-cockpit-command"),
+        session: request.headers.get("x-pr-cockpit-session"),
+      });
+      if (url.pathname === "/healthz") return Response.json({ root: "/srv/pr-cockpit", supervisor: "systemd-system", pid: 421 });
+      if (url.pathname === "/api/agent/pr/owner/repo/17/diff") return new Response("diff --git a/a b/a\n");
+      if (request.method === "POST" && url.pathname === "/api/agent/pr/owner/repo/17/mutations") return Response.json({ id: 1 }, { status: 201 });
+      if (url.pathname === "/api/mutations") return Response.json({ mutations: [] });
+      return new Response("not found", { status: 404 });
+    },
+  });
+  const run = async (...args: string[]) => {
+    const child = Bun.spawn(["/bin/bash", join(import.meta.dir, "pr-cockpit"), ...args], {
+      env: { ...Bun.env, COCKPIT_PORT: String(server.port) },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, error] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+    expect(error).toBe("");
+    expect(exitCode).toBe(0);
+    return seen.splice(0);
+  };
+  try {
+    const status = await run("status");
+    const diff = await run("owner/repo#17", "--diff");
+    const comment = await run("comment", "owner/repo#17", "--body-file", bodyPath);
+    const session = expect.stringMatching(/^[0-9a-f]{16}$/);
+    expect(status).toEqual([{ method: "GET", path: "/healthz", command: "status", session }]);
+    expect(diff).toEqual([{ method: "GET", path: "/api/agent/pr/owner/repo/17/diff", command: "diff", session }]);
+    expect(comment).toEqual([
+      { method: "POST", path: "/api/agent/pr/owner/repo/17/mutations", command: "comment", session },
+      { method: "GET", path: "/api/mutations", command: "comment", session },
+    ]);
+    expect(comment[0]!.session).toBe(comment[1]!.session);
+    expect(new Set([status[0]!.session, diff[0]!.session, comment[0]!.session]).size).toBe(3);
+  } finally {
+    server.stop(true);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("mutation commands report queued GitHub failures", async () => {
   const server = Bun.serve({
     port: 0,

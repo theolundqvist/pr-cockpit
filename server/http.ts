@@ -141,6 +141,7 @@ import { relayStatus, webhookCoveredSince } from "./relayClient.ts";
 import { relayCoverage } from "./relayCoverage.ts";
 import { refreshCachedPrDetail } from "./cachedPrDetail.ts";
 import { notePrViewed } from "./recentPrViews.ts";
+import { applyUsageStatsSetting, trackCliRequest, trackGithubAuth, trackReposConfigured, trackStep, trackUiBatch, usageStatsEnabled } from "./usageStats.ts";
 import {
   clearRepositoryIssues,
   retrySystemIssue,
@@ -1054,7 +1055,10 @@ async function handlePrDetail(
     return cached ? json(withBaseBranchPr(repoName, num, JSON.parse(cached.row.detail_json))) : notPreloaded();
   }
   if (recordView || agentRead) void fetchMirror(repoName).catch(() => {});
-  if (recordView && !agentRead) notePrViewed(repoName, num);
+  if (recordView && !agentRead) {
+    notePrViewed(repoName, num);
+    trackStep("pr-opened");
+  }
 
   let snapshot = cachedPrSnapshot(repoName, num);
   if (snapshot) {
@@ -1855,7 +1859,7 @@ async function handleAgentMutation(owner: string, repo: string, number: string, 
       throw new Error("mutation payload required");
     }
     const payload = normalizeAgentMutation(repoName, num, detail, requestBody.payload);
-    return json({ id: enqueueMutation({ repo: repoName, number: num, payload }) }, 201);
+    return json({ id: enqueueMutation({ repo: repoName, number: num, payload, cli: true }) }, 201);
   } catch (err) {
     return json({ error: err instanceof Error ? err.message : String(err) }, 400);
   }
@@ -3521,9 +3525,11 @@ async function handlePutSettings(req: Request, runtime: HttpRuntime): Promise<Re
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : String(error) }, 400);
   }
+  applyUsageStatsSetting();
   if (settings.repos !== previousRepos) {
     clearRepositoryIssues();
     void runtime.pollOnce().catch((error) => console.warn("repository settings poll failed:", error));
+    trackReposConfigured();
   }
   if (settings.replica_ssh_host !== previousReplica && Bun.env.COCKPIT_LAUNCHER) {
     setTimeout(() => process.exit(1), 250);
@@ -3674,6 +3680,24 @@ function handleHealthz(): Response {
   });
 }
 
+const USAGE_BODY_LIMIT = 32 * 1024;
+
+// Statistics turned off still answer 204 and keep nothing.
+async function handleUsage(req: Request): Promise<Response> {
+  if (!usageStatsEnabled()) return new Response(null, { status: 204 });
+  const bytes = await req.arrayBuffer();
+  if (bytes.byteLength > USAGE_BODY_LIMIT) return json({ error: "usage batch too large" }, 413);
+  let body: unknown;
+  try {
+    body = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return json({ error: "invalid JSON body" }, 400);
+  }
+  const batch = body && typeof body === "object" ? body as { session?: unknown; client?: unknown; events?: unknown } : {};
+  if (!trackUiBatch(batch.session, batch.client, batch.events)) return json({ error: "invalid usage batch" }, 400);
+  return new Response(null, { status: 204 });
+}
+
 function handleShutdown(): Response {
   setTimeout(() => process.exit(0), 100);
   return json({ ok: true });
@@ -3799,6 +3823,7 @@ async function handleMergeApproval(owner: string, repo: string, number: string, 
     invalidatePr(repoName, num);
     invalidateInbox();
   }
+  trackStep("merge-approval", approved ? "on" : "off");
   return json({ approvedForSafeMerge: approved });
 }
 
@@ -3886,6 +3911,7 @@ async function handleReviewHandoff(
     invalidatePr(repoName, num);
     invalidateInbox();
   }
+  trackStep("mark-ready", ready ? "on" : "off", agent ? { client: "cli" } : {});
   return json({ readyForReview: ready, headSha });
 }
 
@@ -3990,6 +4016,7 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
         || (req.method === "POST" && url.pathname === "/api/quick-generate")
         || (req.method === "POST" && url.pathname === "/api/ask")
         || (req.method === "POST" && url.pathname === "/api/auth/setup")
+        || (req.method === "POST" && url.pathname === "/api/usage")
         || (req.method === "PUT" && url.pathname === "/api/settings")
         || (req.method === "PUT" && url.pathname === "/api/whiteboard")
         || (req.method === "POST" && url.pathname === "/api/notifications/claim")
@@ -4103,14 +4130,24 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     if (req.method === "GET" && (url.pathname === "/api/closed" || url.pathname === "/api/kitchen-history")) {
       return handleClosed(url, runtime);
     }
+    // Not a replica-local path: a replica forwards UI usage so its source install reports it.
+    if (req.method === "POST" && url.pathname === "/api/usage") {
+      return handleUsage(req);
+    }
     if (req.method === "GET" && url.pathname === "/api/auth/status") {
       const scopes = requestedAuthScopes(url.searchParams.get("scopes")?.split(","));
-      return scopes ? json(await runtime.githubAuthStatus(scopes)) : json({ error: "invalid auth scopes" }, 400);
+      if (!scopes) return json({ error: "invalid auth scopes" }, 400);
+      const status = await runtime.githubAuthStatus(scopes);
+      trackGithubAuth(status.state);
+      return json(status);
     }
     if (req.method === "POST" && url.pathname === "/api/auth/setup") {
       const body = await req.json().catch(() => null) as { scopes?: unknown } | null;
       const scopes = requestedAuthScopes(body?.scopes);
-      return scopes ? json(await runtime.startGithubSetup(scopes)) : json({ error: "invalid auth scopes" }, 400);
+      if (!scopes) return json({ error: "invalid auth scopes" }, 400);
+      const status = await runtime.startGithubSetup(scopes);
+      trackGithubAuth(status.state);
+      return json(status);
     }
     if (req.method === "GET" && url.pathname === "/api/onboarding/repos") {
       return handleOnboardingRepos();
@@ -4601,15 +4638,22 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
     return null;
   };
   return async function fetchHandler(req: Request): Promise<Response> {
+    let status = 500;
     try {
       const source = httpUsageSource(req.method, new URL(req.url).pathname);
-      return await (source === null ? route(req) : withGithubUsageSource(source, () => route(req)));
+      const response = await (source === null ? route(req) : withGithubUsageSource(source, () => route(req)));
+      status = response.status;
+      return response;
     } catch (error) {
       if (!(error instanceof GithubRequestError)) throw error;
       console.error("GitHub request failed:", error);
-      return githubErrorResponse(error, undefined, {
+      const response = githubErrorResponse(error, undefined, {
         hotPrs: httpUsageSource(req.method, new URL(req.url).pathname) === "agent read",
       });
+      status = response.status;
+      return response;
+    } finally {
+      trackCliRequest(req, status);
     }
   };
 }

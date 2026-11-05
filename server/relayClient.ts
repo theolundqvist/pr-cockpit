@@ -11,6 +11,7 @@ import { prsViewedRecently, prViewedRecently } from "./recentPrViews.ts";
 import { forwarderCoveredSince } from "./forwarders.ts";
 import { setWebhookCoverage } from "./webhookCoverage.ts";
 import { relayAnchors, relayCapability, type RelayAnchors, type RelayCapability } from "./relayAnchors.ts";
+import { relayInstallId } from "./usageStats.ts";
 
 const POLL_MS = 5_000;
 const ERROR_BACKOFF_MS = 60_000;
@@ -78,7 +79,6 @@ type RelayFrame =
 type RelaySession = { ticket: string; expiresAt: number; repos: Record<string, boolean> };
 
 const RELAY_CURSOR_KEY = "relay_cursor";
-const RELAY_INSTALL_KEY = "relay_install_id";
 let backoffUntil = 0;
 let lastOkAt: number | null = null;
 let lastEventAt: number | null = null;
@@ -253,15 +253,6 @@ export async function createRelaySession(
   });
   if (!response.ok) throw new Error(`relay session responded ${response.status}`);
   return await response.json() as RelaySession;
-}
-
-// The relay's stream limits key on this rather than on the changing proof set.
-function relayInstallId(): string {
-  const stored = getSetting(RELAY_INSTALL_KEY);
-  if (stored) return stored;
-  const created = crypto.randomUUID();
-  setSetting(RELAY_INSTALL_KEY, created);
-  return created;
 }
 
 // Resolves null when the relay accepted none of the proofs.
