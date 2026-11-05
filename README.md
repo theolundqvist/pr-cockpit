@@ -55,6 +55,8 @@ Diffs, threads, checks, and file history live in the same review workspace. Shor
 
 Syntax highlighting covers Shiki's bundled languages in diffs, file previews, editors, and Markdown code blocks, including Swift, C/C++ headers, Objective-C, Kotlin, and C#. Grammars load on demand; unrecognized formats remain plain text.
 
+Wide Markdown tables scroll horizontally without wrapping cells; smaller tables keep their natural width.
+
 PR images are prefetched into each machine's persistent cache. SSH replicas download through their source server, so private images require no separate GitHub login on the replica. The source uses the installed `gh-img` extension when direct GitHub access is unavailable. Sign-in HTML is rejected and old cached sign-in pages are replaced on the next request.
 
 SSH replicas forward the source's PR updates to an open conversation, including comment edits and PRs outside the inbox or already merged. Changed inbox snapshots also refresh the matching detail after import.

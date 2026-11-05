@@ -692,6 +692,12 @@ kbd {
   color: var(--fail);
 }
 .md table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow: auto hidden;
+  overflow-wrap: normal;
+  white-space: nowrap;
   border-collapse: collapse;
   margin: 0 0 14px;
   font-size: 13px;
