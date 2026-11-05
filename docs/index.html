@@ -1553,7 +1553,7 @@
           <div class="install-command-wrap">
             <div class="code-shell">
               <pre class="code-block" role="region" aria-label="Install command" tabindex="0"><span class="prompt" aria-hidden="true">$ </span><code class="install-command">curl -fsSL https://raw.githubusercontent.com/theolundqvist/pr-cockpit/main/scripts/bootstrap | bash</code></pre>
-              <button class="copy-install" type="button" aria-label="Copy install command">
+              <button class="copy-install" type="button" aria-label="Copy install command" data-event="copy-install">
                 <svg class="icon-copy" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M15 5.5A1.5 1.5 0 0 0 13.5 4H5.5A1.5 1.5 0 0 0 4 5.5v8A1.5 1.5 0 0 0 5.5 15"></path></svg>
                 <svg class="icon-check" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 12.8 9.2 17.5 19.5 7"></path></svg>
               </button>
@@ -1605,6 +1605,10 @@
             <p>Change markers and Actions status—not PR contents or logs. Hosted by default; <a href="https://github.com/theolundqvist/pr-cockpit/blob/main/docs/self-host-relay.md">self-hosting is optional</a>.</p>
           </details>
           <details>
+            <summary>Does Cockpit collect usage data?</summary>
+            <p>Counts of which screens, buttons and shortcuts get used, under a random install id—never PR contents, code, comments or repository names. Turn it off in Settings → Usage. This site counts visits without cookies. <a href="https://github.com/theolundqvist/pr-cockpit#usage-statistics">Details</a>.</p>
+          </details>
+          <details>
             <summary>What should Linux users know?</summary>
             <p>The installer handles setup. Wayland uses XWayland; global shortcuts depend on your compositor.</p>
           </details>
@@ -1630,6 +1634,7 @@
     <img id="lightbox-image" alt="">
   </dialog>
 
+  <script src="stats.js?v=2026-11-05"></script>
   <script src="benchmark-results.js?v=2026-08-23-render-rerun"></script>
   <script>
     const lightbox = document.querySelector("#lightbox");
@@ -1735,6 +1740,7 @@
         return;
       }
       copyButton.classList.add("copied");
+      window.prcStats.step("copy-install", "button");
       copyStatus.textContent = "Install command copied to clipboard.";
       copyResetTimer = setTimeout(() => {
         copyButton.classList.remove("copied");

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -80,6 +81,7 @@ async function runBootstrap({
   interactive = false,
   noColor = false,
   dryRun = false,
+  env = {},
 }: {
   home: string;
   target: string;
@@ -88,6 +90,7 @@ async function runBootstrap({
   interactive?: boolean;
   noColor?: boolean;
   dryRun?: boolean;
+  env?: Record<string, string>;
 }) {
   const expectPath = join(home, "bootstrap.expect");
   if (interactive) {
@@ -104,6 +107,7 @@ async function runBootstrap({
       COCKPIT_BOOTSTRAP_DRY_RUN: dryRun ? "1" : "0",
       TERM: "xterm-256color",
       ...(noColor ? { NO_COLOR: "1" } : {}),
+      ...env,
     },
     stdin: "ignore",
     stdout: "pipe",
@@ -248,5 +252,66 @@ test("a failed install never offers or writes teaching instructions", async () =
     expect(readFileSync(fixture.instructions, "utf8")).toBe("# Existing instructions\n");
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+/** The fixture's curl, swapped for one that logs each call's arguments, a line per call. */
+function recordCurl(root: string) {
+  const log = join(root, "curl.log");
+  executable(join(root, "bin", "curl"), `printf '%s\\n' "$*" >>"${log}"`);
+  return log;
+}
+
+/** Each logged report's JSON body; the script waits for its background reports before it exits. */
+const reports = (log: string) =>
+  existsSync(log)
+    ? readFileSync(log, "utf8").trim().split("\n").map((call) => ({ call, body: JSON.parse(call.match(/--data (\{.*\}) https:/)![1]!) }))
+    : [];
+
+test("an install reports its start and finish under one run id, which it leaves for the app's first launch", async () => {
+  const fixture = installedFixture();
+  const log = recordCurl(fixture.root);
+  try {
+    const result = await runBootstrap(fixture);
+    expect(result.exitCode).toBe(0);
+    const sent = reports(log);
+    expect(sent.map(({ call }) => call.endsWith(" https://relay.prcockpit.com/events"))).toEqual([true, true]);
+    expect(sent.map(({ body }) => body.events[0].action).sort()).toEqual(["script-done", "script-start"]);
+    const run = sent[0]!.body.anon;
+    expect(run).toMatch(/^[A-Za-z0-9-]{1,64}$/);
+    expect(sent[1]!.body.anon).toBe(run);
+    expect(sent[0]!.body).toMatchObject({ surface: "script", platform: "darwin" });
+    expect(readFileSync(join(fixture.home, ".config", "pr-cockpit", "install-ref"), "utf8")).toBe(`${run}\n`);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("a failed install reports the stage it failed in", async () => {
+  const fixture = installedFixture(1);
+  const log = recordCurl(fixture.root);
+  try {
+    const result = await runBootstrap(fixture);
+    expect(result.exitCode).toBe(1);
+    const events = reports(log).map(({ body }) => body.events[0]);
+    expect(events).toContainEqual(expect.objectContaining({ action: "script-start" }));
+    expect(events).toContainEqual(expect.objectContaining({ action: "script-failed", value: "install" }));
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("DO_NOT_TRACK and COCKPIT_USAGE_STATS=0 install without reporting or leaving a run id", async () => {
+  for (const env of [{ DO_NOT_TRACK: "1" }, { COCKPIT_USAGE_STATS: "0" }]) {
+    const fixture = installedFixture();
+    const log = recordCurl(fixture.root);
+    try {
+      const result = await runBootstrap({ ...fixture, env });
+      expect(result.exitCode).toBe(0);
+      expect(existsSync(log)).toBe(false);
+      expect(existsSync(join(fixture.home, ".config", "pr-cockpit", "install-ref"))).toBe(false);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
   }
 });

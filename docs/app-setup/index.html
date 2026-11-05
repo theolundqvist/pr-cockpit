@@ -106,8 +106,12 @@
     <a class="open-app" href="prcockpit://main">Open PR Cockpit</a>
     <p class="fallback">Nothing opened? Launch PR Cockpit directly, or return to the <a href="/">homepage</a>.</p>
   </main>
+  <script src="/stats.js?v=2026-11-05"></script>
   <script>
     addEventListener("load", function () {
+      // GitHub names the setup it finished (install, update or request); counted before the app opens.
+      window.prcStats.step("github-app-setup", new URLSearchParams(location.search).get("setup_action") || "install");
+      window.prcStats.flush();
       location.href = "prcockpit://main";
     }, { once: true });
   </script>

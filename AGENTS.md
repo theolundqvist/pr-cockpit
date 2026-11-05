@@ -102,6 +102,8 @@ A scratch server on a copy of a real database is not isolated by its port: it st
 
 Walk both install paths before trusting a change: `COCKPIT_BOOTSTRAP_DRY_RUN=1 COCKPIT_HOME=/tmp/some-path scripts/bootstrap` must reach stage `3/3`, and a fake `HOME`/`PATH` fixture covers the legacy migration. A silent exit before the last stage is the signature of the bug above.
 
+`scripts/bootstrap.test.ts` refuses to run as root (the script's first line exits), so every test fails on a root-only host such as the shared agent server whatever the change; run it as a normal user, for example from a Mac checkout. Its PATH stubs make `/usr/bin/env bash` the system bash, so on macOS it also covers bash 3.2.
+
 ## Durable lessons
 
 After a task needs non-obvious investigation, repeated failed attempts, or a recovery procedure, capture the lesson before handoff:

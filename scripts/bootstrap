@@ -25,8 +25,15 @@ else
 fi
 
 say() { echo "pr-cockpit: $*"; }
-die() { echo "pr-cockpit: $*" >&2; exit 1; }
-stage() { printf '\n%b[%s]%b %b%s%b\n' "$accent" "$1" "$reset" "$bold" "$2" "$reset"; }
+die() { echo "pr-cockpit: $*" >&2; stats_step script-failed "$stats_stage"; stats_wait; exit 1; }
+stage() {
+  case "$1" in
+    1/3) stats_stage=prerequisites ;;
+    2/3) stats_stage=checkout ;;
+    3/3) stats_stage=install ;;
+  esac
+  printf '\n%b[%s]%b %b%s%b\n' "$accent" "$1" "$reset" "$bold" "$2" "$reset"
+}
 status() { printf '%b  ready%b  %s\n' "$green" "$reset" "$1"; }
 
 run() {
@@ -36,6 +43,47 @@ run() {
   fi
   "$@"
 }
+
+# Install counts, described in the README's "Usage statistics": the step this run reached, the OS
+# family and a random id for the run, which the app's first launch reports too so an install links to
+# its run. COCKPIT_USAGE_STATS=0 or DO_NOT_TRACK=1 turns them off; a dry run never reports.
+stats_url="${COCKPIT_RELAY_URL-https://relay.prcockpit.com}"
+stats_run=""
+stats_stage=prerequisites
+case "$(uname -s)" in
+  Darwin) stats_platform=darwin ;;
+  Linux) stats_platform=linux ;;
+  *) stats_platform=other ;;
+esac
+if [[ "$dry_run" != "1" && "${DO_NOT_TRACK:-}" != "1" && -n "$stats_url" ]]; then
+  case "${COCKPIT_USAGE_STATS:-}" in
+    0 | off | false) ;;
+    *) stats_run="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || true)" ;;
+  esac
+  [[ "$stats_run" =~ ^[A-Za-z0-9-]{1,64}$ ]] || stats_run=""
+fi
+
+# Sent in the background so a slow or unreachable relay never holds up the install; the script
+# waits for them (at most curl's 3 s) only as it exits.
+stats_step() {
+  [[ -n "$stats_run" ]] || return 0
+  local value=""
+  if [[ -n "${2:-}" ]]; then value=",\"value\":\"$2\""; fi
+  curl --max-time 3 -fsS -o /dev/null -X POST -H "content-type: application/json" \
+    --data "{\"anon\":\"$stats_run\",\"surface\":\"script\",\"platform\":\"$stats_platform\",\"events\":[{\"at\":$(date +%s)000,\"kind\":\"step\",\"action\":\"$1\"$value}]}" \
+    "$stats_url/events" </dev/null >/dev/null 2>&1 &
+}
+stats_wait() {
+  [[ -z "$stats_run" ]] || wait 2>/dev/null || true
+}
+
+# The app reads this once, so its first launch names the run that installed it.
+stats_ref() {
+  [[ -n "$stats_run" ]] || return 0
+  local dir="${XDG_CONFIG_HOME:-$HOME/.config}/pr-cockpit"
+  { mkdir -p "$dir" && printf '%s\n' "$stats_run" >"$dir/install-ref"; } 2>/dev/null || true
+}
+stats_step script-start
 
 # Piped into bash, stdin is the script body itself, so every prompt and every
 # interactive child reads the terminal on fd 3 instead.
@@ -302,6 +350,7 @@ status "Checkout prepared"
 
 
 stage "3/3" "Install PR Cockpit"
+stats_ref
 if ! run "$target/scripts/install"; then
   if [[ -n "$legacy_backup" ]]; then
     rm -rf "$target"
@@ -314,8 +363,10 @@ if ! run "$target/scripts/install"; then
   die "installer failed"
 fi
 status "Installation complete"
+stats_step script-done
 if [[ -n "$legacy_backup" ]]; then
   rm -rf "$legacy_backup"
 fi
 prepare_agent_instructions
 write_agent_instructions
+stats_wait
