@@ -3385,16 +3385,16 @@
         {/if}
       {/if}
       <nav class="tabs">
-        <a class="tab" class:active={tab === "conversation"} data-event="tab-conversation" href="#/pr/{repo}/{number}" onclick={(event) => guardTabNavigation(event, "conversation")}>
+        <a class="tab" class:active={tab === "conversation"} data-event="conversation-tab" href="#/pr/{repo}/{number}" onclick={(event) => guardTabNavigation(event, "conversation")}>
           Conversation {#if tab === "files"}<Kbd keys="d" />{/if}
         </a>
-        <a class="tab" class:active={tab === "files"} data-event="tab-files" href="#/pr/{repo}/{number}/files">
+        <a class="tab" class:active={tab === "files"} data-event="files-tab" href="#/pr/{repo}/{number}/files">
           Files {#if pr.changedFiles > 0}<span class="tab-count">{diffState === "ready" ? treeFiles.length : pr.changedFiles}</span>{/if} {#if tab !== "files"}<Kbd keys="d" />{/if}
         </a>
-        <a class="tab" class:active={tab === "agents"} data-event="tab-agents" href="#/pr/{repo}/{number}/agents" onclick={(event) => guardTabNavigation(event, "agents")}>
+        <a class="tab" class:active={tab === "agents"} data-event="agents-tab" href="#/pr/{repo}/{number}/agents" onclick={(event) => guardTabNavigation(event, "agents")}>
           Agents {#if agent?.state === "running"}<span class="tab-count">1</span>{/if} {#if tab !== "agents"}<Kbd keys="⌘3" />{/if}
         </a>
-        <a class="tab" class:active={tab === "actions"} data-event="tab-actions" href="#/pr/{repo}/{number}/actions" onclick={(event) => guardTabNavigation(event, "actions")}>
+        <a class="tab" class:active={tab === "actions"} data-event="actions-tab" href="#/pr/{repo}/{number}/actions" onclick={(event) => guardTabNavigation(event, "actions")}>
           Actions {#if tab !== "actions"}<Kbd keys="⌘4" />{/if}
         </a>
       </nav>

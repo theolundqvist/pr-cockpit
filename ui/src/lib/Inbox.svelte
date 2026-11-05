@@ -1487,23 +1487,23 @@
 
     <div class="queue-toolbar">
       <div class="view-tabs" role="tablist" aria-label="List view">
-        <button class="view-tab" role="tab" data-event="view-queue" title="Pull requests involving you" aria-selected={view === "open"} class:active={view === "open"} onclick={() => showView("open")}>
+        <button class="view-tab" role="tab" data-event="your-queue" title="Pull requests involving you" aria-selected={view === "open"} class:active={view === "open"} onclick={() => showView("open")}>
           Your queue
           <span class="view-tab-count">{filterByAuthorAndDraft(filterByRepositories(prs.filter((pr) => !isSetAside(pr)), selectedRepos), peopleFilter, viewerLogin).length}</span>
           {#if view === "closed"}<Kbd keys="tab" />{/if}
         </button>
-        <button class="view-tab" role="tab" data-event="view-all" title="Every open pull request in tracked repositories" aria-selected={view === "all"} class:active={view === "all"} onclick={() => showView("all")}>
+        <button class="view-tab" role="tab" data-event="all-prs" title="Every open pull request in tracked repositories" aria-selected={view === "all"} class:active={view === "all"} onclick={() => showView("all")}>
           All PRs {#if view === "open"}<Kbd keys="tab" />{/if}
         </button>
-        <button class="view-tab" role="tab" data-event="view-merged" aria-selected={view === "closed"} class:active={view === "closed"} onclick={() => showView("closed")}>
+        <button class="view-tab" role="tab" data-event="recently-merged" aria-selected={view === "closed"} class:active={view === "closed"} onclick={() => showView("closed")}>
           Recently merged {#if view === "all"}<Kbd keys="tab" />{/if}
         </button>
-        <a class="view-tab" role="tab" data-event="view-actions" aria-selected="false" href={actionsHref}>Actions</a>
+        <a class="view-tab" role="tab" data-event="actions-view" aria-selected="false" href={actionsHref}>Actions</a>
         {#if prefs.agentConversationsEnabled}
-          <button class="view-tab" role="tab" data-event="view-agents" aria-selected={view === "agents"} class:active={view === "agents"} onclick={() => showView("agents")}>Agents</button>
+          <button class="view-tab" role="tab" data-event="agents-view" aria-selected={view === "agents"} class:active={view === "agents"} onclick={() => showView("agents")}>Agents</button>
         {/if}
         {#if prefs.whiteboardEnabled}
-          <button class="view-tab" role="tab" data-event="view-whiteboard" aria-selected={view === "whiteboard"} class:active={view === "whiteboard"} onclick={() => showView("whiteboard")}>Whiteboard</button>
+          <button class="view-tab" role="tab" data-event="whiteboard-view" aria-selected={view === "whiteboard"} class:active={view === "whiteboard"} onclick={() => showView("whiteboard")}>Whiteboard</button>
         {/if}
       </div>
       {#if view !== "whiteboard" && view !== "agents"}
