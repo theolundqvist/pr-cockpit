@@ -83,14 +83,19 @@
   {#if badge}
     {@render badge()}
   {:else}
-    <span class="row-badge-slot"><span class="row-badge badge {status.tone}">{status.label}</span></span>
+    <span class="row-badge-slot">
+      {#if compact && pr.state === "OPEN" && status.label !== "draft"}
+        <span class="badge">{isDraftPr(pr) ? "draft" : "open"}</span>
+      {/if}
+      <span class="row-badge badge {status.tone}">{status.label}</span>
+    </span>
   {/if}
   <div class="row-main">
     {#if editing}
       {@render editor()}
     {:else}
     <div class="row-title">
-      {#if isDraftPr(pr)}<span class="badge wait row-draft">Draft</span>{/if}
+      {#if isDraftPr(pr) && !compact}<span class="badge wait row-draft">Draft</span>{/if}
       <span class="row-title-text">{pr.title.startsWith(DRAFT_PREFIX) ? pr.title.slice(DRAFT_PREFIX.length) : pr.title}</span>
       {#if pr.rank != null}
         <span class="pinned-mark" title="Pinned until merged or archived" aria-label="Pinned">
@@ -108,6 +113,9 @@
       {:else}
         {@const statsDiffer = pr.additions !== pr.rawAdditions || pr.deletions !== pr.rawDeletions}
         <span class="num">#{pr.number}</span>
+        {#if compact && pr.rank != null}
+          <span class="badge" title="Pinned until merged or archived">Pinned</span>
+        {/if}
         {#if burnt}
           <span class="cooking-stage burnt" title="kitchen: burnt — needs intervention">Burnt</span>
         {:else if cooking}
@@ -423,7 +431,7 @@
     padding: 2px 8px;
   }
   @media (max-width: 720px) {
-    .row-badge-slot {
+    .row:not(.compact) .row-badge-slot {
       display: none !important;
     }
     .row-meta .branch,
@@ -614,14 +622,15 @@
     display: contents;
     white-space: normal;
   }
-  /* Compact stacked rows show their nesting through the indent and rule alone. */
   .row.compact .pinned-mark,
   .row.compact .stack-glyph {
     display: none;
   }
   .row.compact .row-badge-slot {
     display: flex;
-    grid-column: 1;
+    flex-wrap: wrap;
+    gap: 4px;
+    grid-column: 1 / -1;
     grid-row: 2;
     flex: none;
     width: auto;
@@ -630,13 +639,13 @@
     margin-top: 0;
   }
   .row.compact .row-meta {
-    grid-column: 2;
-    grid-row: 2;
+    grid-column: 1 / 3;
+    grid-row: 3;
     margin-top: 0;
   }
   .row.compact .greptile {
     grid-column: 3;
-    grid-row: 2;
+    grid-row: 3;
     margin-top: 0;
   }
 </style>
