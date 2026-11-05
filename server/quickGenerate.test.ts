@@ -27,6 +27,11 @@ function mockFetch(impl: (input: FetchInput, init?: FetchInit) => Promise<Respon
   return spyOn(globalThis, "fetch").mockImplementation(Object.assign(impl, { preconnect }));
 }
 
+function sse(events: unknown[]): Response {
+  const body = events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("");
+  return new Response(`${body}data: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
+}
+
 function homeWith(files: { config?: string; home?: string }, processEnv: Record<string, string | undefined> = {}): QuickGenerateRoots {
   const home = mkdtempSync(join(tmpdir(), "quick-generate-home-"));
   dirs.push(home);
@@ -154,11 +159,18 @@ describe("quick generate provider calls", () => {
       if (String(input).endsWith("/models")) return Response.json({ data: [{ id: "gpt-oss-120b" }, { id: "qwen-3.8-27b" }] });
       const body: unknown = JSON.parse(String(init?.body));
       models.push(body && typeof body === "object" && "model" in body ? body.model : undefined);
-      return Response.json({ choices: [{ message: { content: "\n\nHello there.", reasoning: "hidden" } }] });
+      return sse([
+        { choices: [{ delta: { role: "assistant", reasoning: "hidden" } }] },
+        { choices: [{ delta: { content: "\n\nHello" } }] },
+        { choices: [{ delta: { content: " there.\n" } }] },
+      ]);
     });
     try {
-      await quickGenerate({ key: "", model: "", prompt: "Say hello" }, undefined, homeWith({ config: "CEREBRAS_API_KEY=csk-secret" }));
+      const pieces: string[] = [];
+      const text = await quickGenerate({ key: "", model: "", prompt: "Say hello" }, (piece) => pieces.push(piece), undefined, homeWith({ config: "CEREBRAS_API_KEY=csk-secret" }));
       expect(models).toEqual(["qwen-3.8-27b"]);
+      expect(pieces).toEqual(["Hello", " there.\n"]);
+      expect(text).toBe("Hello there.");
     } finally {
       fetchSpy.mockRestore();
     }
@@ -174,7 +186,7 @@ describe("quick generate provider calls", () => {
     const fetchSpy = mockFetch(async () => responses.shift() ?? Response.json({}, { status: 500 }));
     try {
       for (let attempt = 0; attempt < 2; attempt++) {
-        const error = await rejection(quickGenerate({ key: "OPENAI_API_KEY", model: "gpt-x", prompt: "hi" }, undefined, roots));
+        const error = await rejection(quickGenerate({ key: "OPENAI_API_KEY", model: "gpt-x", prompt: "hi" }, () => {}, undefined, roots));
         expect(error.status).toBe(502);
         expect(error.message).toContain("OpenAI");
         expect(error.message).not.toContain(secret);
@@ -197,11 +209,27 @@ describe("quick generate provider calls", () => {
     try {
       const caller = new AbortController();
       const roots = homeWith({ config: "CEREBRAS_API_KEY=csk-secret" });
-      const pending = quickGenerate({ key: "", model: "qwen-3.8-27b", prompt: "hi" }, caller.signal, roots);
+      const pending = quickGenerate({ key: "", model: "qwen-3.8-27b", prompt: "hi" }, () => {}, caller.signal, roots);
       caller.abort();
       const error = await rejection(pending);
       expect(error.status).toBe(499);
       expect(upstreamSignal?.aborted).toBe(true);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+  test("a provider error mid-stream fails the generation after the text so far", async () => {
+    const fetchSpy = mockFetch(async () => sse([
+      { choices: [{ delta: { content: "Partial" } }] },
+      { error: { message: "Model is overloaded" } },
+    ]));
+    try {
+      const pieces: string[] = [];
+      const roots = homeWith({ config: "GROQ_API_KEY=gsk-secret" });
+      const error = await rejection(quickGenerate({ key: "", model: "llama", prompt: "hi" }, (piece) => pieces.push(piece), undefined, roots));
+      expect(pieces).toEqual(["Partial"]);
+      expect(error.status).toBe(502);
+      expect(error.message).toBe("Groq stream failed: Model is overloaded");
     } finally {
       fetchSpy.mockRestore();
     }
@@ -224,6 +252,56 @@ describe("quick generate routes", () => {
       expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
       fetchSpy.mockRestore();
+    }
+  });
+  test("generated text reaches the client while the provider is still streaming", async () => {
+    setSetting("quick_generate_enabled", "true");
+    const roots = homeWith({});
+    const envFile = join(roots.home, "keys.env");
+    writeFileSync(envFile, "CEREBRAS_API_KEY=csk-secret");
+    setSetting("quick_generate_env_file", envFile);
+    const realFetch = globalThis.fetch;
+    const encoder = new TextEncoder();
+    let finishUpstream = () => {};
+    const upstreamFinished = new Promise<void>((resolve) => (finishUpstream = resolve));
+    const fetchSpy = mockFetch(async (input, init) => {
+      if (!String(input).startsWith("https://api.cerebras.ai/")) return realFetch(input, init);
+      return new Response(new ReadableStream<Uint8Array>({
+        async start(controller) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "First" } }] })}\n\n`));
+          await upstreamFinished;
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: " second" } }] })}\n\ndata: [DONE]\n\n`));
+          controller.close();
+        },
+      }), { headers: { "content-type": "text/event-stream" } });
+    });
+    const server = startCockpitServer(0, buildFetchHandler(4820), "");
+    try {
+      const response = await realFetch(`http://127.0.0.1:${server.port}/api/quick-generate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ key: "CEREBRAS_API_KEY", model: "qwen-3.8-27b", prompt: "hi" }),
+      });
+      expect(response.headers.get("content-type")).toBe("application/x-ndjson");
+      const reader = response.body!.pipeThrough(new TextDecoderStream()).getReader();
+      let received = "";
+      while (!received.includes("\n")) received += (await reader.read()).value ?? "";
+      expect(received).toBe(`${JSON.stringify({ type: "text", text: "First" })}\n`);
+      finishUpstream();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        received += value;
+      }
+      expect(received.trimEnd().split("\n").map((line) => JSON.parse(line))).toEqual([
+        { type: "text", text: "First" },
+        { type: "text", text: " second" },
+        { type: "done", text: "First second" },
+      ]);
+    } finally {
+      finishUpstream();
+      fetchSpy.mockRestore();
+      server.stop(true);
     }
   });
 

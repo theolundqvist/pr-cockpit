@@ -3116,7 +3116,28 @@ async function handleQuickGenerate(req: Request, url: URL): Promise<Response> {
     if (typeof key !== "string" || typeof model !== "string" || typeof prompt !== "string") {
       return json({ error: "invalid quick generate request" }, 400);
     }
-    return json({ text: await quickGenerate({ key: key.trim(), model: model.trim(), prompt }, req.signal) });
+    const input = { key: key.trim(), model: model.trim(), prompt };
+    const encoder = new TextEncoder();
+    const closed = new AbortController();
+    const signal = AbortSignal.any([req.signal, closed.signal]);
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const send = (event: unknown) => {
+          if (!closed.signal.aborted) controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+        };
+        try {
+          send({ type: "done", text: await quickGenerate(input, (text) => send({ type: "text", text }), signal) });
+        } catch (error) {
+          if (!(error instanceof QuickGenerateError)) console.error("Quick generate failed:", error);
+          send({ type: "error", message: error instanceof QuickGenerateError ? error.message : "Quick generate failed." });
+        }
+        if (!closed.signal.aborted) controller.close();
+      },
+      cancel() {
+        closed.abort();
+      },
+    });
+    return new Response(stream, { headers: { "content-type": "application/x-ndjson", "cache-control": "no-store" } });
   } catch (error) {
     if (error instanceof QuickGenerateError) return json({ error: error.message }, error.status);
     console.error("Quick generate failed:", error);

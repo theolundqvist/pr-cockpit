@@ -97,6 +97,7 @@ function editorTargetInCheckout(checkout, relativePath) {
 
 const boundsFile = path.join(app.getPath("userData"), "window-bounds.json");
 const zoomFile = path.join(app.getPath("userData"), "zoom-level.json");
+const panelSizesFile = path.join(app.getPath("userData"), "panel-sizes.json");
 const ZOOM_LEVEL_MIN = -8;
 const ZOOM_LEVEL_MAX = 8;
 
@@ -134,6 +135,24 @@ function saveModeBounds(mode, bounds) {
     fs.writeFileSync(boundsFile, JSON.stringify(all));
   } catch (err) {
     console.error("pr-cockpit: failed to save window bounds", err);
+  }
+}
+
+function loadPanelSizes() {
+  try {
+    return JSON.parse(fs.readFileSync(panelSizesFile, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function savePanelSize(name, [width, height]) {
+  const all = loadPanelSizes();
+  all[name] = { width, height };
+  try {
+    fs.writeFileSync(panelSizesFile, JSON.stringify(all));
+  } catch (err) {
+    console.error("pr-cockpit: failed to save panel size", err);
   }
 }
 
@@ -844,21 +863,24 @@ if (!app.requestSingleInstanceLock()) {
     win.loadURL(firstUrl);
 
     // Panels only hide, so their renderer keeps its state between presentations.
-    function createPanel({ name, url, width, height, openEvent, closeHash, onNavigate = () => false }) {
+    function createPanel({ name, url, width, height, minWidth, minHeight, resizable = false, hasShadow = false, openEvent, closeHash, onNavigate = () => false }) {
       const baseHash = new URL(url).hash;
+      const saved = resizable ? loadPanelSizes()[name] : null;
       const panelWin = new BrowserWindow({
-        width,
-        height,
+        width: saved?.width ?? width,
+        height: saved?.height ?? height,
+        minWidth,
+        minHeight,
         // nonactivating NSPanel: takes keyboard focus while another app stays active —
         // app.focus({steal:true}) is ignored by modern macOS cooperative activation
         ...desktopPolicy.paletteWindow,
         frame: false,
-        resizable: false,
+        resizable,
         alwaysOnTop: true,
         skipTaskbar: true,
         show: false,
         transparent: true,
-        hasShadow: false,
+        hasShadow,
         backgroundColor: "#00000000",
         // Keep panel loads off the main window's potentially saturated HTTP connection pool.
         webPreferences: { sandbox: true, partition: `cockpit-${name}`, preload: path.join(__dirname, "preload.js") },
@@ -868,6 +890,15 @@ if (!app.requestSingleInstanceLock()) {
       let loadFailed = false;
       let loading = false;
       let showPending = false;
+      let sizeSaveTimer = null;
+      if (resizable) {
+        panelWin.on("resize", () => {
+          clearTimeout(sizeSaveTimer);
+          sizeSaveTimer = setTimeout(() => {
+            if (!panelWin.isDestroyed()) savePanelSize(name, panelWin.getSize());
+          }, 300);
+        });
+      }
       function load() {
         clearTimeout(retryTimer);
         if (panelWin.isDestroyed() || loading) return;
@@ -944,6 +975,7 @@ if (!app.requestSingleInstanceLock()) {
         show,
         destroy() {
           clearTimeout(retryTimer);
+          clearTimeout(sizeSaveTimer);
           if (!panelWin.isDestroyed()) panelWin.destroy();
         },
       };
@@ -987,8 +1019,12 @@ if (!app.requestSingleInstanceLock()) {
         quickGeneratePanel = createPanel({
           name: "quick generate",
           url: quickGenerateUrl,
-          width: 784,
-          height: 620,
+          width: 720,
+          height: 560,
+          minWidth: 480,
+          minHeight: 360,
+          resizable: true,
+          hasShadow: true,
           openEvent: "cockpit:open-quick-generate",
           closeHash: "#/quick-generate/close",
         });

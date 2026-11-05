@@ -1,6 +1,6 @@
 <script>
   import { tick, untrack } from "svelte";
-  import { fetchQuickGenerateConfig, fetchQuickGenerateModels, quickGenerate } from "./api.js";
+  import { fetchQuickGenerateConfig, fetchQuickGenerateModels, fetchVersion, quickGenerate } from "./api.js";
   import { prefs } from "./prefs.svelte.js";
   import { isRecordingShortcut } from "./shortcutCapture.js";
   import { renderMarkdown } from "./markdown.js";
@@ -14,6 +14,7 @@
   let result = $state("");
   let error = $state(null);
   let generating = $state(false);
+  let streamed = $state(false);
   let copied = $state(false);
   let config = $state(null);
   let configError = $state(null);
@@ -25,6 +26,7 @@
   let modelsLoading = $state(false);
   let modelsError = $state(null);
   let promptEl = $state(null);
+  let resultEl = $state(null);
   let configRequest = null;
   let modelsRequest = null;
   let generateRequest = null;
@@ -100,9 +102,20 @@
     if (open && enabled && config && !configLoading && key && modelsKey !== key) loadModels(key);
   });
 
+  // The shell never reloads its hidden panel, so an update reaches this page when it next opens.
+  let loadedRev = null;
+  function reloadIfUpdated() {
+    fetchVersion().then(({ rev }) => {
+      if (!rev) return;
+      if (loadedRev === null) loadedRev = rev;
+      else if (rev !== loadedRev && !generating) location.reload();
+    }).catch(() => {});
+  }
+
   // Reopening rereads keys so .env edits show up without a reload.
   async function show() {
     open = true;
+    if (standalone) reloadIfUpdated();
     if (enabled && (config || configError)) loadConfig();
     await tick();
     promptEl?.focus();
@@ -122,10 +135,17 @@
     const request = new AbortController();
     generateRequest = request;
     generating = true;
+    streamed = false;
     error = null;
     copied = false;
     try {
-      const text = await quickGenerate({ key, model, prompt }, request.signal);
+      const text = await quickGenerate({ key, model, prompt }, (piece) => {
+        if (request.signal.aborted) return;
+        const following = !resultEl || resultEl.scrollHeight - resultEl.scrollTop - resultEl.clientHeight < 24;
+        result = streamed ? result + piece : piece;
+        streamed = true;
+        if (following) tick().then(() => resultEl?.scrollTo({ top: resultEl.scrollHeight }));
+      }, request.signal);
       if (!request.signal.aborted) result = text;
     } catch (e) {
       if (!request.signal.aborted) error = message(e);
@@ -236,7 +256,7 @@
           class="prompt"
           bind:this={promptEl}
           bind:value={prompt}
-          rows="5"
+          rows="2"
           placeholder="What should it write?"
           spellcheck="true"
           aria-label="Prompt"
@@ -262,7 +282,7 @@
           <div class="error" role="alert"><span>{error}</span></div>
         {/if}
         {#if result}
-          <div class="result md" class:stale={generating} aria-label="Generated text" aria-busy={generating}>{@html renderMarkdown(result)}</div>
+          <div class="result md" class:stale={generating && !streamed} bind:this={resultEl} aria-label="Generated text" aria-busy={generating}>{@html renderMarkdown(result)}</div>
         {/if}
 
         <div class="foot">
@@ -293,8 +313,7 @@
     backdrop-filter: blur(4px) saturate(85%);
   }
   .scrim.standalone {
-    align-items: center;
-    padding: 32px;
+    padding: 0;
     background: transparent;
     backdrop-filter: none;
   }
@@ -314,8 +333,14 @@
     box-shadow: var(--shadow-dialog);
   }
   .quick-generate.standalone {
-    max-height: calc(var(--general-height) - 64px);
-    box-shadow: 0 12px 28px rgb(0 0 0 / 0.16), 0 2px 6px rgb(0 0 0 / 0.1);
+    width: 100%;
+    height: 100%;
+    max-height: none;
+    border-color: var(--border-hover);
+    box-shadow: none;
+  }
+  .quick-generate.standalone .foot {
+    margin-top: auto;
   }
   .quick-generate:focus {
     outline: none;
@@ -361,14 +386,15 @@
     flex: none;
     width: 100%;
     box-sizing: border-box;
-    min-height: 112px;
-    max-height: 40vh;
+    min-height: 73px;
+    max-height: min(40vh, 208px);
+    field-sizing: content;
     padding: 14px 16px;
     border: 0;
     background: none;
     color: var(--text);
     font: 15px/1.5 var(--sans);
-    resize: vertical;
+    resize: none;
   }
   .prompt:focus {
     outline: none;
@@ -410,6 +436,7 @@
     flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
+    max-width: none;
     padding: 14px 16px;
     border-top: 1px solid var(--border);
     color: var(--text);
@@ -473,10 +500,6 @@
     }
   }
   @media (max-width: 620px) {
-    .scrim.standalone {
-      align-items: flex-start;
-      padding: 16px 12px;
-    }
     .select {
       max-width: 140px;
     }

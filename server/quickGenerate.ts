@@ -176,7 +176,7 @@ export function providerFetch(
   return vendorFetch(vendorFor(key), key.id, key.secret, path, init, deadline, signal);
 }
 
-// Server-sent events from an OpenAI-compatible stream; each `data:` payload goes to onData as parsed JSON.
+// Server-sent events from a provider stream; each `data:` payload goes to onData as parsed JSON.
 export function providerStream(
   key: DetectedKey,
   path: string,
@@ -321,6 +321,7 @@ export async function quickGenerateModels(
 
 export async function quickGenerate(
   input: { key: string; model: string; prompt: string },
+  onText: (text: string) => void,
   signal?: AbortSignal,
   roots: QuickGenerateRoots = systemRoots(),
 ): Promise<string> {
@@ -335,25 +336,27 @@ export async function quickGenerate(
     if (model === "") throw new QuickGenerateError(502, `${label} listed no usable models.`);
   }
   const messages = [{ role: "user", content: input.prompt }];
-  let text: unknown;
-  if (key.provider === "anthropic") {
-    const body = await providerFetch(key, "/messages", {
-      method: "POST",
-      body: { model, max_tokens: ANTHROPIC_MAX_TOKENS, messages },
-    }, deadline, signal);
-    const content = field(body, "content");
-    text = Array.isArray(content)
-      ? content.map((part: unknown) => field(part, "type") === "text" ? field(part, "text") : "")
-        .filter((part): part is string => typeof part === "string").join("")
-      : undefined;
-  } else {
-    const body = await providerFetch(key, "/chat/completions", {
-      method: "POST",
-      body: { model, messages, stream: false },
-    }, deadline, signal);
-    const choices = field(body, "choices");
-    text = field(field(Array.isArray(choices) ? choices[0] : undefined, "message"), "content");
-  }
-  if (typeof text !== "string" || text.trim() === "") throw new QuickGenerateError(502, `${label} returned no text.`);
-  return text.trim();
+  const anthropic = key.provider === "anthropic";
+  const body = anthropic
+    ? { model, max_tokens: ANTHROPIC_MAX_TOKENS, messages, stream: true }
+    : { model, messages, stream: true };
+  let text = "";
+  await providerStream(key, anthropic ? "/messages" : "/chat/completions", body, deadline, signal, (data) => {
+    const failure = field(data, "error");
+    if (failure) {
+      const detail = typeof failure === "string" ? failure : field(failure, "message");
+      const suffix = typeof detail === "string" && detail ? `: ${redact(detail, key.secret)}` : ".";
+      throw new QuickGenerateError(502, `${label} stream failed${suffix}`);
+    }
+    const choices = field(data, "choices");
+    const part = anthropic
+      ? field(data, "type") === "content_block_delta" ? field(field(data, "delta"), "text") : undefined
+      : field(field(Array.isArray(choices) ? choices[0] : undefined, "delta"), "content");
+    const piece = typeof part === "string" ? text ? part : part.trimStart() : "";
+    if (!piece) return;
+    text += piece;
+    onText(piece);
+  });
+  if (text === "") throw new QuickGenerateError(502, `${label} returned no text.`);
+  return text.trimEnd();
 }
