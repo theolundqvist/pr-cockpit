@@ -23,9 +23,12 @@ const JEV_BASE_URL = "https://api.typesafe.ai/v1";
 const JEV_CONCURRENCY = 4;
 // Jev allows 32k tokens per question, but its accuracy drops as one state grows, so states stay near 12k tokens.
 const JEV_STATE_CHARS = 48_000;
+// A line deep in a 12k-char excerpt that shared a 48k-char state with others scored 0.22 and never reached Qwen;
+// in 2k-char windows over 24k-char states it scored 0.97, and Qwen's budget holds 30 such windows instead of five.
+const EXCERPT_STATE_CHARS = 24_000;
 const JEV_STATE_ITEMS = 50;
 const RELEVANT = 0.5;
-const ITEM_CHARS = 12_000;
+const ITEM_CHARS = 2_000;
 const PAGE_SECTION_CHARS = 2_000;
 const TOTAL_ITEM_CHARS = 1_500_000;
 const LIST_BODY_CHARS = 1_200;
@@ -190,11 +193,15 @@ function splitText(label: string, body: string, source = label): Item[] {
   const parts: string[] = [];
   let current = "";
   for (const line of body.split("\n")) {
-    if (current && current.length + line.length + 1 > ITEM_CHARS) {
-      parts.push(current);
-      current = "";
+    // A line longer than a window continues in the next one instead of being cut.
+    for (let start = 0; start === 0 || start < line.length; start += ITEM_CHARS) {
+      const piece = line.slice(start, start + ITEM_CHARS);
+      if (current && current.length + piece.length + 1 > ITEM_CHARS) {
+        parts.push(current);
+        current = "";
+      }
+      current += (current ? "\n" : "") + piece;
     }
-    current += (current ? "\n" : "") + line.slice(0, ITEM_CHARS);
   }
   if (current) parts.push(current);
   return parts.map((part, index) => ({ label: `${label}, part ${index + 1} of ${parts.length}`, text: part, source }));
@@ -293,13 +300,13 @@ export function pageItems(page: string): Item[] {
   return items;
 }
 
-function chunk<T>(entries: T[], size: (entry: T) => number): T[][] {
+function chunk<T>(entries: T[], size: (entry: T) => number, stateChars: number): T[][] {
   const chunks: T[][] = [];
   let current: T[] = [];
   let chars = 0;
   for (const entry of entries) {
     const length = size(entry);
-    if (current.length && (chars + length > JEV_STATE_CHARS || current.length >= JEV_STATE_ITEMS)) {
+    if (current.length && (chars + length > stateChars || current.length >= JEV_STATE_ITEMS)) {
       chunks.push(current);
       current = [];
       chars = 0;
@@ -315,11 +322,12 @@ function chunk<T>(entries: T[], size: (entry: T) => number): T[][] {
 async function jevNouls<T>(
   ctx: AskContext,
   entries: T[],
+  stateChars: number,
   state: (chunk: T[]) => Record<string, unknown>,
   instruction: (index: number) => string,
 ): Promise<number[]> {
   const limit = createConcurrencyLimit(JEV_CONCURRENCY);
-  const chunks = chunk(entries, (entry) => JSON.stringify(entry).length);
+  const chunks = chunk(entries, (entry) => JSON.stringify(entry).length, stateChars);
   const answers = await Promise.all(chunks.map((part) => limit(async () => {
     const questions = Object.fromEntries(part.map((_, index) => [`q${index}`, { type: "noul", instructions: instruction(index) }]));
     const body = await vendorFetch(ctx.jev, JEV_KEY, ctx.jevSecret, "/systemone", {
@@ -425,6 +433,7 @@ async function filterPrs(ctx: AskContext, question: string, condition: string | 
   const probabilities = await jevNouls(
     ctx,
     rows,
+    JEV_STATE_CHARS,
     (part) => (condition ? { question, condition, prs: part } : { question, prs: part }),
     (index) => condition
       ? `Is \`condition\` true of the pull request \`prs[${index}]\`?`
@@ -520,6 +529,7 @@ async function askItems(ctx: AskContext, question: string, title: string, all: I
     ? await jevNouls(
       ctx,
       items,
+      EXCERPT_STATE_CHARS,
       (part) => ({ question, view: title, items: part.map(({ label, text }) => ({ label, text })) }),
       (index) => `Does \`items[${index}]\` contain information that helps answer \`question\` about \`view\`?`,
     )

@@ -117,6 +117,40 @@ describe("ask about a list", () => {
   });
 });
 
+describe("ask about a PR", () => {
+  test("a fact deep inside a huge file reaches Qwen's excerpts", async () => {
+    const needle = `"refund_window_days": 41`;
+    // 120 JSONL rows of about 3k chars; the fact sits 2.4k chars into row 110.
+    const rows = Array.from({ length: 120 }, (_, index) =>
+      `+{"case": ${index}, "notes": "${"refund policy ".repeat(175)}", ${index === 110 ? needle : `"refund_window_days": 30`}, "tail": "${"x".repeat(600)}"}`);
+    const diff = `diff --git a/evals/refunds/cases.jsonl b/evals/refunds/cases.jsonl\nnew file mode 100644\n--- /dev/null\n+++ b/evals/refunds/cases.jsonl\n@@ -0,0 +1,120 @@\n${rows.join("\n")}\n`;
+    const chatBodies: unknown[] = [];
+    const vendors = mockVendors((call) => {
+      if (call.url.startsWith("https://api.typesafe.ai/")) {
+        // Measured on real PRs: Jev finds such a line in 24k-char states but scores it 0.22 in 48k-char ones.
+        const state = field(call.body, "state");
+        const items = field(state, "items");
+        const small = JSON.stringify(state).length <= 32_000;
+        const answers = Object.fromEntries((Array.isArray(items) ? items : []).map((item, index) =>
+          [`q${index}`, { type: "noul", noul: small && String(field(item, "text")).includes(needle) ? 0.95 : 0.1 }]));
+        return Response.json({ model: "jev", answers, usage: { input_tokens: 1, output_tokens: 1 } });
+      }
+      if (call.url.endsWith("/models")) return models("qwen-3.8-27b");
+      chatBodies.push(call.body);
+      return sse([{ content: "41 days." }]);
+    });
+    try {
+      const detail = { title: "Refund cases", state: "OPEN", author: { login: "dev" }, body: "Adds refund eval cases." };
+      const result = await askView("How many days is the refund window in case 110?", { kind: "pr", key: "acme/app#2", detail, diff }, () => {}, undefined, keyFile("TYPESAFE_API_KEY=ts-secret\nCEREBRAS_API_KEY=csk-secret"));
+      const messages = field(chatBodies[0], "messages");
+      expect(String(field(Array.isArray(messages) ? messages[1] : null, "content"))).toContain(needle);
+      expect(result.sources?.map((source) => source.label)).toEqual(["cases.jsonl"]);
+    } finally {
+      vendors.restore();
+    }
+  });
+});
+
 describe("Qwen provider", () => {
   test("Groq answers when Cerebras fails, and each key reaches only its own vendor", async () => {
     const vendors = mockVendors((call) => {
