@@ -7,6 +7,7 @@ import { initHistory } from "./lib/history.svelte.js";
 import { initQuota } from "./lib/quota.svelte.js";
 import { initNativePalette } from "./lib/nativePalette.js";
 import { warmHighlightWorker } from "./lib/offThreadHighlight.js";
+import { tapKeys } from "./lib/usage.js";
 
 initNativePalette();
 initTheme();
@@ -15,6 +16,8 @@ initPrefs();
 if (location.hash.startsWith("#/embed")) {
   import("./lib/Embed.svelte").then(({ default: Embed }) => mount(Embed, { target: document.getElementById("app") }));
 } else {
+  // First, so usage stats see shortcuts a component's own listener stops from propagating.
+  tapKeys();
   initHistory();
   initQuota();
   mount(App, { target: document.getElementById("app") });

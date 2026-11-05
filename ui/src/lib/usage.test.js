@@ -1,6 +1,6 @@
-import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setSystemTime, test, vi } from "bun:test";
 import { sendUsage } from "./api.js";
-import { controlName, keyCombo, showScreen, startUsage } from "./usage.js";
+import { controlName, keyCombo, showScreen, startUsage, tapKeys } from "./usage.js";
 
 // A tiny DOM: elements with attributes and children, closest/matches for the simple selectors usage.js uses, and event targets.
 class Element {
@@ -51,14 +51,16 @@ class Target {
     this.listeners.set(`${type}:${!!capture}`, (this.listeners.get(`${type}:${!!capture}`) ?? []).filter((l) => l !== listener));
   }
   dispatch(type, event = {}) {
-    for (const key of [`${type}:true`, `${type}:false`]) for (const listener of this.listeners.get(key) ?? []) listener({ type, ...event });
+    let stopped = false;
+    const sent = { type, ...event, stopImmediatePropagation: () => (stopped = true) };
+    for (const key of [`${type}:true`, `${type}:false`]) for (const listener of this.listeners.get(key) ?? []) if (!stopped) listener(sent);
   }
   count() {
     return [...this.listeners.values()].reduce((sum, list) => sum + list.length, 0);
   }
 }
 
-const WORDS = new Set(["Close", "Close pull request", "Reply", "Newest first", "relay-url", "Share usage statistics"]);
+const WORDS = new Set(["Close", "Close pull request", "Reply", "Newest first", "relay-url", "Share usage statistics", "app"]);
 const SECRET = "Secret launch plan for acme";
 let doc;
 let win;
@@ -87,6 +89,7 @@ beforeEach(() => {
 afterEach(() => {
   running?.stop();
   running = null;
+  vi.useRealTimers();
   setSystemTime();
 });
 
@@ -112,6 +115,12 @@ describe("controlName", () => {
     const button = h("button", { "aria-label": "Close" });
     h("aside", { "data-area": "nav" }, h("div", {}, button));
     expect(controlName(button, WORDS)).toBe("nav:close");
+  });
+
+  test("stops looking for a place at the app's mount point", () => {
+    const button = h("button", { "aria-label": "Close" });
+    h("div", { id: "app" }, h("div", {}, button));
+    expect(controlName(button, WORDS)).toBe("close");
   });
 
   test("falls back to what a control is when its label is built from data", () => {
@@ -287,11 +296,24 @@ describe("startUsage", () => {
     ]);
   });
 
-  test("sends batches of 50 at once and the rest every interval", async () => {
+  test("sees shortcuts a component's capture listener stops, through the tap installed first", () => {
+    tapKeys(win);
+    win.addEventListener("keydown", (event) => event.stopImmediatePropagation(), true);
+    const usage = start({ every: 60_000 });
+    start({ every: 60_000 }).stop();
+    running = usage;
+    win.dispatch("keydown", { target: h("body"), key: "?" });
+    win.dispatch("pagehide");
+    expect(events().filter((event) => event.kind === "key").map((event) => event.action)).toEqual(["question"]);
+    expect(win.listeners.get("keydown:true")).toHaveLength(2);
+  });
+
+  test("sends batches of 50 at once and the rest every interval", () => {
+    vi.useFakeTimers();
     start({ every: 20 });
     for (let i = 0; i < 52; i += 1) click(h("button", { "data-event": "merge" }));
     expect(sent.map((batch) => [batch.events.length, batch.last])).toEqual([[50, false]]);
-    await Bun.sleep(40);
+    vi.advanceTimersByTime(20);
     expect(sent.map((batch) => [batch.events.length, batch.last])).toEqual([[50, false], [2, false]]);
     click(h("button", { "data-event": "merge" }));
     doc.visibilityState = "hidden";
@@ -299,15 +321,18 @@ describe("startUsage", () => {
     expect(sent.at(-1)).toMatchObject({ last: true, events: [{ action: "merge" }] });
   });
 
-  test("stop removes every listener and drops what is queued", async () => {
+  test("stop removes its listeners and drops what is queued", () => {
+    vi.useFakeTimers();
     const usage = start({ every: 20 });
     click(h("button", { "data-event": "merge" }));
     usage.stop();
     running = null;
-    expect(doc.count() + win.count()).toBe(0);
+    // Only the window's shortcut tap stays, and it hands keys to no one.
+    expect(doc.count() + win.count()).toBe(1);
     click(h("button", { "data-event": "merge" }));
+    win.dispatch("keydown", { target: h("body"), key: "j" });
     win.dispatch("pagehide");
-    await Bun.sleep(40);
+    vi.advanceTimersByTime(40);
     expect(sent).toEqual([]);
   });
 });

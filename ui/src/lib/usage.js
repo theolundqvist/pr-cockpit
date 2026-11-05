@@ -78,9 +78,9 @@ const staticId = (el, words) => {
   return id && ID.test(id) && words.has(id) ? id : "";
 };
 
-/** Where an element sits: the nearest element around it with a data-area or a static id. */
+/** Where an element sits: the nearest element around it with a data-area or a static id, short of the mount point (`#app`) that holds everything. */
 function placeOf(el, words) {
-  for (let at = el.parentElement; at; at = at.parentElement) {
+  for (let at = el.parentElement; at && at.getAttribute("id") !== "app"; at = at.parentElement) {
     const place = at.getAttribute("data-area") || staticId(at, words);
     if (place) return place;
   }
@@ -137,6 +137,21 @@ const randomId = () =>
 // Screens shown: the route's at depth 0 and flows over it deeper (onboarding, GitHub setup). The deepest, latest shown is the one on screen.
 const shown = [];
 const running = new Set();
+// Shortcut handlers of running usages, behind one capture listener per window that tapKeys installs.
+const keyHandlers = new Set();
+const tapped = new WeakSet();
+
+/**
+ * Installs the window's shortcut listener once. Call it before any component adds its own capture listener: one that stops a key it handled (the
+ * cheatsheet's ?, a dialog's Escape) would otherwise hide that key from usage stats.
+ */
+export function tapKeys(win = window) {
+  if (tapped.has(win)) return;
+  tapped.add(win);
+  win.addEventListener("keydown", (event) => {
+    for (const handler of keyHandlers) handler(event);
+  }, true);
+}
 let reporting = false;
 
 function shownScreen() {
@@ -236,7 +251,8 @@ export function startUsage({ send, words, every = 10_000, root = document }) {
   root.addEventListener("change", onChange, true);
   root.addEventListener("focusin", onFocus, true);
   root.addEventListener("input", onInput, true);
-  window.addEventListener("keydown", onKey, true);
+  tapKeys(window);
+  keyHandlers.add(onKey);
   window.addEventListener("pagehide", last);
   document.addEventListener("visibilitychange", onVisibility);
   const usage = {
@@ -259,7 +275,7 @@ export function startUsage({ send, words, every = 10_000, root = document }) {
       root.removeEventListener("change", onChange, true);
       root.removeEventListener("focusin", onFocus, true);
       root.removeEventListener("input", onInput, true);
-      window.removeEventListener("keydown", onKey, true);
+      keyHandlers.delete(onKey);
       window.removeEventListener("pagehide", last);
       document.removeEventListener("visibilitychange", onVisibility);
     },
