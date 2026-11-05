@@ -117,7 +117,8 @@ done <"$COMPOSE_ENV_FILE"
 printf '%s\n' \
   "Installed $SERVICE_NAME with container UID:GID $COCKPIT_UID:$COCKPIT_GID." \
   "Relay port 4821 listens on host loopback only; a reverse proxy on the host terminates TLS in front of it." \
-  "Usage is available on host loopback only at http://127.0.0.1:4822/usage."
+  "Usage is available on host loopback only at http://127.0.0.1:4822/usage." \
+  "The analytics panel is available on host loopback only at http://127.0.0.1:4822/analytics."
 printf 'Webhook forwarding is %s; leave RELAY_FORWARD_WEBHOOK_URL unset or empty in %s to disable it.\n' \
   "$FORWARDING_STATUS" "$COMPOSE_ENV_FILE"
 if [ "$FORWARDING_STATUS" = enabled ]; then

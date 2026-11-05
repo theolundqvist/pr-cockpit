@@ -343,6 +343,15 @@ func (s *Server) handleProofSession(response http.ResponseWriter, request *http.
 			s.logger.Warn("record relay activity failed", "error", err)
 		}
 	}
+	if input.Install != nil {
+		var user *GitHubIdentity
+		if input.User != nil && input.User.ID > 0 {
+			user = input.User
+		}
+		if err := s.store.RecordRelayConnection(request.Context(), *input.Install, user, s.now()); err != nil {
+			s.logger.Warn("record relay connection failed", "error", err)
+		}
+	}
 	s.maybeCleanup(request.Context())
 	writeJSON(response, http.StatusOK, map[string]any{"ticket": session.ticket, "expiresAt": session.authExpires.UnixMilli(), "repos": session.coverage})
 }

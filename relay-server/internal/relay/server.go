@@ -177,12 +177,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /session", s.handleSession)
 	mux.HandleFunc("POST /anchors", s.handleAnchors)
 	mux.HandleFunc("GET /stream", s.handleStream)
+	mux.HandleFunc("POST /events", s.handleAnalyticsEvents)
 	return mux
 }
 
 func (s *Server) AdminHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /usage", s.handleUsage)
+	mux.HandleFunc("GET /analytics", s.handleAnalyticsPanel)
 	return mux
 }
 

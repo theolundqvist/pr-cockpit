@@ -129,6 +129,51 @@ CREATE TABLE IF NOT EXISTS relay_anchors (
   prev_until_ms INTEGER,
   last_counted_after TEXT
 );
+CREATE TABLE IF NOT EXISTS analytics_subjects (
+  subject TEXT PRIMARY KEY,
+  surface TEXT NOT NULL,
+  first_ms INTEGER NOT NULL,
+  last_ms INTEGER NOT NULL,
+  platform TEXT,
+  version TEXT,
+  ref TEXT
+);
+CREATE INDEX IF NOT EXISTS analytics_subjects_first_idx ON analytics_subjects(surface, first_ms);
+CREATE INDEX IF NOT EXISTS analytics_subjects_last_idx ON analytics_subjects(last_ms);
+CREATE TABLE IF NOT EXISTS analytics_steps (
+  subject TEXT NOT NULL,
+  step TEXT NOT NULL,
+  first_ms INTEGER NOT NULL,
+  value TEXT NOT NULL,
+  PRIMARY KEY(subject, step)
+);
+CREATE INDEX IF NOT EXISTS analytics_steps_step_idx ON analytics_steps(step, first_ms);
+CREATE TABLE IF NOT EXISTS analytics_days (
+  day TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  events INTEGER NOT NULL,
+  PRIMARY KEY(day, subject)
+);
+CREATE INDEX IF NOT EXISTS analytics_days_subject_idx ON analytics_days(subject, day);
+CREATE TABLE IF NOT EXISTS analytics_counts (
+  day TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  screen TEXT NOT NULL,
+  action TEXT NOT NULL,
+  value TEXT NOT NULL,
+  client TEXT NOT NULL,
+  n INTEGER NOT NULL,
+  PRIMARY KEY(day, subject, kind, screen, action, value, client)
+);
+CREATE TABLE IF NOT EXISTS analytics_links (
+  install TEXT NOT NULL,
+  github_user_id INTEGER NOT NULL,
+  login TEXT NOT NULL,
+  first_ms INTEGER NOT NULL,
+  last_ms INTEGER NOT NULL,
+  PRIMARY KEY(install, github_user_id)
+);
 `)
 	if err != nil {
 		return err
@@ -342,6 +387,9 @@ func (s *Store) cleanup(ctx context.Context, now time.Time) (int64, error) {
 		return deletedMarkers, err
 	}
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM usage_repo_daily WHERE day < ?`, oldestUsageDay); err != nil {
+		return deletedMarkers, err
+	}
+	if err := cleanupAnalytics(ctx, s.db, now); err != nil {
 		return deletedMarkers, err
 	}
 	return deletedMarkers, nil
