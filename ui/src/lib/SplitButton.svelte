@@ -7,6 +7,7 @@
     mainDisabled = false,
     caretDisabled = false,
     optionsLabel,
+    usageEvent,
     onMain,
     onToggle,
     main,
@@ -15,7 +16,7 @@
 </script>
 
 <div class="split-button {tone}" data-split-action>
-  <button class="split-main" type="button" disabled={mainDisabled} onclick={onMain}>
+  <button class="split-main" type="button" data-event={usageEvent} disabled={mainDisabled} onclick={onMain}>
     {@render main()}
   </button>
   <button
@@ -23,6 +24,7 @@
     class:open
     type="button"
     disabled={caretDisabled}
+    data-event={usageEvent && `${usageEvent}-options`}
     aria-label={optionsLabel}
     aria-expanded={open}
     aria-haspopup="menu"

@@ -583,7 +583,7 @@
         <div class="column">
           <div class="head-top">
             <h2 class="conv-title" title={sessionTitle(conv)}>{sessionTitle(conv)}</h2>
-            <a class="head-button pr-link" href="#/pr/{conv.repo}/{conv.number}/agents" title="Open pull request {conv.repo}#{conv.number}" aria-label="Open pull request {conv.repo}#{conv.number}">
+            <a class="head-button pr-link" data-event="open-pr" href="#/pr/{conv.repo}/{conv.number}/agents" title="Open pull request {conv.repo}#{conv.number}" aria-label="Open pull request {conv.repo}#{conv.number}">
               <span class="mono">{conv.repo}#{conv.number}</span>
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 4.5h6v6M11.25 4.75 4.5 11.5" /></svg>
             </a>

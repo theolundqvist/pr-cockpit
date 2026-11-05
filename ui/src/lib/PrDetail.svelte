@@ -3186,6 +3186,7 @@
                 <button
                   type="button"
                   class="approval-summary required"
+                  data-event="approval-required"
                   aria-label={canReview ? "Approval required. Review this pull request" : "Approval required. Choose a reviewer"}
                   title={canReview ? "Review this pull request" : "Choose a reviewer"}
                   onclick={activateApprovalMarker}
@@ -3278,6 +3279,7 @@
                 <li>
                   <a
                     class="ci-failure-row"
+                    data-event="failing-check"
                     href={`#/pr/${repo}/${number}/actions?sha=${pr.headRefOid}${check.jobId === null ? "" : `&job=${check.jobId}`}`}
                   >
                     <span class="ci-failure-check">
@@ -3350,7 +3352,7 @@
                 <ul class="conflict-file-list mono" aria-label="Conflicting files">
                   {#each conflictFiles as path (path)}
                     {#if prefs.conflictEditorEnabled}
-                      <li><button type="button" class="conflict-file-open" title={`Resolve conflicts in ${path}`} onclick={() => (conflictEditorPath = path)}>{path}</button></li>
+                      <li><button type="button" class="conflict-file-open" data-event="open-conflict-file" title={`Resolve conflicts in ${path}`} onclick={() => (conflictEditorPath = path)}>{path}</button></li>
                     {:else}
                       <li title={path}>{path}</li>
                     {/if}
@@ -3614,6 +3616,7 @@
                     class:running={RUNNING_CI_STATES.has(event.ciState)}
                     class:neutral={!event.ciState}
                     href="#/pr/{repo}/{number}/actions?sha={event.oid}"
+                    data-event="commit-checks"
                     aria-label="{commitCiLabel(event.ciState)} for {event.oid.slice(0, 7)}. View workflow runs"
                     title="{commitCiLabel(event.ciState)} · View workflow runs for {event.oid.slice(0, 7)}"
                   >
@@ -3631,6 +3634,7 @@
                     class="when commit-when"
                     disabled={!event.parentOid}
                     title={event.parentOid ? "View this commit's changes" : ""}
+                    data-event="commit-changes"
                     aria-label="View changes from {when} ago"
                     onclick={() => selectCommit(event.oid)}
                   >
@@ -3694,6 +3698,7 @@
                     open={mergeMenuOpen}
                     mainDisabled={!enabled}
                     optionsLabel="Merge options"
+                    usageEvent="merge"
                     onMain={() => requestMerge()}
                     onToggle={() => ((reviewMenuOpen = false), (mergeMenuOpen = !mergeMenuOpen))}
                   >
@@ -3854,6 +3859,7 @@
                 {#each quickActions as action (action.id)}
                   <button
                     class="btn wide shortcut-action"
+                    data-event="quick-action"
                     title={action.kind === "label" ? `Add label “${action.value}”` : `Comment “${action.value}”`}
                     disabled={quickActionBusy !== null || action.done || (action.kind === "label" && action.value === "order" && (cancelOrderBusy || cancelOrderPending))}
                     onclick={() => runQuickAction(action)}
@@ -3891,7 +3897,7 @@
               <div class="actions">
                 {#each previewLinks as link (link.url)}
                   <div class="preview-row">
-                    <a class="btn shortcut-action preview-launch" href={link.url} target="_blank" rel="noreferrer" title={link.url}>
+                    <a class="btn shortcut-action preview-launch" data-event="open-preview" href={link.url} target="_blank" rel="noreferrer" title={link.url}>
                       <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
                         {#if link.kind === "desktop"}
                           <rect x="3" y="4" width="18" height="12" rx="2" />
@@ -3907,6 +3913,7 @@
                     <button
                       type="button"
                       class="btn preview-copy"
+                      data-event="copy-preview-link"
                       aria-label={`Copy ${link.kind === "desktop" ? "desktop app" : "web preview"} link`}
                       title={`Copy ${link.kind === "desktop" ? "desktop app" : "web preview"} link`}
                       onclick={() => navigator.clipboard.writeText(link.url).then(
@@ -3923,7 +3930,7 @@
                 {/each}
                 {#if promptDiff}
                   <div class="preview-row">
-                    <a class="btn shortcut-action preview-launch" href={promptDiff.url} target="_blank" rel="noreferrer" title={promptDiff.url}>
+                    <a class="btn shortcut-action preview-launch" data-event="open-prompt-diff" href={promptDiff.url} target="_blank" rel="noreferrer" title={promptDiff.url}>
                       <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
                         <path d="M6 3h8l4 4v14H6z" />
                         <path d="M12 8v6m-3-3h6m-6 6h6" />
@@ -3957,7 +3964,7 @@
               <h3 class="side-title">Links</h3>
               {#each otherCommentLinks as link (link.url)}
                 {@const internal = cockpitActionsHref(link.url)}
-                <a class="check" href={internal ?? link.url} target={internal ? undefined : "_blank"} rel={internal ? undefined : "noreferrer"} title={link.url}>
+                <a class="check" data-event="comment-link" href={internal ?? link.url} target={internal ? undefined : "_blank"} rel={internal ? undefined : "noreferrer"} title={link.url}>
                   <span class="check-name">{link.label}</span>
                 </a>
               {/each}
@@ -3973,6 +3980,7 @@
                   {#each agentRuns as run (run.id)}
                     <a
                       class="agent-item {runHealth(run)}"
+                      data-event="agent-run"
                       href="#/pr/{repo}/{number}/agents"
                       title={run.brief}
                       onclick={() => selectRun(run.id)}
@@ -4132,6 +4140,7 @@
                 mainDisabled={verdictSubmitting || pendingReviewStale || pendingReviewMutationBusy || (prefs.pendingReviewsEnabled && pendingReviewState !== "ready")}
                 caretDisabled={verdictSubmitting || pendingReviewStale || pendingReviewMutationBusy || (prefs.pendingReviewsEnabled && pendingReviewState !== "ready")}
                 optionsLabel="Review options"
+                usageEvent="review"
                 onMain={submitVerdict}
                 onToggle={() => ((mergeMenuOpen = false), (reviewMenuOpen = !reviewMenuOpen))}
               >

@@ -1953,7 +1953,7 @@
             </div>
             {#each savedViews as v, i (v.name)}
               <div class="view-item" class:active={activeView === v.name}>
-                <button class="view-apply" onclick={() => applyView(v.query)}>
+                <button class="view-apply" data-event="apply-view" onclick={() => applyView(v.query)}>
                   {#if !filterOpen && i < 9 && activeView !== v.name}<Kbd keys={`${i + 1}`} />{/if}
                   <span class="view-name" title={v.query}>{v.name}</span>
                   <span class="view-count">{viewCount(v)}</span>

@@ -186,7 +186,7 @@
                       <ul class="matrix-jobs">
                         {#each state.jobs as job (job.id)}
                           <li>
-                            <button class="matrix-job" onclick={() => onselect(job)} title={job.name}>
+                            <button class="matrix-job" data-event="matrix-job" onclick={() => onselect(job)} title={job.name}>
                               {@render statusIcon(job.status, job.conclusion)}
                               <span class="matrix-job-name">{jobLabel(node.job, job)}</span>
                               <span class="matrix-job-meta">{jobMeta(job)}</span>
@@ -198,6 +198,7 @@
                   {:else}
                     <button
                       class="graph-node"
+                      data-event="graph-job"
                       class:clickable={state.jobs.length > 0}
                       style={`left:${node.x}px;top:${node.y}px`}
                       onclick={() => selectDefinition(node.job, workflow)}

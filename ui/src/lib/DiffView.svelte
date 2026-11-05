@@ -2175,6 +2175,7 @@
       <div class="file-head-row">
         <button
           class="file-head mono"
+          data-event="file-head"
           onclick={(event) => (fileEditor?.path === file.path ? finishFileEdit() : keepingHeaderPlace(event.currentTarget.closest(".file-head-row"), file, () => onToggleFile(file)))}
         >
           <Chevron direction={isCollapsed ? "right" : "down"} />
@@ -2364,6 +2365,7 @@
             {#if expandable || !Array.isArray(gap)}
               <button
                 class="hunk-head"
+                data-event="expand-hunk"
                 class:expandable
                 data-hunk-index={hi}
                 disabled={!expandable || loading}

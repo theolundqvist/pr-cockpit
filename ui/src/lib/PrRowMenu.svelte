@@ -254,6 +254,7 @@
       <button
         role="menuitem"
         class="quick-submenu-trigger"
+        data-event="quick-actions"
         bind:this={quickSubmenuTrigger}
         aria-haspopup="menu"
         aria-expanded={!!quickSubmenu}
@@ -281,6 +282,7 @@
       {#each menuQuickActions as action (action.id)}
         <button
           role="menuitem"
+          data-event="quick-action"
           disabled={quickActionBusy || action.done}
           title={action.kind === "label" ? `Add label “${action.value}”` : `Comment “${action.value}”`}
           onclick={() => runQuickAction(action)}

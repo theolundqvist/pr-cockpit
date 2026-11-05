@@ -505,6 +505,14 @@ export async function saveSettings(patch) {
   return body;
 }
 
+// A batch of usage stats (startUsage in usage.js). The last ones, as the page hides, go by beacon, which outlives the page.
+export function sendUsage(events, last = false) {
+  const client = navigator.userAgent.includes("Electron") ? "electron" : "browser";
+  const body = JSON.stringify({ session: events[0].session, client, events });
+  if (last && navigator.sendBeacon?.("/api/usage", new Blob([body], { type: "application/json" }))) return;
+  fetch("/api/usage", { method: "POST", headers: { "content-type": "application/json" }, body, keepalive: true }).catch(() => {});
+}
+
 async function quickGenerateJson(res, label) {
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new Error(body?.error || `${label} ${res.status}`);

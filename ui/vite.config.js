@@ -1,8 +1,9 @@
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+import { usageWords } from "./usageWords.js";
 
 export default defineConfig({
-  plugins: [svelte()],
+  plugins: [svelte(), usageWords()],
   // shared/taskList.js parses with the renderer's own marked instance.
   resolve: { dedupe: ["marked"] },
   // Module workers share Shiki's grammar chunks with the page instead of inlining a copy.

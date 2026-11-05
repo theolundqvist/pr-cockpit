@@ -59,6 +59,7 @@
   this={editing ? "div" : "a"}
   role={editing ? "group" : "link"}
   class="row {status.tone}"
+  data-event="pr-row"
   class:selected
   class:multi-selected={multiSelected}
   class:archived-row={archived}

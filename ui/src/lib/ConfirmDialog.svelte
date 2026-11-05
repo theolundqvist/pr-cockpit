@@ -51,7 +51,7 @@
 </script>
 
 <div class="confirm-layer">
-  <button class="confirm-backdrop" type="button" tabindex="-1" aria-label="Dismiss {title}" onclick={onCancel}></button>
+  <button class="confirm-backdrop" type="button" tabindex="-1" data-event="confirm-dismiss" aria-label="Dismiss {title}" onclick={onCancel}></button>
   <div
     class="confirm-dialog"
     role="alertdialog"
@@ -79,7 +79,7 @@
         <span>Cancel</span>
         <Kbd keys="esc" />
       </button>
-      <button class="confirm-button primary" class:danger type="button" aria-label={confirmLabel} data-primary onclick={onConfirm}>
+      <button class="confirm-button primary" class:danger type="button" data-event="confirm" aria-label={confirmLabel} data-primary onclick={onConfirm}>
         <span>{confirmLabel}</span>
         <Kbd keys="enter" />
       </button>

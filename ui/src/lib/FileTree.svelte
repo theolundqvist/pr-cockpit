@@ -189,6 +189,7 @@
     {#if row.kind === "dir"}
       <button
         class="row dir"
+        data-event="tree-dir"
         style="padding-left: {row.depth * INDENT + 8}px"
         onclick={() => toggleDir(value.path)}
         oncontextmenu={onContextMenu && ((event) => onContextMenu(event, `${value.path}/**`))}
@@ -202,6 +203,7 @@
     {:else}
       <button
         class="row file"
+        data-event="tree-file"
         class:selected={value.path === selectedPath}
         class:hovered={value.path === hoveredPath}
         style="padding-left: {row.depth * INDENT + 8}px"

@@ -1,12 +1,15 @@
 <script>
-  import { fetchGithubUsage, saveRestRecording } from "./api.js";
+  import { fetchGithubUsage, saveRestRecording, saveSettings } from "./api.js";
   import { cachedView, cacheView } from "./detailCache.js";
+  import { prefs, setPrefs } from "./prefs.svelte.js";
   import { quotaIdentityLabel } from "./quotaImpact.js";
 
   let data = $state(cachedView("usage"));
   let error = $state(null);
   let restSaving = $state(false);
   let restSaveError = $state(null);
+  let statsSaving = $state(false);
+  let statsSaveError = $state(null);
 
   const number = new Intl.NumberFormat();
   const percent = (value, total) => total > 0 ? Math.min(100, (value / total) * 100) : 0;
@@ -69,6 +72,20 @@
     }
   }
 
+  async function setUsageStats(input) {
+    const enabled = input.checked;
+    statsSaving = true;
+    statsSaveError = null;
+    try {
+      setPrefs(await saveSettings({ usage_stats: enabled }));
+    } catch (failure) {
+      input.checked = !enabled;
+      statsSaveError = failure.message;
+    } finally {
+      statsSaving = false;
+    }
+  }
+
   $effect(() => {
     load().catch((failure) => (error = failure.message));
   });
@@ -80,6 +97,32 @@
       <span class="head-title">Usage</span>
     </div>
   </header>
+
+  <section class="stats-sharing" aria-label="Usage statistics">
+    <label class="check-field">
+      <input
+        class="check"
+        type="checkbox"
+        data-event="usage-stats"
+        checked={prefs.usageStats && !prefs.usageStatsForcedOff}
+        disabled={!prefs.loaded || statsSaving || prefs.usageStatsForcedOff}
+        onchange={(event) => setUsageStats(event.currentTarget)}
+      />
+      <span class="check-text">
+        <span class="check-label">Share usage statistics</span>
+        {#if statsSaveError}
+          <span class="hint save-error" role="alert">{statsSaveError}</span>
+        {:else if prefs.usageStatsForcedOff}
+          <span class="hint">Off: the server sets COCKPIT_USAGE_STATS=0 or DO_NOT_TRACK.</span>
+        {/if}
+        <span class="hint">
+          Sends names of screens, buttons, shortcuts and outcomes, with counts, tied to a random install id that the relay links to your GitHub
+          account when live updates are on. Never PR content, comments, typed text, file paths, or repository or branch names.
+          <a href="https://github.com/theolundqvist/pr-cockpit#usage-statistics" target="_blank" rel="noopener noreferrer">Details</a>
+        </span>
+      </span>
+    </label>
+  </section>
 
     {#snippet restRecording(enabled)}
       <label class="check-field rest-recording">
@@ -550,6 +593,12 @@
   }
   .rest-quota.exhausted strong { color: var(--fail); }
   .rest-recording { margin-top: 18px; }
+  .stats-sharing {
+    padding-bottom: 22px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 22px;
+  }
+  .stats-sharing a { color: var(--link); }
   .check-field { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
   .check-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .check-label { color: var(--text); font-size: 13px; line-height: 21px; }

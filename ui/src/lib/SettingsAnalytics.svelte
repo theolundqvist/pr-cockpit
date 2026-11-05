@@ -483,6 +483,7 @@
                 {#each series.values as count, bucketIndex}
                   <button
                     class="heat-cell"
+                    data-event="heat-cell"
                     type="button"
                     style={`--heat: ${Math.round(18 + Math.sqrt(count / heatMaximum) * 70)}%`}
                     aria-label={`${series.author}, ${view.buckets[bucketIndex].label}: ${count} merged pull request${count === 1 ? "" : "s"}`}

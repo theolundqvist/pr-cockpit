@@ -5,6 +5,7 @@
   import Kbd from "./Kbd.svelte";
   import GithubSetupModal from "./GithubSetupModal.svelte";
   import { tailscaleAccess } from "./tailscaleAccess.js";
+  import { showScreen } from "./usage.js";
 
   let { onDone, onCancel = null } = $props();
 
@@ -13,6 +14,7 @@
   const COVERAGE_POLL_LIMIT = 40;
 
   let step = $state("choose");
+  $effect(() => showScreen(`onboarding/${step}`, 1));
   let auth = $state(null);
   let authLoading = $state(true);
   let githubSetup = $state(null);
@@ -316,7 +318,7 @@
           <div class="notice">No repositories were returned. Add one by name to get started.</div>
         {/if}
         {#each extraRepos as name (name)}
-          <div class="manual-repo"><span>{name}</span><button class="link-button" type="button" onclick={() => toggle(name)} aria-label={`Remove ${name}`}>Remove</button></div>
+          <div class="manual-repo"><span>{name}</span><button class="link-button" type="button" data-event="remove-repo" onclick={() => toggle(name)} aria-label={`Remove ${name}`}>Remove</button></div>
         {/each}
         <label class="manual-label" for="onb-manual-repo">Add by repository name</label>
         <div class="manual-add">

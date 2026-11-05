@@ -195,7 +195,7 @@
   <button class="btn" type="button" onclick={() => addRule()}>Add rule</button>
   <span class="hint examples-label">Examples</span>
   {#each NOTIFICATION_EXAMPLES as example}
-    <button class="btn" type="button" title={example.hint} onclick={() => addRule(example.build(viewer.login))}>{example.label}</button>
+    <button class="btn" type="button" data-event="add-example-rule" title={example.hint} onclick={() => addRule(example.build(viewer.login))}>{example.label}</button>
   {/each}
 </div>
 

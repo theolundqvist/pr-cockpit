@@ -1,6 +1,7 @@
 <script>
   import { onMount } from "svelte";
   import { fetchAuthStatus, startGithubSetup } from "./api.js";
+  import { showScreen } from "./usage.js";
 
   let { initialStatus, onReady, onClose } = $props();
 
@@ -14,6 +15,7 @@
   let timer = null;
   const titleId = "github-setup-title";
 
+  onMount(() => showScreen("github-setup", 2));
   onMount(() => {
     if (status?.state === "ready") acceptStatus(status);
     else if (status?.state === "authorizing") scheduleRefresh();

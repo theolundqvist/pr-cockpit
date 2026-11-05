@@ -657,7 +657,7 @@
               {#each grouping.groups as group, index (group.id)}
                 <div class="group-editor-row">
                   <input class="input" aria-label={`Group ${index + 1} name`} maxlength="80" placeholder="Group name" bind:value={group.name} />
-                  <button class="btn" type="button" aria-label={`Remove group ${group.name || index + 1}`} onclick={() => grouping.groups = grouping.groups.filter((item) => item.id !== group.id)}>Remove</button>
+                  <button class="btn" type="button" data-event="remove-group" aria-label={`Remove group ${group.name || index + 1}`} onclick={() => grouping.groups = grouping.groups.filter((item) => item.id !== group.id)}>Remove</button>
                 </div>
               {/each}
               {#if groupIssues}<span class="hint invalid-hint">Give each group a unique, nonempty name.</span>{/if}
@@ -1218,6 +1218,7 @@
                   <button
                     class="btn"
                     type="button"
+                    data-event="unhide-review-path"
                     aria-label={`Stop hiding ${pattern} in ${hiddenRepo}`}
                     onclick={() => {
                       const { [hiddenRepo]: _, ...others } = hiddenReviewPaths;

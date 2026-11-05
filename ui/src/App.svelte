@@ -19,7 +19,7 @@
   import QuotaBanner from "./lib/QuotaBanner.svelte";
   import Kbd from "./lib/Kbd.svelte";
   import SystemIssueModal from "./lib/SystemIssueModal.svelte";
-  import { fetchSettings, fetchSystemIssues, retrySystemIssue } from "./lib/api.js";
+  import { fetchSettings, fetchSystemIssues, retrySystemIssue, sendUsage } from "./lib/api.js";
   import { showFlash } from "./lib/flash.svelte.js";
   import { burstGate } from "./lib/burstGate.js";
   import { connectEvents } from "./lib/events.js";
@@ -33,6 +33,8 @@
   import { isPromptDialogOpen } from "./lib/dom.js";
   import { SETTINGS_SECTION_KEY, SETTINGS_SECTIONS, normalizeSettingsSection, settingsSectionHref } from "./lib/settingsSections.js";
   import { parseCommentTarget, prLinkHash } from "./lib/commentTarget.js";
+  import { showScreen, startUsage } from "./lib/usage.js";
+  import usageWords from "virtual:usage-words";
 
   window.cockpitFlash = showFlash;
 
@@ -179,6 +181,26 @@
       .catch(() => (reposConfigured = true));
   });
 
+  // Usage stats count on the route's screen; onboarding and GitHub setup show theirs over it.
+  let usageScreen = $derived(
+    route.name === "detail"
+      ? `detail/${route.tab.toLowerCase()}`
+      : route.name === "settings"
+        ? `settings/${route.section}`
+        : route.name === "actionsRun"
+          ? "actions-run"
+          : route.name === "quickGenerate"
+            ? "quick-generate"
+            : route.name,
+  );
+  $effect(() => showScreen(usageScreen));
+  // Only while settings allow them; turning them off drops whatever is queued.
+  $effect(() => {
+    if (!prefs.usageStats || prefs.usageStatsForcedOff) return;
+    const usage = startUsage({ send: sendUsage, words: new Set(usageWords) });
+    return () => usage.stop();
+  });
+
   // Single delivery owner. Pending desktop notifications are claimed only while opted in with
   // permission granted, re-checked live per claim and per show: when the opt-in loads or flips on,
   // on every queue insert, after a (re)connect, and when Settings grants permission or retries.
@@ -297,7 +319,7 @@
       {/if}
     </div>
     <div class="app-drag-region" aria-hidden="true"></div>
-    <aside class="app-sidebar">
+    <aside class="app-sidebar" data-area="nav">
       <nav class="app-nav" aria-label={route.name === "settings" ? "Settings navigation" : "Cockpit navigation"}>
         {#if route.name === "settings"}
           <a class="nav-item settings-back" href="#/">

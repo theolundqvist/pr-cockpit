@@ -193,6 +193,7 @@
               <button
                 type="button"
                 class="ce-file"
+                data-event="conflict-file"
                 class:on={file.path === activePath}
                 aria-current={file.path === activePath ? "true" : undefined}
                 title={file.path}

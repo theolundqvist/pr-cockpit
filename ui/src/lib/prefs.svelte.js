@@ -34,6 +34,9 @@ export const prefs = $state({
   agentConversationsEnabled: true,
   quickGenerateEnvFile: "",
   personalQuickActions: "",
+  // off until settings say otherwise, so nothing is counted before they load
+  usageStats: false,
+  usageStatsForcedOff: false,
   agents: [
     { id: "fixer", name: "Auto-merge fixer", enabled: true, trigger: "keybind", keybind: "a", model: "opus", prompt_template: "" },
     { id: "autofix", name: "Auto-fix", enabled: true, trigger: "keybind", keybind: "f", model: "opus", prompt_template: "" },
@@ -69,6 +72,8 @@ export function setPrefs(settings) {
   prefs.agentConversationsEnabled = settings.agent_conversations_enabled === true;
   prefs.quickGenerateEnvFile = settings.quick_generate_env_file ?? "";
   prefs.personalQuickActions = settings.personal_quick_actions ?? "";
+  prefs.usageStats = settings.usage_stats === true;
+  prefs.usageStatsForcedOff = settings.usage_stats_forced_off === true;
   whiteboardSession.current?.setEnabled(prefs.whiteboardEnabled);
   prefs.loaded = true;
 }

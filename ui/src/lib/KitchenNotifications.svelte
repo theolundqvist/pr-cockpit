@@ -136,7 +136,7 @@
   const time = (value) => new Date(value).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 </script>
 
-<button class="notification-trigger" bind:this={trigger} aria-label={unreadCount ? `Notifications, ${unreadCount} unread` : "Notifications"} aria-expanded={open} aria-controls="kitchen-notifications" popovertarget="kitchen-notifications" popovertargetaction="toggle" onclick={prepareToggle} title="Notifications">
+<button class="notification-trigger" bind:this={trigger} data-event="notifications" aria-label={unreadCount ? `Notifications, ${unreadCount} unread` : "Notifications"} aria-expanded={open} aria-controls="kitchen-notifications" popovertarget="kitchen-notifications" popovertargetaction="toggle" onclick={prepareToggle} title="Notifications">
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" /></svg>
   {#if unreadCount}<span class="notification-count" aria-hidden="true">{unreadCount > 99 ? "99+" : unreadCount}</span>{/if}
 </button>
@@ -160,12 +160,12 @@
     {:else if !visible.length}<div class="notification-empty">{shownFilter === "unread" ? "You're all caught up." : shownFilter === "mine" ? "No PRs merged by you." : "No notifications."}</div>{/if}
     {#each visible as pr (prKey(pr))}
       <div class="notification-item" class:unread={isUnread(pr)}>
-        <a class="notification-link" href={`#/pr/${pr.repo}/${pr.number}`} onclick={() => { setRead(pr, true); panel.hidePopover(); }}>
+        <a class="notification-link" data-event="open-pr" href={`#/pr/${pr.repo}/${pr.number}`} onclick={() => { setRead(pr, true); panel.hidePopover(); }}>
           <span class="notification-title" title={pr.title}>{pr.title}</span>
           {#if pr.author}<span class="notification-author">Author @{pr.author}</span>{/if}
           <span class="notification-meta"><span><span class="merged">Merged</span> · {pr.repo.split("/").at(-1)} #{pr.number}</span><time datetime={pr.terminalAt}>{time(pr.terminalAt)}</time></span>
         </a>
-        <button class="read-toggle" aria-label={`${isUnread(pr) ? "Mark as read" : "Mark as unread"}: ${pr.title}`} title={isUnread(pr) ? "Mark as read" : "Mark as unread"} onclick={() => setRead(pr, isUnread(pr))}><span class:filled={isUnread(pr)}></span></button>
+        <button class="read-toggle" data-event="toggle-read" aria-label={`${isUnread(pr) ? "Mark as read" : "Mark as unread"}: ${pr.title}`} title={isUnread(pr) ? "Mark as read" : "Mark as unread"} onclick={() => setRead(pr, isUnread(pr))}><span class:filled={isUnread(pr)}></span></button>
       </div>
     {/each}
     {#if moreUncleared}<button class="load-more" disabled={loading} onclick={() => load(true)}>{loading ? "Loading…" : "Load older notifications"}</button>{/if}
