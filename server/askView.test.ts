@@ -55,7 +55,8 @@ function pr(number: number, title: string): AskPr {
 function jevAnswer(body: unknown): Response {
   const state = field(body, "state");
   const prs = field(state, "prs");
-  const entries: unknown[] = Array.isArray(prs) ? prs : [field(state, "items")].flat();
+  const items = field(state, "items");
+  const entries: unknown[] = Array.isArray(prs) ? prs : Object.values(items && typeof items === "object" ? items : {});
   const answers = Object.fromEntries(entries.map((entry, index) => {
     const text = String(field(entry, "title") ?? field(entry, "text"));
     return [`q${index}`, { type: "noul", noul: /billing|invoice/i.test(text) ? 0.9 : 0.1 }];
@@ -131,8 +132,12 @@ describe("ask about a PR", () => {
         const state = field(call.body, "state");
         const items = field(state, "items");
         const small = JSON.stringify(state).length <= 32_000;
-        const answers = Object.fromEntries((Array.isArray(items) ? items : []).map((item, index) =>
-          [`q${index}`, { type: "noul", noul: small && String(field(item, "text")).includes(needle) ? 0.95 : 0.1 }]));
+        const questions = field(call.body, "questions");
+        const answers = Object.fromEntries(Object.entries(questions && typeof questions === "object" ? questions : {}).map(([key, question]) => {
+          const target = /`items\.(item\d+)`/.exec(String(field(question, "instructions")))?.[1];
+          const item = target ? field(items, target) : null;
+          return [key, { type: "noul", noul: small && String(field(item, "text")).includes(needle) ? 0.95 : 0.1 }];
+        }));
         return Response.json({ model: "jev", answers, usage: { input_tokens: 1, output_tokens: 1 } });
       }
       if (call.url.endsWith("/models")) return models("qwen-3.8-27b");

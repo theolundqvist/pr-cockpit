@@ -530,8 +530,9 @@ async function askItems(ctx: AskContext, question: string, title: string, all: I
       ctx,
       items,
       EXCERPT_STATE_CHARS,
-      (part) => ({ question, view: title, items: part.map(({ label, text }) => ({ label, text })) }),
-      (index) => `Does \`items[${index}]\` contain information that helps answer \`question\` about \`view\`?`,
+      // Explicit keys avoid Jev attributing a window's evidence to a neighbouring array index.
+      (part) => ({ question, view: title, items: Object.fromEntries(part.map(({ label, text }, index) => [`item${index + 1}`, { label, text }])) }),
+      (index) => `Does \`items.item${index + 1}\` contain information that helps answer \`question\` about \`view\`?`,
     )
     : [];
   const ranked = items
