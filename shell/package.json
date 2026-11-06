@@ -3,7 +3,7 @@
   "private": true,
   "main": "main.js",
   "scripts": {
-    "postinstall": "bun build-trackpad.cjs",
+    "postinstall": "bun build-trackpad.cjs && bun build-selected-text.cjs",
     "start": "electron ."
   },
   "devDependencies": {

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell, Menu, globalShortcut, Tray, nativeTheme, systemPreferences, ipcMain } = require("electron");
+const { app, BrowserWindow, shell, Menu, globalShortcut, Tray, nativeTheme, systemPreferences, ipcMain, dialog } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -11,6 +11,8 @@ const { configuredShortcuts, platformPolicy } = require("./platformPolicy");
 const { deepLinkHash, protocolAction, protocolArgFromArgv } = require("./protocolArgv");
 const { createShellProcessOwnership } = require("./shellProcessOwnership");
 const { attachTrackpadNavigation } = require("./trackpadNavigation");
+const { createSelectionCapture, createSelectionOpener } = require("./selectedText");
+const { createPanelOpenEvent } = require("./panelOpenEvent");
 app.setName("PR Cockpit");
 const desktopPolicy = platformPolicy();
 if (desktopPolicy.desktopName) app.setDesktopName(desktopPolicy.desktopName);
@@ -308,7 +310,7 @@ if (!app.requestSingleInstanceLock()) {
       y: anchor ? anchor.y + 34 : undefined,
       backgroundColor: windowBackgroundColor(),
       ...desktopPolicy.mainWindow,
-      webPreferences: { sandbox: true, preload: path.join(__dirname, "preload.js") },
+      webPreferences: { sandbox: true, plugins: true, preload: path.join(__dirname, "preload.js") },
       show: false,
     });
     extraWindows.add(extra);
@@ -595,7 +597,7 @@ if (!app.requestSingleInstanceLock()) {
       height: 900,
       backgroundColor: windowBackgroundColor(),
       ...desktopPolicy.mainWindow,
-      webPreferences: { sandbox: true, preload: path.join(__dirname, "preload.js") },
+      webPreferences: { sandbox: true, plugins: true, preload: path.join(__dirname, "preload.js") },
       show: false,
     });
 
@@ -863,7 +865,7 @@ if (!app.requestSingleInstanceLock()) {
     win.loadURL(firstUrl);
 
     // Panels only hide, so their renderer keeps its state between presentations.
-    function createPanel({ name, url, width, height, minWidth, minHeight, resizable = false, hasShadow = false, openEvent, closeHash, onNavigate = () => false }) {
+    function createPanel({ name, url, width, height, minWidth, minHeight, resizable = false, hasShadow = false, hideOnBlur = true, plugins = false, openEvent, closeHash, onHide = () => {}, onNavigate = () => false }) {
       const baseHash = new URL(url).hash;
       const saved = resizable ? loadPanelSizes()[name] : null;
       const panelWin = new BrowserWindow({
@@ -883,13 +885,18 @@ if (!app.requestSingleInstanceLock()) {
         hasShadow,
         backgroundColor: "#00000000",
         // Keep panel loads off the main window's potentially saturated HTTP connection pool.
-        webPreferences: { sandbox: true, partition: `cockpit-${name}`, preload: path.join(__dirname, "preload.js") },
+        webPreferences: {
+          sandbox: true,
+          plugins,
+          partition: `cockpit-${name}`,
+          preload: path.join(__dirname, "preload.js"),
+        },
       });
       let ready = false;
       let retryTimer = null;
       let loadFailed = false;
       let loading = false;
-      let showPending = false;
+      const pendingOpenEvent = createPanelOpenEvent(openEvent);
       let sizeSaveTimer = null;
       if (resizable) {
         panelWin.on("resize", () => {
@@ -907,24 +914,26 @@ if (!app.requestSingleInstanceLock()) {
         panelWin.loadURL(url).catch(() => {});
       }
       function hide() {
-        showPending = false;
+        pendingOpenEvent.clear();
+        onHide();
         if (!panelWin.isDestroyed()) panelWin.hide();
       }
       function present() {
         if (isQuitting || panelWin.isDestroyed() || !ready) return;
-        showPending = false;
+        const script = pendingOpenEvent.takeScript();
+        if (!script) return;
         panelWin.webContents
-          .executeJavaScript(`window.dispatchEvent(new Event(${JSON.stringify(openEvent)}))`)
+          .executeJavaScript(script)
           .catch(() => {});
         panelWin.center();
         panelWin.show();
         panelWin.focus();
         panelWin.webContents.focus();
       }
-      function show() {
+      function show(detail) {
         if (isQuitting || panelWin.isDestroyed()) return;
+        pendingOpenEvent.request(detail);
         if (!ready) {
-          showPending = true;
           load();
           return;
         }
@@ -939,7 +948,7 @@ if (!app.requestSingleInstanceLock()) {
           return;
         }
         ready = true;
-        if (showPending) present();
+        if (pendingOpenEvent.pending) present();
       });
       panelWin.webContents.on("did-fail-load", (event, errorCode, desc, failedUrl, isMainFrame) => {
         if (!isMainFrame || errorCode === -3) return; // -3 ERR_ABORTED: a load we superseded, not a real failure
@@ -951,14 +960,14 @@ if (!app.requestSingleInstanceLock()) {
       });
       panelWin.webContents.on("render-process-gone", (event, details) => {
         if (isQuitting || panelWin.isDestroyed()) return;
-        showPending ||= panelWin.isVisible();
+        if (panelWin.isVisible() && !pendingOpenEvent.pending) pendingOpenEvent.request();
         ready = false;
         loading = false;
         panelWin.hide();
         console.error(`pr-cockpit: ${name} renderer gone (${details.reason}, exitCode=${details.exitCode})`);
         load();
       });
-      panelWin.on("blur", hide);
+      if (hideOnBlur) panelWin.on("blur", hide);
       panelWin.on("close", (e) => {
         if (isQuitting) return;
         e.preventDefault();
@@ -973,6 +982,8 @@ if (!app.requestSingleInstanceLock()) {
       return {
         win: panelWin,
         show,
+        hide,
+        cancelPendingShow() { pendingOpenEvent.clear(); },
         destroy() {
           clearTimeout(retryTimer);
           clearTimeout(sizeSaveTimer);
@@ -1014,6 +1025,23 @@ if (!app.requestSingleInstanceLock()) {
     // Quick Generate is opt-in: its panel and shortcut exist only while the setting is on, and
     // turning it off destroys the panel along with any draft in it.
     let quickGeneratePanel = null;
+    const selectionOpener = createSelectionOpener({
+      getPanel: () => quickGeneratePanel,
+      capture: createSelectionCapture(),
+      reportFailure(failure, panel) {
+        if (panel.win.isDestroyed()) return;
+        dialog.showMessageBox(panel.win, {
+          type: "warning",
+          message: failure.message,
+          detail: failure.detail,
+          buttons: failure.settings ? ["Enter Manually", "Open Accessibility Settings"] : ["Enter Manually"],
+          defaultId: 0,
+          cancelId: 0,
+        }).then(({ response }) => {
+          if (response === 1 && failure.settings) shell.openExternal(failure.settings);
+        }).catch(() => {});
+      },
+    });
     function setQuickGenerateEnabled(enabled) {
       if (enabled && !quickGeneratePanel) {
         quickGeneratePanel = createPanel({
@@ -1025,11 +1053,15 @@ if (!app.requestSingleInstanceLock()) {
           minHeight: 360,
           resizable: true,
           hasShadow: true,
+          hideOnBlur: false,
+          plugins: true,
+          onHide: () => selectionOpener.cancel(),
           openEvent: "cockpit:open-quick-generate",
           closeHash: "#/quick-generate/close",
         });
         quickGenerateWin = quickGeneratePanel.win;
       } else if (!enabled && quickGeneratePanel) {
+        selectionOpener.cancel();
         quickGeneratePanel.destroy();
         quickGeneratePanel = null;
         quickGenerateWin = null;
@@ -1037,7 +1069,7 @@ if (!app.requestSingleInstanceLock()) {
     }
 
     function showQuickGenerate() {
-      quickGeneratePanel?.show();
+      void selectionOpener.open();
     }
 
     function flashRenderer(message) {

@@ -136,7 +136,7 @@ import { AGENT_DEFAULTS, askViewEnabled, pendingReviewsEnabled, quickGenerateEna
 import { claudeBinPath, codexBinPath, ompBinPath } from "./harness.ts";
 import { CommitMessageError, generateCommitMessage } from "./commitMessage.ts";
 import { askView, parseAskRequest, type AskView } from "./askView.ts";
-import { QuickGenerateError, quickGenerate, quickGenerateConfig, quickGenerateModels } from "./quickGenerate.ts";
+import { QuickGenerateError, parseQuickGenerateRequest, quickGenerate, quickGenerateConfig, quickGenerateModels } from "./quickGenerate.ts";
 import { relayStatus, webhookCoveredSince } from "./relayClient.ts";
 import { relayCoverage } from "./relayCoverage.ts";
 import { refreshCachedPrDetail } from "./cachedPrDetail.ts";
@@ -3110,13 +3110,7 @@ async function handleQuickGenerate(req: Request, url: URL): Promise<Response> {
     } catch {
       return json({ error: "invalid JSON body" }, 400);
     }
-    const key: unknown = body && typeof body === "object" && "key" in body ? body.key : "";
-    const model: unknown = body && typeof body === "object" && "model" in body ? body.model : "";
-    const prompt: unknown = body && typeof body === "object" && "prompt" in body ? body.prompt : undefined;
-    if (typeof key !== "string" || typeof model !== "string" || typeof prompt !== "string") {
-      return json({ error: "invalid quick generate request" }, 400);
-    }
-    const input = { key: key.trim(), model: model.trim(), prompt };
+    const input = parseQuickGenerateRequest(body);
     const encoder = new TextEncoder();
     const closed = new AbortController();
     const signal = AbortSignal.any([req.signal, closed.signal]);

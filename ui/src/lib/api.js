@@ -544,11 +544,28 @@ async function* streamEvents(res) {
   }
 }
 
-export async function quickGenerate({ key, model, prompt }, onText, signal = null) {
+// Raw base64 of the file's bytes, without the data: URL prefix.
+function base64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.slice(reader.result.indexOf(",") + 1));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+// attachments: [{ name, mimeType, blob }], already validated against shared/quickGenerateAttachments.js.
+export async function quickGenerate({ key, model, prompt, attachments = [] }, onText, signal = null) {
+  const body = { key, model, prompt };
+  if (attachments.length) {
+    body.attachments = await Promise.all(
+      attachments.map(async ({ name, mimeType, blob }) => ({ name, mimeType, data: await base64(blob) })),
+    );
+  }
   const res = await fetch("/api/quick-generate", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ key, model, prompt }),
+    body: JSON.stringify(body),
     signal,
   });
   if (!res.ok) await quickGenerateJson(res, "quick-generate");

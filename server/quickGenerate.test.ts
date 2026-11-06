@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { db, getSetting, setSetting } from "./db.ts";
 import { startCockpitServer } from "./cockpitServer.ts";
 import { buildFetchHandler } from "./http.ts";
-import { QuickGenerateError, quickGenerate, quickGenerateConfig, quickGenerateModels, type QuickGenerateRoots } from "./quickGenerate.ts";
+import { QuickGenerateError, parseQuickGenerateRequest, quickGenerate, quickGenerateConfig, quickGenerateModels, type QuickGenerateAttachment, type QuickGenerateRoots } from "./quickGenerate.ts";
+import { ATTACHMENT_LIMITS } from "../shared/quickGenerateAttachments.js";
 
 const SETTING_NAMES = ["quick_generate_enabled", "quick_generate_key", "quick_generate_model", "quick_generate_env_file", "replica_ssh_host"];
 const savedSettings = new Map(SETTING_NAMES.map((name) => [name, getSetting(name)]));
@@ -158,9 +159,9 @@ describe("quick generate provider calls", () => {
     const fetchSpy = mockFetch(async (input, init) => {
       calls.push({ url: String(input), auth: new Headers(init?.headers).get("authorization") });
       return Response.json({ data: [
-        { id: "google/gemini-omni-1.2-flash", name: "Google: Gemini Omni 1.2 Flash", created: 30 },
-        { id: "openrouter/auto", name: "Auto Router", created: 10 },
-        { id: "qwen/qwen3.8-27b", name: "Qwen: Qwen3.8 27B", created: 20 },
+        { id: "google/gemini-omni-1.2-flash", name: "Google: Gemini Omni 1.2 Flash", created: 30, architecture: { input_modalities: ["text", "image"], output_modalities: ["text", "video"] } },
+        { id: "openrouter/auto", name: "Auto Router", created: 10, architecture: { input_modalities: ["text"], output_modalities: ["text"] } },
+        { id: "qwen/qwen3.8-27b", name: "Qwen: Qwen3.8 27B", created: 20, architecture: { input_modalities: ["text", "image"], output_modalities: ["text"] } },
       ] });
     });
     try {
@@ -168,9 +169,9 @@ describe("quick generate provider calls", () => {
       expect(quickGenerateConfig(roots).keys.map((key) => key.label)).toEqual(["OpenAI", "OpenRouter"]);
       const models = await quickGenerateModels("OPENROUTER_API_KEY", undefined, roots);
       expect(models).toEqual([
-        { id: "openrouter/auto", label: "Auto Router" },
-        { id: "google/gemini-omni-1.2-flash", label: "Google: Gemini Omni 1.2 Flash" },
-        { id: "qwen/qwen3.8-27b", label: "Qwen: Qwen3.8 27B" },
+        { id: "openrouter/auto", label: "Auto Router", inputs: ["text"] },
+        { id: "google/gemini-omni-1.2-flash", label: "Google: Gemini Omni 1.2 Flash", inputs: ["text", "image"] },
+        { id: "qwen/qwen3.8-27b", label: "Qwen: Qwen3.8 27B", inputs: ["text", "image"] },
       ]);
       expect(calls).toEqual([{ url: "https://openrouter.ai/api/v1/models", auth: "Bearer sk-or-secret" }]);
     } finally {
@@ -363,4 +364,372 @@ describe("quick generate routes", () => {
       server.stop(true);
     }
   });
+});
+
+// Public one-pixel PNG from Anthropic's vision documentation.
+const png: QuickGenerateAttachment = {
+  name: "pixel.png", mimeType: "image/png",
+  data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC",
+};
+const textFile: QuickGenerateAttachment = { name: "note.md", mimeType: "text/markdown", data: Buffer.from("A café in 日本\n").toString("base64") };
+
+function pdfFixture(): QuickGenerateAttachment {
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>",
+  ];
+  let document = "%PDF-1.4\n";
+  const offsets = [0];
+  for (const [index, object] of objects.entries()) {
+    offsets.push(Buffer.byteLength(document));
+    document += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  }
+  const xref = Buffer.byteLength(document);
+  document += `xref\n0 4\n0000000000 65535 f \n${offsets.slice(1).map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return { name: "page.pdf", mimeType: "application/pdf", data: Buffer.from(document).toString("base64") };
+}
+
+describe("quick generate attachments", () => {
+  test("image-only requests deliver real native image content to each vision vendor with its own key", async () => {
+    const cases = [
+      { key: "OPENAI_API_KEY", model: "gpt-4.1", endpoint: "https://api.openai.com/v1/chat/completions" },
+      { key: "ANTHROPIC_API_KEY", model: "claude-sonnet-4-6", endpoint: "https://api.anthropic.com/v1/messages" },
+      { key: "GROQ_API_KEY", model: "qwen/qwen3.8-27b", endpoint: "https://api.groq.com/openai/v1/chat/completions" },
+      { key: "CEREBRAS_API_KEY", model: "qwen-3.8-27b", endpoint: "https://api.cerebras.ai/v1/chat/completions" },
+    ];
+    const roots = homeWith({ config: cases.map(({ key }) => `${key}=secret-${key}`).join("\n") });
+    for (const item of cases) {
+      const fetchSpy = mockFetch(async (url, init) => {
+        expect(String(url)).toBe(item.endpoint);
+        const headers = new Headers(init?.headers);
+        const anthropic = item.key === "ANTHROPIC_API_KEY";
+        expect(headers.get(anthropic ? "x-api-key" : "authorization")).toBe(`${anthropic ? "" : "Bearer "}secret-${item.key}`);
+        expect(headers.get(anthropic ? "authorization" : "x-api-key")).toBeNull();
+        const body = JSON.parse(String(init?.body));
+        expect(body.model).toBe(item.model);
+        expect(body.stream).toBe(true);
+        expect(body.messages).toEqual([{ role: "user", content: [anthropic
+          ? { type: "image", source: { type: "base64", media_type: "image/png", data: png.data } }
+          : { type: "image_url", image_url: { url: `data:image/png;base64,${png.data}` } },
+        ] }]);
+        return sse([anthropic ? { type: "content_block_delta", delta: { type: "text_delta", text: "Red" } } : { choices: [{ delta: { content: "Red" } }] }]);
+      });
+      try {
+        expect(await quickGenerate({ key: item.key, model: item.model, prompt: "", attachments: [png] }, () => {}, undefined, roots)).toBe("Red");
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    }
+  });
+
+  test("PDFs use native documents/files and UTF-8 text stays decoded, ordered and named", async () => {
+    const pdf = pdfFixture();
+    const roots = homeWith({ config: "OPENAI_API_KEY=sk-openai\nANTHROPIC_API_KEY=sk-anthropic\nCEREBRAS_API_KEY=csk-secret" });
+    for (const anthropic of [false, true]) {
+      const fetchSpy = mockFetch(async (_url, init) => {
+        const body = JSON.parse(String(init?.body));
+        expect(body.messages[0].content).toEqual([
+          anthropic ? { type: "document", title: pdf.name, source: { type: "base64", media_type: pdf.mimeType, data: pdf.data } }
+            : { type: "file", file: { filename: pdf.name, file_data: `data:application/pdf;base64,${pdf.data}` } },
+          { type: "text", text: "note.md\nA café in 日本\n" },
+          { type: "text", text: "Summarize exactly" },
+        ]);
+        return sse([anthropic ? { type: "content_block_delta", delta: { text: "Summary" } } : { choices: [{ delta: { content: "Summary" } }] }]);
+      });
+      try {
+        await quickGenerate({ key: anthropic ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY", model: anthropic ? "claude-sonnet-4-6" : "gpt-4.1", prompt: "Summarize exactly", attachments: [pdf, textFile] }, () => {}, undefined, roots);
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    }
+    const fetchSpy = mockFetch(async (_url, init) => {
+      expect(JSON.parse(String(init?.body)).messages).toEqual([{ role: "user", content: "note.md\nA café in 日本\n" }]);
+      return sse([{ choices: [{ delta: { content: "Read" } }] }]);
+    });
+    try {
+      await quickGenerate({ key: "CEREBRAS_API_KEY", model: "gpt-oss-120b", prompt: "", attachments: [textFile] }, () => {}, undefined, roots);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  test("invalid encoding, binary content, mismatched types and oversized attachments fail before any network call", async () => {
+    const roots = homeWith({ config: "OPENAI_API_KEY=sk-secret" });
+    const oversized = { ...textFile, data: Buffer.alloc(ATTACHMENT_LIMITS.fileBytes + 1, 65).toString("base64") };
+    const fullSize = { ...textFile, data: Buffer.alloc(ATTACHMENT_LIMITS.fileBytes, 65).toString("base64") };
+    const batches = [
+      Array(ATTACHMENT_LIMITS.count + 1).fill(textFile), Array(Math.floor(ATTACHMENT_LIMITS.totalBytes / ATTACHMENT_LIMITS.fileBytes) + 1).fill(fullSize),
+      [{ ...png, data: `data:image/png;base64,${png.data}` }], [{ ...png, data: "https://example.com/file" }],
+      [{ ...textFile, data: "!!!!" }],
+      [{ ...textFile, data: Buffer.from([0xc3, 0x28]).toString("base64") }],
+      [{ ...textFile, data: Buffer.from("binary\0data").toString("base64") }],
+      [{ ...textFile, mimeType: "application/octet-stream" }],
+      [{ ...png, mimeType: "image/jpeg" }],
+    ];
+    const fetchSpy = spyOn(globalThis, "fetch");
+    try {
+      for (const attachments of batches) {
+        const error = await rejection(quickGenerate({ key: "", model: "gpt-4.1", prompt: "", attachments }, () => {}, undefined, roots));
+        expect(error.status).toBe(400);
+      }
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  test("model and provider restrictions fail before POST without selecting another provider or dropping files", async () => {
+    const roots = homeWith({ config: "CEREBRAS_API_KEY=csk-secret\nOPENAI_API_KEY=sk-secret\nGROQ_API_KEY=gsk-secret" });
+    const cases = [
+      { key: "CEREBRAS_API_KEY", model: "gpt-oss-120b", attachments: [png] },
+      { key: "OPENAI_API_KEY", model: "gpt-3.5-turbo", attachments: [png] },
+      { key: "GROQ_API_KEY", model: "qwen/qwen3.8-27b", attachments: [pdfFixture()] },
+      { key: "CEREBRAS_API_KEY", model: "qwen-3.8-27b", attachments: [png, png, png] },
+      { key: "GROQ_API_KEY", model: "qwen/qwen3.8-27b", attachments: [png, png, png, png] },
+      { key: "CEREBRAS_API_KEY", model: "qwen-3.8-27b", attachments: [png, { ...textFile, data: Buffer.alloc(ATTACHMENT_LIMITS.fileBytes, 65).toString("base64") }, { ...textFile, data: Buffer.alloc(3 * 1024 * 1024, 65).toString("base64") }] },
+    ];
+    const fetchSpy = spyOn(globalThis, "fetch");
+    try {
+      for (const item of cases) {
+        const error = await rejection(quickGenerate({ ...item, prompt: "" }, () => {}, undefined, roots));
+        expect(error.status).toBe(400);
+      }
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  test("request parsing accepts image-only prompts and rejects malformed attachment structures", async () => {
+    expect(parseQuickGenerateRequest({ key: " OPENAI_API_KEY ", model: " gpt-4.1 ", prompt: "", attachments: [png] })).toEqual({
+      key: "OPENAI_API_KEY", model: "gpt-4.1", prompt: "", attachments: [png],
+    });
+    setSetting("quick_generate_enabled", "true");
+    const fetchSpy = spyOn(globalThis, "fetch");
+    try {
+      for (const attachments of [null, {}, [null], [{ name: "bad", mimeType: "image/png", data: 42 }]]) {
+        const response = await buildFetchHandler(4820)(new Request("http://127.0.0.1:4820/api/quick-generate", {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ prompt: "", attachments }),
+        }));
+        expect(response.status).toBe(400);
+      }
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+});
+
+describe("quick generate attachment boundaries and streaming", () => {
+  test("the exact shared count, file-byte and total-byte boundaries are accepted", async () => {
+    const roots = homeWith({ config: "OPENAI_API_KEY=sk-secret" });
+    const fetchSpy = mockFetch(async () => sse([{ choices: [{ delta: { content: "Read" } }] }]));
+    try {
+      const fullSize = { ...textFile, data: Buffer.alloc(ATTACHMENT_LIMITS.fileBytes, 65).toString("base64") };
+      for (const attachments of [Array(ATTACHMENT_LIMITS.count).fill(textFile), Array(4).fill(fullSize), [{ ...textFile, data: "" }]]) {
+        expect(await quickGenerate({ key: "", model: "gpt-4.1", prompt: "", attachments }, () => {}, undefined, roots)).toBe("Read");
+      }
+      expect(fetchSpy).toHaveBeenCalledTimes(3);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  test("Cerebras rejects a valid but unsupported GIF and enforces exact serialized payload bytes before POST", async () => {
+    const roots = homeWith({ config: "CEREBRAS_API_KEY=csk-secret" });
+    const gif = { name: "pixel.gif", mimeType: "image/gif", data: "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" };
+    const fetchSpy = spyOn(globalThis, "fetch");
+    try {
+      const unsupported = await rejection(quickGenerate({ key: "", model: "qwen-3.8-27b", prompt: "", attachments: [gif] }, () => {}, undefined, roots));
+      expect(unsupported.status).toBe(400);
+      const oversized = await rejection(quickGenerate({
+        key: "", model: "qwen-3.8-27b", prompt: "",
+        attachments: [png, { ...textFile, name: "a".repeat(10 * 1024 * 1024) }],
+      }, () => {}, undefined, roots));
+      expect(oversized.status).toBe(400);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  test("HTTP generation accepts image metadata trailers and UTF-8 terminal logs", async () => {
+    setSetting("quick_generate_enabled", "true");
+    const roots = homeWith({ config: "GROQ_API_KEY=gsk-test-secret" });
+    setSetting("quick_generate_env_file", join(roots.configHome, ".env"));
+    const attachments = [
+      { ...png, data: Buffer.concat([Buffer.from(png.data, "base64"), Buffer.from("image metadata")]).toString("base64") },
+      { ...textFile, data: Buffer.from("\u001b[32mInspection WREN-52\u001b[0m").toString("base64") },
+    ];
+    const fetchSpy = mockFetch(async () => sse([{ choices: [{ delta: { content: "Accepted" } }] }]));
+    try {
+      const response = await buildFetchHandler(4820)(new Request("http://127.0.0.1:4820/api/quick-generate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ key: "GROQ_API_KEY", model: "qwen/qwen3.8-27b", prompt: "Read these files", attachments }),
+      }));
+      const events = (await response.text()).trimEnd().split("\n").map((line) => JSON.parse(line));
+      expect(response.status).toBe(200);
+      expect(events.at(-1)).toEqual({ type: "done", text: "Accepted" });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  test("HTTP parsing delivers attachments into the native request and preserves partial NDJSON text on a provider error", async () => {
+    setSetting("quick_generate_enabled", "true");
+    const roots = homeWith({});
+    const envFile = join(roots.home, "keys.env");
+    writeFileSync(envFile, "OPENAI_API_KEY=sk-private-test-secret");
+    setSetting("quick_generate_env_file", envFile);
+    const fetchSpy = mockFetch(async (url, init) => {
+      expect(String(url)).toBe("https://api.openai.com/v1/chat/completions");
+      expect(JSON.parse(String(init?.body)).messages[0].content).toEqual([
+        { type: "image_url", image_url: { url: `data:image/png;base64,${png.data}` } },
+      ]);
+      return sse([
+        { choices: [{ delta: { content: "Partial" } }] },
+        { error: { message: "Provider rejected sk-private-test-secret after first token" } },
+      ]);
+    });
+    try {
+      const response = await buildFetchHandler(4820)(new Request("http://127.0.0.1:4820/api/quick-generate", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ key: "OPENAI_API_KEY", model: "gpt-4.1", prompt: "", attachments: [png] }),
+      }));
+      expect(response.headers.get("content-type")).toBe("application/x-ndjson");
+      expect((await response.text()).trimEnd().split("\n").map((line) => JSON.parse(line))).toEqual([
+        { type: "text", text: "Partial" },
+        { type: "error", message: "OpenAI stream failed: Provider rejected [redacted] after first token" },
+      ]);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+});
+
+function openRouterModel(id: string, inputs: string[], outputs = ["text"]) {
+  return { id, name: id, architecture: { input_modalities: inputs, output_modalities: outputs } };
+}
+
+describe("OpenRouter attachment capabilities and delivery", () => {
+  test("catalog modalities, not model names, advertise image/native PDF support and require text output", async () => {
+    const roots = homeWith({ config: "OPENROUTER_API_KEY=sk-or-secret" });
+    const fetchSpy = mockFetch(async () => Response.json({ data: [
+      openRouterModel("unknown-author/native-document", ["text", "file"]),
+      openRouterModel("unknown-author/vision", ["text", "image"]),
+      openRouterModel("unknown-author/image-only-input", ["image"]),
+      openRouterModel("google/gemini-text-only", ["text"]),
+      openRouterModel("unknown-author/multimodal", ["text", "image", "file"]),
+      openRouterModel("unknown-author/image-generator", ["text", "image"], ["image"]),
+      { id: "unknown-author/missing-output", architecture: { input_modalities: ["image", "file"] } },
+    ] }));
+    try {
+      const models = await quickGenerateModels("OPENROUTER_API_KEY", undefined, roots);
+      expect(models).toEqual([
+        { id: "unknown-author/native-document", label: "unknown-author/native-document", inputs: ["text", "pdf"] },
+        { id: "unknown-author/vision", label: "unknown-author/vision", inputs: ["text", "image"] },
+        { id: "unknown-author/image-only-input", label: "unknown-author/image-only-input", inputs: ["image"] },
+        { id: "google/gemini-text-only", label: "google/gemini-text-only", inputs: ["text"] },
+        { id: "unknown-author/multimodal", label: "unknown-author/multimodal", inputs: ["text", "image", "pdf"] },
+      ]);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  test("binary generation revalidates current catalog per request and sends native content only to OpenRouter with its key", async () => {
+    const roots = homeWith({ config: "OPENROUTER_API_KEY=sk-or-secret\nOPENAI_API_KEY=sk-other\nANTHROPIC_API_KEY=sk-ant-other" });
+    const calls: string[] = [];
+    const pdf = pdfFixture();
+    const fetchSpy = mockFetch(async (url, init) => {
+      calls.push(String(url));
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer sk-or-secret");
+      expect(new Headers(init?.headers).get("x-api-key")).toBeNull();
+      if (String(url) === "https://openrouter.ai/api/v1/models") {
+        expect(init?.method).toBe("GET");
+        expect(init?.body).toBeUndefined();
+        return Response.json({ data: [openRouterModel("vendor/native", ["text", "image", "file"])] });
+      }
+      expect(String(url)).toBe("https://openrouter.ai/api/v1/chat/completions");
+      const body = JSON.parse(String(init?.body));
+      expect(body.model).toBe("vendor/native");
+      expect(body.stream).toBe(true);
+      if (calls.length === 2) {
+        expect(body.messages[0].content).toEqual([
+          { type: "file", file: { filename: pdf.name, file_data: `data:application/pdf;base64,${pdf.data}` } },
+          { type: "image_url", image_url: { url: `data:image/png;base64,${png.data}` } },
+          { type: "text", text: "Describe both" },
+        ]);
+        expect(body.plugins).toEqual([{ id: "file-parser", pdf: { engine: "native" } }]);
+      } else {
+        expect(body.messages[0].content).toEqual([{ type: "image_url", image_url: { url: `data:image/png;base64,${png.data}` } }]);
+        expect(body.plugins).toBeUndefined();
+      }
+      return sse([{ choices: [{ delta: { content: "Read" } }] }]);
+    });
+    try {
+      await quickGenerate({ key: "OPENROUTER_API_KEY", model: "vendor/native", prompt: "Describe both", attachments: [pdf, png] }, () => {}, undefined, roots);
+      await quickGenerate({ key: "OPENROUTER_API_KEY", model: "vendor/native", prompt: "", attachments: [png] }, () => {}, undefined, roots);
+      expect(calls).toEqual([
+        "https://openrouter.ai/api/v1/models", "https://openrouter.ai/api/v1/chat/completions",
+        "https://openrouter.ai/api/v1/models", "https://openrouter.ai/api/v1/chat/completions",
+      ]);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+
+  test("unknown, unsupported and non-text-output models are refused after GET without any provider POST", async () => {
+    const roots = homeWith({ config: "OPENROUTER_API_KEY=sk-or-secret" });
+    const fetchSpy = mockFetch(async (url, init) => {
+      expect(String(url)).toBe("https://openrouter.ai/api/v1/models");
+      expect(init?.method).toBe("GET");
+      return Response.json({ data: [
+        openRouterModel("google/gemini-text-only", ["text"]),
+        openRouterModel("vendor/vision-no-native-files", ["text", "image"]),
+        openRouterModel("vendor/non-chat-output", ["text", "image", "file"], ["image"]),
+      ] });
+    });
+    try {
+      const cases = [
+        { model: "vendor/not-listed", attachments: [png] },
+        { model: "google/gemini-text-only", attachments: [png] },
+        { model: "vendor/vision-no-native-files", attachments: [pdfFixture()] },
+        { model: "vendor/non-chat-output", attachments: [pdfFixture()] },
+      ];
+      for (const input of cases) {
+        const error = await rejection(quickGenerate({ ...input, key: "", prompt: "" }, () => {}, undefined, roots));
+        expect(error.status).toBe(400);
+      }
+      expect(fetchSpy).toHaveBeenCalledTimes(cases.length);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  test("named-model text and UTF-8 attachment requests retain the no-catalog text flow", async () => {
+    const roots = homeWith({ config: "OPENROUTER_API_KEY=sk-or-secret" });
+    const fetchSpy = mockFetch(async (url, init) => {
+      expect(String(url)).toBe("https://openrouter.ai/api/v1/chat/completions");
+      const body = JSON.parse(String(init?.body));
+      expect(body.model).toBe("vendor/text");
+      expect(body.plugins).toBeUndefined();
+      return sse([{ choices: [{ delta: { content: "Read" } }] }]);
+    });
+    try {
+      await quickGenerate({ key: "", model: "vendor/text", prompt: "Original prompt" }, () => {}, undefined, roots);
+      await quickGenerate({ key: "", model: "vendor/text", prompt: "", attachments: [textFile] }, () => {}, undefined, roots);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
 });

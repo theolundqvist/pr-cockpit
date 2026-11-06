@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { parseEnv } from "node:util";
 import { readSettings } from "./settings.ts";
+import { ATTACHMENT_LIMITS, attachmentKind, hasAttachmentSignature } from "../shared/quickGenerateAttachments.js";
 
 export interface QuickGenerateRoots {
   home: string;
@@ -48,6 +49,82 @@ export class QuickGenerateError extends Error {
   constructor(readonly status: number, message: string) {
     super(message);
   }
+}
+
+export type ModelInput = "text" | "image" | "pdf";
+export interface QuickGenerateModel {
+  id: string;
+  label: string;
+  inputs: ModelInput[];
+  attachmentLimits?: { imageCount?: number; totalBytes?: number; imageMimeTypes?: string[] };
+}
+export interface QuickGenerateAttachment {
+  name: string;
+  mimeType: string;
+  data: string;
+}
+export interface QuickGenerateInput {
+  key: string;
+  model: string;
+  prompt: string;
+  attachments?: QuickGenerateAttachment[];
+}
+
+export function parseQuickGenerateRequest(body: unknown): QuickGenerateInput {
+  const key = field(body, "key") === undefined ? "" : field(body, "key");
+  const model = field(body, "model") === undefined ? "" : field(body, "model");
+  const prompt = field(body, "prompt");
+  const attachments = field(body, "attachments");
+  if (typeof key !== "string" || typeof model !== "string" || typeof prompt !== "string") {
+    throw new QuickGenerateError(400, "Invalid quick generate request.");
+  }
+  if (attachments !== undefined && (!Array.isArray(attachments) || attachments.some((attachment) =>
+    typeof field(attachment, "name") !== "string" || !field(attachment, "name")
+    || typeof field(attachment, "mimeType") !== "string" || typeof field(attachment, "data") !== "string"
+  ))) {
+    throw new QuickGenerateError(400, "Each attachment needs a name, file type, and base64 file content.");
+  }
+  return { key: key.trim(), model: model.trim(), prompt, attachments: attachments as QuickGenerateAttachment[] | undefined };
+}
+
+interface ValidatedAttachment extends QuickGenerateAttachment {
+  kind: ModelInput;
+  bytes: number;
+  text?: string;
+}
+
+function validateAttachments(attachments: QuickGenerateAttachment[] = []): ValidatedAttachment[] {
+  if (attachments.length > ATTACHMENT_LIMITS.count) {
+    throw new QuickGenerateError(400, `Attach at most ${ATTACHMENT_LIMITS.count} files.`);
+  }
+  let totalBytes = 0;
+  return attachments.map((attachment) => {
+    const mimeType = attachment.mimeType.split(";", 1)[0]!.trim().toLowerCase();
+    const kind = attachmentKind(mimeType);
+    if (!kind) throw new QuickGenerateError(400, "Unsupported attachment. Use PNG, JPEG, WebP, GIF, PDF, or UTF-8 text.");
+    const data = attachment.data;
+    const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+    const size = data.length / 4 * 3 - padding;
+    if (size > ATTACHMENT_LIMITS.fileBytes) throw new QuickGenerateError(400, "Each attachment must be 5 MiB or smaller.");
+    totalBytes += size;
+    if (totalBytes > ATTACHMENT_LIMITS.totalBytes) throw new QuickGenerateError(400, "Attachments must total 20 MiB or less.");
+    if (data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) {
+      throw new QuickGenerateError(400, "Attachment content must be raw base64, not a URL.");
+    }
+    const bytes = Buffer.from(data, "base64");
+    if (kind === "text") {
+      let text: string;
+      try {
+        text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+      } catch {
+        throw new QuickGenerateError(400, "Text attachments must contain valid UTF-8.");
+      }
+      if (text.includes("\0")) throw new QuickGenerateError(400, "Binary files cannot be attached as text.");
+      return { ...attachment, mimeType, kind, bytes: bytes.length, text };
+    }
+    if (!hasAttachmentSignature(bytes, mimeType)) throw new QuickGenerateError(400, "Attachment content does not match its image or PDF file type.");
+    return { ...attachment, mimeType, kind, bytes: bytes.length };
+  });
 }
 
 function envFiles(roots: QuickGenerateRoots): { files: string[]; explicit: boolean } {
@@ -237,6 +314,7 @@ async function vendorRequest<T>(
 ): Promise<T> {
   const headers = { ...vendor.headers };
   if (init.body !== undefined) headers["content-type"] = "application/json";
+  const requestBody = init.body === undefined ? undefined : typeof init.body === "string" ? init.body : JSON.stringify(init.body);
   const timeout = deadline.signal;
   let response: Response;
   let text: string;
@@ -244,7 +322,7 @@ async function vendorRequest<T>(
     response = await fetch(`${vendor.baseUrl}${path}`, {
       method: init.method,
       headers,
-      body: init.body === undefined ? undefined : JSON.stringify(init.body),
+      body: requestBody,
       redirect: "error",
       signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     });
@@ -282,16 +360,82 @@ const OPENAI_NON_CHAT_RE = /audio|realtime|transcribe|tts|image|search|embedding
 // Groq lists speech and transcription models (told apart by output_modalities) and prompt-guard classifiers.
 const GROQ_NON_CHAT_RE = /guard/;
 
+// Vendor documentation is the source of truth; an unfamiliar family stays text-only.
+// OpenAI: /api/docs/models and /api/docs/guides/file-inputs (vision models accept PDFs).
+// Anthropic: /docs/en/build-with-claude/{vision,pdf-support} (all active Claude models).
+// Groq: https://console.groq.com/docs/vision (these two documented vision models, no PDFs).
+// Cerebras: https://inference-docs.cerebras.ai/capabilities/image-inputs (Qwen PNG/JPEG).
+// OpenRouter: /docs/api/api-reference/models/list-all-models-and-their-properties;
+// /docs/guides/overview/multimodal/pdfs requires engine "native" to prohibit OCR fallback.
+function modelCapabilities(provider: ProviderId, model: string, metadata?: unknown): Pick<QuickGenerateModel, "inputs" | "attachmentLimits"> {
+  if (provider === "openrouter") {
+    // Named-model text generation keeps its existing no-discovery path.
+    if (metadata === undefined) return { inputs: ["text"] };
+    // Catalog modalities, not author/model-name guesses. "file" is native PDF support;
+    // generation pins the native engine so OpenRouter cannot silently substitute OCR.
+    const modalities = field(field(metadata, "architecture"), "input_modalities");
+    const inputs: ModelInput[] = [];
+    if (Array.isArray(modalities) && modalities.includes("text")) inputs.push("text");
+    if (Array.isArray(modalities) && modalities.includes("image")) inputs.push("image");
+    if (Array.isArray(modalities) && modalities.includes("file")) inputs.push("pdf");
+    return { inputs };
+  }
+  if (provider === "anthropic" && /^claude-(?:3|opus-|sonnet-|haiku-|fable-|mythos-)/.test(model)) return { inputs: ["text", "image", "pdf"] };
+  if (provider === "openai" && !OPENAI_NON_CHAT_RE.test(model) && (
+    /^gpt-(?:4o|4\.1|4\.5|5(?:\.\d+)?|6(?:\.1)?)(?:-|$)/.test(model)
+    || /^(?:o1|o3|o4-mini)(?:-\d{4}-\d{2}-\d{2})?$/.test(model)
+    || model === "chatgpt-4o-latest"
+  )) return { inputs: ["text", "image", "pdf"] };
+  if (provider === "groq" && (model === "qwen/qwen3.8-27b" || model === "meta-models/muse-spark-open")) {
+    return { inputs: ["text", "image"], attachmentLimits: model === "qwen/qwen3.8-27b"
+      ? { imageCount: 3, totalBytes: 13 * 1024 * 1024 }
+      : { imageCount: 5 } };
+  }
+  if (provider === "cerebras" && model === "qwen-3.8-27b") {
+    // Account tier is unknown: Free Trial allows two images; base64 and prompt need request headroom.
+    return { inputs: ["text", "image"], attachmentLimits: { imageCount: 2, totalBytes: 7 * 1024 * 1024, imageMimeTypes: ["image/png", "image/jpeg"] } };
+  }
+  return { inputs: ["text"] };
+}
+
+function attachmentContent(provider: ProviderId, prompt: string, attachments: ValidatedAttachment[]): string | unknown[] {
+  if (attachments.length === 0) return prompt;
+  if (attachments.every((attachment) => attachment.kind === "text")) return [
+    ...attachments.map((attachment) => `${attachment.name}\n${attachment.text}`),
+    ...(prompt.trim() ? [prompt] : []),
+  ].join("\n\n");
+  const content: unknown[] = attachments.map((attachment) => {
+    if (attachment.kind === "text") return { type: "text", text: `${attachment.name}\n${attachment.text}` };
+    if (provider === "anthropic") {
+      return {
+        type: attachment.kind === "image" ? "image" : "document",
+        ...(attachment.kind === "pdf" ? { title: attachment.name } : {}),
+        source: { type: "base64", media_type: attachment.mimeType, data: attachment.data },
+      };
+    }
+    if (attachment.kind === "image") return {
+      type: "image_url", image_url: { url: `data:${attachment.mimeType};base64,${attachment.data}` },
+    };
+    return { type: "file", file: { filename: attachment.name, file_data: `data:application/pdf;base64,${attachment.data}` } };
+  });
+  if (prompt.trim()) content.push({ type: "text", text: prompt });
+  return content;
+}
+
 export async function fetchModels(
   key: DetectedKey,
   signal: AbortSignal | undefined,
   deadline: Deadline = { signal: AbortSignal.timeout(MODELS_TIMEOUT_MS), ms: MODELS_TIMEOUT_MS },
-): Promise<Array<{ id: string; label: string }>> {
+): Promise<QuickGenerateModel[]> {
   const body = await providerFetch(key, key.provider === "anthropic" ? "/models?limit=1000" : "/models", { method: "GET" }, deadline, signal);
   const data = field(body, "data");
   const models = (Array.isArray(data) ? data : []).flatMap((entry: unknown) => {
     const id = field(entry, "id");
     if (typeof id !== "string" || id === "") return [];
+    if (key.provider === "openrouter") {
+      const outputs = field(field(entry, "architecture"), "output_modalities");
+      if (!Array.isArray(outputs) || !outputs.includes("text")) return [];
+    }
     if (key.provider === "openai" && (!OPENAI_CHAT_MODEL_RE.test(id) || OPENAI_NON_CHAT_RE.test(id))) return [];
     const outputs = field(entry, "output_modalities");
     if (key.provider === "groq" && (
@@ -304,46 +448,81 @@ export async function fetchModels(
     return [{
       id,
       label: typeof displayName === "string" && displayName ? displayName : id,
+      ...modelCapabilities(key.provider, id, entry),
       created: typeof created === "number" ? created : 0,
       // The newest OpenRouter listing is often a multimodal preview; its Auto Router is the sensible default.
       preferred: key.provider === "cerebras" ? /qwen/i.test(id) : key.provider === "openrouter" && id === "openrouter/auto",
     }];
   });
   models.sort((a, b) => Number(b.preferred) - Number(a.preferred) || b.created - a.created);
-  return models.map(({ id, label }) => ({ id, label }));
+  return models.map(({ id, label, inputs, attachmentLimits }) => ({ id, label, inputs, ...(attachmentLimits ? { attachmentLimits } : {}) }));
 }
 
 export async function quickGenerateModels(
   keyName: string,
   signal?: AbortSignal,
   roots: QuickGenerateRoots = systemRoots(),
-): Promise<Array<{ id: string; label: string }>> {
+): Promise<QuickGenerateModel[]> {
   return fetchModels(resolveKey(detectKeys(roots).keys, keyName), signal);
 }
 
 export async function quickGenerate(
-  input: { key: string; model: string; prompt: string },
+  input: QuickGenerateInput,
   onText: (text: string) => void,
   signal?: AbortSignal,
   roots: QuickGenerateRoots = systemRoots(),
 ): Promise<string> {
-  if (input.prompt.trim() === "") throw new QuickGenerateError(400, "Prompt is empty.");
+  const attachments = validateAttachments(input.attachments);
+  if (input.prompt.trim() === "" && attachments.length === 0) throw new QuickGenerateError(400, "Prompt is empty.");
   if (input.prompt.length > MAX_PROMPT_CHARS) throw new QuickGenerateError(400, "Prompt is too long.");
   const key = resolveKey(detectKeys(roots).keys, input.key);
   const label = PROVIDERS[key.provider].label;
   const deadline: Deadline = { signal: AbortSignal.timeout(GENERATE_TIMEOUT_MS), ms: GENERATE_TIMEOUT_MS };
   let model = input.model;
+  let models: QuickGenerateModel[] | undefined;
   if (model === "") {
-    model = (await fetchModels(key, signal, deadline))[0]?.id ?? "";
+    models = await fetchModels(key, signal, deadline);
+    model = models[0]?.id ?? "";
     if (model === "") throw new QuickGenerateError(502, `${label} listed no usable models.`);
   }
-  const messages = [{ role: "user", content: input.prompt }];
+  let capabilities = modelCapabilities(key.provider, model);
+  if (key.provider === "openrouter" && attachments.some((attachment) => attachment.kind !== "text")) {
+    // Validate each binary request against current vendor metadata under the generation's
+    // existing deadline. Default-model discovery already supplied this request's catalog.
+    models ??= await fetchModels(key, signal, deadline);
+    const selected = models.find((candidate) => candidate.id === model);
+    if (!selected) throw new QuickGenerateError(400, "The selected OpenRouter model is no longer available for attachments. Choose a listed image- or PDF-capable model; nothing has been sent.");
+    capabilities = selected;
+  }
+  const { inputs, attachmentLimits } = capabilities;
+  const unsupported = attachments.find((attachment) => !inputs.includes(attachment.kind));
+  if (unsupported) throw new QuickGenerateError(400, `${label}'s selected model does not support ${unsupported.kind === "pdf" ? "PDFs" : unsupported.kind === "image" ? "images" : "text files"}. Choose a model that supports this attachment; nothing has been sent.`);
+  const imageCount = attachments.filter((attachment) => attachment.kind === "image").length;
+  if (attachmentLimits?.imageCount !== undefined && imageCount > attachmentLimits.imageCount) {
+    throw new QuickGenerateError(400, `This ${label} model accepts at most ${attachmentLimits.imageCount} images per request.`);
+  }
+  if (attachmentLimits?.imageMimeTypes && attachments.some((attachment) =>
+    attachment.kind === "image" && !attachmentLimits.imageMimeTypes!.includes(attachment.mimeType)
+  )) throw new QuickGenerateError(400, `${label} accepts ${attachmentLimits.imageMimeTypes.map((mime) => mime.split("/")[1]!.toUpperCase()).join(", ")} images for this model.`);
+  if (attachmentLimits?.totalBytes !== undefined && attachments.reduce((total, attachment) => total + attachment.bytes, 0) > attachmentLimits.totalBytes) {
+    throw new QuickGenerateError(400, `This ${label} model accepts at most ${attachmentLimits.totalBytes / 1024 / 1024} MiB of attachments.`);
+  }
+  const messages = [{ role: "user", content: attachmentContent(key.provider, input.prompt, attachments) }];
   const anthropic = key.provider === "anthropic";
   const body = anthropic
     ? { model, max_tokens: ANTHROPIC_MAX_TOKENS, messages, stream: true }
-    : { model, messages, stream: true };
+    : {
+      model, messages, stream: true,
+      ...(key.provider === "openrouter" && attachments.some((attachment) => attachment.kind === "pdf")
+        ? { plugins: [{ id: "file-parser", pdf: { engine: "native" } }] }
+        : {}),
+    };
+  const requestBody = JSON.stringify(body);
+  if (key.provider === "cerebras" && imageCount > 0 && Buffer.byteLength(requestBody) > 10 * 1024 * 1024) {
+    throw new QuickGenerateError(400, `${label} image requests must fit within 10 MiB including base64 encoding. Remove or shrink attachments.`);
+  }
   let text = "";
-  await providerStream(key, anthropic ? "/messages" : "/chat/completions", body, deadline, signal, (data) => {
+  await providerStream(key, anthropic ? "/messages" : "/chat/completions", requestBody, deadline, signal, (data) => {
     const failure = field(data, "error");
     if (failure) {
       const detail = typeof failure === "string" ? failure : field(failure, "message");
