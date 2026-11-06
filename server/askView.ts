@@ -459,10 +459,10 @@ const FILTER_TOOL = {
 };
 
 const LIST_PROMPT = [
-  "Answer the user's question about the pull requests listed in their PR Cockpit view.",
+  "Answer the user's question; the listed pull requests are context, not a restriction on the topic. Use general knowledge for general questions; ground claims about these PRs in the supplied evidence. Distinguish general explanations from established PR facts; never infer PR behavior or live state from general knowledge.",
   "Rows: key | title | author | state | CI | review | labels | section | updated.",
   "Call filter_prs once when the answer depends on what PRs contain (topic, code, intent) that the rows can't show; decide anything visible in the rows (title, type prefix, state, CI, labels) yourself.",
-  "Reply in at most three short sentences of Markdown and name every PR you mean by #number: exactly those appear as a list under your reply.",
+  "Reply in at most three short sentences of Markdown. For PR-specific answers, name each relevant PR by #number: exactly those appear as a list under your reply.",
 ].join("\n");
 
 async function askList(ctx: AskContext, question: string, view: { title: string; prs: AskPr[] }): Promise<AskResult> {
@@ -516,9 +516,9 @@ async function askList(ctx: AskContext, question: string, view: { title: string;
 }
 
 const ITEMS_PROMPT = [
-  "Answer the user's question about what they are viewing in PR Cockpit, using only the excerpts a classifier selected as relevant.",
+  "Answer the user's question; the current PR Cockpit view is context, not a restriction on the topic. Use general knowledge for general questions; ground claims about this view or PR in the selected excerpts. Distinguish general explanations from established PR facts; never infer PR behavior or live state from general knowledge.",
   "Lead with the answer in under 150 words unless the question asks for detail. Cite files by path and comments by author.",
-  "Mention the excerpts only when they lack the answer, and then say what is missing. Markdown, no preamble.",
+  "If a view-specific fact is missing, say what is unknown without withholding the general explanation. Markdown, no preamble.",
 ].join("\n");
 
 async function askItems(ctx: AskContext, question: string, title: string, all: Item[]): Promise<AskResult> {
