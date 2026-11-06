@@ -269,7 +269,7 @@
           </div>
         {:else if config && !config.keys.length}
           <p class="notice">
-            No API keys found in {config.envFiles.join(", ") || "the key file"}. Add CEREBRAS_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, or GROQ_API_KEY, or choose another file in Settings → Agents &amp; merging.
+            No API keys found in {config.envFiles.join(", ") || "the key file"}. Add CEREBRAS_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY, or choose another file in Settings → Agents &amp; merging.
           </p>
         {/if}
         {#if modelsError}

@@ -24,7 +24,7 @@ const MODELS_TIMEOUT_MS = 10_000;
 const MAX_PROMPT_CHARS = 100_000;
 const ANTHROPIC_MAX_TOKENS = 4096;
 
-export type ProviderId = "cerebras" | "openai" | "anthropic" | "groq";
+export type ProviderId = "cerebras" | "openai" | "anthropic" | "groq" | "openrouter";
 
 // Only these vendors' fixed endpoints ever receive a key, and only the key named for that vendor.
 const PROVIDERS: Record<ProviderId, { label: string; envPrefix: string; baseUrl: string }> = {
@@ -32,9 +32,10 @@ const PROVIDERS: Record<ProviderId, { label: string; envPrefix: string; baseUrl:
   openai: { label: "OpenAI", envPrefix: "OPENAI", baseUrl: "https://api.openai.com/v1" },
   anthropic: { label: "Anthropic", envPrefix: "ANTHROPIC", baseUrl: "https://api.anthropic.com/v1" },
   groq: { label: "Groq", envPrefix: "GROQ", baseUrl: "https://api.groq.com/openai/v1" },
+  openrouter: { label: "OpenRouter", envPrefix: "OPENROUTER", baseUrl: "https://openrouter.ai/api/v1" },
 };
-const PROVIDER_ORDER: ProviderId[] = ["cerebras", "openai", "anthropic", "groq"];
-const KEY_NAME_RE = /^(CEREBRAS|OPENAI|ANTHROPIC|GROQ)_API_KEY(?:_([A-Z0-9][A-Z0-9_]*))?$/;
+const PROVIDER_ORDER: ProviderId[] = ["cerebras", "openai", "anthropic", "groq", "openrouter"];
+const KEY_NAME_RE = /^(CEREBRAS|OPENAI|ANTHROPIC|GROQ|OPENROUTER)_API_KEY(?:_([A-Z0-9][A-Z0-9_]*))?$/;
 
 export interface DetectedKey {
   id: string;
@@ -298,13 +299,14 @@ export async function fetchModels(
       || (Array.isArray(outputs) && !outputs.includes("text"))
       || GROQ_NON_CHAT_RE.test(id)
     )) return [];
-    const displayName = field(entry, "display_name");
+    const displayName = field(entry, key.provider === "openrouter" ? "name" : "display_name");
     const created = field(entry, "created");
     return [{
       id,
       label: typeof displayName === "string" && displayName ? displayName : id,
       created: typeof created === "number" ? created : 0,
-      preferred: key.provider === "cerebras" && /qwen/i.test(id),
+      // The newest OpenRouter listing is often a multimodal preview; its Auto Router is the sensible default.
+      preferred: key.provider === "cerebras" ? /qwen/i.test(id) : key.provider === "openrouter" && id === "openrouter/auto",
     }];
   });
   models.sort((a, b) => Number(b.preferred) - Number(a.preferred) || b.created - a.created);

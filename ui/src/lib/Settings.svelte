@@ -1081,7 +1081,7 @@
                 {#if quickGenerateConfigError}
                   <span class="hint">Fix the key file to list keys.</span>
                 {:else if quickGenerateConfig && !quickGenerateConfig.keys.length}
-                  <span class="hint invalid-hint">No keys found. Add CEREBRAS_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, or GROQ_API_KEY to the key file.</span>
+                  <span class="hint invalid-hint">No keys found. Add CEREBRAS_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY to the key file.</span>
                 {:else}
                   <span class="hint">Detected on the Cockpit host.</span>
                 {/if}

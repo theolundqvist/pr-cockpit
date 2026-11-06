@@ -153,6 +153,31 @@ describe("quick generate provider calls", () => {
     }
   });
 
+  test("OpenRouter model discovery puts the Auto Router first, uses catalog names, and sends the key only to OpenRouter", async () => {
+    const calls: Array<{ url: string; auth: string | null }> = [];
+    const fetchSpy = mockFetch(async (input, init) => {
+      calls.push({ url: String(input), auth: new Headers(init?.headers).get("authorization") });
+      return Response.json({ data: [
+        { id: "google/gemini-omni-1.2-flash", name: "Google: Gemini Omni 1.2 Flash", created: 30 },
+        { id: "openrouter/auto", name: "Auto Router", created: 10 },
+        { id: "qwen/qwen3.8-27b", name: "Qwen: Qwen3.8 27B", created: 20 },
+      ] });
+    });
+    try {
+      const roots = homeWith({ config: "OPENROUTER_API_KEY=sk-or-secret\nOPENAI_API_KEY=sk-other" });
+      expect(quickGenerateConfig(roots).keys.map((key) => key.label)).toEqual(["OpenAI", "OpenRouter"]);
+      const models = await quickGenerateModels("OPENROUTER_API_KEY", undefined, roots);
+      expect(models).toEqual([
+        { id: "openrouter/auto", label: "Auto Router" },
+        { id: "google/gemini-omni-1.2-flash", label: "Google: Gemini Omni 1.2 Flash" },
+        { id: "qwen/qwen3.8-27b", label: "Qwen: Qwen3.8 27B" },
+      ]);
+      expect(calls).toEqual([{ url: "https://openrouter.ai/api/v1/models", auth: "Bearer sk-or-secret" }]);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   test("an empty model generates with the provider's preferred discovered model", async () => {
     const models: unknown[] = [];
     const fetchSpy = mockFetch(async (input, init) => {
