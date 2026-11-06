@@ -2271,8 +2271,10 @@
     return pr.files.nodes.filter((file) => !excludedPath(file.path, testPattern, generatedPaths))
       .reduce((sum, file) => ({ additions: sum.additions + file.additions, deletions: sum.deletions + file.deletions }), { additions: 0, deletions: 0 });
   });
-  let excludedFilesHidden = $derived(excludedFiles.length > 0 && excludedFiles.every((f) => collapsedFiles.has(f.path)));
-  let treeFiles = $derived(excludedFilesHidden ? includedFiles : files);
+  const fileFilters = ["all", "hide", "only"];
+  const fileFilterLabels = { all: "All files", hide: "Hide tests/generated", only: "Only tests/generated" };
+  let fileFilter = $derived(excludedChoice ?? (prefs.hideExcludedDefault ? "hide" : "all"));
+  let treeFiles = $derived(fileFilter === "hide" ? includedFiles : fileFilter === "only" ? excludedFiles : files);
 
   function startTreeResize(e) {
     e.preventDefault();
@@ -2294,16 +2296,17 @@
   }
 
   // This PR's x choice; reopening the PR applies the default again.
-  let excludedChoice = null;
+  let excludedChoice = $state(null);
   // Folds the x group placed, kept apart from viewed files so each classified range and a later show
   // reconcile them without touching what the reviewer marked viewed.
   let groupFolds = new Set();
   let excludedFoldAppliedFor = null;
 
-  function applyExcludedFolds(hide) {
+  function applyExcludedFolds(mode) {
     const next = new Set(collapsedFiles);
     for (const path of groupFolds) if (!viewedFiles.has(path)) next.delete(path);
-    groupFolds = new Set(hide ? excludedFiles.map((f) => f.path).filter((path) => !viewedFiles.has(path)) : []);
+    const hidden = mode === "hide" ? excludedFiles : mode === "only" ? includedFiles : [];
+    groupFolds = new Set(hidden.map((f) => f.path).filter((path) => !viewedFiles.has(path)));
     for (const path of groupFolds) next.add(path);
     collapsedFiles = next;
   }
@@ -2311,12 +2314,11 @@
   $effect(() => {
     if (!prefs.loaded || !classifiedDiffKey || excludedFoldAppliedFor === classifiedDiffKey) return;
     excludedFoldAppliedFor = classifiedDiffKey;
-    untrack(() => applyExcludedFolds(excludedChoice ?? prefs.hideExcludedDefault));
+    untrack(() => applyExcludedFolds(fileFilter));
   });
 
   function toggleExcludedFiles() {
-    excludedChoice = !excludedFilesHidden;
-    if (!excludedChoice) updateViewedFiles(excludedFiles, false);
+    excludedChoice = fileFilters[(fileFilters.indexOf(fileFilter) + 1) % fileFilters.length];
     applyExcludedFolds(excludedChoice);
   }
 
@@ -3009,7 +3011,7 @@
     { key: "J / K", label: "file" },
     { key: "v", label: "toggle file viewed" },
     { key: "c", label: "changes range" },
-    { key: "x", label: "hide tests/generated" },
+    { key: "x", label: "cycle file filter" },
     { key: "h", label: "file history" },
     { key: "r", label: "reply" },
     { key: "e", label: "edit inline" },
@@ -3420,9 +3422,9 @@
               {/if}
             </div>
             <div class="toolbar-left">
-              {#if excludedFiles.length && diffState === "ready"}
+              {#if files.length && diffState === "ready"}
                 <button class="toolbar-btn shortcut-action" onclick={toggleExcludedFiles}>
-                  {excludedFilesHidden ? "show" : "hide"} {excludedFiles.length} test/generated file{excludedFiles.length > 1 ? "s" : ""} <Kbd keys="x" />
+                  {fileFilterLabels[fileFilter]} <Kbd keys="x" />
                 </button>
               {/if}
               <button class="toolbar-btn" onclick={toggleDiffLayout}>{prefs.diffLayout === "split" ? "unified" : "side by side"}</button>
@@ -4385,7 +4387,7 @@
       <KeyBar keys={tab === "files" ? filesKeys : tab === "agents" || tab === "actions" ? tabKeys : conversationKeys} />
     {/if}
 
-    <Telescope bind:this={telescope} {repo} headSha={pr.headRefOid} headRef={pr.headRefName} {excludedFilesHidden} changedFiles={files} onOpenChangedFile={openChangedFile} onOpenHistory={openFileHistory} bind:open={telescopeOpen} />
+    <Telescope bind:this={telescope} {repo} headSha={pr.headRefOid} headRef={pr.headRefName} {fileFilter} changedFiles={files} onOpenChangedFile={openChangedFile} onOpenHistory={openFileHistory} bind:open={telescopeOpen} />
     <FileHistory
       {repo}
       path={historyPath}

@@ -169,6 +169,8 @@ Safe-merge approval is also visible in CLI output and as `approvedForSafeMerge` 
 
 The PR detail’s Agents tab renders Markdown answers and expandable tool activity, shows an identical final-answer echo only once, and keeps available tool inputs, errors, and log tails inspectable.
 
+In the Files tab, <kbd>x</kbd> cycles **All files → Hide tests/generated → Only tests/generated → All files**. The file tree and file finder follow the selection; viewed-file marks stay unchanged.
+
 Enable **Agent conversations** in **Settings → Agents & merging** for a conversation-first **Agents** workspace beside the inbox tabs. Search sessions grouped into **Working**, **Needs attention**, and **Recent**, including closed PRs. Read **Conversation**, expand longer tasks in place, inspect **Log tail**, or open an older attempt from run history. Run links support Back/Forward; each run and view remembers its reading position. New output follows only when you’re at the end; otherwise **Jump to latest** signals unread output. Transcripts and logs contain the recent output available from the cache, not complete logs. PR filters and grouping sit below the inbox tabs.
 
 Use <kbd>⌘J</kbd> to ask general questions or ask about the current view. PR-specific answers use the visible PR evidence; general explanations do not require a matching excerpt.

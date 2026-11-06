@@ -1151,6 +1151,67 @@ const scenarios = [
       await file.locator(".hunks").waitFor();
     },
   },
+  {
+    name: "detail-file-filter-cycle",
+    route: `#/pr/${REPO}/101/files`,
+    description: "Cycles all, source-only, and test/generated-only files without changing viewed state.",
+    ready: ".files-layout .diff",
+    beforeGoto: async (page, { baseURL }) => {
+      const settings = await requestJson(`${baseURL}/api/settings`);
+      await page.route("**/api/settings", (route) => route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ ...settings, hide_tests_default: false, file_finder_enabled: true }),
+      }));
+      await page.route("**/generated-files*", (route) => route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ status: "ok", paths: ["README.md"] }),
+      }));
+      await page.route("**/api/repo-files?*", (route) => route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ status: "ok", paths: ["README.md", "src/flight.ts", "src/flight.test.ts"], generatedPaths: ["README.md"] }),
+      }));
+    },
+    verify: async (page) => {
+      const states = [
+        { label: "All files", names: ["README.md", "flight.test.ts", "flight.ts"], expanded: ["README.md", "src/flight.test.ts", "src/flight.ts"] },
+        { label: "Hide tests/generated", names: ["flight.ts"], expanded: ["src/flight.ts"] },
+        { label: "Only tests/generated", names: ["README.md", "flight.test.ts"], expanded: ["README.md", "src/flight.test.ts"] },
+      ];
+      async function check(state) {
+        await page.getByRole("button", { name: state.label, exact: false }).waitFor();
+        await page.waitForFunction((state) => {
+          const names = [...document.querySelectorAll('[data-event="tree-file"] .name')].map((node) => node.textContent).sort();
+          const expanded = [...document.querySelectorAll(".diff .file:not(.collapsed) .file-path")].map((node) => node.textContent).sort();
+          return JSON.stringify(names) === JSON.stringify(state.names) && JSON.stringify(expanded) === JSON.stringify(state.expanded);
+        }, state);
+        await page.keyboard.press("Control+p");
+        await page.getByRole("dialog", { name: "code browser", exact: true }).waitFor();
+        const paths = state.names.map((name) => name === "README.md" ? name : `src/${name}`).sort();
+        await page.waitForFunction((paths) => {
+          const shown = [...document.querySelectorAll(".ts-path")].map((node) => node.textContent).sort();
+          return JSON.stringify(shown) === JSON.stringify(paths);
+        }, paths);
+        await page.keyboard.press("Escape");
+        await page.getByRole("dialog", { name: "code browser", exact: true }).waitFor({ state: "hidden" });
+      }
+      for (const state of states) {
+        await check(state);
+        await page.keyboard.press("x");
+      }
+      await check(states[0]);
+      const testFile = page.locator(".diff .file").filter({ has: page.locator(".file-path", { hasText: "src/flight.test.ts" }) });
+      await testFile.getByRole("button", { name: "Mark file viewed", exact: true }).click();
+      await page.locator(".files-toolbar .shortcut-action").click();
+      await check(states[1]);
+      await page.keyboard.press("x");
+      await check({ ...states[2], expanded: ["README.md"] });
+      await page.keyboard.press("x");
+      await check({ ...states[0], expanded: ["README.md", "src/flight.ts"] });
+      if (await testFile.getByRole("button", { name: "Mark file unviewed", exact: true }).getAttribute("aria-pressed") !== "true") {
+        throw new Error("Cycling the file filter cleared the reviewed test file");
+      }
+    },
+  },
   commentLinkScenario("detail-comment-link-thread", 101, `https://github.com/${REPO}/pull/101#discussion_r101002`, "Same-PR link to a resolved review-thread reply opens Files, expands the thread, and highlights the reply.", '[data-comment-id="101002"]', `#/pr/${REPO}/101/files`, inlineFixtureThread),
   commentLinkScenario("detail-comment-link-issue-comment", 102, `https://github.com/${REPO}/pull/101#issuecomment-101101`, "Link from another PR to an issue comment opens that PR and highlights the comment.", '[data-issue-comment-id="101101"]', `#/pr/${REPO}/101?comment=issuecomment-101101`),
   {

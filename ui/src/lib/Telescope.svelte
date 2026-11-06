@@ -16,7 +16,7 @@
   import { columnWithin, createDefinitionHover, tokenAtPoint, wordAtPoint } from "./wordAtPoint.js";
 
   // With `hotkeys` off, Cmd+P and Cmd+Shift+F only switch modes once open; the owner opens it through `activate`.
-  let { repo, headSha, headRef, context = "", excludedFilesHidden = false, changedFiles = [], onOpenChangedFile, onOpenHistory = null, onBack = null, hotkeys = true, open = $bindable(false) } = $props();
+  let { repo, headSha, headRef, context = "", fileFilter = "all", changedFiles = [], onOpenChangedFile, onOpenHistory = null, onBack = null, hotkeys = true, open = $bindable(false) } = $props();
 
   const definitionHover = createDefinitionHover(() => view);
   $effect(() => () => definitionHover.destroy());
@@ -64,7 +64,7 @@
   const SNIPPET_LEAD_CHARS = 10;
 
   let testPattern = $derived(testMatcher(prefs.testPathRegex, prefs.hiddenReviewPaths[repo]));
-  let shownPath = $derived(excludedFilesHidden ? (path) => !excludedPath(path, testPattern, generatedPaths) : null);
+  let shownPath = $derived(fileFilter === "all" ? null : (path) => excludedPath(path, testPattern, generatedPaths) === (fileFilter === "only"));
 
   // Snippets drop their indentation, and a match past the visible width pulls the snippet's start forward.
   function snippetRuns(item, tokens) {
@@ -77,7 +77,7 @@
 
   let results = $derived.by(() => {
     if (mode === "defs") return defCandidates.map((c) => ({ path: c.path, line: c.line, text: c.text }));
-    if (excludedFilesHidden && filesStatus !== "ok") return [];
+    if (shownPath && filesStatus !== "ok") return [];
     if (mode === "search") {
       const rows = shownPath ? matches.filter((m) => shownPath(m.path)) : matches;
       return rows.map((m) => ({ path: m.path, line: m.line, text: m.text }));
@@ -558,7 +558,7 @@
         {:else if searchStatus === "fetch-failed" || filesStatus === "fetch-failed"}cache fetch failed
         {:else if searchStatus === "error" || filesStatus === "error"}request failed
         {:else if searchStatus === "not-found" || filesStatus === "not-found"}sha not found
-        {:else if excludedFilesHidden && filesStatus === "loading"}loading…
+        {:else if shownPath && filesStatus === "loading"}loading…
         {:else if results.length}{selected + 1}/{results.length}
         {:else if (mode === "search" ? query.trim() : true)}no matches{/if}
       </div>
