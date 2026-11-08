@@ -679,3 +679,52 @@ test("cache retention bounds each indexed batch and expires file contents while 
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test("pruning a run's jobs reopens the run for a job refetch and keeps the run", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-job-retention-"));
+  const scenario = `
+    const { db, pruneCacheBatch, upsertWorkflowRun, upsertRunJob, markWorkflowRunJobsFetched, listRunJobsForRun } = await import(${JSON.stringify(dbModuleUrl)});
+    const repo = "owner/repo";
+    for (const id of [1, 2]) {
+      upsertWorkflowRun({
+        repo, run_id: id, run_attempt: 1, pr_number: 1, head_sha: "sha", head_branch: "branch",
+        workflow_name: "CI", workflow_path: "ci.yml", status: "completed", conclusion: "success",
+        event_at: "2026-01-01T00:00:00Z", html_url: null,
+      });
+      upsertRunJob({
+        repo, job_id: id, run_id: id, run_attempt: 1, head_sha: "sha", head_branch: "branch",
+        workflow_name: "CI", name: "test", status: "completed", conclusion: "success",
+        started_at: null, completed_at: null, html_url: null, runner_name: null,
+        runner_group_name: null, labels_json: "[]", failed_step: null,
+      });
+      markWorkflowRunJobsFetched(repo, id, 1);
+    }
+    const runJobsTable = 3;
+    const kept = pruneCacheBatch(runJobsTable);
+    const pruned = pruneCacheBatch(runJobsTable, "9999-01-01T00:00:00.000Z");
+    const runs = db.query("SELECT run_id, jobs_fetched_at FROM workflow_runs ORDER BY run_id").all();
+    console.log(JSON.stringify({ kept, pruned, runs, jobs: listRunJobsForRun(repo, 1, 1).length }));
+    db.close();
+  `;
+  try {
+    const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(stderr);
+    expect(JSON.parse(stdout)).toEqual({
+      kept: 0,
+      pruned: 2,
+      runs: [{ run_id: 1, jobs_fetched_at: null }, { run_id: 2, jobs_fetched_at: null }],
+      jobs: 0,
+    });
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});

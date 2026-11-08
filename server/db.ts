@@ -596,19 +596,42 @@ CREATE INDEX IF NOT EXISTS workflow_runs_recent_idx ON workflow_runs (repo, even
 CREATE INDEX IF NOT EXISTS workflow_runs_path_idx ON workflow_runs (repo, ${STATIC_WORKFLOW_PATH_SQL}, event_at DESC, run_id DESC, run_attempt DESC);
 DROP INDEX IF EXISTS workflow_runs_repo_time_idx;
 `);
-const cacheRetentionStatements = [
-  ["pr_detail_cache", "fetched_at"],
-  ["pr_webhook_activity", "received_at"],
-  ["diffs", "fetched_at"],
-  ["run_jobs", "fetched_at"],
-  ["workflow_runs", "fetched_at"],
-  ["file_contents", "fetched_at"],
-].map(([table, timestamp]) => db.prepare(
-  `DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM ${table} WHERE ${timestamp} < ? LIMIT 20)`,
-));
+const DAY_MS = 86_400_000;
+const CACHE_RETENTION_DAYS = 30;
+const RUN_JOB_RETENTION_DAYS = 7;
 
-export function pruneCacheBatch(table: number, cutoff = new Date(Date.now() - 30 * 86400_000).toISOString()): number {
-  return cacheRetentionStatements[table]!.run(cutoff).changes;
+function retentionBatch(table: string, timestamp: string): (cutoff: string) => number {
+  const stmt = db.prepare(`DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM ${table} WHERE ${timestamp} < ? LIMIT 20)`);
+  return (cutoff) => stmt.run(cutoff).changes;
+}
+
+const pruneRunJobsStmt = db.prepare<{ repo: string; run_id: number; run_attempt: number }, [string]>(
+  "DELETE FROM run_jobs WHERE rowid IN (SELECT rowid FROM run_jobs WHERE fetched_at < ? LIMIT 20) RETURNING repo, run_id, run_attempt",
+);
+const unmarkRunJobsFetchedStmt = db.prepare(
+  "UPDATE workflow_runs SET jobs_fetched_at = NULL WHERE repo = ? AND run_id = ? AND run_attempt = ?",
+);
+// A run whose jobs were pruned must refetch them instead of reading as a run without jobs.
+const pruneRunJobsBatch = db.transaction((cutoff: string): number => {
+  const pruned = pruneRunJobsStmt.all(cutoff);
+  for (const job of pruned) unmarkRunJobsFetchedStmt.run(job.repo, job.run_id, job.run_attempt);
+  return pruned.length;
+});
+
+// Actions jobs dominate the cache (millions of rows a month on a busy repo) and are refetched on demand,
+// so they expire sooner; workflow runs stay longer because the review gate reads a PR's earlier heads.
+const cacheRetention: Array<{ days: number; prune: (cutoff: string) => number }> = [
+  { days: CACHE_RETENTION_DAYS, prune: retentionBatch("pr_detail_cache", "fetched_at") },
+  { days: CACHE_RETENTION_DAYS, prune: retentionBatch("pr_webhook_activity", "received_at") },
+  { days: CACHE_RETENTION_DAYS, prune: retentionBatch("diffs", "fetched_at") },
+  { days: RUN_JOB_RETENTION_DAYS, prune: pruneRunJobsBatch },
+  { days: CACHE_RETENTION_DAYS, prune: retentionBatch("workflow_runs", "fetched_at") },
+  { days: CACHE_RETENTION_DAYS, prune: retentionBatch("file_contents", "fetched_at") },
+];
+
+export function pruneCacheBatch(table: number, cutoff?: string): number {
+  const retention = cacheRetention[table]!;
+  return retention.prune(cutoff ?? new Date(Date.now() - retention.days * DAY_MS).toISOString());
 }
 
 export function startCacheRetention(): () => void {
@@ -619,8 +642,8 @@ export function startCacheRetention(): () => void {
     if (stopped) return;
     try {
       let delay = 100;
-      if (table < cacheRetentionStatements.length && pruneCacheBatch(table) === 0) table++;
-      if (table === cacheRetentionStatements.length) {
+      if (table < cacheRetention.length && pruneCacheBatch(table) === 0) table++;
+      if (table === cacheRetention.length) {
         const incremental = db.query<{ auto_vacuum: number }, []>("PRAGMA auto_vacuum").get()?.auto_vacuum === 2;
         const free = incremental && db.query<{ freelist_count: number }, []>("PRAGMA freelist_count").get()!.freelist_count > 0;
         if (free) {
