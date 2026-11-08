@@ -12,6 +12,8 @@ The queue separates **ready to merge**, **your move**, and **waiting**. Failed m
 
 Cooking rows show **since ordered** in the inbox and compact PR overlays, measured from the latest cached `order` label-addition event (REST `created_at` or timeline `LabeledEvent.createdAt`), not a Kitchen stage change. The clock is omitted when the label is no longer present or its addition time is unknown.
 
+The PR header shows **Ordered** while an open PR has the `order` label; merged and closed states take precedence.
+
 ## Install
 
 Run this in your terminal as your normal user, **not with `sudo`**:

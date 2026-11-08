@@ -1,6 +1,6 @@
 // Browser integration coverage uses an isolated mutation queue, never a real order.
 export function kitchenCancelScenarios() {
-  return ["ready", "pending", "failed", "serving"].map((mode) => ({
+  return ["ready", "pending", "failed", "serving", "merged", "closed"].map((mode) => ({
     name: `detail-kitchen-cancel-${mode}`,
     route: "#/pr/fixture/cockpit/101",
     ready: ".detail .pr-head",
@@ -13,6 +13,7 @@ export function kitchenCancelScenarios() {
       await page.route((url) => url.pathname === "/api/pr/fixture/cockpit/101", async (route) => {
         const response = await route.fetch();
         const pr = await response.json();
+        if (mode === "merged" || mode === "closed") pr.state = mode.toUpperCase();
         pr.labels.nodes.push(...["order", "rush", mode === "serving" ? "kitchen: serving" : "kitchen: oven"].map((name) => ({ name, color: "5319e7" })));
         await route.fulfill({ response, json: pr });
       });
@@ -32,6 +33,9 @@ export function kitchenCancelScenarios() {
       await page.getByRole("button", { name: "Cancel order", exact: true }).click();
     },
     verify: async (page) => {
+      const expected = ["merged", "closed"].includes(mode) ? mode : mode === "pending" ? "open" : "ordered";
+      await page.waitForFunction((expected) => document.querySelector(".pr-head .sub > .chip")?.textContent.trim() === expected, expected);
+      if (mode === "merged" || mode === "closed") return;
       if (mode === "failed") {
         await page.getByRole("alert").filter({ hasText: /cancel Kitchen order/i }).waitFor();
         await page.getByRole("button", { name: "Try again", exact: true }).waitFor();
