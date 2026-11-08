@@ -111,17 +111,41 @@ const VIDEO_CONTROLS = `<media-control-bar>
   <media-fullscreen-button notooltip></media-fullscreen-button>
 </media-control-bar>`;
 let mediaChrome;
+const PLAYER_SELECTOR = "media-controller, cockpit-player";
+
+// Connecting a media-controller forces a synchronous layout, which stalls opening a long
+// conversation; a placeholder holds the video until it nears the viewport.
+const playerObserver = new IntersectionObserver((entries) => {
+  for (const entry of entries) if (entry.isIntersecting) upgradePlayer(entry.target);
+}, { rootMargin: "600px 0px" });
+
+customElements.define("cockpit-player", class extends HTMLElement {
+  connectedCallback() {
+    playerObserver.observe(this);
+  }
+
+  disconnectedCallback() {
+    playerObserver.unobserve(this);
+  }
+});
+
+function upgradePlayer(placeholder) {
+  playerObserver.unobserve(placeholder);
+  mediaChrome ??= import("media-chrome");
+  const player = document.createElement("media-controller");
+  player.append(...placeholder.childNodes);
+  player.insertAdjacentHTML("beforeend", VIDEO_CONTROLS);
+  placeholder.replaceWith(player);
+}
 
 function videoPlayer(doc, src) {
-  mediaChrome ??= import("media-chrome");
-  const player = doc.createElement("media-controller");
+  const player = doc.createElement("cockpit-player");
   const video = doc.createElement("video");
   video.setAttribute("slot", "media");
   video.setAttribute("src", src);
   video.setAttribute("preload", "metadata");
   video.setAttribute("playsinline", "");
   player.append(video);
-  player.insertAdjacentHTML("beforeend", VIDEO_CONTROLS);
   return player;
 }
 
@@ -141,7 +165,11 @@ export function imageFallback(node) {
     const original = img.dataset.originalSrc || img.src;
     if (!GH_VIDEO_RE.test(original)) return replace(img, original);
     const player = videoPlayer(document, img.src);
-    player.querySelector("video").addEventListener("error", () => replace(player, original), { once: true });
+    const video = player.querySelector("video");
+    video.addEventListener("error", () => {
+      const container = video.closest(PLAYER_SELECTOR);
+      if (container) replace(container, original);
+    }, { once: true });
     img.replaceWith(player);
   };
   node.addEventListener("error", failed, true);
@@ -209,7 +237,7 @@ document.addEventListener("error", (event) => {
   const img = document.createElement("img");
   img.src = video.dataset.gifSrc;
   img.alt = video.dataset.gifAlt;
-  video.closest("media-controller")?.replaceWith(img);
+  video.closest(PLAYER_SELECTOR)?.replaceWith(img);
 }, true);
 
 // A player's tooltips measure layout on every media state change, so they stay off until the

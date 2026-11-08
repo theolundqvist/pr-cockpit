@@ -24,7 +24,7 @@ async function renderSamples() {
       const render = (source) => {
         const doc = new DOMParser().parseFromString(renderMarkdown(source), "text/html");
         return {
-          players: doc.querySelectorAll("media-controller").length,
+          players: doc.querySelectorAll("cockpit-player").length,
           links: [...doc.querySelectorAll("a")].map((a) => a.href),
           images: [...doc.querySelectorAll("img")].map((img) => img.dataset.originalSrc),
           html: doc.body.innerHTML,
@@ -56,7 +56,7 @@ test("embeds only video attachments that occupy a whole line", { timeout: 30_000
 
   expect(rendered.betweenText.players).toBe(1);
   expect(rendered.betweenText.links).toEqual([]);
-  expect(rendered.betweenText.html).toContain("</media-controller>After behavior");
+  expect(rendered.betweenText.html).toContain("</cockpit-player>After behavior");
 
   expect(rendered.twoVideos.players).toBe(2);
   expect(rendered.twoVideos.links).toEqual([]);

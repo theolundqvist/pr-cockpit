@@ -720,7 +720,8 @@ kbd {
   max-width: 100%;
   cursor: zoom-in;
 }
-.md media-controller {
+.md media-controller,
+.md cockpit-player {
   display: block;
   width: fit-content;
   max-width: 100%;
@@ -734,7 +735,8 @@ kbd {
   --media-range-bar-color: var(--link);
   --media-font-size: 12px;
 }
-.md media-controller video {
+.md media-controller video,
+.md cockpit-player video {
   display: block;
   width: auto;
   height: auto;
