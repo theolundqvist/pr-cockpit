@@ -46,7 +46,7 @@ function show(img) {
   pump();
 }
 
-function hide(img) {
+function hide(img, unload = true) {
   const index = pending.indexOf(img);
   if (index >= 0) pending.splice(index, 1);
   const controller = loading.get(img);
@@ -55,7 +55,7 @@ function hide(img) {
     loading.delete(img);
     pump();
   }
-  img.removeAttribute("src");
+  if (unload) img.removeAttribute("src");
   const url = objectUrls.get(img);
   if (url) {
     URL.revokeObjectURL(url);
@@ -87,7 +87,8 @@ export function lazyThumbnail(img, src) {
     },
     destroy() {
       observer.unobserve(img);
-      hide(img);
+      // Changing src after removal registers Chromium viewport listeners on the detached image.
+      hide(img, false);
       img.removeEventListener("error", failed);
     },
   };
