@@ -629,3 +629,48 @@ test("Actions lookups by run, commit, branch, recency, and workflow are served b
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test("cache retention bounds each indexed batch and expires file contents while the server stays up", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-retention-"));
+  const scenario = `
+    // Load after the isolated child selects its database directory.
+    const { db, pruneCacheBatch, saveFileContents, getFileContents, startCacheRetention } = await import(${JSON.stringify(dbModuleUrl)});
+    const insert = db.query("INSERT INTO file_contents(sha,path,content,fetched_at) VALUES (?, 'file', 'cached', ?)");
+    for (let i = 0; i < 205; i++) insert.run(String(i), "2000-01-01T00:00:00.000Z");
+    saveFileContents("fresh", "file", "new");
+    const batch = pruneCacheBatch(5);
+    const remaining = db.query("SELECT count(*) AS n FROM file_contents WHERE fetched_at < '2001'").get().n;
+    const plan = db.query("EXPLAIN QUERY PLAN SELECT rowid FROM file_contents WHERE fetched_at < ? LIMIT 100").all("2001");
+    const timers = [];
+    globalThis.setTimeout = (callback) => { timers.push(callback); return { unref() {} }; };
+    globalThis.clearTimeout = () => {};
+    const stop = startCacheRetention();
+    for (let i = 0; i < 30; i++) timers.shift()?.();
+    stop();
+    const after = db.query("SELECT count(*) AS n FROM file_contents").get().n;
+    console.log(JSON.stringify({ batch, remaining, after, fresh: getFileContents("fresh", "file"), plan, vacuum: db.query("PRAGMA auto_vacuum").get().auto_vacuum }));
+    db.close();
+  `;
+  try {
+    const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(stderr);
+    const result = JSON.parse(stdout);
+    expect(result.batch).toBe(20);
+    expect(result.remaining).toBe(185);
+    expect(result.after).toBe(1);
+    expect(result.fresh).toBe("new");
+    expect(result.vacuum).toBe(2);
+    expect(result.plan.map((row: { detail: string }) => row.detail).join(" ")).toContain("file_contents_fetched_idx");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});

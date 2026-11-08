@@ -1,4 +1,4 @@
-import { db, failInterruptedMutations, prIsOpen } from "./db.ts";
+import { db, failInterruptedMutations, prIsOpen, startCacheRetention } from "./db.ts";
 import { recoverRefreshingMutations } from "./mutations.ts";
 import { seedSettings } from "./settings.ts";
 import { startPoller } from "./poller.ts";
@@ -56,6 +56,7 @@ try {
     startWebhooks();
     startPrWorktreePruning(prIsOpen);
   }
+  if (!isMockGithub) startCacheRetention();
   if (!isMockGithub) startUpdateCheck();
 
   if (serve.enabled && serve.error) {

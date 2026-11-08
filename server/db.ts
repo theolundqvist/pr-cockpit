@@ -20,6 +20,8 @@ mkdirSync(dataDir, { recursive: true });
 
 export const RUN_JOB_LOG_FORMAT_VERSION = 2;
 export const db = new Database(`${dataDir}/cockpit.db`);
+// Existing databases need an offline VACUUM to enable this; never rewrite a live cache at startup.
+db.exec("PRAGMA auto_vacuum = INCREMENTAL;");
 db.exec("PRAGMA journal_mode = WAL;");
 // WAL keeps the database consistent without an fsync per commit; FULL cost ~18 ms per write on the
 // host disk, stalling the event loop for every lease renewal and background upsert. mmap serves large
@@ -565,13 +567,19 @@ if (storedEpoch !== SCHEMA_EPOCH) {
   db.exec(`PRAGMA user_version = ${SCHEMA_EPOCH}`);
 }
 
-// The retention sweeps below run on every start. Without these indexes each fetched_at filter
-// reads every row's overflow pages (patches, gzipped logs): seconds of startup on a cold cache.
+const fileContentColumns = db.query("PRAGMA table_info(file_contents)").all() as Array<{ name: string }>;
+if (!fileContentColumns.some((column) => column.name === "fetched_at")) {
+  db.exec("ALTER TABLE file_contents ADD COLUMN fetched_at TEXT NOT NULL DEFAULT ''");
+}
+
+// Retention selects rowids through small timestamp indexes, not cached payload overflow pages.
 db.exec(`
 CREATE INDEX IF NOT EXISTS pr_detail_cache_fetched_idx ON pr_detail_cache (fetched_at);
 CREATE INDEX IF NOT EXISTS diffs_fetched_idx ON diffs (fetched_at);
 CREATE INDEX IF NOT EXISTS run_jobs_fetched_idx ON run_jobs (fetched_at);
 CREATE INDEX IF NOT EXISTS workflow_runs_fetched_idx ON workflow_runs (fetched_at);
+CREATE INDEX IF NOT EXISTS file_contents_fetched_idx ON file_contents (fetched_at);
+CREATE INDEX IF NOT EXISTS pr_webhook_activity_received_idx ON pr_webhook_activity (received_at);
 `);
 
 // Reusable-workflow runs carry an `@refs/...` suffix; this strips it.
@@ -587,13 +595,51 @@ CREATE INDEX IF NOT EXISTS workflow_runs_recent_idx ON workflow_runs (repo, even
 CREATE INDEX IF NOT EXISTS workflow_runs_path_idx ON workflow_runs (repo, ${STATIC_WORKFLOW_PATH_SQL}, event_at DESC, run_id DESC, run_attempt DESC);
 DROP INDEX IF EXISTS workflow_runs_repo_time_idx;
 `);
-db.exec("DELETE FROM pr_detail_cache WHERE fetched_at < datetime('now', '-30 days')");
-db.exec("DELETE FROM pr_webhook_activity WHERE received_at < datetime('now', '-30 days')");
-// Diffs are a pure re-fetchable cache and were insert-only until this column existed;
-// legacy rows carry '' and so are swept by the same retention pass.
-db.exec("DELETE FROM diffs WHERE fetched_at < datetime('now', '-30 days')");
-db.exec("DELETE FROM run_jobs WHERE fetched_at < datetime('now', '-30 days')");
-db.exec("DELETE FROM workflow_runs WHERE fetched_at < datetime('now', '-30 days')");
+const cacheRetentionStatements = [
+  ["pr_detail_cache", "fetched_at"],
+  ["pr_webhook_activity", "received_at"],
+  ["diffs", "fetched_at"],
+  ["run_jobs", "fetched_at"],
+  ["workflow_runs", "fetched_at"],
+  ["file_contents", "fetched_at"],
+].map(([table, timestamp]) => db.prepare(
+  `DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM ${table} WHERE ${timestamp} < ? LIMIT 20)`,
+));
+
+export function pruneCacheBatch(table: number, cutoff = new Date(Date.now() - 30 * 86400_000).toISOString()): number {
+  return cacheRetentionStatements[table]!.run(cutoff).changes;
+}
+
+export function startCacheRetention(): () => void {
+  let table = 0;
+  let stopped = false;
+  let timer: Timer;
+  const sweep = () => {
+    if (stopped) return;
+    try {
+      let delay = 100;
+      if (table < cacheRetentionStatements.length && pruneCacheBatch(table) === 0) table++;
+      if (table === cacheRetentionStatements.length) {
+        const incremental = db.query<{ auto_vacuum: number }, []>("PRAGMA auto_vacuum").get()?.auto_vacuum === 2;
+        const free = incremental && db.query<{ freelist_count: number }, []>("PRAGMA freelist_count").get()!.freelist_count > 0;
+        if (free) {
+          db.exec("PRAGMA incremental_vacuum(100)");
+        } else {
+          table = 0;
+          delay = 60 * 60_000;
+        }
+      }
+      timer = setTimeout(sweep, delay);
+    } catch (error) {
+      console.error("Cache retention failed:", error);
+      timer = setTimeout(sweep, 60 * 60_000);
+    }
+    timer.unref();
+  };
+  timer = setTimeout(sweep, 100);
+  timer.unref();
+  return () => { stopped = true; clearTimeout(timer); };
+}
 // Presence expires at restart, but a completed catalog is durable evidence for its head.
 db.exec("UPDATE actions_leases SET expires_at = datetime('now')");
 
@@ -1003,7 +1049,7 @@ export function getFileContents(sha: string, path: string): string | null {
 }
 
 const saveFileContentsStmt = db.prepare(
-  "INSERT OR IGNORE INTO file_contents (sha, path, content) VALUES (?, ?, ?)",
+  "INSERT OR IGNORE INTO file_contents (sha, path, content, fetched_at) VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
 );
 
 export function saveFileContents(sha: string, path: string, content: string): void {
