@@ -1,14 +1,10 @@
-<script module>
-  // Survives navigating away and back so the page renders instantly from the last snapshot.
-  const snapshotCache = new Map();
-</script>
-
 <script>
   import ActionStatusIcon from "./ActionStatusIcon.svelte";
   import MultiSelectDropdown from "./MultiSelectDropdown.svelte";
   import { prefetchRepoRun, rememberActionRun } from "./actionPrefetch.js";
   import { actionsRunDestination } from "./githubLinks.js";
   import { fetchRepoActions, fetchSettings } from "./api.js";
+  import { cachedView, cacheView } from "./detailCache.js";
   import { durationText, relativeTime } from "./time.js";
   import { isTypingTarget } from "./dom.js";
 
@@ -157,7 +153,7 @@
   $effect(() => {
     if (!initialized) return;
     const filters = { repo: selectedRepos, workflow: selectedWorkflows, status: selectedStatus };
-    const cacheKey = JSON.stringify(filters);
+    const cacheKey = `actions:${JSON.stringify(filters)}`;
     const controller = new AbortController();
     let stopped = false;
 
@@ -166,7 +162,7 @@
       try {
         const next = await fetchRepoActions(filters, controller.signal);
         if (stopped) return;
-        snapshotCache.set(cacheKey, next);
+        cacheView(cacheKey, next);
         snapshot = next;
         error = "";
       } catch (nextError) {
@@ -178,7 +174,7 @@
 
     // Returning to the page or switching filters renders the last snapshot at once and
     // refreshes behind it, instead of blanking to a loading state.
-    const cached = snapshotCache.get(cacheKey);
+    const cached = cachedView(cacheKey);
     if (cached) snapshot = cached;
     void refresh(!cached);
     const timer = setInterval(() => {

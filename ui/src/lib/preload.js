@@ -7,10 +7,12 @@ import { prKeyOf } from "./prKey.js";
 // hovered or selected, and always `prefetch` so the server answers from local data only.
 const EAGER_DIFF_BYTES = 2 * 1024 * 1024;
 const MISS_RETRY_MS = 60_000;
+const MAX_QUEUE = 64;
 let queue = [];
 const misses = new Map();
 let running = null;
 let wake = 0;
+let cancelWake = null;
 
 export function whenIdle(run) {
   if (typeof requestIdleCallback !== "function") {
@@ -87,6 +89,9 @@ function wanted(candidate, now) {
 // and includes diffs too large to warm eagerly. Earlier urgent work drops back to idle priority.
 export function preloadPr(pr, { urgent = false, diff = true } = {}) {
   const now = Date.now();
+  for (const [key, at] of misses) {
+    if (now - at >= MISS_RETRY_MS) misses.delete(key);
+  }
   const fresh = tasksFor(pr, diff).filter((candidate) => (urgent || candidate.eager) && wanted(candidate, now));
   const keys = new Set(fresh.map((candidate) => candidate.key));
   if (urgent) {
@@ -98,14 +103,17 @@ export function preloadPr(pr, { urgent = false, diff = true } = {}) {
     const queued = new Set(queue.map((candidate) => candidate.key));
     queue.push(...fresh.filter((candidate) => !queued.has(candidate.key)));
   }
+  queue.length = Math.min(queue.length, MAX_QUEUE);
   pump();
 }
 
 function pump() {
   if (running !== null || queue.length === 0) return;
+  cancelWake?.();
   const ticket = ++wake;
   const start = () => {
     if (ticket !== wake || running !== null) return;
+    cancelWake = null;
     const next = queue.shift();
     if (!next) return;
     if (next.loaded()) return pump();
@@ -118,6 +126,8 @@ function pump() {
       pump();
     });
   };
-  if (queue[0].urgent) setTimeout(start);
-  else whenIdle(start);
+  if (queue[0].urgent) {
+    const timer = setTimeout(start);
+    cancelWake = () => clearTimeout(timer);
+  } else cancelWake = whenIdle(start);
 }

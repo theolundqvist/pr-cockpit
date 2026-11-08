@@ -801,10 +801,10 @@
 
   let openOrdered = $derived(groups.filter((g) => g.id !== "cooking" || !cookingHidden).flatMap((g) => g.items.filter((i) => i.pr).map((i) => i.pr)));
 
-  // warm each queued PR's tabs in idle time; a row the cursor moves to (hover or j/k) jumps the queue
+  // Warm the first rows in idle time; hover or j/k prioritizes any other PR immediately.
   $effect(() => {
     if (!active || view !== "open") return;
-    const rows = openOrdered;
+    const rows = openOrdered.slice(0, 8);
     untrack(() => {
       for (const pr of rows) preloadPr(pr);
     });
