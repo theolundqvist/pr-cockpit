@@ -2,6 +2,7 @@ import { fetchRepoActionLog, fetchRepoActions } from "./api.js";
 
 const MAX_RUNS = 20;
 const MAX_LOGS = 100;
+const MAX_LOG_BYTES = 32 * 1024 * 1024;
 const MAX_PR_ACTION_DATA = 100;
 const RUN_CACHE_MS = 15_000;
 const runSnapshots = new Map();
@@ -10,6 +11,7 @@ const rememberedRuns = new Map();
 const actionLogs = new Map();
 const actionLogRequests = new Map();
 const prActionData = { actions: new Map(), graph: new Map(), commits: new Map() };
+let logBytes = 0;
 
 const terminalFailures = new Set(["failure", "timed_out", "action_required", "startup_failure", "stale"]);
 const runningStatuses = new Set(["in_progress", "pending", "waiting", "requested"]);
@@ -68,17 +70,33 @@ function prioritizedJobs(jobs) {
 }
 
 export function cachedActionLog(key) {
-  return actionLogs.get(key) ?? null;
+  const cached = actionLogs.get(key);
+  if (cached) {
+    actionLogs.delete(key);
+    actionLogs.set(key, cached);
+  }
+  return cached ?? null;
 }
 
 export function loadActionLog(key, loader) {
-  const cached = actionLogs.get(key);
+  const cached = cachedActionLog(key);
   if (cached) return Promise.resolve(cached);
   const pending = actionLogRequests.get(key);
   if (pending) return pending;
   const request = loader().then((result) => {
     if (result?.state === "ready" || result?.state === "not-produced") {
-      boundedSet(actionLogs, key, result, MAX_LOGS);
+      const bytes = (result.body?.length ?? 0) * 2;
+      if (bytes <= MAX_LOG_BYTES) {
+        logBytes -= (actionLogs.get(key)?.body?.length ?? 0) * 2;
+        actionLogs.delete(key);
+        actionLogs.set(key, result);
+        logBytes += bytes;
+        while (actionLogs.size > MAX_LOGS || logBytes > MAX_LOG_BYTES) {
+          const oldest = actionLogs.keys().next().value;
+          logBytes -= (actionLogs.get(oldest)?.body?.length ?? 0) * 2;
+          actionLogs.delete(oldest);
+        }
+      }
     }
     return result;
   }).finally(() => actionLogRequests.delete(key));

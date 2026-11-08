@@ -57,6 +57,8 @@ The search panel uses its own connection pool, so pending main-window requests c
 
 Diffs, threads, checks, and file history live in the same review workspace. Short diffs render without scrolling, including in tall windows. The header shows Closed or Merged even if the PR retains its draft flag. The PR check summary uses the latest workflow run and job attempt; earlier runs remain in Actions history. Press <kbd>x</kbd> to cycle **All files → Hide tests/generated → Only tests/generated**, keeping viewed marks. Generated files include `.generated.` names and committed `.gitattributes` rules marked `linguist-generated`; nested rules and overrides follow the reviewed revision. The default filter follows Settings.
 
+Actions keeps recently read logs in memory for instant switching, with a 32 MiB text budget and at most 100 jobs. Larger logs stay readable but are not added to that cache; filter snapshots share the bounded recent-view cache.
+
 Syntax highlighting covers Shiki's bundled languages in diffs, file previews, editors, and Markdown code blocks, including Swift, C/C++ headers, Objective-C, Kotlin, and C#. Grammars load on demand; unrecognized formats remain plain text.
 
 Wide Markdown tables scroll horizontally without wrapping cells; smaller tables keep their natural width.

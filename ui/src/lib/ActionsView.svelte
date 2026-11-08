@@ -267,12 +267,8 @@
       const targetJobs = targetJob
         ? next.jobs.filter((job) => job.runId === targetJob.runId && job.attempt === targetJob.attempt)
         : [];
-      const cached = {};
-      for (const job of targetJobs) {
-        const result = cachedActionLog(actionLogKey(repo, activeSha, job.id));
-        if (result) cached[job.id] = result;
-      }
-      if (Object.keys(cached).length > 0) logs = { ...logs, ...cached };
+      const cached = targetJob && cachedActionLog(actionLogKey(repo, activeSha, targetJob.id));
+      if (cached) logs = { [targetJob.id]: cached };
       void prefetchActionLogs(
         targetJobs,
         (job) => actionLogKey(repo, activeSha, job.id),
@@ -282,12 +278,9 @@
         () => !stopped,
       ).then(() => {
         if (stopped) return;
-        const prefetched = {};
-        for (const job of targetJobs) {
-          const result = cachedActionLog(actionLogKey(repo, activeSha, job.id));
-          if (result) prefetched[job.id] = result;
-        }
-        if (Object.keys(prefetched).length > 0) logs = { ...logs, ...prefetched };
+        const id = selectedJobId;
+        const result = cachedActionLog(actionLogKey(repo, activeSha, id));
+        if (result) logs = { [id]: result };
       });
     }
 
@@ -377,9 +370,9 @@
             : fetchActionLog(capturedRepo, number, id, capturedSha),
         );
       }
-      if (`${capturedRepo}:${capturedSha}` !== `${repo}:${activeSha}`) return;
+      if (`${capturedRepo}:${capturedSha}` !== `${repo}:${activeSha}` || id !== selectedJobId) return;
       if (result?.state === "ready" || result?.state === "not-produced") {
-        logs = { ...logs, [id]: result };
+        logs = { [id]: result };
       }
       const nextErrors = { ...logErrors };
       delete nextErrors[id];
