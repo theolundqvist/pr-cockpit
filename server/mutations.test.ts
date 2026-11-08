@@ -85,6 +85,11 @@ test("applied mutations remain pending through refresh without becoming retryabl
       cache(113, { body: "later body", lastEditedAt: new Date(Date.now() + 1_000).toISOString(), comments: { nodes: [] } });
     }));
     const supersededEditCount = db.listMutationsForPr(repo, 113).length;
+    const mergedTaskRow = insert(114, { kind: "edit-body", body: "- [x] Done", tasks: [{ key: "replaced-task", checked: true }] });
+    await processMutation(mergedTaskRow, dependencies(async () => {
+      cache(114, { state: "MERGED", updatedAt: new Date(Date.now() + 1_000).toISOString(), body: "later body", comments: { nodes: [] } });
+    }));
+    const mergedTaskCount = db.listMutationsForPr(repo, 114).length;
     cache(112, { body: "body", comments: { nodes: [] }, reviewThreads: { nodes: [{ id: "thread-1", isResolved: false }] } });
     const unconfirmedResolveRow = insert(112);
     await processMutation(unconfirmedResolveRow, dependencies(async () => {}));
@@ -147,6 +152,7 @@ test("applied mutations remain pending through refresh without becoming retryabl
       refreshFailure: { state: refreshFailure?.state, error: refreshFailure?.error },
       unconfirmedEdit: { state: unconfirmedEdit?.state, error: unconfirmedEdit?.error },
       supersededEditCount,
+      mergedTaskCount,
       unconfirmedResolve: { state: unconfirmedResolve?.state, error: unconfirmedResolve?.error },
       confirmedCommentCount,
       freshEditCount, publishedBody,
@@ -185,6 +191,7 @@ test("applied mutations remain pending through refresh without becoming retryabl
     expect(result.refreshFailure).toEqual({ state: "refreshing", error: "GitHub accepted resolve-thread, but cache refresh failed: refresh unavailable" });
     expect(result.unconfirmedEdit).toEqual({ state: "refreshing", error: "GitHub accepted edit-body, but cache refresh failed: refreshed cache does not contain the accepted change" });
     expect(result.supersededEditCount).toBe(0);
+    expect(result.mergedTaskCount).toBe(0);
     expect(result.unconfirmedResolve).toEqual({ state: "refreshing", error: "GitHub accepted resolve-thread, but cache refresh failed: refreshed cache does not contain the accepted change" });
     expect(result.confirmedCommentCount).toBe(0);
     expect(result.freshEditCount).toBe(0);

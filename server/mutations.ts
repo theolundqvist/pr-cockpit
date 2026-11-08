@@ -489,6 +489,8 @@ function mutationReflected(row: Pick<MutationRow, "repo" | "number" | "payload_j
   // edit also confirms once GitHub records a later edit: a newer description replaced it, while a stale read still
   // carries the edit time from before this mutation was queued.
   if (payload.kind === "edit-body") {
+    // Closed PRs can retain an accepted checkbox write that a later description replaced.
+    if ((detail.state === "MERGED" || detail.state === "CLOSED") && Date.parse(detail.updatedAt) > Date.parse(row.created_at)) return true;
     if (!payload.tasks) {
       return sameGithubText(detail.body, payload.body)
         || (!!detail.lastEditedAt && Date.parse(detail.lastEditedAt) > Date.parse(row.created_at));
