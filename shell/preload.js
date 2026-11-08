@@ -10,14 +10,18 @@ contextBridge.exposeInMainWorld("cockpitShell", {
     return () => ipcRenderer.removeListener("cockpit:trackpad-phase", listener);
   },
   openEditor: (repo, number, target, headSha) => ipcRenderer.invoke("cockpit:open-editor", { repo, number, target, headSha }),
-  prepareEditor: (repo, number, headSha) => ipcRenderer.invoke("cockpit:prepare-editor", { repo, number, headSha }),
+  ...(process.argv.includes("--cockpit-prepare-editor") ? {
+    prepareEditor: (repo, number, headSha) => ipcRenderer.invoke("cockpit:prepare-editor", { repo, number, headSha }),
+  } : {}),
   finishEditor: (sessionId) => ipcRenderer.invoke("cockpit:finish-editor", sessionId),
   openSetup: (action) => ipcRenderer.invoke("cockpit:open-setup", action),
   installGit: () => ipcRenderer.invoke("cockpit:install-git"),
   openDataFolder: () => ipcRenderer.invoke("cockpit:open-data-folder"),
   openWindow: (hash) => ipcRenderer.invoke("cockpit:open-window", hash),
   refreshSettings: () => ipcRenderer.send("cockpit:settings-changed"),
-  getNativePalette: () => ipcRenderer.invoke("cockpit:native-palette"),
+  ...(process.argv.includes("--cockpit-native-palette") ? {
+    getNativePalette: () => ipcRenderer.invoke("cockpit:native-palette"),
+  } : {}),
   onNativePaletteChanged: (callback) => {
     const listener = (_event, palette) => callback(palette);
     ipcRenderer.on("cockpit:native-palette-changed", listener);

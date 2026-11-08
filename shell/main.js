@@ -16,6 +16,7 @@ const { createPanelOpenEvent } = require("./panelOpenEvent");
 app.setName("PR Cockpit");
 const desktopPolicy = platformPolicy();
 if (desktopPolicy.desktopName) app.setDesktopName(desktopPolicy.desktopName);
+const shellApiArguments = ["--cockpit-native-palette", "--cockpit-prepare-editor"];
 
 // Only scripts/cockpit (the installed app) sets COCKPIT_MANAGED; every other launch is an isolated dev instance.
 const isManaged = process.env.COCKPIT_MANAGED === "1";
@@ -310,7 +311,7 @@ if (!app.requestSingleInstanceLock()) {
       y: anchor ? anchor.y + 34 : undefined,
       backgroundColor: windowBackgroundColor(),
       ...desktopPolicy.mainWindow,
-      webPreferences: { sandbox: true, plugins: true, preload: path.join(__dirname, "preload.js") },
+      webPreferences: { sandbox: true, plugins: true, preload: path.join(__dirname, "preload.js"), additionalArguments: shellApiArguments },
       show: false,
     });
     extraWindows.add(extra);
@@ -597,7 +598,7 @@ if (!app.requestSingleInstanceLock()) {
       height: 900,
       backgroundColor: windowBackgroundColor(),
       ...desktopPolicy.mainWindow,
-      webPreferences: { sandbox: true, plugins: true, preload: path.join(__dirname, "preload.js") },
+      webPreferences: { sandbox: true, plugins: true, preload: path.join(__dirname, "preload.js"), additionalArguments: shellApiArguments },
       show: false,
     });
 
@@ -890,6 +891,7 @@ if (!app.requestSingleInstanceLock()) {
           plugins,
           partition: `cockpit-${name}`,
           preload: path.join(__dirname, "preload.js"),
+          additionalArguments: shellApiArguments,
         },
       });
       let ready = false;
@@ -1112,6 +1114,7 @@ if (!app.requestSingleInstanceLock()) {
 
     async function applyShortcuts() {
       const settings = await fetchSettings();
+      if (isQuitting) return;
       shellThemePreference = normalizeThemePreference(settings?.theme);
       nativeTheme.themeSource = shellThemePreference;
       syncWindowBackground();

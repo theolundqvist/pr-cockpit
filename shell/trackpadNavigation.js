@@ -22,8 +22,9 @@ function getNativeMonitor() {
 // Keep delivery scoped to the window receiving input, including detached PR windows.
 function attachTrackpadNavigation(win) {
   if (process.platform !== "darwin") return;
+  const webContents = win.webContents;
   const send = (phase) => {
-    if (!win.webContents.isDestroyed()) win.webContents.send(CHANNEL, phase);
+    if (!webContents.isDestroyed()) webContents.send(CHANNEL, phase);
   };
   const input = (_event, event) => {
     if (event.type === "gestureScrollBegin") send("begin");
@@ -36,10 +37,10 @@ function attachTrackpadNavigation(win) {
   const native = getNativeMonitor();
   const windowNumber = native?.windowNumber(win.getNativeWindowHandle());
   if (native) windows.set(windowNumber, win);
-  else win.webContents.on("input-event", input);
+  else webContents.on("input-event", input);
   win.on("blur", cancel);
   win.once("closed", () => {
-    win.webContents.removeListener("input-event", input);
+    webContents.removeListener("input-event", input);
     if (native) windows.delete(windowNumber);
     win.removeListener("blur", cancel);
   });
