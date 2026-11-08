@@ -235,11 +235,14 @@ test("an older search result cannot replace a newer PR index row", async () => {
   }
 });
 
-test("fresh databases include terminal PR index columns", async () => {
+test("fresh databases include terminal PR index columns and indexed ordering", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-fresh-index-"));
   const scenario = `
     const { db } = await import(${JSON.stringify(dbModuleUrl)});
-    console.log(JSON.stringify(db.query("PRAGMA table_info(pr_index)").all().map((column) => column.name)));
+    console.log(JSON.stringify({
+      columns: db.query("PRAGMA table_info(pr_index)").all().map((column) => column.name),
+      plan: db.query("EXPLAIN QUERY PLAN SELECT * FROM pr_index ORDER BY updated_at DESC").all().map((row) => row.detail).join(" "),
+    }));
     db.close();
   `;
 
@@ -255,7 +258,9 @@ test("fresh databases include terminal PR index columns", async () => {
       new Response(process.stderr).text(),
     ]);
     if (exitCode !== 0) throw new Error(stderr);
-    expect(JSON.parse(stdout)).toEqual(expect.arrayContaining(["merged_at", "closed_at", "involves_me"]));
+    const result = JSON.parse(stdout);
+    expect(result.columns).toEqual(expect.arrayContaining(["merged_at", "closed_at", "involves_me"]));
+    expect(result.plan).toBe("SCAN pr_index USING INDEX pr_index_updated_idx");
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }

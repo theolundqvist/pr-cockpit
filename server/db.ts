@@ -472,6 +472,7 @@ if (!prIndexColumns.some((c) => c.name === "created_at")) {
   })();
 }
 db.exec("CREATE INDEX IF NOT EXISTS pr_index_terminal_idx ON pr_index (involves_me, state, COALESCE(merged_at, closed_at, updated_at) DESC)");
+db.exec("CREATE INDEX IF NOT EXISTS pr_index_updated_idx ON pr_index (updated_at DESC)");
 
 const webhookRegistrationColumns = db.query("PRAGMA table_info(webhook_registrations)").all() as Array<{ name: string; pk: number }>;
 if (webhookRegistrationColumns.find((c) => c.name === "window_id")?.pk) {

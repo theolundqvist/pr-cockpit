@@ -3386,10 +3386,14 @@ async function handlePrIndex(url: URL, runtime: HttpRuntime): Promise<Response> 
       const match = PR_INDEX_KEY_RE.exec(key);
       return match ? [{ key, repo: match[1]!, number: Number(match[2]) }] : [];
     });
-  const byKey = new Map(listPrIndex().map((row) => [prKey(row), row]));
+  const byKey = new Map<string, PrIndexRow>();
   const missingByRepo = new Map<string, number[]>();
   for (const ref of requested) {
-    if (byKey.has(ref.key)) continue;
+    const cached = getPrIndexEntry(ref.repo, ref.number);
+    if (cached) {
+      byKey.set(ref.key, cached);
+      continue;
+    }
     const numbers = missingByRepo.get(ref.repo) ?? [];
     numbers.push(ref.number);
     missingByRepo.set(ref.repo, numbers);
