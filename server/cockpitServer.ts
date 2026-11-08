@@ -1,5 +1,6 @@
 import type { ServerWebSocket } from "bun";
 import { setRendererInvalidationPublisher } from "./rendererInvalidation.ts";
+import { recordProfile } from "./profile.ts";
 
 type FetchHandler = (request: Request) => Response | Promise<Response>;
 
@@ -62,6 +63,7 @@ function buildOriginPolicy(configured: string | undefined): (request: Request) =
 
 export function startCockpitServer(port: number, fetchHandler: FetchHandler, allowedOrigins?: string) {
   const originAllowed = buildOriginPolicy(allowedOrigins ?? Bun.env.COCKPIT_ALLOWED_ORIGINS);
+  let dispatch = fetchHandler;
   const server = Bun.serve({
     port,
     hostname: "127.0.0.1",
@@ -77,7 +79,14 @@ export function startCockpitServer(port: number, fetchHandler: FetchHandler, all
       if ((UNSAFE_BROWSER_METHODS[request.method] || pathname === "/api/quick-generate/models") && !originAllowed(request)) {
         return new Response("Forbidden", { status: 403 });
       }
-      return fetchHandler(request);
+      if (pathname === "/api/debug/profile" && request.method === "POST") {
+        bunServer.timeout(request, 150);
+        const seconds = Number(new URL(request.url).searchParams.get("seconds") ?? 20);
+        return recordProfile(seconds, fetchHandler, (handler) => { dispatch = handler; })
+          .then((result) => Response.json(result))
+          .catch((error) => Response.json({ error: String(error) }, { status: 400 }));
+      }
+      return dispatch(request);
     },
     websocket: {
       open(socket) {

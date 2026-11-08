@@ -13,6 +13,7 @@ const { createShellProcessOwnership } = require("./shellProcessOwnership");
 const { attachTrackpadNavigation } = require("./trackpadNavigation");
 const { createSelectionCapture, createSelectionOpener } = require("./selectedText");
 const { createPanelOpenEvent } = require("./panelOpenEvent");
+const { recordPerformanceProfile } = require("./profile");
 app.setName("PR Cockpit");
 const desktopPolicy = platformPolicy();
 if (desktopPolicy.desktopName) app.setDesktopName(desktopPolicy.desktopName);
@@ -413,7 +414,20 @@ if (!app.requestSingleInstanceLock()) {
         submenu: [{ label: "New Window", accelerator: "CommandOrControl+N", click: () => openExtraWindow() }, { role: "close" }],
       },
       { role: "editMenu" },
-      { label: "View", submenu: [{ role: "reload" }, { role: "forceReload" }, { role: "toggleDevTools" }] },
+      { label: "View", submenu: [
+        { role: "reload" }, { role: "forceReload" }, { role: "toggleDevTools" },
+        { label: "Record Performance Profile", click: async () => {
+          const flash = (message) => win?.webContents.executeJavaScript(`window.cockpitFlash && window.cockpitFlash(${JSON.stringify(message)})`).catch(() => {});
+          try {
+            flash("Recording performance for 20 seconds…");
+            const directory = await recordPerformanceProfile(win, serverOrigin);
+            flash("Performance profile saved");
+            shell.showItemInFolder(path.join(directory, "summary.md"));
+          } catch (error) {
+            dialog.showErrorBox("Performance recording failed", String(error));
+          }
+        } },
+      ] },
       { role: "windowMenu" },
     ]),
   );

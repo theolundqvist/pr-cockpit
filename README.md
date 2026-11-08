@@ -39,6 +39,10 @@ Press <kbd>h</kbd> on a PR in the list to **Remind me**. Pick a time or type a d
 
 Enable **Date filters and sorting** in **Settings → Workspace** for **Opened** and **Order** controls in the main PR lists, plus **Grouping** in Your queue. Switch grouping between Status, Feature area, PR type, and Manual without leaving the queue. Opened, Order, Grouping, and Repository selections survive refreshes and app updates; only applied custom date bounds are saved. Filter to the last 24 hours, 7 days, 30 days, or a custom local date-and-time range; custom bounds apply when you press **Apply**. Order by newest or oldest opened, or most or least recently updated. **Queue order** keeps the usual priorities. Grouped queues keep their sections, manual pin order, and stacks; the Whiteboard is unchanged. PRs with an unknown opened date appear in All time but not an active date range.
 
+## Investigating slowness
+
+Run `pr-cockpit profile --seconds 20` while reproducing the slowdown (1–120 seconds), without restarting the server. It prints the output folder and top findings; CLI recordings cover the server only. In the desktop app, **View → Record Performance Profile** records both server and main renderer for 20 seconds, then reveals the folder. Nothing is sampled outside a recording. Profiles and summaries go to `~/Library/Logs/PR Cockpit/profiles/<timestamp>/` on macOS, or `${XDG_STATE_HOME:-~/.local/state}/pr-cockpit/profiles/<timestamp>/` on Linux. Open the `.cpuprofile` files in Chrome DevTools or speedscope; `summary.md` and `summary.json` include route/query timings, event-loop lag, GitHub requests, subprocess durations, memory, and (from the menu) renderer heap, DOM nodes, and long tasks. Profiles may contain local paths and SQL values: review them before sharing. Set `COCKPIT_PORT` to target a nondefault local server.
+
 ## From finding the PR to finishing the review
 
 ### Bring up a PR without leaving your editor
