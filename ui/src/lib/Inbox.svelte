@@ -21,7 +21,7 @@
   import { fetchInbox, fetchRecentClosed, fetchAllPrs, fetchPrDetails, setArchived, saveSettings, reorderPr, setMergeApproval, clearReviewHandoff, enqueueMutation, fetchMutations, retryMutation, discardMutation, fetchSettings, fetchRelayStatus, fetchRelayCoverage, autofixAgent, customAgent } from "./api.js";
   import { cacheDetail, cachedHeadSha, cachedView, cacheView } from "./detailCache.js";
   import { preloadPr } from "./preload.js";
-  import { filterPrs, countMatches, wantsHistory } from "./prFilter.js";
+  import { filterPrs, countMatches, wantsHistory, queryDecidesDrafts } from "./prFilter.js";
   import { customOpenedRange, filterByOpened, isRollingRange, OPENED_RANGES, openedBounds, sortPrs, PR_ORDERS } from "./prTime.js";
   import { classify } from "./whoseMove.js";
   import { mergeGate } from "./mergeGate.js";
@@ -300,9 +300,10 @@
   const peopleSnapshot = storedPeopleFilter();
   let authorFilter = $state(peopleSnapshot.author);
   let hideDrafts = $state(peopleSnapshot.hideDrafts);
-  // The Whiteboard hides the Filters panel, so it keeps every author and draft.
-  let peopleFilter = $derived(view === "whiteboard" ? { author: "all", hideDrafts: false } : { author: authorFilter, hideDrafts });
-  let peopleFilterActive = $derived(authorFilter !== "all" || hideDrafts);
+  // The Whiteboard hides the Filters panel, so it keeps every author and draft. A draft qualifier in the query overrides the toggle.
+  let effectiveHideDrafts = $derived(hideDrafts && !queryDecidesDrafts(filterQuery));
+  let peopleFilter = $derived(view === "whiteboard" ? { author: "all", hideDrafts: false } : { author: authorFilter, hideDrafts: effectiveHideDrafts });
+  let peopleFilterActive = $derived(authorFilter !== "all" || effectiveHideDrafts);
   let repoPickerOpen = $state(false);
   let viewOptionsOpen = $state(false);
   let viewOptionsButton;
@@ -734,7 +735,7 @@
   }
 
   let historyActive = $derived(wantsHistory(filterQuery) && historyQuery === filterQuery.trim() && !historyLoading);
-  let queryFilteredPrs = $derived(wantsHistory(filterQuery) ? (historyQuery === filterQuery.trim() ? historyPrs : []) : filterPrs(prs, filterQuery, showArchived));
+  let queryFilteredPrs = $derived(wantsHistory(filterQuery) ? (historyQuery === filterQuery.trim() ? historyPrs : []) : filterPrs(prs, filterQuery, { archived: showArchived, viewer: viewerLogin }));
   let availableRepos = $derived(availableRepositories(view === "all" ? [...configuredRepos, ...allPrsRepos, ...selectedRepos] : configuredRepos, prs, archivedPrs, closedPrs));
   let scopedPrs = $derived(filterByAuthorAndDraft(filterByRepositories(queryFilteredPrs.filter((pr) => !isSetAside(pr)), selectedRepos), peopleFilter, viewerLogin));
   let filteredPrs = $derived(filterByOpened(scopedPrs, openedFilter));
@@ -752,7 +753,7 @@
   // history views can't be counted from the open inbox; show the live count only while applied, else a placeholder
   function viewCount(v) {
     if (wantsHistory(v.query)) return activeView === v.name && historyActive ? historyPrs.filter((pr) => !isSetAside(pr)).length : "–";
-    return countMatches(prs.filter((pr) => !isSetAside(pr)), v.query, showArchived);
+    return countMatches(prs.filter((pr) => !isSetAside(pr)), v.query, { archived: showArchived, viewer: viewerLogin });
   }
 
 
@@ -1635,7 +1636,7 @@
               }
             }
           }}
-          placeholder="filter — text, or author: state: is: repo: base: review:"
+          placeholder="filter — text, -text, &quot;phrase&quot;, or label: is: author: state: repo: base: head: review:"
           spellcheck="false"
           autocomplete="off"
         />
@@ -1851,9 +1852,9 @@
             <div class="empty">No open pull requests involving you. Use All PRs to see every tracked repository.</div>
           {:else if !filterQuery && scopedPrs.length === 0 && prs.some(isSetAside)}
             <div class="empty">You’re all caught up here. Your set-aside PRs are in the tray.</div>
-          {:else if selectedRepos.length && scopedPrs.length === 0}
+          {:else if selectedRepos.length && scopedPrs.length === 0 && (!filterQuery.trim() || queryFilteredPrs.length > 0)}
             <div class="empty">No pull requests involving you in the selected repositories. Use All PRs to see every open pull request.</div>
-          {:else if peopleFilterActive && scopedPrs.length === 0}
+          {:else if peopleFilterActive && scopedPrs.length === 0 && (!filterQuery.trim() || queryFilteredPrs.length > 0)}
             <div class="empty">No pull requests match the author and draft filters.</div>
           {:else if wantsHistory(filterQuery) && !historyActive}
             <div class="empty">Searching history…</div>

@@ -167,7 +167,7 @@ import {
 import { checkForUpdate, isUpdateAvailable, runningRev, updatesEnabled } from "./version.ts";
 import { spawn } from "node:child_process";
 import { repoUsersCached } from "./repoUsers.ts";
-import { matchesQuery, parseQuery, wantsHistoricalPrs } from "./query.ts";
+import { matchesQuery, parseQuery, wantsHistoricalPrs, type QueryTarget } from "./query.ts";
 import { buildWebhookRoutes } from "./webhooks.ts";
 import { findDefinition, grep, localFileHistoryPatch, symbolMentionHistory, withSearchCtx } from "./repoSearch.ts";
 import { lsTree, showFile } from "./gitShow.ts";
@@ -330,6 +330,25 @@ function stubPrRowFromIndex(entry: PrIndexRow): PrRow {
     greptile_unresolved_count: 0,
     detail_json: "{}",
     fetched_at: entry.updated_at,
+  };
+}
+
+// Labels live in detail_json; parse it only when a clause reads them.
+function queryTarget(pr: PrRow): QueryTarget {
+  let labels: string[] | undefined;
+  return {
+    author: pr.author,
+    repo: pr.repo,
+    title: pr.title,
+    number: pr.number,
+    state: pr.state,
+    is_draft: pr.is_draft,
+    base_ref: pr.base_ref,
+    head_ref: pr.head_ref,
+    review_decision: pr.review_decision,
+    get labels() {
+      return labels ??= labelNames(JSON.parse(pr.detail_json));
+    },
   };
 }
 
@@ -563,19 +582,19 @@ async function handleInbox(url: URL): Promise<Response> {
   const archivedKeys = listArchivedKeys();
   let prs = listPrs().filter((pr) => archivedKeys.has(prKey(pr)) === wantArchived);
   const q = url.searchParams.get("q");
+  const viewerLogin = replicaEnabled() ? replicaViewerLogin() : await getViewerLogin().catch(() => null);
   if (q) {
     const parsed = parseQuery(q);
-    prs = prs.filter((pr) => matchesQuery(pr, parsed, wantArchived));
+    prs = prs.filter((pr) => matchesQuery(queryTarget(pr), parsed, { archived: wantArchived, viewer: viewerLogin }));
     if (wantsHistoricalPrs(parsed)) {
       const liveKeys = new Set(prs.map(prKey));
       const historical = listPrIndex()
         .map(stubPrRowFromIndex)
-        .filter((pr) => !liveKeys.has(prKey(pr)) && matchesQuery(pr, parsed, false));
+        .filter((pr) => !liveKeys.has(prKey(pr)) && matchesQuery(queryTarget(pr), parsed, { archived: false, viewer: viewerLogin }));
       prs = [...prs, ...historical];
     }
   }
   const rows = inboxRows(prs);
-  const viewerLogin = replicaEnabled() ? replicaViewerLogin() : await getViewerLogin().catch(() => null);
   return json({ prs: rows, lastPollAt: isMockGithub ? MOCK_FIXTURE_CLOCK : lastPollAt, viewerLogin });
 }
 
