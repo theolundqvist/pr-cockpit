@@ -221,7 +221,9 @@ if [[ -d "$electron_src" ]]; then
   plutil -replace CFBundleURLTypes -json '[{"CFBundleURLName":"app.pr-cockpit","CFBundleURLSchemes":["prcockpit"]}]' "$bundle/Contents/Info.plist"
   cp "$root/assets/icon.icns" "$bundle/Contents/Resources/$icon_name.icns"
   echo "$electron_version" > "$bundle/Contents/Resources/pr-cockpit-electron-version"
-  codesign --force --deep -s - "$bundle" >/dev/null 2>&1 || echo "pr-cockpit: ad-hoc codesign failed, continuing (Gatekeeper may complain on first launch)"
+  # Ad-hoc signatures default to a cdhash requirement, so every update looked like a new app to macOS
+  # and dropped its Accessibility grant; an identifier requirement keeps the grant across updates.
+  { codesign --force --deep -s - "$bundle" && codesign --force -s - -r='designated => identifier "app.pr-cockpit"' "$bundle"; } >/dev/null 2>&1 || echo "pr-cockpit: ad-hoc codesign failed, continuing (Gatekeeper may complain on first launch)"
   echo "pr-cockpit: packaged $bundle"
 else
   echo "pr-cockpit: electron dist not found at $electron_src, skipping shell app packaging (will fall back to the plain electron binary)"

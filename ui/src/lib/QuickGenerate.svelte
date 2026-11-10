@@ -348,19 +348,31 @@
     streamed = false;
     error = null;
     copied = false;
+    let streamText = "";
+    let frame = 0;
+    // Fast models stream hundreds of pieces a second; rendering the reply's markdown once per frame keeps the panel responsive.
+    const render = () => {
+      frame = 0;
+      const following = !resultEl || resultEl.scrollHeight - resultEl.scrollTop - resultEl.clientHeight < 24;
+      result = streamText;
+      streamed = true;
+      if (following) tick().then(() => resultEl?.scrollTo({ top: resultEl.scrollHeight }));
+    };
     try {
       const sent = attachments.map(({ name, mimeType, blob }) => ({ name, mimeType, blob }));
       const text = await quickGenerate({ key, model, prompt, attachments: sent }, (piece) => {
         if (request.signal.aborted) return;
-        const following = !resultEl || resultEl.scrollHeight - resultEl.scrollTop - resultEl.clientHeight < 24;
-        result = streamed ? result + piece : piece;
-        streamed = true;
-        if (following) tick().then(() => resultEl?.scrollTo({ top: resultEl.scrollHeight }));
+        streamText += piece;
+        frame ||= requestAnimationFrame(render);
       }, request.signal);
       if (!request.signal.aborted) result = text;
     } catch (e) {
-      if (!request.signal.aborted) error = message(e);
+      if (!request.signal.aborted) {
+        if (streamText) result = streamText;
+        error = message(e);
+      }
     } finally {
+      cancelAnimationFrame(frame);
       generating = false;
     }
   }
