@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { customOpenedRange, filterByOpened, openedBounds, parseLocalDateTime, sortByTime } from "./prTime.js";
+import { customOpenedRange, filterByOpened, openedBounds, parseLocalDateTime, sortPrs } from "./prTime.js";
 
 const HOUR = 60 * 60 * 1000;
 const NOW = Date.parse("2026-10-04T12:00:00.000Z");
@@ -58,10 +58,32 @@ test("timestamp orders put unknown times last and keep ties in incoming order", 
     { number: 13, createdAt: at(NOW - 2 * HOUR), updatedAt: at(NOW - 4 * HOUR) },
     { number: 14, createdAt: null, updatedAt: at(NOW - HOUR) },
   ];
-  expect(numbers(sortByTime(prs, "newest"))).toEqual([11, 13, 12, 10, 14]);
-  expect(numbers(sortByTime(prs, "oldest"))).toEqual([12, 11, 13, 10, 14]);
-  expect(numbers(sortByTime(prs, "updated"))).toEqual([11, 14, 10, 13, 12]);
-  expect(numbers(sortByTime(prs, "stale"))).toEqual([13, 10, 11, 14, 12]);
+  expect(numbers(sortPrs(prs, "newest"))).toEqual([11, 13, 12, 10, 14]);
+  expect(numbers(sortPrs(prs, "oldest"))).toEqual([12, 11, 13, 10, 14]);
+  expect(numbers(sortPrs(prs, "updated"))).toEqual([11, 14, 10, 13, 12]);
+  expect(numbers(sortPrs(prs, "stale"))).toEqual([13, 10, 11, 14, 12]);
   expect(numbers(prs)).toEqual([10, 11, 12, 13, 14]);
-  expect(sortByTime(prs, "queue")).toBe(prs);
+  expect(sortPrs(prs, "queue")).toBe(prs);
+});
+
+test("name order compares whole titles, numbers by value, ignoring case", () => {
+  const prs = [
+    { number: 1, title: "fix(ui): step 10" },
+    { number: 2, title: "Fix(ui): step 9" },
+    { number: 3, title: "feat(ui): add" },
+    { number: 4, title: "fix(ui): step 9" },
+  ];
+  expect(numbers(sortPrs(prs, "name"))).toEqual([3, 2, 4, 1]);
+});
+
+test("PR type order follows the queue's type ranking, untyped and unknown types last, ties in incoming order", () => {
+  const prs = [
+    { number: 1, title: "chore: bump" },
+    { number: 2, title: "Update readme" },
+    { number: 3, title: "fix(api): b" },
+    { number: 4, title: "style: tabs" },
+    { number: 5, title: "DRAFT feat(ui): a" },
+    { number: 6, title: "fix(api): a" },
+  ];
+  expect(numbers(sortPrs(prs, "type"))).toEqual([5, 3, 6, 1, 2, 4]);
 });

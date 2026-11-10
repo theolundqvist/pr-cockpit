@@ -2,7 +2,7 @@ import { categoryForPr, orderQueueUnits, PR_TYPES, TYPE_TITLES } from "../../../
 import { cookingStage, isBurnt } from "../../../shared/cookingStage.js";
 import { isApprovedForSafeMerge } from "./prRowActions.js";
 import { prKey } from "./prKey.js";
-import { sortByTime } from "./prTime.js";
+import { sortPrs } from "./prTime.js";
 import { classify, GROUP_ORDER, GROUP_TITLES } from "./whoseMove.js";
 
 const TRUNK_MIN_BASE_COUNT = 3;
@@ -116,7 +116,7 @@ export function inboxGroups(prs, options) {
   // A stack sorts by its root row; feature groups also order by status, then type. A timestamp order
   // re-sorts only unpinned roots inside each section, with queue order breaking ties.
   const statusRank = mode === "feature" ? (pr) => GROUP_ORDER.indexOf(classify(pr, viewerLogin).group) : undefined;
-  const sortUnits = (units) => sortByTime(orderQueueUnits(units, statusRank), listOrder);
+  const sortUnits = (units) => sortPrs(orderQueueUnits(units, statusRank), listOrder);
   const shown = (id, rows) => rows.length > 0 || reveal(id);
   const statusGroups = categories.filter(({ id }) => shown(id, buckets.get(id) ?? [])).map(({ id, title }) => {
     const rows = buckets.get(id) ?? [];

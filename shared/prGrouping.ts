@@ -40,7 +40,7 @@ export function isDraftPr(pr: { title: string; isDraft?: boolean }): boolean {
 
 const TYPE_ORDER = ["feat", "fix", "perf", "refactor", "test", "ci", "build", "docs", "chore"];
 
-function typeRank(type: string | null): number {
+export function typeRank(type: string | null): number {
   const index = TYPE_ORDER.indexOf(type ?? "");
   return index < 0 ? TYPE_ORDER.length : index;
 }

@@ -1,5 +1,7 @@
-// Opened-date filters and timestamp ordering for PR lists. Rows carry GitHub's own `createdAt` and
+// Opened-date filters and list orders for PR lists. Rows carry GitHub's own `createdAt` and
 // `updatedAt`; a missing or unparseable timestamp never borrows another field's value.
+
+import { parsePrTitle, typeRank } from "../../../shared/prGrouping.ts";
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -13,12 +15,14 @@ export const OPENED_RANGES = [
   { value: "custom", label: "Custom range" },
 ];
 
-export const TIME_ORDERS = [
+export const PR_ORDERS = [
   { value: "queue", label: "Queue order" },
   { value: "newest", label: "Newest opened" },
   { value: "oldest", label: "Oldest opened" },
   { value: "updated", label: "Recently updated" },
   { value: "stale", label: "Least recently updated" },
+  { value: "name", label: "Name" },
+  { value: "type", label: "PR type" },
 ];
 
 const ORDER_KEYS = {
@@ -55,9 +59,20 @@ export function filterByOpened(prs, bounds) {
   });
 }
 
-// Queue order returns the input array itself. Timestamp orders return a new array; rows without the
-// timestamp go last and ties keep their incoming order.
-export function sortByTime(prs, order) {
+const NAME_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
+function sortStable(prs, rank, compare) {
+  return prs
+    .map((pr, index) => ({ pr, index, rank: rank(pr) }))
+    .sort((a, b) => compare(a.rank, b.rank) || a.index - b.index)
+    .map(({ pr }) => pr);
+}
+
+// Queue order returns the input array itself. Other orders return a new array whose ties keep their
+// incoming order. Rows without the timestamp go last, as do titles without a known PR type.
+export function sortPrs(prs, order) {
+  if (order === "name") return sortStable(prs, (pr) => pr.title, NAME_COLLATOR.compare);
+  if (order === "type") return sortStable(prs, (pr) => typeRank(parsePrTitle(pr.title).type), (a, b) => a - b);
   const key = ORDER_KEYS[order];
   if (!key) return prs;
   return prs

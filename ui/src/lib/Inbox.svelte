@@ -22,7 +22,7 @@
   import { cacheDetail, cachedHeadSha, cachedView, cacheView } from "./detailCache.js";
   import { preloadPr } from "./preload.js";
   import { filterPrs, countMatches, wantsHistory } from "./prFilter.js";
-  import { customOpenedRange, filterByOpened, isRollingRange, OPENED_RANGES, openedBounds, sortByTime, TIME_ORDERS } from "./prTime.js";
+  import { customOpenedRange, filterByOpened, isRollingRange, OPENED_RANGES, openedBounds, sortPrs, PR_ORDERS } from "./prTime.js";
   import { classify } from "./whoseMove.js";
   import { mergeGate } from "./mergeGate.js";
   import { prefs } from "./prefs.svelte.js";
@@ -89,7 +89,7 @@
       const custom = typeof stored?.custom?.from === "string" && typeof stored?.custom?.to === "string" ? stored.custom : null;
       const range = custom && customOpenedRange(custom.from, custom.to).range;
       const opened = OPENED_RANGES.some((option) => option.value === stored?.opened) && (stored.opened !== "custom" || range) ? stored.opened : "all";
-      const order = TIME_ORDERS.some((option) => option.value === stored?.order) ? stored.order : "queue";
+      const order = PR_ORDERS.some((option) => option.value === stored?.order) ? stored.order : "queue";
       return { opened, range: opened === "custom" ? range : opened, order, custom: range ? custom : null };
     } catch {
       return { opened: "all", range: "all", order: "queue", custom: null };
@@ -740,7 +740,7 @@
   let filteredPrs = $derived(filterByOpened(scopedPrs, openedFilter));
   let scopedClosedPrs = $derived(filterByAuthorAndDraft(filterByRepositories(closedPrs.filter((pr) => !isSetAside(pr)), selectedRepos), peopleFilter, viewerLogin));
   let authorOptions = $derived(availableAuthors(view === "all" ? allPrs : view === "closed" ? closedPrs : prs, authorFilter === "all" || authorFilter === "me" ? [] : [{ author: authorFilter }]));
-  let filteredClosedPrs = $derived(sortByTime(orderQueueUnits(filterByOpened(scopedClosedPrs, openedFilter)), listOrder));
+  let filteredClosedPrs = $derived(sortPrs(orderQueueUnits(filterByOpened(scopedClosedPrs, openedFilter)), listOrder));
   let actionsHref = $derived.by(() => {
     const params = new URLSearchParams();
     if (selectedRepos.length === 0) params.append("repo", "");
@@ -1156,9 +1156,9 @@
     return pr ? groupId(pr) : null;
   });
   let scopedAllPrs = $derived(filterByAuthorAndDraft(allPrs.filter((pr) => !isSetAside(pr)), peopleFilter, viewerLogin));
-  let visibleAllPrs = $derived(sortByTime(orderQueueUnits(filterByOpened(scopedAllPrs, openedFilter)), listOrder));
+  let visibleAllPrs = $derived(sortPrs(orderQueueUnits(filterByOpened(scopedAllPrs, openedFilter)), listOrder));
   let scopedArchivedPrs = $derived(filterByAuthorAndDraft(archivedPrs.filter((pr) => !isSetAside(pr)), peopleFilter, viewerLogin));
-  let visibleArchivedPrs = $derived(sortByTime(filterByOpened(scopedArchivedPrs, openedFilter), listOrder));
+  let visibleArchivedPrs = $derived(sortPrs(filterByOpened(scopedArchivedPrs, openedFilter), listOrder));
   let ordered = $derived(view === "all" ? visibleAllPrs : view === "closed" ? filteredClosedPrs : showArchived ? [...openOrdered, ...visibleArchivedPrs] : openOrdered);
   let archivedSet = $derived(new Set(archivedPrs.map((pr) => prKey(pr))));
   const isArchived = (pr) => archivedSet.has(prKey(pr));
@@ -1523,7 +1523,7 @@
           <label class="time-field">
             <span class="time-field-label">Order</span>
             <select aria-label="Order" class="time-select" value={timeOrder} onchange={(event) => chooseOrder(event.currentTarget.value)}>
-              {#each TIME_ORDERS as option (option.value)}<option value={option.value}>{option.label}</option>{/each}
+              {#each PR_ORDERS as option (option.value)}<option value={option.value}>{option.label}</option>{/each}
             </select>
           </label>
           {#if view === "open"}
