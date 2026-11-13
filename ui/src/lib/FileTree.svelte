@@ -1,8 +1,8 @@
 <script>
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
   import Chevron from "./Chevron.svelte";
 
-  let { files, selectedPath, hoveredPath = null, onSelect, onContextMenu = null, browse = false } = $props();
+  let { files, selectedPath, hoveredPath = null, onSelect, onContextMenu = null, browse = false, active = true } = $props();
 
   const INDENT = 16;
   let lastSelectedPath = null;
@@ -14,6 +14,9 @@
   let treeEl = $state();
   let windowStart = $state(0);
   let windowEnd = $state(40);
+  // a hidden scroll container reports 0, so its last visible offset is kept for when it shows again
+  let shownScrollTop = 0;
+  let revealPending = false;
 
   let tree = $derived.by(() => {
     const root = { name: "", path: "", dirs: new Map(), files: [] };
@@ -128,7 +131,7 @@
   }
 
   export function focus() {
-    treeEl?.focus();
+    treeEl?.focus({ preventScroll: true });
   }
 
   async function focusRow(index) {
@@ -176,17 +179,23 @@
     });
   }
 
+  function onRootScroll(event) {
+    const root = event.currentTarget;
+    if (root.clientHeight) shownScrollTop = root.scrollTop;
+    scheduleWindow();
+  }
+
   $effect(() => {
     const element = treeEl;
     if (!element) return;
     const root = element.parentElement;
     const resize = new ResizeObserver(scheduleWindow);
-    root.addEventListener("scroll", scheduleWindow, { passive: true });
+    root.addEventListener("scroll", onRootScroll, { passive: true });
     resize.observe(root);
     return () => {
       if (windowFrame !== null) cancelAnimationFrame(windowFrame);
       windowFrame = null;
-      root.removeEventListener("scroll", scheduleWindow);
+      root.removeEventListener("scroll", onRootScroll);
       resize.disconnect();
     };
   });
@@ -194,6 +203,20 @@
   $effect(() => {
     rows.length;
     scheduleWindow();
+  });
+
+  let wasActive = untrack(() => active);
+  $effect(() => {
+    if (active === wasActive) return;
+    wasActive = active;
+    if (!active || !treeEl) return;
+    const root = treeEl.parentElement;
+    if (root.scrollTop !== shownScrollTop) root.scrollTop = shownScrollTop;
+    updateWindow();
+    if (revealPending) {
+      revealPending = false;
+      revealSelected();
+    }
   });
 
   $effect(() => {
@@ -214,8 +237,14 @@
       if (next.size !== toggledDirs.size) toggledDirs = next;
     }
     lastSelectedPath = path;
-    const index = rows.findIndex((row) => row.kind === "file" && row.value.path === path);
+    if (untrack(() => active)) revealSelected();
+    else revealPending = true;
+  });
+
+  function revealSelected() {
+    const index = rows.findIndex((row) => row.kind === "file" && row.value.path === selectedPath);
     if (index < 0) return;
+    focusedIndex = index;
     requestAnimationFrame(async () => {
       if (!treeEl) return;
       const root = treeEl.parentElement;
@@ -232,7 +261,7 @@
       if (rowRect.top < rootRect.top) root.scrollTop -= (rootRect.top - rowRect.top) / scale;
       else if (rowRect.bottom > rootRect.bottom) root.scrollTop += (rowRect.bottom - rootRect.bottom) / scale;
     });
-  });
+  }
 </script>
 
 {#snippet rails(depth)}

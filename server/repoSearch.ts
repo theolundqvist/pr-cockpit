@@ -3,7 +3,7 @@ import { astDefinitions } from "./astResolve.ts";
 import { showFile } from "./gitShow.ts";
 import { fetchMirror, mirrorDir, withMirrorOperation } from "./mirror.ts";
 
-const MAX_MATCHES = 2000;
+export const MAX_MATCHES = 2000;
 
 export interface GrepMatch {
   path: string;
@@ -87,7 +87,8 @@ export function withSearchCtx<T>(
 function parseGrepLine(line: string, prefix: string): GrepMatch | null {
   if (!line.startsWith(prefix)) return null;
   const rest = line.slice(prefix.length);
-  const m = rest.match(/^(.*?):(\d+):(.*)$/);
+  // `s`: a CRLF line keeps its "\r", which `.` alone would reject, dropping the match
+  const m = rest.match(/^(.*?):(\d+):(.*)$/s);
   return m ? { path: m[1]!, line: Number(m[2]), text: m[3]! } : null;
 }
 

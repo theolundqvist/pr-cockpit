@@ -40,7 +40,9 @@
   function onItemHover(e, index) {
     if (e.screenX !== lastMouseX || e.screenY !== lastMouseY) selected = index;
   }
+  let rootEl = $state(null);
   let inputEl = $state(null);
+  let listEl = $state(null);
   let editorEl = $state(null);
   let fileTree = $state(null);
   let treeFiles = $derived(filePaths.map((path) => ({ path })));
@@ -52,6 +54,28 @@
   let fileOpen = $state(false); // the shown file fills the browser
   let fileFind = $state(null);
   let findOpen = $state(false);
+
+  let explorerOpened = $state(false);
+  let workspace = $derived(explorerOpened || mode === "explore");
+  let quickOpen = $state(false);
+  let quickQuery = $state("");
+  let quickSelected = $state(0);
+  let quickInputEl = $state(null);
+  let quickListEl = $state(null);
+  let quickReturnFocus = null;
+  let quickScrollTop = $state(0);
+  let quickHeight = $state(560);
+  const QUICK_ROW_HEIGHT = 28;
+  let quickStart = $derived(Math.max(0, Math.floor(quickScrollTop / QUICK_ROW_HEIGHT) - 6));
+  let quickEnd = $derived(Math.min(quickResults.length, quickStart + Math.ceil(quickHeight / QUICK_ROW_HEIGHT) + 12));
+
+  $effect(() => {
+    if (!quickListEl) return;
+    const element = quickListEl;
+    const resize = new ResizeObserver(() => (quickHeight = element.clientHeight));
+    resize.observe(element);
+    return () => resize.disconnect();
+  });
 
   let defCandidates = $state([]);
   let defsSymbol = $state("");
@@ -78,15 +102,9 @@
     return clipped ? [{ content: "…", hit: false }, ...runs] : runs;
   }
 
-  let results = $derived.by(() => {
-    if (mode === "defs") return defCandidates.map((c) => ({ path: c.path, line: c.line, text: c.text }));
-    if (mode === "explore") return [];
+  function rankFiles(input) {
     if (shownPath && filesStatus !== "ok") return [];
-    if (mode === "search") {
-      const rows = shownPath ? matches.filter((m) => shownPath(m.path)) : matches;
-      return rows.map((m) => ({ path: m.path, line: m.line, text: m.text }));
-    }
-    const q = query.trim();
+    const q = input.trim();
     const paths = shownPath ? filePaths.filter(shownPath) : filePaths;
     const changedPaths = changedFiles
       .map((file) => file.path)
@@ -99,7 +117,19 @@
           ...paths.filter((path) => !priority.has(path)).map((path) => ({ path, priority: false })),
         ];
     return ranked.slice(0, MAX_RESULTS).map((r) => ({ path: r.path, line: null, changed: r.priority, positions: r.positions ?? null }));
+  }
+
+  let results = $derived.by(() => {
+    if (mode === "defs") return defCandidates.map((c) => ({ path: c.path, line: c.line, text: c.text }));
+    if (mode === "explore") return [];
+    if (shownPath && filesStatus !== "ok") return [];
+    if (mode === "search") {
+      const rows = shownPath ? matches.filter((m) => shownPath(m.path)) : matches;
+      return rows.map((m) => ({ path: m.path, line: m.line, text: m.text }));
+    }
+    return rankFiles(query);
   });
+  let quickResults = $derived(quickOpen ? rankFiles(quickQuery) : []);
   let groups = $derived.by(() => {
     const out = [];
     results.forEach((r, i) => {
@@ -110,7 +140,6 @@
     return out;
   });
 
-  let current = $derived(results[selected] ?? null);
   let preview = $derived(view ? previews.get(view.path) ?? null : null);
 
   // the live x toggle can shrink the list under the cursor
@@ -175,6 +204,7 @@
     filePaths = [];
     filesStatus = "loading";
     matches = [];
+    matchedQuery = "";
     hist = [];
     histIndex = -1;
     view = null;
@@ -186,25 +216,79 @@
     mode = nextMode;
     query = "";
     matches = [];
+    matchedQuery = "";
     selected = 0;
     searchStatus = "ok";
   }
 
   export async function activate(nextMode) {
+    if (open && workspace && nextMode === "files") return openQuickOpen();
     fileOpen = false;
+    quickOpen = false;
+    quickReturnFocus = null;
     if (!open) {
       open = true;
+      explorerOpened = false;
       resetList(nextMode);
       if (filesStatus !== "ok") loadFiles();
     } else if (mode !== nextMode) {
-      resetList(nextMode);
+      if (!workspace) resetList(nextMode);
+      else {
+        mode = nextMode;
+        if (searchStatus !== "ok") {
+          matches = [];
+          matchedQuery = "";
+          searchStatus = "ok";
+        }
+      }
     }
+    if (nextMode === "explore") explorerOpened = true;
     await tick();
     if (nextMode === "explore") fileTree?.focus();
     else {
       inputEl?.focus();
       inputEl?.select();
     }
+  }
+
+  async function openQuickOpen() {
+    if (!quickOpen) {
+      quickReturnFocus = document.activeElement;
+      quickQuery = "";
+      quickScrollTop = 0;
+      quickSelected = 0;
+      quickOpen = true;
+    }
+    await tick();
+    quickInputEl?.focus();
+    quickInputEl?.select();
+  }
+
+  function closeQuickOpen() {
+    const target = quickReturnFocus;
+    quickOpen = false;
+    quickReturnFocus = null;
+    if (target?.isConnected && rootEl?.contains(target)) target.focus({ preventScroll: true });
+    else if (mode === "explore") fileTree?.focus();
+    else editorEl?.focus({ preventScroll: true });
+  }
+
+  function commitQuickOpen(index = quickSelected) {
+    const r = quickResults[index];
+    if (!r) return;
+    quickOpen = false;
+    quickReturnFocus = null;
+    navigateTo({ path: r.path });
+    editorEl?.focus({ preventScroll: true });
+  }
+
+  function quickMove(delta) {
+    if (!quickResults.length) return;
+    quickSelected = Math.max(0, Math.min(quickResults.length - 1, quickSelected + delta));
+    const top = quickSelected * QUICK_ROW_HEIGHT;
+    if (top < quickListEl.scrollTop) quickListEl.scrollTop = top;
+    else if (top + QUICK_ROW_HEIGHT > quickListEl.scrollTop + quickHeight) quickListEl.scrollTop = top + QUICK_ROW_HEIGHT - quickHeight;
+    quickScrollTop = quickListEl.scrollTop;
   }
 
   function leaveDefs() {
@@ -214,6 +298,9 @@
   function close() {
     open = false;
     fileOpen = false;
+    explorerOpened = false;
+    quickOpen = false;
+    quickReturnFocus = null;
   }
 
   async function openFile() {
@@ -223,10 +310,8 @@
     editorEl?.focus({ preventScroll: true });
   }
 
-  // back to the results, previewing the selected one again
   async function closeFile() {
     fileOpen = false;
-    previewedSelectionKey = null;
     await tick();
     inputEl?.focus();
   }
@@ -261,19 +346,25 @@
   $effect(() => {
     if (!open || mode !== "search") return;
     const q = query.trim();
+    const searchRepo = repo;
+    const searchHead = headSha;
+    const searchRef = headRef;
     // too-short queries match a huge chunk of the repo — never send them; the cleanup below aborts any in-flight one
     if (q.length < MIN_SEARCH_QUERY) {
       matches = [];
+      matchedQuery = "";
       searchStatus = "ok";
       return;
     }
+    if (untrack(() => q === matchedQuery && searchStatus === "ok")) return;
     const token = {};
+    searchStatus = "loading";
     searchToken = token;
     const controller = new AbortController();
     const run = async (attempt = 0) => {
       try {
-        const res = await repoSearch(repo, headSha, headRef, q, controller.signal);
-        if (searchToken !== token) return;
+        const res = await repoSearch(searchRepo, searchHead, searchRef, q, controller.signal);
+        if (searchToken !== token || controller.signal.aborted) return;
         if (res.status === "ok") {
           matches = res.matches;
           matchedQuery = q;
@@ -284,16 +375,18 @@
           setTimeout(() => searchToken === token && run(attempt + 1), 800);
         } else {
           matches = [];
+          matchedQuery = "";
           searchStatus = res.status === "fetching" ? "not-found" : res.status;
         }
       } catch (err) {
         if (searchToken === token && err?.name !== "AbortError") {
           matches = [];
+          matchedQuery = "";
           searchStatus = "error";
         }
       }
     };
-    const timer = setTimeout(run, 100);
+    const timer = setTimeout(run, 25);
     return () => {
       clearTimeout(timer);
       controller.abort();
@@ -337,20 +430,6 @@
     previews = after;
   }
 
-  let previewedSelectionKey = null;
-
-  // sidebar selection previews in the editor without touching history
-  $effect(() => {
-    const c = current;
-    if (!open || !c || fileOpen) return;
-    const key = `${headSha}\n${mode}\n${selected}\n${c.path}\n${c.line ?? ""}`;
-    untrack(() => {
-      if (key === previewedSelectionKey) return;
-      previewedSelectionKey = key;
-      view = { path: c.path, line: c.line ?? null };
-    });
-  });
-
   $effect(() => {
     if (open && view) ensurePreview(view.path);
   });
@@ -390,11 +469,15 @@
     view = hist[histIndex];
   }
 
+  // An arrow move previews the selection without touching history; typing and arriving results never
+  // fetch candidates, and the editor's sidebar changes the file only on Enter or click.
   function move(delta) {
     if (!results.length) return;
     selected = Math.max(0, Math.min(results.length - 1, selected + delta));
+    const r = results[selected];
+    if (!workspace && !fileOpen) view = { path: r.path, line: r.line ?? null };
     requestAnimationFrame(() => {
-      document.querySelector(".ts-item.active")?.scrollIntoView({ block: "nearest" });
+      listEl?.querySelector(".ts-item.active")?.scrollIntoView({ block: "nearest" });
     });
   }
 
@@ -408,7 +491,7 @@
       return;
     }
     navigateTo({ path: r.path, line: r.line ?? null });
-    if (prefs.fileFinderEnabled) openFile();
+    if (prefs.fileFinderEnabled && !workspace) openFile();
   }
 
   let defToken;
@@ -432,6 +515,7 @@
         defsSymbol = symbol;
         mode = "defs";
         selected = 0;
+        if (!workspace && !fileOpen) view = { path: res.candidates[0].path, line: res.candidates[0].line ?? null };
       } else {
         showFlash(`no definition for ${symbol}`);
       }
@@ -504,22 +588,37 @@
         return;
       }
       if (!open) return;
-      if ((fileOpen || mode === "explore") && e.target.closest?.(".file-find")) return;
-      if ((fileOpen || mode === "explore") && meta && !e.shiftKey && key === "f") fileFind?.show();
+      if (quickOpen) {
+        if (e.key === "Escape") closeQuickOpen();
+        else if (e.key === "ArrowDown") quickMove(1);
+        else if (e.key === "ArrowUp") quickMove(-1);
+        else if (e.key === "Enter") commitQuickOpen();
+        else if (e.key === "Tab") quickInputEl?.focus({ preventScroll: true });
+        else {
+          e.stopImmediatePropagation();
+          return;
+        }
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        return;
+      }
+      const editing = fileOpen || workspace;
+      if (editing && e.target.closest?.(".file-find")) return;
+      if (editing && meta && !e.shiftKey && key === "f") fileFind?.show();
       else if (fileOpen && e.key === "Escape") findOpen ? fileFind?.hide() : closeFile();
-      else if (mode === "explore" && findOpen && e.key === "Escape") fileFind?.hide();
+      else if (workspace && findOpen && e.key === "Escape") fileFind?.hide();
+      else if (workspace && mode === "defs" && e.key === "Escape") leaveDefs();
+      else if (workspace && mode === "search" && e.key === "Escape") activate("explore");
       else if (fileOpen && !meta && !e.altKey && FILE_SCROLL_KEYS.has(e.key)) scrollFile(e.key);
       else if (e.key === "Escape") {
         close();
         onBack?.();
       } else if (meta && e.key === "[") goBack();
       else if (meta && e.key === "]") goForward();
+      else if (workspace && e.target.closest?.(".ts-editor") && !meta && !e.altKey && FILE_SCROLL_KEYS.has(e.key)) scrollFile(e.key);
       else if (mode === "explore") {
-        if (e.target.closest?.(".ts-editor") && !meta && !e.altKey && FILE_SCROLL_KEYS.has(e.key)) {
-          scrollFile(e.key);
-          e.preventDefault();
-        }
-        if (e.key.length === 1 && e.key !== " " && !meta && !e.altKey) e.stopImmediatePropagation();
+        // the tree owns its navigation keys; anything else, or any key without a focused owner, stops here
+        if (!meta && !e.altKey && ((e.key.length === 1 && e.key !== " ") || !rootEl?.contains(e.target))) e.stopImmediatePropagation();
         return;
       }
       else if (fileOpen) {
@@ -542,13 +641,18 @@
     return () => window.removeEventListener("keydown", onKey, { capture: true });
   });
 
+  // Keys the editor's own controls leave unhandled bubble to the page beneath, whose window listeners act on single keys.
+  function holdKeys(e) {
+    if (!e.metaKey && !e.ctrlKey) e.stopPropagation();
+  }
+
   const tail = (p) => p.slice(p.lastIndexOf("/") + 1);
 </script>
 
 {#snippet marked(text, ranges)}{#each matchRuns([{ content: text }], ranges) as run}{#if run.hit}<mark class="ts-hl">{run.content}</mark>{:else}{run.content}{/if}{/each}{/snippet}
 
 {#if open}
-  <div class="ts-root" class:full={fileOpen} role="dialog" aria-label="code browser">
+  <div class="ts-root" class:full={fileOpen} role="dialog" aria-label="code browser" tabindex="-1" bind:this={rootEl} onkeydown={workspace ? holdKeys : undefined}>
     <div class="ts-side">
       <div class="ts-tabs">
         <button class="ts-tab" class:on={mode === "search"} onclick={() => activate("search")}>
@@ -584,6 +688,7 @@
       {/if}
       <div class="ts-count">
         {#if searchStatus === "fetching" || filesStatus === "fetching"}fetching…
+        {:else if mode === "search" && searchStatus === "loading"}searching…
         {:else if searchStatus === "fetch-failed" || filesStatus === "fetch-failed"}cache fetch failed
         {:else if searchStatus === "error" || filesStatus === "error"}request failed
         {:else if searchStatus === "not-found" || filesStatus === "not-found"}sha not found
@@ -592,10 +697,13 @@
         {:else if results.length}{selected + 1}/{results.length}
         {:else if (mode === "search" ? query.trim() : true)}no matches{/if}
       </div>
-      <div class="ts-list" onmousemove={trackMouse}>
-        {#if mode === "explore"}
-          <FileTree bind:this={fileTree} files={treeFiles} selectedPath={view?.path} onSelect={(path) => navigateTo({ path })} browse />
-        {:else}
+      {#if workspace}
+        <div class="ts-list" hidden={mode !== "explore"}>
+          <FileTree bind:this={fileTree} files={treeFiles} selectedPath={view?.path} onSelect={(path) => navigateTo({ path })} browse active={mode === "explore"} />
+        </div>
+      {/if}
+      {#if mode !== "explore"}
+      <div class="ts-list" bind:this={listEl} onmousemove={trackMouse}>
         {#each groups as group (group.path)}
           {#if mode !== "files"}
           <div class="ts-group-head mono" title={group.path}>
@@ -627,8 +735,8 @@
             </button>
           {/each}
         {/each}
-        {/if}
       </div>
+      {/if}
     </div>
     <div class="ts-main">
       <div class="ts-bar">
@@ -646,7 +754,7 @@
         {#if !(fileOpen && findOpen)}
           <span class="ts-hint">ctrl+click → definition{onOpenHistory ? " · right-click → mention history" : ""}</span>
         {/if}
-        {#if fileOpen || mode === "explore"}
+        {#if fileOpen || workspace}
           <FileFind bind:this={fileFind} bind:open={findOpen} root={editorEl} lines={preview?.status === "ready" ? preview.lines : []} revision={preview} />
         {/if}
         <button class="ts-nav shortcut" onclick={fileOpen ? closeFile : close} title={fileOpen ? "Back to results" : "Close"} aria-label={fileOpen ? "Back to results" : "Close"}>
@@ -681,6 +789,63 @@
         {/if}
       </div>
     </div>
+    {#if quickOpen}
+      <div
+        class="ts-quick-scrim"
+        role="presentation"
+        onmousedown={(e) => {
+          e.preventDefault();
+          closeQuickOpen();
+        }}
+      >
+        <div class="ts-quick" role="dialog" tabindex="-1" aria-label="Go to file" onmousedown={(e) => e.stopPropagation()}>
+          <input
+            class="ts-input mono"
+            bind:this={quickInputEl}
+            bind:value={quickQuery}
+            oninput={() => {
+              quickSelected = 0;
+              quickScrollTop = 0;
+              if (quickListEl) quickListEl.scrollTop = 0;
+            }}
+            placeholder="Go to file…"
+            spellcheck="false"
+            autocomplete="off"
+          />
+          {#if filesStatus !== "ok" || !quickResults.length}
+            <div class="ts-count">
+              {#if filesStatus === "loading"}loading…
+              {:else if filesStatus === "fetching"}fetching…
+              {:else if filesStatus === "fetch-failed"}cache fetch failed
+              {:else if filesStatus === "not-found"}sha not found
+              {:else if filesStatus !== "ok"}request failed
+              {:else}no matches{/if}
+            </div>
+          {/if}
+          <div class="ts-list" bind:this={quickListEl} onmousemove={trackMouse} onscroll={(event) => (quickScrollTop = event.currentTarget.scrollTop)}>
+            <div style:height="{quickStart * QUICK_ROW_HEIGHT}px" aria-hidden="true"></div>
+            {#each quickResults.slice(quickStart, quickEnd) as item, offset (item.path)}
+              {@const i = quickStart + offset}
+              <button
+                class="ts-item mono"
+                tabindex="-1"
+                class:active={i === quickSelected}
+                onmouseenter={(e) => {
+                  if (e.screenX !== lastMouseX || e.screenY !== lastMouseY) quickSelected = i;
+                }}
+                onclick={() => commitQuickOpen(i)}
+              >
+                <span class="ts-name">{#if item.positions}{@render marked(tail(item.path), positionRanges(item.positions, item.path.lastIndexOf("/") + 1))}{:else}{tail(item.path)}{/if}</span>
+                <span class="ts-dir">{#if item.positions}{@render marked(item.path, positionRanges(item.positions))}{:else}{item.path}{/if}</span>
+                {#if item.changed}<span class="ts-diff badge review">diff</span>{/if}
+                {#if i === quickSelected}<Kbd keys="enter" />{/if}
+              </button>
+            {/each}
+            <div style:height="{Math.max(0, quickResults.length - quickEnd) * QUICK_ROW_HEIGHT}px" aria-hidden="true"></div>
+          </div>
+        </div>
+      </div>
+    {/if}
   </div>
 {/if}
 
@@ -1005,6 +1170,40 @@
   .pl-code {
     padding: 0 14px;
     color: var(--text);
+  }
+  .ts-quick-scrim {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    padding-top: 10vh;
+  }
+  .ts-quick {
+    display: flex;
+    flex-direction: column;
+    width: min(600px, calc(100% - 32px));
+    max-height: 60vh;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow-dialog);
+    overflow: hidden;
+  }
+  .ts-quick .ts-item {
+    padding-left: 14px;
+    height: 28px;
+    box-sizing: border-box;
+  }
+  .ts-quick .ts-list {
+    padding: 0;
+  }
+  .ts-quick .ts-name {
+    max-width: 50%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   @media (max-width: 760px) {

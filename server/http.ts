@@ -169,7 +169,8 @@ import { spawn } from "node:child_process";
 import { repoUsersCached } from "./repoUsers.ts";
 import { matchesQuery, parseQuery, wantsHistoricalPrs, type QueryTarget } from "./query.ts";
 import { buildWebhookRoutes } from "./webhooks.ts";
-import { findDefinition, grep, localFileHistoryPatch, symbolMentionHistory, withSearchCtx } from "./repoSearch.ts";
+import { findDefinition, localFileHistoryPatch, symbolMentionHistory, withSearchCtx } from "./repoSearch.ts";
+import { prewarmCodeSearch, searchCodeSnippets } from "./codeSearch.ts";
 import { lsTree, showFile } from "./gitShow.ts";
 import { QUICK_ACTIONS_PATH } from "../shared/quickActions.js";
 import { aggregateReviewScore, aggregateReviewStale, currentReviewerScores, reviewBots } from "./reviewScore.ts";
@@ -3213,7 +3214,7 @@ async function handleRepoSearch(req: Request, url: URL): Promise<Response> {
   if (q.length < MIN_SEARCH_QUERY) return json({ status: "ok", matches: [] });
   return withSearchCtx(repo, headRef, sha, async (ctx) => {
     if (ctx.status !== "ok") return json({ status: ctx.status });
-    return json({ status: "ok", matches: await grep(ctx.checkout, sha, q, req.signal) });
+    return json({ status: "ok", matches: await searchCodeSnippets(ctx.checkout, repo, sha, q, req.signal) });
   });
 }
 async function handleRepoDefinition(req: Request, url: URL): Promise<Response> {
@@ -3245,6 +3246,7 @@ async function handleRepoFiles(url: URL): Promise<Response> {
   if (!REPO_RE.test(repo) || !FULL_SHA_RE.test(sha) || !REF_RE.test(headRef)) return json({ error: "invalid repo/sha/headRef" }, 400);
   return withSearchCtx(repo, headRef, sha, async (ctx) => {
     if (ctx.status !== "ok") return json({ status: ctx.status });
+    void prewarmCodeSearch(ctx.checkout, repo, sha);
     const generated = await generatedFilesFromMirror(repo, sha, sha, "two-dot");
     if (generated.status !== "ok") return json({ status: generated.status });
     return json({ status: "ok", paths: lsTree(ctx.checkout, repo, sha), generatedPaths: generated.paths });

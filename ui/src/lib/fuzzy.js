@@ -1,32 +1,36 @@
 // Subsequence matching rewards consecutive runs and path boundaries.
 export function fuzzyMatch(query, str) {
-  const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  return matchTerms(query.toLowerCase().trim().split(/\s+/).filter(Boolean), str);
+}
+
+function matchTerms(terms, str) {
   if (!terms.length) return { score: 0, positions: [] };
   const s = str.toLowerCase();
   const positions = new Set();
   let score = 0;
   for (const term of terms) {
     let best = null;
-    for (let start = 0; start < s.length; start++) {
-      if (s[start] !== term[0]) continue;
-      const hits = [];
-      let qi = 0;
+    const hits = new Array(term.length);
+    for (let start = s.indexOf(term[0]); start !== -1; start = s.indexOf(term[0], start + 1)) {
       let prev = -2;
       let run = 0;
       let termScore = 0;
-      for (let si = start; si < s.length && qi < term.length; si++) {
-        if (s[si] !== term[qi]) continue;
+      let si = start;
+      let qi = 0;
+      for (; qi < term.length; qi++) {
+        if (qi > 0) si = s.indexOf(term[qi], prev + 1);
+        if (si === -1) break;
         let bonus = 1;
         if (si === prev + 1) bonus += ++run * 3;
         else run = 0;
         const before = si === 0 ? "/" : s[si - 1];
         if (before === "/" || before === "." || before === "_" || before === "-") bonus += 5;
         termScore += bonus;
-        hits.push(si);
+        hits[qi] = si;
         prev = si;
-        qi++;
       }
-      if (qi === term.length && (!best || termScore > best.score)) best = { score: termScore, positions: hits };
+      if (qi !== term.length) break;
+      if (!best || termScore > best.score) best = { score: termScore, positions: hits.slice() };
     }
     if (!best) return null;
     score += best.score;
@@ -36,9 +40,10 @@ export function fuzzyMatch(query, str) {
 }
 
 export function fuzzyRank(query, paths) {
+  const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
   const scored = [];
   for (const path of paths) {
-    const m = fuzzyMatch(query, path);
+    const m = matchTerms(terms, path);
     if (m) scored.push({ path, score: m.score, positions: m.positions });
   }
   scored.sort((a, b) => b.score - a.score || a.path.length - b.path.length);
