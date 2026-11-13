@@ -3267,23 +3267,20 @@ async function handleRepoFile(url: URL): Promise<Response> {
   });
 }
 
-// Branch tips for browsing a tracked repository outside a PR. The fetch keeps tips current; when GitHub is
-// unreachable the mirror's last fetched refs still list.
+// Resolve branch tips only after a fresh fetch; don't present an old staging revision as current.
 async function handleRepoBranches(url: URL): Promise<Response> {
   if (!readSettings().file_finder_enabled) return json({ error: "not found" }, 404);
   const repo = url.searchParams.get("repo") ?? "";
   if (!REPO_RE.test(repo)) return json({ error: "invalid repo" }, 400);
-  let fetchFailed = false;
   try {
     await fetchMirror(repo, INCREMENTAL_FETCH_TIMEOUT_MS);
   } catch (error) {
-    if (!(error instanceof MirrorFetchError && error.kind === "deadline")) {
-      fetchFailed = true;
-      console.warn(`mirror fetch before listing branches failed for ${repo}:`, error);
-    }
+    if (error instanceof MirrorFetchError && error.kind === "deadline") return json({ status: "fetching" });
+    console.warn(`mirror fetch before listing branches failed for ${repo}:`, error);
+    return json({ status: "fetch-failed" });
   }
   const result = await branchesFromMirror(repo);
-  if (result.status === "no-mirror") return json({ status: fetchFailed ? "fetch-failed" : "fetching" });
+  if (result.status === "no-mirror") return json({ status: "fetching" });
   return json(result);
 }
 

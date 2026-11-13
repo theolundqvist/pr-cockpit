@@ -7,8 +7,7 @@
   import Kbd from "./Kbd.svelte";
   import Telescope from "./Telescope.svelte";
 
-  // Outside a PR, Cmd+P and Cmd+Shift+F first pick a tracked repository and one of its branches.
-  let { repos, active } = $props();
+  let { repos, active, preferredRepo = null } = $props();
 
   const MAX_ROWS = 200;
   const BRANCH_RETRY_MS = 800;
@@ -60,10 +59,11 @@
     inputEl?.focus();
   }
 
-  function start(nextMode) {
+  export function start(nextMode) {
     mode = nextMode;
-    if (repos.length === 1) {
-      pickRepo(repos[0]);
+    const initialRepo = preferredRepo ?? repo ?? (repos.length === 1 ? repos[0] : null);
+    if (initialRepo) {
+      pickRepo(initialRepo, "staging", true);
       return;
     }
     step = "repo";
@@ -73,16 +73,16 @@
     focusInput();
   }
 
-  function pickRepo(name, preferredBranch = null) {
+  function pickRepo(name, preferredBranch = null, autoOpen = false) {
     repo = name;
     step = "branch";
     query = "";
     selected = 0;
-    loadBranches(name, preferredBranch);
+    loadBranches(name, preferredBranch, autoOpen);
     focusInput();
   }
 
-  async function loadBranches(name, preferredBranch) {
+  async function loadBranches(name, preferredBranch, autoOpen) {
     const token = {};
     branchToken = token;
     branchList = { status: "loading", branches: [] };
@@ -93,6 +93,11 @@
         if (res.status !== "fetching") {
           branchList = { status: res.status, branches: res.branches ?? [] };
           if (preferredBranch && !query.trim()) selected = Math.max(0, branchList.branches.findIndex((branch) => branch.name === preferredBranch));
+          if (autoOpen && !query.trim() && res.status === "ok") {
+            const branch = branchList.branches.find((branch) => branch.name === preferredBranch)
+              ?? branchList.branches.find((branch) => branch.default);
+            if (branch) await choose({ value: branch });
+          }
           return;
         }
         branchList = { status: "fetching", branches: [] };
@@ -107,7 +112,7 @@
   async function choose(row) {
     if (!row) return;
     if (step === "repo") {
-      pickRepo(row.value);
+      pickRepo(row.value, "staging", true);
       return;
     }
     step = null;
@@ -147,7 +152,7 @@
       if (isPromptDialogOpen() || telescopeOpen) return;
       const meta = e.metaKey || e.ctrlKey;
       const key = e.key.toLowerCase();
-      if (meta && !e.altKey && ((e.shiftKey && key === "f") || (!e.shiftKey && key === "p"))) start(e.shiftKey ? "search" : "files");
+      if (meta && !e.altKey && ((e.shiftKey && (key === "f" || key === "e")) || (!e.shiftKey && key === "p"))) start(e.shiftKey ? key === "e" ? "explore" : "search" : "files");
       else if (!step) return;
       else if (e.key === "Escape") back();
       else if (e.key === "ArrowDown") move(1);
@@ -166,7 +171,7 @@
   <div class="finder-scrim" onmousedown={close} role="presentation">
     <div class="finder" role="dialog" tabindex="-1" aria-label={step === "repo" ? "Choose a repository" : "Choose a branch"} onmousedown={(e) => e.stopPropagation()}>
       <div class="finder-head">
-        <span class="finder-mode">{mode === "files" ? "Go to file" : "Search in files"}</span>
+        <span class="finder-mode">{mode === "explore" ? "Explore files" : mode === "files" ? "Find file" : "Search code"}</span>
         {#if step === "branch"}<span class="finder-crumb mono">{repo}</span>{/if}
       </div>
       <input

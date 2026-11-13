@@ -2,14 +2,15 @@
   import { tick } from "svelte";
   import Chevron from "./Chevron.svelte";
 
-  let { files, selectedPath, hoveredPath = null, onSelect, onContextMenu = null } = $props();
+  let { files, selectedPath, hoveredPath = null, onSelect, onContextMenu = null, browse = false } = $props();
 
   const INDENT = 16;
   let lastSelectedPath = null;
   const ROW_HEIGHT = 32;
   const OVERSCAN = 12;
 
-  let collapsedDirs = $state(new Set());
+  let toggledDirs = $state(new Set());
+  let focusedIndex = $state(0);
   let treeEl = $state();
   let windowStart = $state(0);
   let windowEnd = $state(40);
@@ -38,7 +39,7 @@
       });
     });
     compress(root);
-    sumLines(root);
+    if (!browse) sumLines(root);
     return root;
   });
 
@@ -47,7 +48,7 @@
     function append(node, depth) {
       for (const dir of node.dirs.values()) {
         flattened.push({ key: `dir:${dir.path}`, kind: "dir", depth, value: dir });
-        if (!collapsedDirs.has(dir.path)) append(dir, depth + 1);
+        if (expanded(dir.path)) append(dir, depth + 1);
       }
       for (const file of node.files) {
         flattened.push({ key: `file:${file.path}`, kind: "file", depth, value: file });
@@ -116,10 +117,54 @@
     if (end !== windowEnd) windowEnd = end;
   }
 
+  function expanded(path) {
+    return browse ? toggledDirs.has(path) : !toggledDirs.has(path);
+  }
+
   function toggleDir(path) {
-    const next = new Set(collapsedDirs);
+    const next = new Set(toggledDirs);
     next.has(path) ? next.delete(path) : next.add(path);
-    collapsedDirs = next;
+    toggledDirs = next;
+  }
+
+  export function focus() {
+    treeEl?.focus();
+  }
+
+  async function focusRow(index) {
+    focusedIndex = Math.max(0, Math.min(rows.length - 1, index));
+    const root = treeEl.parentElement;
+    const top = scrollGeometry(root).treeTop + focusedIndex * ROW_HEIGHT;
+    if (top < root.scrollTop) root.scrollTop = top;
+    else if (top + ROW_HEIGHT > root.scrollTop + root.clientHeight) root.scrollTop = top + ROW_HEIGHT - root.clientHeight;
+    updateWindow();
+    await tick();
+    treeEl.querySelector(`[data-index="${focusedIndex}"]`)?.focus({ preventScroll: true });
+  }
+
+  function onKey(event) {
+    if (!browse || event.metaKey || event.ctrlKey || event.altKey || !rows.length) return;
+    const row = rows[focusedIndex];
+    if (!row) return;
+    if (event.key === "ArrowDown") focusRow(focusedIndex + 1);
+    else if (event.key === "ArrowUp") focusRow(focusedIndex - 1);
+    else if (event.key === "Home") focusRow(0);
+    else if (event.key === "End") focusRow(rows.length - 1);
+    else if (event.key === "ArrowRight" && row.kind === "dir") {
+      if (!expanded(row.value.path)) toggleDir(row.value.path);
+      else focusRow(focusedIndex + 1);
+    } else if (event.key === "ArrowLeft") {
+      if (row.kind === "dir" && expanded(row.value.path)) toggleDir(row.value.path);
+      else {
+        const parent = rows.slice(0, focusedIndex).findLastIndex((candidate) => candidate.depth < row.depth);
+        if (parent >= 0) focusRow(parent);
+      }
+    } else if (event.key === "Enter" || event.key === " ") {
+      if (row.kind === "dir") toggleDir(row.value.path);
+      else onSelect(row.value.path);
+    } else return;
+    event.preventDefault();
+    event.stopPropagation();
   }
 
   let windowFrame = null;
@@ -154,6 +199,20 @@
   $effect(() => {
     const path = selectedPath;
     if (path === lastSelectedPath) return;
+    if (browse && !files.length) return;
+    if (browse && path) {
+      const next = new Set(toggledDirs);
+      function reveal(node) {
+        for (const dir of node.dirs.values()) {
+          if (path.startsWith(`${dir.path}/`)) {
+            next.add(dir.path);
+            reveal(dir);
+          }
+        }
+      }
+      reveal(tree);
+      if (next.size !== toggledDirs.size) toggledDirs = next;
+    }
     lastSelectedPath = path;
     const index = rows.findIndex((row) => row.kind === "file" && row.value.path === path);
     if (index < 0) return;
@@ -182,27 +241,39 @@
   {/if}
 {/snippet}
 
-<div class="tree" bind:this={treeEl}>
+<div class="tree" class:browse bind:this={treeEl} role="tree" aria-label={browse ? "Repository files" : "Changed files"} tabindex={browse ? 0 : undefined} onkeydown={onKey}>
   <div class="spacer" style="height:{windowStart * ROW_HEIGHT}px" aria-hidden="true"></div>
-  {#each rows.slice(windowStart, windowEnd) as row (row.key)}
+  {#each rows.slice(windowStart, windowEnd) as row, index (row.key)}
     {@const value = row.value}
     {#if row.kind === "dir"}
       <button
         class="row dir"
+        role="treeitem"
+        aria-expanded={browse ? expanded(value.path) : undefined}
+        aria-level={browse ? row.depth + 1 : undefined}
+        tabindex={browse ? -1 : undefined}
+        data-index={windowStart + index}
+        onfocus={() => (focusedIndex = windowStart + index)}
         data-event="tree-dir"
         style="padding-left: {row.depth * INDENT + 8}px"
         onclick={() => toggleDir(value.path)}
         oncontextmenu={onContextMenu && ((event) => onContextMenu(event, `${value.path}/**`))}
       >
         {@render rails(row.depth)}
-        <Chevron direction={collapsedDirs.has(value.path) ? "right" : "down"} size={12} />
+        <Chevron direction={expanded(value.path) ? "down" : "right"} size={12} />
         <svg class="folder-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M1.5 4.5V3a1 1 0 0 1 1-1h3l1.5 2h6.5a1 1 0 0 1 1 1v7.5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z" /></svg>
         <span class="name">{value.name}</span>
-        <span class="counts mono"><span class="add">+{value.additions}</span><span class="del">−{value.deletions}</span></span>
+        {#if !browse}<span class="counts mono"><span class="add">+{value.additions}</span><span class="del">−{value.deletions}</span></span>{/if}
       </button>
     {:else}
       <button
         class="row file"
+        role="treeitem"
+        aria-selected={browse ? value.path === selectedPath : undefined}
+        aria-level={browse ? row.depth + 1 : undefined}
+        tabindex={browse ? -1 : undefined}
+        data-index={windowStart + index}
+        onfocus={() => (focusedIndex = windowStart + index)}
         data-event="tree-file"
         class:selected={value.path === selectedPath}
         class:hovered={value.path === hoveredPath}
@@ -215,7 +286,7 @@
           <svg class="moved-icon" viewBox="0 0 12 12" aria-label="Moved file">
             <path d="M1 3h7V1l3 3-3 3V5H1zm10 6H4v2L1 8l3-3v2h7z"></path>
           </svg>
-        {:else}
+        {:else if !browse}
           <span class="dot {value.tone}"></span>
         {/if}
         <svg class="file-icon {value.icon}" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -238,7 +309,7 @@
           {/if}
         </svg>
         <span class="name">{value.name}</span>
-        {#if !value.isUnchangedRename}
+        {#if !browse && !value.isUnchangedRename}
           <span class="counts mono"><span class="add">+{value.additions}</span><span class="del">−{value.deletions}</span></span>
         {/if}
       </button>
@@ -252,6 +323,8 @@
     display: flex;
     flex-direction: column;
   }
+  .tree.browse .dir .name { direction: ltr; }
+  .row:focus-visible { outline: 2px solid var(--link); outline-offset: -2px; }
   .spacer {
     flex: none;
   }

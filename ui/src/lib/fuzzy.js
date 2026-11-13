@@ -1,27 +1,38 @@
-// subsequence match; rewards consecutive runs and boundary hits (after / . _ -) so basenames rank first
+// Subsequence matching rewards consecutive runs and path boundaries.
 export function fuzzyMatch(query, str) {
-  if (!query) return { score: 0, positions: [] };
-  const q = query.toLowerCase();
+  const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  if (!terms.length) return { score: 0, positions: [] };
   const s = str.toLowerCase();
-  const positions = [];
-  let qi = 0;
+  const positions = new Set();
   let score = 0;
-  let prev = -2;
-  let run = 0;
-  for (let si = 0; si < s.length && qi < q.length; si++) {
-    if (s[si] !== q[qi]) continue;
-    let bonus = 1;
-    if (si === prev + 1) bonus += ++run * 3;
-    else run = 0;
-    const before = si === 0 ? "/" : s[si - 1];
-    if (before === "/" || before === "." || before === "_" || before === "-") bonus += 5;
-    score += bonus;
-    positions.push(si);
-    prev = si;
-    qi++;
+  for (const term of terms) {
+    let best = null;
+    for (let start = 0; start < s.length; start++) {
+      if (s[start] !== term[0]) continue;
+      const hits = [];
+      let qi = 0;
+      let prev = -2;
+      let run = 0;
+      let termScore = 0;
+      for (let si = start; si < s.length && qi < term.length; si++) {
+        if (s[si] !== term[qi]) continue;
+        let bonus = 1;
+        if (si === prev + 1) bonus += ++run * 3;
+        else run = 0;
+        const before = si === 0 ? "/" : s[si - 1];
+        if (before === "/" || before === "." || before === "_" || before === "-") bonus += 5;
+        termScore += bonus;
+        hits.push(si);
+        prev = si;
+        qi++;
+      }
+      if (qi === term.length && (!best || termScore > best.score)) best = { score: termScore, positions: hits };
+    }
+    if (!best) return null;
+    score += best.score;
+    for (const position of best.positions) positions.add(position);
   }
-  if (qi < q.length) return null;
-  return { score: score - s.length * 0.01, positions };
+  return { score: score - s.length * 0.01, positions: [...positions].sort((a, b) => a - b) };
 }
 
 export function fuzzyRank(query, paths) {

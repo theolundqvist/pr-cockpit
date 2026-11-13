@@ -296,6 +296,12 @@
   const settingsSnapshot = cachedView("settings");
   let savedViews = $state(settingsSnapshot ? cachedSavedViews(settingsSnapshot) : []);
   let configuredRepos = $state(settingsSnapshot ? repoList(settingsSnapshot) : []);
+  let finder = $state(null);
+  const repositoryActions = [
+    { mode: "files", label: "Find file", keys: ["cmd", "p"], icon: "M5 2.5h6l4 4V17.5H5zM11 2.5v4h4" },
+    { mode: "search", label: "Search code", keys: ["cmd", "shift", "f"], icon: "m6 5-4 5 4 5m8-10 4 5-4 5m-3-12-2 14" },
+    { mode: "explore", label: "Explore files", keys: ["cmd", "shift", "e"], icon: "M2.5 5V3.5h5l2 2h8v11h-15z" },
+  ];
   let selectedRepos = $state(storedRepositories());
   const peopleSnapshot = storedPeopleFilter();
   let authorFilter = $state(peopleSnapshot.author);
@@ -1921,6 +1927,15 @@
             <span class="quick-action-label">Find a pull request</span>
             <span class="quick-action-shortcut"><Kbd keys={["cmd", "k"]} label="Command K" /></span>
           </button>
+          {#if prefs.fileFinderEnabled}
+            {#each repositoryActions as action}
+              <button class="quick-action" type="button" onclick={() => finder?.start(action.mode)}>
+                <span class="quick-action-icon" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none"><path d={action.icon}></path></svg></span>
+                <span class="quick-action-label">{action.label}</span>
+                <span class="quick-action-shortcut"><Kbd keys={action.keys} /></span>
+              </button>
+            {/each}
+          {/if}
           {#if view === "open"}
             <button class="quick-action" type="button" onclick={openFilter}>
               <span class="quick-action-icon" aria-hidden="true">
@@ -1973,7 +1988,7 @@
   </div>
 </div>
 <RowMediaOverlay list={queueList} prFor={prForMedia} />
-{#if prefs.fileFinderEnabled}<InboxFinder repos={configuredRepos} {active} />{/if}
+{#if prefs.fileFinderEnabled}<InboxFinder bind:this={finder} repos={configuredRepos} preferredRepo={ordered[selected]?.repo ?? (selectedRepos.length === 1 ? selectedRepos[0] : null)} {active} />{/if}
 {#if reminder}
   <RemindPicker anchor={reminder.anchor} onSelect={chooseReminder} onClose={closeReminder} />
 {/if}

@@ -12,6 +12,7 @@
   import { prefs } from "./prefs.svelte.js";
   import Kbd from "./Kbd.svelte";
   import FileFind from "./FileFind.svelte";
+  import FileTree from "./FileTree.svelte";
   import { matchRuns, positionRanges, queryRanges } from "./matchRuns.js";
   import { columnWithin, createDefinitionHover, tokenAtPoint, wordAtPoint } from "./wordAtPoint.js";
 
@@ -41,6 +42,8 @@
   }
   let inputEl = $state(null);
   let editorEl = $state(null);
+  let fileTree = $state(null);
+  let treeFiles = $derived(filePaths.map((path) => ({ path })));
   let previews = $state(new Map());
 
   let view = $state(null); // { path, line } shown in the editor
@@ -77,6 +80,7 @@
 
   let results = $derived.by(() => {
     if (mode === "defs") return defCandidates.map((c) => ({ path: c.path, line: c.line, text: c.text }));
+    if (mode === "explore") return [];
     if (shownPath && filesStatus !== "ok") return [];
     if (mode === "search") {
       const rows = shownPath ? matches.filter((m) => shownPath(m.path)) : matches;
@@ -120,7 +124,7 @@
   // up to 2000 match lines - tokenized in the highlight worker once per (theme, path, line), cached
   // across keystrokes, in batches of one language so the first rows colour before the last are done
   $effect(() => {
-    const rows = mode !== "files" ? results : null;
+    const rows = mode === "search" || mode === "defs" ? results : null;
     const themeName = theme.shiki;
     if (!open || !rows || rows.length === 0) return;
     let cancelled = false;
@@ -196,8 +200,11 @@
       resetList(nextMode);
     }
     await tick();
-    inputEl?.focus();
-    inputEl?.select();
+    if (nextMode === "explore") fileTree?.focus();
+    else {
+      inputEl?.focus();
+      inputEl?.select();
+    }
   }
 
   function leaveDefs() {
@@ -295,6 +302,7 @@
 
   async function ensurePreview(path) {
     if (!path || previews.has(path)) return;
+    const source = `${repo}\0${headSha}`;
     const next = new Map(previews);
     next.set(path, { status: "loading" });
     previews = next;
@@ -311,6 +319,7 @@
     } catch {
       entry = { status: "missing" };
     }
+    if (source !== `${repo}\0${headSha}`) return;
     const after = new Map(previews);
     after.set(path, entry);
     previews = after;
@@ -476,6 +485,12 @@
       if (isPromptDialogOpen()) return;
       const meta = e.metaKey || e.ctrlKey;
       const key = e.key.toLowerCase();
+      if (prefs.fileFinderEnabled && (open || hotkeys) && meta && e.shiftKey && key === "e") {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        activate("explore");
+        return;
+      }
       if ((open || hotkeys) && meta && e.shiftKey && key === "f") {
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -489,15 +504,24 @@
         return;
       }
       if (!open) return;
-      if (fileOpen && e.target.closest?.(".file-find")) return; // its field handles Enter and Escape
-      if (fileOpen && meta && !e.shiftKey && key === "f") fileFind?.show();
+      if ((fileOpen || mode === "explore") && e.target.closest?.(".file-find")) return;
+      if ((fileOpen || mode === "explore") && meta && !e.shiftKey && key === "f") fileFind?.show();
       else if (fileOpen && e.key === "Escape") findOpen ? fileFind?.hide() : closeFile();
+      else if (mode === "explore" && findOpen && e.key === "Escape") fileFind?.hide();
       else if (fileOpen && !meta && !e.altKey && FILE_SCROLL_KEYS.has(e.key)) scrollFile(e.key);
       else if (e.key === "Escape") {
         close();
         onBack?.();
       } else if (meta && e.key === "[") goBack();
       else if (meta && e.key === "]") goForward();
+      else if (mode === "explore") {
+        if (e.target.closest?.(".ts-editor") && !meta && !e.altKey && FILE_SCROLL_KEYS.has(e.key)) {
+          scrollFile(e.key);
+          e.preventDefault();
+        }
+        if (e.key.length === 1 && e.key !== " " && !meta && !e.altKey) e.stopImmediatePropagation();
+        return;
+      }
       else if (fileOpen) {
         // the browser covers the page, whose single-key shortcuts must not act beneath it
         if (!meta && !e.altKey) e.stopImmediatePropagation();
@@ -533,17 +557,22 @@
         <button class="ts-tab" class:on={mode === "files"} onclick={() => activate("files")}>
           files {#if mode !== "files"}<Kbd keys={["cmd", "p"]} />{/if}
         </button>
+        {#if prefs.fileFinderEnabled}
+        <button class="ts-tab" class:on={mode === "explore"} onclick={() => activate("explore")}>
+          explore {#if mode !== "explore"}<Kbd keys={["cmd", "shift", "e"]} />{/if}
+        </button>
+        {/if}
         {#if mode === "defs"}
           <span class="ts-tab on ts-tab-defs" title="definitions of {defsSymbol}">defs: {defsSymbol}</span>
         {/if}
-        {#if context}<span class="ts-context mono" title={context}>{context}</span>{/if}
       </div>
+      {#if context}<div class="ts-source"><span class="ts-context mono" title={context}>{context}</span><span class="mono" title={headSha}>{headSha.slice(0, 7)}</span></div>{/if}
       {#if mode === "defs"}
         <div class="ts-defbar mono">
           <span class="ts-defsym">{results.length} definition{results.length === 1 ? "" : "s"} of {defsSymbol}</span>
           <button class="ts-defback" onclick={leaveDefs}>back</button>
         </div>
-      {:else}
+      {:else if mode !== "explore"}
         <input
           class="ts-input mono"
           bind:this={inputEl}
@@ -558,19 +587,25 @@
         {:else if searchStatus === "fetch-failed" || filesStatus === "fetch-failed"}cache fetch failed
         {:else if searchStatus === "error" || filesStatus === "error"}request failed
         {:else if searchStatus === "not-found" || filesStatus === "not-found"}sha not found
-        {:else if shownPath && filesStatus === "loading"}loading…
+        {:else if filesStatus === "loading" && (shownPath || mode !== "search")}loading…
+        {:else if mode === "explore"}{filePaths.length.toLocaleString()} files
         {:else if results.length}{selected + 1}/{results.length}
         {:else if (mode === "search" ? query.trim() : true)}no matches{/if}
       </div>
       <div class="ts-list" onmousemove={trackMouse}>
+        {#if mode === "explore"}
+          <FileTree bind:this={fileTree} files={treeFiles} selectedPath={view?.path} onSelect={(path) => navigateTo({ path })} browse />
+        {:else}
         {#each groups as group (group.path)}
+          {#if mode !== "files"}
           <div class="ts-group-head mono" title={group.path}>
             <span class="ts-name"
               >{#if prefs.fileFinderEnabled && group.items[0].positions}{@render marked(tail(group.path), positionRanges(group.items[0].positions, group.path.lastIndexOf("/") + 1))}{:else}{tail(group.path)}{/if}</span
             >
-            <span class="ts-dir">{group.path}</span>
+            <span class="ts-dir">{#if prefs.fileFinderEnabled && group.items[0].positions}{@render marked(group.path, positionRanges(group.items[0].positions))}{:else}{group.path}{/if}</span>
             {#if mode !== "files"}<span class="ts-gc">{group.items.length}</span>{/if}
           </div>
+          {/if}
           {#each group.items as item (item.index)}
             {@const toks = item.line != null ? snipTokens.get(snipKey(item.path, item.text, theme.shiki)) : null}
             <button
@@ -592,6 +627,7 @@
             </button>
           {/each}
         {/each}
+        {/if}
       </div>
     </div>
     <div class="ts-main">
@@ -610,7 +646,7 @@
         {#if !(fileOpen && findOpen)}
           <span class="ts-hint">ctrl+click → definition{onOpenHistory ? " · right-click → mention history" : ""}</span>
         {/if}
-        {#if fileOpen}
+        {#if fileOpen || mode === "explore"}
           <FileFind bind:this={fileFind} bind:open={findOpen} root={editorEl} lines={preview?.status === "ready" ? preview.lines : []} revision={preview} />
         {/if}
         <button class="ts-nav shortcut" onclick={fileOpen ? closeFile : close} title={fileOpen ? "Back to results" : "Close"} aria-label={fileOpen ? "Back to results" : "Close"}>
@@ -684,6 +720,15 @@
   :global(.app-shell.shell) .ts-tabs {
     padding-left: 84px;
   }
+  .ts-source {
+    display: flex;
+    gap: 12px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border-soft);
+    color: var(--text-faint);
+    font-size: 11px;
+  }
+  .ts-source .ts-context { margin-left: 0; flex: 1; }
   .ts-context {
     margin-left: auto;
     min-width: 0;

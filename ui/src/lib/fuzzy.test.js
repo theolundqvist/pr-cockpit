@@ -19,6 +19,17 @@ describe("fuzzyMatch", () => {
   test("empty query matches anything with zero score", () => {
     expect(fuzzyMatch("", "anything")).toEqual({ score: 0, positions: [] });
   });
+
+  test("matches directory and filename terms in either order with exact highlight positions", () => {
+    const path = "src/runtime/commands.ts";
+    for (const query of ["runtime cmd", "cmd runtime", " runtime   cmd "]) {
+      const match = fuzzyMatch(query, path);
+      expect(match).not.toBeNull();
+      expect(match.positions.map((index) => path[index]).join("")).toBe("runtimecmd");
+      expect(new Set(match.positions).size).toBe(match.positions.length);
+    }
+    expect(fuzzyMatch("runtime nonexistent", path)).toBeNull();
+  });
 });
 
 describe("fuzzyRank", () => {
