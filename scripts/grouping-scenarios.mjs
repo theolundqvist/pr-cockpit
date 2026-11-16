@@ -89,3 +89,75 @@ export function groupingScenarios() {
     },
   }));
 }
+
+const NESTED_TITLES = [
+  "feat(outlook): Sync folders on open",
+  "feat(outlook/send): Retry sends after reconnect",
+  "fix(outlook/send): Keep the draft when sending fails",
+  "feat(outlook/send/queue): Drain the outbox in order",
+  "fix(outlook-calendar): Show recurring invites",
+  "feat(billing): Add workspace invoices",
+];
+
+// Feature scopes nest on `/`; `collapsed` also folds `outlook/send` and then all of `outlook` from
+// their headers and checks that the counts, rows, keyboard cursor, and persistence follow.
+export function nestedGroupingScenarios() {
+  return ["nested", "collapsed"].map((mode) => ({
+    name: `inbox-grouping-${mode}`,
+    route: "#/",
+    ready: ".inbox-layout .queue-group",
+    prepare: async ({ baseURL }) => {
+      const previous = await fetch(`${baseURL}/api/settings`).then((response) => response.json());
+      const put = (prGrouping) => fetch(`${baseURL}/api/settings`, {
+        method: "PUT", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ pr_grouping: prGrouping }),
+      });
+      await put({ mode: "feature", groups: previous.pr_grouping.groups });
+      return () => put(previous.pr_grouping);
+    },
+    beforeGoto: async (page) => {
+      await page.addInitScript(() => {
+        if (!sessionStorage.getItem("nested-grouping-fixture")) {
+          localStorage.removeItem("cockpit:collapsed-groups");
+          sessionStorage.setItem("nested-grouping-fixture", "1");
+        }
+      });
+      await page.route("**/api/inbox", async (route) => {
+        const response = await route.fetch();
+        const data = await response.json();
+        const seed = data.prs[0];
+        data.prs = NESTED_TITLES.map((title, index) => ({ ...seed, number: 600 + index, title,
+          baseRef: "main", headRef: `nested-${index}`, rank: null, labels: [], readyForReview: false,
+          approvedForSafeMerge: false, mergeFailed: false, isDraft: false }));
+        await route.fulfill({ response, json: data });
+      });
+    },
+    interact: async (page) => {
+      if (mode !== "collapsed") return;
+      const header = (label) => page.locator(".group-toggle").filter({ has: page.getByText(label, { exact: true }) });
+      await page.keyboard.press("j");
+      await page.keyboard.press("j");
+      await header("send").click();
+      await page.locator(`a[href$="/602"]`).waitFor({ state: "hidden" });
+      if (!(await page.locator(".row.selected").getAttribute("href")).endsWith("/604")) throw new Error("Collapsing did not move the cursor to the next listed row");
+      await page.reload();
+      await page.locator(".inbox-layout .queue-group").first().waitFor();
+      if (await page.locator(`a[href$="/601"]`).count()) throw new Error("Collapsed subgroup did not persist");
+      await header("outlook").click();
+      await page.locator(`a[href$="/600"]`).waitFor({ state: "hidden" });
+    },
+    verify: async (page) => {
+      const sections = await page.locator(".queue-group:not(.archived-group)").evaluateAll((nodes) => nodes.map((node) => [
+        node.querySelector(".group-label").textContent.replace(/\s+/g, " ").trim(),
+        getComputedStyle(node).getPropertyValue("--depth").trim(),
+        node.querySelectorAll("a.row").length,
+      ].join(":")));
+      const expected = mode === "nested"
+        ? ["billing 1:0:1", "outlook 4:0:1", "send 3:1:2", "queue 1:2:1", "outlook-calendar 1:0:1"]
+        : ["billing 1:0:1", "outlook 4:0:0", "outlook-calendar 1:0:1"];
+      if (sections.join("|") !== expected.join("|")) throw new Error(`Unexpected nested sections: ${sections.join("|")}`);
+      const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
+      if (overflow) throw new Error("Nested groups overflow the viewport");
+    },
+  }));
+}

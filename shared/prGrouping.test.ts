@@ -7,6 +7,7 @@ test("feature groups come only from the title scope, ignoring keyword configurat
   expect(categoryForPr("fix: Correct billing totals", config)).toBe("other");
   expect(categoryForPr("Fix billing", config)).toBe("other");
   expect(categoryForPr("chore(other): Tidy", config)).toBe("other");
+  expect(categoryForPr("feat( Outlook / Send/ ): Retry", config)).toBe("feature:outlook/send");
 });
 
 test("types follow the title contract, including drafts and scoped breaking changes", () => {

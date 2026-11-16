@@ -21,7 +21,7 @@ export function cookingScenarios() {
       ] } }));
       await page.addInitScript(() => {
         if (!sessionStorage.getItem("cooking-fixture")) {
-          localStorage.removeItem("cockpit:cooking-hidden");
+          localStorage.removeItem("cockpit:collapsed-groups");
           localStorage.setItem("cockpit:kitchen-seen", JSON.stringify({ "fixture/cockpit#509:2026-07-14T09:30:00Z": true }));
           sessionStorage.setItem("cooking-fixture", "1");
         }
@@ -227,7 +227,7 @@ export function readyForReviewScenario() {
       });
     },
     beforeGoto: async (page) => {
-      await page.addInitScript(() => localStorage.removeItem("cockpit:cooking-hidden"));
+      await page.addInitScript(() => localStorage.removeItem("cockpit:collapsed-groups"));
       await page.route("**/api/inbox", async (route) => {
         const response = await route.fetch();
         const data = await response.json();

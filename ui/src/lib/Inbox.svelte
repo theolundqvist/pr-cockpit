@@ -70,15 +70,37 @@
   }
 
   let keybindAgents = $derived(prefs.agents.filter((a) => a.trigger === "keybind" && a.enabled && a.keybind));
-  let cookingHidden = $state(localStorage.getItem("cockpit:cooking-hidden") === "true");
+  // Collapsed section ids; Cooking's former Show/Hide preference carries over once.
+  function storedCollapsedGroups() {
+    const ids = new Set();
+    try {
+      for (const id of JSON.parse(localStorage.getItem("cockpit:collapsed-groups") ?? "[]")) if (typeof id === "string") ids.add(id);
+    } catch {}
+    if (localStorage.getItem("cockpit:cooking-hidden") === "true") {
+      ids.add("cooking");
+      localStorage.setItem("cockpit:collapsed-groups", JSON.stringify([...ids]));
+    }
+    localStorage.removeItem("cockpit:cooking-hidden");
+    return ids;
+  }
+  let collapsedGroups = $state(storedCollapsedGroups());
   let cookingActive = $derived(prefs.cookingSectionEnabled && view === "open");
-  function toggleCooking() {
-    const key = ordered[selected] && prKey(ordered[selected]);
-    cookingHidden = !cookingHidden;
-    localStorage.setItem("cockpit:cooking-hidden", String(cookingHidden));
-    selected = Math.max(0, ordered.findIndex((pr) => prKey(pr) === key));
+  // Collapsing hides a section's rows and every nested subsection; the cursor stays on its row when
+  // that row remains listed, else moves to the nearest row after it.
+  function toggleGroup(id) {
+    const before = ordered;
+    const at = selected;
+    const next = new Set(collapsedGroups);
+    if (!next.delete(id)) next.add(id);
+    collapsedGroups = next;
+    localStorage.setItem("cockpit:collapsed-groups", JSON.stringify([...next]));
+    const index = new Map(ordered.map((pr, i) => [prKey(pr), i]));
+    const survivor = [...before.slice(at), ...before.slice(0, at).reverse()].find((pr) => index.has(prKey(pr)));
+    selected = survivor ? index.get(prKey(survivor)) : 0;
     multiAnchor = null;
   }
+  const groupCollapsed = (group) => collapsedGroups.has(group.id);
+  const groupUnderCollapsed = (group) => group.ancestors.some((id) => collapsedGroups.has(id));
   let filterOpen = $state(false);
   let groupingSaving = $state(false);
   let filterQuery = $state("");
@@ -806,7 +828,7 @@
     reveal: (id) => revealKey !== null && revealKey === dragKey && dropPlan(dragKey, id) !== null,
   }));
 
-  let openOrdered = $derived(groups.filter((g) => g.id !== "cooking" || !cookingHidden).flatMap((g) => g.items.filter((i) => i.pr).map((i) => i.pr)));
+  let openOrdered = $derived(groups.filter((g) => !groupCollapsed(g) && !groupUnderCollapsed(g)).flatMap((g) => g.items.filter((i) => i.pr).map((i) => i.pr)));
 
   // Warm the first rows in idle time; hover or j/k prioritizes any other PR immediately.
   $effect(() => {
@@ -1871,31 +1893,39 @@
           {/if}
 
           {#each groups as group (group.id)}
-            {@const groupCount = group.items.filter((item) => item.pr).length}
-            <section class="queue-group">
-              <div
-                class="group-label"
-                class:drop-active={dropHint?.key === "header:" + group.id}
-                role="presentation"
-                ondragover={(e) => onDragOverGroup(e, group)}
-                ondrop={(e) => onDropGroup(e, group)}
-              >
-                {#if group.id === "cooking"}
-                  <button class="cooking-toggle" aria-expanded={!cookingHidden} aria-controls="cooking-prs" onclick={toggleCooking}>
-                    <span class="cooking-indicator" aria-hidden="true"></span>
-                    <span>{group.title}</span>
-                    <span class="group-count">{groupCount}</span>
-                    <span class="cooking-description">Kitchen labels</span>
-                    <span class="cooking-action">{cookingHidden ? "Show" : "Hide"} <span aria-hidden="true">{cookingHidden ? "▸" : "▾"}</span></span>
-                  </button>
-                {:else}<span>{group.title}</span>{/if}
-                {#if dropHint?.plan && dropHint.target === group.id}<span class="drop-preview">{describeDrop(dropHint.plan)}</span>{/if}
-                {#if group.id !== "cooking"}<span class="group-count">{groupCount}</span>{/if}
-              </div>
-              {#if group.id !== "cooking" || !cookingHidden}
-                <div class="group-body" id={group.id === "cooking" ? "cooking-prs" : undefined}>{@render groupBody(group)}</div>
-              {/if}
-            </section>
+            {@const collapsed = groupCollapsed(group)}
+            {@const bodyId = group.id === "cooking" ? "cooking-prs" : `group-prs-${group.id}`}
+            {#if !groupUnderCollapsed(group)}
+              <section class="queue-group" class:subgroup={group.depth > 0} class:collapsed style:--depth={group.depth}>
+                <div
+                  class="group-label"
+                  class:drop-active={dropHint?.key === "header:" + group.id}
+                  role="presentation"
+                  ondragover={(e) => onDragOverGroup(e, group)}
+                  ondrop={(e) => onDropGroup(e, group)}
+                >
+                  {#if group.id === "cooking"}
+                    <button class="cooking-toggle" aria-expanded={!collapsed} aria-controls={bodyId} onclick={() => toggleGroup(group.id)}>
+                      <span class="cooking-indicator" aria-hidden="true"></span>
+                      <span>{group.title}</span>
+                      <span class="group-count">{group.total}</span>
+                      <span class="cooking-description">Kitchen labels</span>
+                      <span class="cooking-action">{collapsed ? "Show" : "Hide"} <span aria-hidden="true">{collapsed ? "▸" : "▾"}</span></span>
+                    </button>
+                  {:else}
+                    <button class="group-toggle" type="button" aria-expanded={!collapsed} aria-controls={collapsed ? undefined : bodyId} title={group.title} data-event="inbox.group-collapse" onclick={() => toggleGroup(group.id)}>
+                      <span class="group-chevron" aria-hidden="true"></span>
+                      <span>{group.label}</span>
+                    </button>
+                  {/if}
+                  {#if dropHint?.plan && dropHint.target === group.id}<span class="drop-preview">{describeDrop(dropHint.plan)}</span>{/if}
+                  {#if group.id !== "cooking"}<span class="group-count">{group.total}</span>{/if}
+                </div>
+                {#if !collapsed}
+                  <div class="group-body" id={bodyId}>{@render groupBody(group)}</div>
+                {/if}
+              </section>
+            {/if}
           {/each}
 
           {#if showArchived}
@@ -2033,6 +2063,14 @@
   .cooking-description { font-weight: 400; text-transform: none; letter-spacing: normal; opacity: .65; }
   .cooking-action { margin-left: auto; text-transform: none; letter-spacing: normal; }
   @media (max-width: 700px) { .cooking-description { display: none; } }
+  /* The chevron sits in the header's left padding so an expanded section keeps its usual look. */
+  .group-toggle { display: flex; align-items: center; gap: 4px; min-width: 0; margin-left: -14px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; text-align: left; cursor: pointer; }
+  .group-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+  .group-chevron { width: 5px; height: 5px; flex-shrink: 0; margin: 0 3px 2px 2px; border: solid var(--text-faint); border-width: 0 1.5px 1.5px 0; opacity: 0; transform: rotate(45deg); transition: opacity 120ms, transform 120ms; }
+  .collapsed .group-chevron { margin-bottom: 0; transform: rotate(-45deg); }
+  .group-label:hover .group-chevron, .group-toggle:focus-visible .group-chevron, .collapsed .group-chevron { opacity: 1; }
+  .subgroup { margin-top: 8px; margin-left: calc(var(--depth) * 20px); }
+  .queue-group:has(+ .subgroup) { margin-bottom: 0; }
 
   .row-title-editor {
     display: flex;

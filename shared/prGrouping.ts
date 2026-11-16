@@ -27,11 +27,14 @@ export const DRAFT_PREFIX = "DRAFT ";
 
 export type PrTitle = { draft: boolean; type: string | null; scope: string | null; breaking: boolean; summary: string };
 
+// Scopes nest on `/` (`feat(outlook/send)`); segments are trimmed and empty ones dropped, so
+// `outlook / send` and `outlook//send` name the same group.
 export function parsePrTitle(title: string): PrTitle {
   const draft = title.startsWith(DRAFT_PREFIX);
   const groups = TITLE_RE.exec(title)?.groups;
   if (!groups) return { draft, type: null, scope: null, breaking: false, summary: draft ? title.slice(DRAFT_PREFIX.length) : title };
-  return { draft, type: groups.type!, scope: groups.scope?.trim().toLowerCase() || null, breaking: groups.breaking === "!", summary: groups.summary! };
+  const scope = groups.scope?.toLowerCase().split("/").map((segment) => segment.trim()).filter(Boolean).join("/") || null;
+  return { draft, type: groups.type!, scope, breaking: groups.breaking === "!", summary: groups.summary! };
 }
 
 export function isDraftPr(pr: { title: string; isDraft?: boolean }): boolean {
@@ -59,7 +62,7 @@ export function orderQueueUnits<T extends { title: string; isDraft?: boolean }>(
     .map(({ unit }) => unit);
 }
 
-// Feature groups key on the lowercased title scope; titles without one fall into "other".
+// Feature groups key on the lowercased title scope, nested on `/`; titles without one fall into "other".
 export function categoryForPr(title: string, config: PrGrouping, assignment?: string): string {
   if (config.mode === "manual") return config.groups.some((group) => group.id === assignment) ? `group:${assignment}` : "other";
   const parsed = parsePrTitle(title);

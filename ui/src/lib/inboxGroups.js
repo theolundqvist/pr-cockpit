@@ -64,6 +64,28 @@ function orderGroup(stack, rows, sortUnits = (units) => units) {
   return { units: [...unranked, ...ranked], unrankedCount: unranked.length, items };
 }
 
+const FEATURE = "feature:";
+
+// Every scope path and its ancestors, depth-first: comparing segment by segment keeps a subtree
+// contiguous, where a plain string sort would put `outlook-x` between `outlook` and `outlook/send`.
+function featureCategories(ids) {
+  const paths = new Map();
+  for (const id of ids) {
+    const segments = id.slice(FEATURE.length).split("/");
+    for (let end = 1; end <= segments.length; end++) paths.set(segments.slice(0, end).join("/"), segments.slice(0, end));
+  }
+  const compare = (a, b) => {
+    for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
+    return a.length - b.length;
+  };
+  return [...paths.values()].sort(compare).map((segments) => ({
+    id: FEATURE + segments.join("/"),
+    title: segments.join("/"),
+    label: segments.at(-1),
+    ancestors: segments.slice(0, -1).map((_, i) => FEATURE + segments.slice(0, i + 1).join("/")),
+  }));
+}
+
 // The inbox's section for one PR. `options`: `stack` from prStack, `grouping` (normalized pr_grouping),
 // `assignments` (manual groups by root key), `viewerLogin`, `cooking` (Kitchen sections active),
 // `readyReview` (marked-ready handoffs get their own section), and `safeMergeApproval`.
@@ -83,9 +105,13 @@ export function inboxGroupId(pr, options) {
     : categoryForPr(root.title, options.grouping, options.assignments[prKey(root)]);
 }
 
-// The inbox's ordered sections, each `{ id, title, units, unrankedCount, items }` with `items` holding
-// `{ pr, stacked }` rows and a `{ divider: true }` before pinned roots. Beyond inboxGroupId's options:
-// `listOrder` re-sorts unpinned roots by time, and `reveal(id)` also shows an empty section.
+// The inbox's ordered sections, each `{ id, title, label, depth, ancestors, total, units, unrankedCount, items }`
+// with `items` holding `{ pr, stacked }` rows and a `{ divider: true }` before pinned roots. Feature scopes
+// nest on `/`: `feat(outlook/send)` sits in an `outlook/send` section listed directly after its ancestors,
+// whose `label` is the last segment, `ancestors` the enclosing section ids outermost first, and `total`
+// counts its rows plus every descendant's. An ancestor without rows of its own still heads its subtree.
+// Beyond inboxGroupId's options: `listOrder` re-sorts unpinned roots by time, and `reveal(id)` also shows
+// an empty section.
 export function inboxGroups(prs, options) {
   const { stack, grouping, viewerLogin, listOrder, reveal = () => false } = options;
   const burnt = [];
@@ -109,7 +135,7 @@ export function inboxGroups(prs, options) {
   const mode = grouping.mode;
   const categories = mode === "status" ? GROUP_ORDER.map((id) => ({ id, title: GROUP_TITLES[id] }))
     : [...(mode === "type" ? PR_TYPES.map((type) => ({ id: `type:${type}`, title: TYPE_TITLES[type] }))
-      : mode === "feature" ? [...buckets.keys()].filter((id) => id.startsWith("feature:")).sort().map((id) => ({ id, title: id.slice("feature:".length) }))
+      : mode === "feature" ? featureCategories([...buckets.keys()].filter((id) => id.startsWith(FEATURE)))
       : grouping.groups.map((group) => ({ id: `group:${group.id}`, title: group.name }))),
       { id: "other", title: mode === "manual" ? "Ungrouped" : "Other" }];
   if (options.cooking) categories.push({ id: "cooking", title: "Cooking" });
@@ -118,34 +144,32 @@ export function inboxGroups(prs, options) {
   const statusRank = mode === "feature" ? (pr) => GROUP_ORDER.indexOf(classify(pr, viewerLogin).group) : undefined;
   const sortUnits = (units) => sortPrs(orderQueueUnits(units, statusRank), listOrder);
   const shown = (id, rows) => rows.length > 0 || reveal(id);
-  const statusGroups = categories.filter(({ id }) => shown(id, buckets.get(id) ?? [])).map(({ id, title }) => {
+  const visible = new Set();
+  for (const { id, ancestors = [] } of categories) {
+    if (shown(id, buckets.get(id) ?? [])) for (const shownId of [...ancestors, id]) visible.add(shownId);
+  }
+  const statusGroups = categories.filter(({ id }) => visible.has(id)).map(({ id, title, label = title, ancestors = [] }) => {
     const rows = buckets.get(id) ?? [];
     // Kitchen stages sort independently of review categories; hide/show never changes saved ranks.
     const { units, unrankedCount, items } = id === "cooking"
       ? { units: [], unrankedCount: 0, items: [...sortUnits(rows)].sort((a, b) => cookingStage(a).rank - cookingStage(b).rank).map((pr) => ({ pr })) }
       : orderGroup(stack, rows, sortUnits);
-    return { id, title, units, unrankedCount, items };
+    return { id, title, label, depth: ancestors.length, ancestors, total: rows.length, units, unrankedCount, items };
   });
-  const leading = [];
-  if (burnt.length) {
-    const { units, unrankedCount, items } = orderGroup(stack, burnt, sortUnits);
-    leading.push({ id: "burnt", title: "Burnt", units, unrankedCount, items });
+  const byId = new Map(statusGroups.map((group) => [group.id, group]));
+  for (const group of statusGroups) {
+    const own = buckets.get(group.id)?.length ?? 0;
+    for (const id of group.ancestors) byId.get(id).total += own;
   }
+  const section = (id, title, rows, sort) => ({ id, title, label: title, depth: 0, ancestors: [], total: rows.length, ...orderGroup(stack, rows, sort) });
+  const leading = [];
+  if (burnt.length) leading.push(section("burnt", "Burnt", burnt, sortUnits));
   if (ready.length) {
     // A handoff has no saved order of its own: pins keep their rank but draw no divider here.
-    leading.push({ id: "ready-review", title: "Marked ready", units: [], unrankedCount: 0, items: [...sortUnits(ready)].map((pr) => ({ pr })) });
+    leading.push({ id: "ready-review", title: "Marked ready", label: "Marked ready", depth: 0, ancestors: [], total: ready.length, units: [], unrankedCount: 0, items: [...sortUnits(ready)].map((pr) => ({ pr })) });
   }
-  if (failed.length) {
-    const { units, unrankedCount, items } = orderGroup(stack, failed, sortUnits);
-    leading.push({ id: "merge-failed", title: "FAILED TO MERGE", units, unrankedCount, items });
-  }
-  if (shown("approved", approved)) {
-    const { units, unrankedCount, items } = orderGroup(stack, approved, sortUnits);
-    leading.push({ id: "approved", title: "Approved for safe merge", units, unrankedCount, items });
-  }
-  if (shown("pinned", pinned)) {
-    const { units, unrankedCount, items } = orderGroup(stack, pinned);
-    leading.push({ id: "pinned", title: "Pinned", units, unrankedCount, items });
-  }
+  if (failed.length) leading.push(section("merge-failed", "FAILED TO MERGE", failed, sortUnits));
+  if (shown("approved", approved)) leading.push(section("approved", "Approved for safe merge", approved, sortUnits));
+  if (shown("pinned", pinned)) leading.push(section("pinned", "Pinned", pinned));
   return [...leading, ...statusGroups];
 }

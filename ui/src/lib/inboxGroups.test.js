@@ -71,3 +71,29 @@ test("a stacked child follows its root's section", () => {
   const prs = [pr(1, "feat: base"), pr(2, "fix: on top", { baseRef: "branch-1" })];
   expect(groupsOf(prs)).toEqual([["type:feat", "Features", [1, 2]]]);
 });
+
+test("feature scopes nest on slashes, with ancestors heading their subtree and counting it", () => {
+  const prs = [
+    pr(1, "feat(outlook/send): retry"),
+    pr(2, "fix(outlook-x): typo"),
+    pr(3, "feat(outlook/send/queue): drain"),
+    pr(4, "feat(outlook): sync"),
+    pr(5, "feat(gmail/labels): map"),
+  ];
+  const groups = inboxGroups(prs, {
+    stack: prStack(prs),
+    grouping: normalizePrGrouping({ mode: "feature" }),
+    assignments: {},
+    viewerLogin: "me",
+    listOrder: "queue",
+  });
+  expect(groups.map((group) => [group.id, group.label, group.depth, group.total, group.items.map((item) => item.pr.number)])).toEqual([
+    ["feature:gmail", "gmail", 0, 1, []],
+    ["feature:gmail/labels", "labels", 1, 1, [5]],
+    ["feature:outlook", "outlook", 0, 3, [4]],
+    ["feature:outlook/send", "send", 1, 2, [1]],
+    ["feature:outlook/send/queue", "queue", 2, 1, [3]],
+    ["feature:outlook-x", "outlook-x", 0, 1, [2]],
+  ]);
+  expect(groups.find((group) => group.id === "feature:outlook/send/queue").ancestors).toEqual(["feature:outlook", "feature:outlook/send"]);
+});
