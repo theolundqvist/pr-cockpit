@@ -4,7 +4,7 @@ import { scrollPerformanceScenario, hiddenInboxScenario } from "./scroll-perform
 import { changeSummaryScenario } from "./change-summary-scenarios.mjs";
 import { historyGestureScenario } from "./history-gesture-scenarios.mjs";
 import { cookingScenarios, readyForReviewScenario } from "./cooking-scenarios.mjs";
-import { groupingScenarios } from "./grouping-scenarios.mjs";
+import { groupingScenarios, nestedGroupingScenarios } from "./grouping-scenarios.mjs";
 import { createServer } from "node:net";
 import { inflateSync } from "node:zlib";
 import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
@@ -329,6 +329,7 @@ const scenarios = [
     },
   })),
   ...groupingScenarios(),
+  ...nestedGroupingScenarios(),
   ...cookingScenarios(),
   readyForReviewScenario(),
   ...kitchenCancelScenarios(),
