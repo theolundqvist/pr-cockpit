@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-if [[ "$(/usr/bin/id -u)" == "0" ]]; then echo "UPDATE_FAILED must not run as root" >&2; exit 1; fi
+system_unit_update="a pr-cockpit.service system unit runs from its source checkout and updates with scripts/update-pull, bun install --production --frozen-lockfile, then systemctl restart pr-cockpit.service"
+if [[ "$(/usr/bin/id -u)" == "0" ]]; then echo "UPDATE_FAILED must not run as root; $system_unit_update" >&2; exit 1; fi
 if [[ "$(/usr/bin/uname -s)" != "Linux" ]]; then echo "UPDATE_FAILED Linux updater requires Linux" >&2; exit 1; fi
 set -Eeuo pipefail
 umask 077
@@ -19,7 +20,11 @@ state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
 manifest="$state_home/pr-cockpit/install-manifest.json"
 current="$data_home/pr-cockpit-runtime/current"
 if [[ ! -f "$manifest" || ! -x "$current/scripts/install-linux-tools" || ! -f "$current/scripts/linux-lifecycle.ts" ]]; then
-  echo "UPDATE_FAILED active Linux installation is incomplete" >&2
+  if [[ -f /etc/systemd/system/pr-cockpit.service ]]; then
+    echo "UPDATE_FAILED $system_unit_update" >&2
+  else
+    echo "UPDATE_FAILED active Linux installation is incomplete" >&2
+  fi
   exit 1
 fi
 if ! active_tools="$("$current/scripts/install-linux-tools" --paths 2>&1)"; then
