@@ -4926,6 +4926,11 @@ export async function closePullRequest(repo: string, number: number): Promise<vo
   await restRequest("PATCH", `/repos/${repo}/pulls/${number}`, { state: "closed" }, repo);
 }
 
+export async function reopenPullRequest(repo: string, number: number): Promise<void> {
+  if (mockGithub) return mockGithub.reopenPullRequest(repo, number);
+  await restRequest("PATCH", `/repos/${repo}/pulls/${number}`, { state: "open" }, repo);
+}
+
 
 export async function fetchPullRequestBody(repo: string, number: number): Promise<string> {
   if (mockGithub) return mockGithub.pullRequestBody(repo, number);
@@ -4942,4 +4947,9 @@ export async function updatePullRequestBody(repo: string, number: number, body: 
 export async function updatePullRequestTitle(repo: string, number: number, title: string): Promise<void> {
   if (mockGithub) return mockGithub.updatePullRequestTitle(repo, number, title);
   await restRequest("PATCH", `/repos/${repo}/pulls/${number}`, { title }, repo);
+}
+
+export async function updatePullRequestBase(repo: string, number: number, base: string): Promise<void> {
+  if (mockGithub) return mockGithub.updatePullRequestBase(repo, number, base);
+  await restRequest("PATCH", `/repos/${repo}/pulls/${number}`, { base }, repo);
 }

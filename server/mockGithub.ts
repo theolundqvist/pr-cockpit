@@ -804,14 +804,30 @@ export const mockGithub = isMockGithub ? {
       ? { mergeMethod: method.toUpperCase(), enabledBy: { login: snapshot?.viewer ?? VIEWER } }
       : null;
   },
-  // Queued edit-title mutations rewrite the fixture and its seeded row: rows carry a far-future fetched_at so
-  // the mutation's own refresh can never overwrite them.
+  // Queued edit-title, edit-base, and reopen mutations rewrite the fixture and its seeded row: rows carry a
+  // far-future fetched_at so the mutation's own refresh can never overwrite them.
   updatePullRequestTitle: (repo: string, number: number, title: string): void => {
     const detail = details[`${repo}#${number}`];
     if (!detail || !fixtureDb) throw new Error(`no mock fixture for ${repo}#${number}`);
     detail.title = title;
     fixtureDb.prepare("UPDATE prs SET title = ?, detail_json = ? WHERE repo = ? AND number = ?").run(title, JSON.stringify(detail), repo, number);
     fixtureDb.prepare("UPDATE pr_index SET title = ? WHERE repo = ? AND number = ?").run(title, repo, number);
+  },
+  updatePullRequestBase: (repo: string, number: number, base: string): void => {
+    const detail = details[`${repo}#${number}`];
+    if (!detail || !fixtureDb) throw new Error(`no mock fixture for ${repo}#${number}`);
+    detail.baseRefName = base;
+    fixtureDb.prepare("UPDATE prs SET base_ref = ?, detail_json = ? WHERE repo = ? AND number = ?").run(base, JSON.stringify(detail), repo, number);
+  },
+  reopenPullRequest: (repo: string, number: number): void => {
+    const detail = details[`${repo}#${number}`];
+    if (!detail || !fixtureDb) throw new Error(`no mock fixture for ${repo}#${number}`);
+    if (detail.state !== "CLOSED") throw new Error(`mock ${repo}#${number} is not closed`);
+    detail.state = "OPEN";
+    detail.closedAt = null;
+    const state = detail.isDraft ? "draft" : "OPEN";
+    fixtureDb.prepare("UPDATE prs SET state = ?, detail_json = ? WHERE repo = ? AND number = ?").run(state, JSON.stringify(detail), repo, number);
+    fixtureDb.prepare("UPDATE pr_index SET state = ? WHERE repo = ? AND number = ?").run("OPEN", repo, number);
   },
   pullRequestBody: (repo: string, number: number): string => {
     const row = fixtureDb?.query<{ detail_json: string }, [string, number]>("SELECT detail_json FROM prs WHERE repo = ? AND number = ?").get(repo, number);

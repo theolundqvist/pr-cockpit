@@ -1805,6 +1805,7 @@ export function normalizeAgentMutation(repo: string, number: number, detail: PrD
     case "ready-for-review":
     case "convert-to-draft":
     case "close":
+    case "reopen":
       return { kind: input.kind };
     case "auto-merge":
       return { kind: "auto-merge", enable: requiredBoolean(input, "enable") };
@@ -1861,6 +1862,8 @@ export function normalizeAgentMutation(repo: string, number: number, detail: PrD
     }
     case "edit-title":
       return { kind: "edit-title", title: requiredString(input, "title") };
+    case "edit-base":
+      return { kind: "edit-base", base: requiredString(input, "base") };
     default:
       throw new Error(`unsupported mutation kind: ${input.kind}`);
   }
@@ -4065,12 +4068,16 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
           parts[0] === "api" && parts[1] === "actions" && parts[2] === "runs" &&
           parts[6] === "rerun-failed-jobs"
         );
-      if (!allowed && req.method === "POST" && url.pathname === "/api/mutations") {
+      const mutationRequest = url.pathname === "/api/mutations"
+        || (parts.length === 7 && parts[0] === "api" && parts[1] === "agent" && parts[2] === "pr" && parts[6] === "mutations");
+      if (!allowed && req.method === "POST" && mutationRequest) {
         const body: unknown = await req.clone().json().catch(() => null);
         const allowedKinds: Record<string, true> = {
           "github-auto-merge": true,
           "edit-body": true,
           "edit-title": true,
+          "edit-base": true,
+          "reopen": true,
           "pending-inline-comment": true,
           "edit-pending-comment": true,
           "delete-pending-comment": true,

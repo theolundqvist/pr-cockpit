@@ -28,6 +28,7 @@ import {
   convertPullRequestToDraft,
   markPullRequestReadyForReview,
   postInlineComment,
+  reopenPullRequest,
   postIssueComment,
   postReview,
   postReviewCommentReply,
@@ -41,6 +42,7 @@ import {
   findCodeScanningAlert,
   submitPendingReview,
   updatePullRequestBody,
+  updatePullRequestBase,
   updatePullRequestTitle,
   updatePullRequestBranch,
   type PrDetail,
@@ -72,9 +74,11 @@ export type MutationPayload =
   | { kind: "ready-for-review" }
   | { kind: "convert-to-draft" }
   | { kind: "close" }
+  | { kind: "reopen" }
   // With `tasks`, `body` is only the client's preview.
   | { kind: "edit-body"; body: string; tasks?: TaskIntent[] }
   | { kind: "edit-title"; title: string }
+  | { kind: "edit-base"; base: string }
   | { kind: "auto-merge"; enable: boolean }
   | { kind: "github-auto-merge"; enable: true; method: MergeMethod }
   | { kind: "github-auto-merge"; enable: false }
@@ -116,8 +120,10 @@ const KNOWN_KINDS: ReadonlySet<string> = new Set([
   "ready-for-review",
   "convert-to-draft",
   "close",
+  "reopen",
   "edit-body",
   "edit-title",
+  "edit-base",
   "auto-merge",
   "github-auto-merge",
   "inline-comment",
@@ -236,6 +242,9 @@ export function enqueueMutation(params: {
   }
   if (params.payload.kind === "edit-title" && !params.payload.title.trim()) {
     throw new Error("pull request title cannot be empty");
+  }
+  if (params.payload.kind === "edit-base" && !params.payload.base.trim()) {
+    throw new Error("base branch cannot be empty");
   }
   if (params.payload.kind === "resolve-thread") requireResolutionThread(params.repo, params.number, params.payload);
   const id = insertMutation({
@@ -367,6 +376,9 @@ async function executeMutation(row: MutationRow): Promise<boolean> {
     case "close":
       await closePullRequest(row.repo, row.number);
       return true;
+    case "reopen":
+      await reopenPullRequest(row.repo, row.number);
+      return false;
     case "edit-body": {
       if (!payload.tasks) {
         await updatePullRequestBody(row.repo, row.number, payload.body);
@@ -401,6 +413,9 @@ async function executeMutation(row: MutationRow): Promise<boolean> {
     }
     case "edit-title":
       await updatePullRequestTitle(row.repo, row.number, payload.title);
+      return false;
+    case "edit-base":
+      await updatePullRequestBase(row.repo, row.number, payload.base);
       return false;
     case "inline-comment": {
       const { headSha } = requirePrRef(row.repo, row.number);

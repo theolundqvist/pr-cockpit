@@ -28,12 +28,13 @@ Mutation commands:
   update-branch        update the PR branch from its base
   ready-for-review     mark a draft ready
   convert-to-draft     convert the PR back to a draft
-  close                close the PR
+  close, reopen        close the PR, or reopen a closed one
   pin, unpin           bookmark or unbookmark the PR in Cockpit's pinned order
   mark-ready, unmark-ready
                        queue the verified current head in Cockpit's Marked ready section, or withdraw it
   edit-body            replace the PR body from --body-file
   edit-title           replace the PR title with one quoted positional argument
+  edit-base            retarget the PR onto one existing base branch
   auto-merge           enable or disable GitHub auto-merge
   cockpit-auto-merge   enable or disable Cockpit's autonomous merge
   inline-comment       comment on --path, --line, and --side from --body-file
@@ -211,7 +212,7 @@ fi
 
 command="read"
 case "${1:-}" in
-  listen|runs|resolve|cache-run|comment|reply|unresolve|dismiss-alert|review|merge|update-branch|ready-for-review|convert-to-draft|close|pin|unpin|mark-ready|unmark-ready|edit-body|edit-title|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers|add-labels|remove-labels)
+  listen|runs|resolve|cache-run|comment|reply|unresolve|dismiss-alert|review|merge|update-branch|ready-for-review|convert-to-draft|close|reopen|pin|unpin|mark-ready|unmark-ready|edit-body|edit-title|edit-base|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers|add-labels|remove-labels)
     command="$1"
     shift
     ;;
@@ -219,7 +220,7 @@ esac
 
 mutation_command=0
 case "$command" in
-  comment|reply|unresolve|dismiss-alert|review|merge|update-branch|ready-for-review|convert-to-draft|close|pin|unpin|mark-ready|unmark-ready|edit-body|edit-title|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers|add-labels|remove-labels)
+  comment|reply|unresolve|dismiss-alert|review|merge|update-branch|ready-for-review|convert-to-draft|close|reopen|pin|unpin|mark-ready|unmark-ready|edit-body|edit-title|edit-base|auto-merge|cockpit-auto-merge|inline-comment|assign|unassign|request-reviewers|unrequest-reviewers|add-labels|remove-labels)
     mutation_command=1
     ;;
 esac
@@ -888,8 +889,9 @@ try {
       payload = { kind: "convert-to-draft" };
       break;
     case "close":
-      exact(0, "close takes only a PR reference");
-      payload = { kind: "close" };
+    case "reopen":
+      exact(0, `${command} takes only a PR reference`);
+      payload = { kind: command };
       break;
     case "pin":
     case "unpin":
@@ -909,6 +911,11 @@ try {
       exact(1, "edit-title requires one quoted title");
       if (!args[0].trim()) fail("pull request title cannot be empty");
       payload = { kind: "edit-title", title: args[0] };
+      break;
+    case "edit-base":
+      exact(1, "edit-base requires one base branch");
+      if (!args[0].trim()) fail("base branch cannot be empty");
+      payload = { kind: "edit-base", base: args[0] };
       break;
     case "auto-merge": {
       exact(1, "auto-merge expects enable or disable");
