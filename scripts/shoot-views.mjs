@@ -1483,6 +1483,14 @@ const scenarios = [
   settings("settings-appearance", "Opt-in appearance, typography, and window preferences.", "appearance"),
   settings("settings-connections", "Remote Cockpit connection settings.", "advanced"),
   {
+    ...settings("settings-usage", "Usage statistics and error reporting consent.", "usage"),
+    ready: ".stats-sharing",
+    verify: async (page) => {
+      await page.locator('.app-nav a[href="#/settings/usage"][aria-current="page"]').waitFor();
+      if (await page.locator('input[data-event="error-reports"]').isChecked()) throw new Error("Error reports were on by default");
+    },
+  },
+  {
     ...settings("settings-scrolled", "Sticky settings header after scrolling the long agent form.", "automerge"),
     interact: async (page) => {
       await page.locator(".page").evaluate((node) => {

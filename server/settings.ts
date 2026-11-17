@@ -7,6 +7,7 @@ import { defaultNotificationSettings, parseNotificationSettings, type Notificati
 import desktopShortcuts from "../shared/desktopShortcuts.json";
 import { invalidateInbox, invalidatePr, invalidateSettings } from "./rendererInvalidation.ts";
 import { isReviewPathPattern } from "../shared/reviewFiles.js";
+import { ERROR_REPORTS_SETTING } from "../shared/sentry.ts";
 
 const POLL_INTERVAL_FLOOR_S = 60;
 const DEFAULT_POLL_INTERVAL_S = 180;
@@ -254,6 +255,15 @@ export function usageStatsForcedOff(): boolean {
   return flag === "0" || flag === "off" || flag === "false" || Bun.env.DO_NOT_TRACK === "1";
 }
 
+// Error reports are opt-in; an explicitly empty COCKPIT_SENTRY_DSN wins over the stored choice.
+export function errorReportsForcedOff(): boolean {
+  return Bun.env.COCKPIT_SENTRY_DSN === "";
+}
+
+export function errorReportsEnabled(): boolean {
+  return !errorReportsForcedOff() && getSetting(ERROR_REPORTS_SETTING) === "on";
+}
+
 export function forceMergeEnabled(repo: string): boolean {
   return parseRepos(getSetting("force_merge_repos") ?? "").includes(repo);
 }
@@ -425,6 +435,8 @@ export interface Settings {
   relay_url: string;
   usage_stats: boolean;
   usage_stats_forced_off: boolean;
+  error_reports: boolean;
+  error_reports_forced_off: boolean;
   notifications: NotificationSettings;
 }
 
@@ -485,6 +497,8 @@ export function readSettings(): Settings {
     relay_url: relayConfig().url,
     usage_stats: getSetting("usage_stats") !== "off",
     usage_stats_forced_off: usageStatsForcedOff(),
+    error_reports: getSetting(ERROR_REPORTS_SETTING) === "on",
+    error_reports_forced_off: errorReportsForcedOff(),
     notifications: notificationSettings(),
   };
 }
@@ -545,6 +559,7 @@ export function writeSettings(
     agent_harness: string;
     relay_url: string;
     usage_stats: boolean;
+    error_reports: boolean;
     notifications: NotificationSettings;
   }>,
 ): Settings {
@@ -731,6 +746,13 @@ export function writeSettings(
     const value = patch.usage_stats === true ? "on" : "off";
     if ((getSetting("usage_stats") ?? "on") !== value) {
       setSetting("usage_stats", value);
+      invalidateSettings();
+    }
+  }
+  if (patch.error_reports !== undefined) {
+    const value = patch.error_reports === true ? "on" : "off";
+    if ((getSetting(ERROR_REPORTS_SETTING) ?? "off") !== value) {
+      setSetting(ERROR_REPORTS_SETTING, value);
       invalidateSettings();
     }
   }

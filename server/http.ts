@@ -143,6 +143,7 @@ import { relayCoverage } from "./relayCoverage.ts";
 import { refreshCachedPrDetail } from "./cachedPrDetail.ts";
 import { notePrViewed } from "./recentPrViews.ts";
 import { applyUsageStatsSetting, trackCliRequest, trackGithubAuth, trackReposConfigured, trackStep, trackUiBatch, usageStatsEnabled } from "./usageStats.ts";
+import { applyErrorReportsSetting } from "./sentry.ts";
 import {
   clearRepositoryIssues,
   retrySystemIssue,
@@ -3680,6 +3681,7 @@ async function handlePutSettings(req: Request, runtime: HttpRuntime): Promise<Re
     return json({ error: error instanceof Error ? error.message : String(error) }, 400);
   }
   applyUsageStatsSetting();
+  await applyErrorReportsSetting();
   if (settings.repos !== previousRepos) {
     clearRepositoryIssues();
     void runtime.pollOnce().catch((error) => console.warn("repository settings poll failed:", error));

@@ -10,6 +10,8 @@
   let restSaveError = $state(null);
   let statsSaving = $state(false);
   let statsSaveError = $state(null);
+  let reportsSaving = $state(false);
+  let reportsSaveError = $state(null);
 
   const number = new Intl.NumberFormat();
   const percent = (value, total) => total > 0 ? Math.min(100, (value / total) * 100) : 0;
@@ -86,6 +88,20 @@
     }
   }
 
+  async function setErrorReports(input) {
+    const enabled = input.checked;
+    reportsSaving = true;
+    reportsSaveError = null;
+    try {
+      setPrefs(await saveSettings({ error_reports: enabled }));
+    } catch (failure) {
+      input.checked = !enabled;
+      reportsSaveError = failure.message;
+    } finally {
+      reportsSaving = false;
+    }
+  }
+
   $effect(() => {
     load().catch((failure) => (error = failure.message));
   });
@@ -98,7 +114,7 @@
     </div>
   </header>
 
-  <section class="stats-sharing" aria-label="Usage statistics">
+  <section class="stats-sharing" aria-label="Usage statistics and error reports">
     <label class="check-field">
       <input
         class="check"
@@ -119,6 +135,28 @@
           Sends names of screens, buttons, shortcuts and outcomes, with counts, tied to a random install id that the relay links to your GitHub
           account when live updates are on. Never PR content, comments, typed text, file paths, or repository or branch names.
           <a href="https://github.com/theolundqvist/pr-cockpit#usage-statistics" target="_blank" rel="noopener noreferrer">Details</a>
+        </span>
+      </span>
+    </label>
+    <label class="check-field error-reports">
+      <input
+        class="check"
+        type="checkbox"
+        data-event="error-reports"
+        checked={prefs.errorReports && !prefs.errorReportsForcedOff}
+        disabled={!prefs.loaded || reportsSaving || prefs.errorReportsForcedOff}
+        onchange={(event) => setErrorReports(event.currentTarget)}
+      />
+      <span class="check-text">
+        <span class="check-label">Send error reports</span>
+        {#if reportsSaveError}
+          <span class="hint save-error" role="alert">{reportsSaveError}</span>
+        {:else if prefs.errorReportsForcedOff}
+          <span class="hint">Off: the server sets an empty COCKPIT_SENTRY_DSN.</span>
+        {/if}
+        <span class="hint">
+          Sends server errors with their messages and stack traces, and failed installs and updates with a redacted log tail, to the maintainer's Sentry.
+          Messages can name repositories or file paths. Off until you turn it on.
         </span>
       </span>
     </label>
@@ -592,7 +630,8 @@
     font-weight: 500;
   }
   .rest-quota.exhausted strong { color: var(--fail); }
-  .rest-recording { margin-top: 18px; }
+  .rest-recording,
+  .error-reports { margin-top: 18px; }
   .stats-sharing {
     padding-bottom: 22px;
     border-bottom: 1px solid var(--border);

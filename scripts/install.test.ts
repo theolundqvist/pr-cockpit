@@ -2,9 +2,23 @@ import { expect, test } from "bun:test";
 import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Database } from "bun:sqlite";
+import { ERROR_REPORTS_SETTING } from "../shared/sentry.ts";
 import { MAX_INSTALL_FAILURE_DETAIL_BYTES, reportInstallFailure } from "./installFailure.ts";
 
 const uid = process.getuid?.() ?? 0;
+
+// The installer reports only with the error-reports consent stored in the data dir's cockpit.db.
+function errorReportsDataDir(value: "on" | "off" | null): string {
+  const dir = mkdtempSync(join(tmpdir(), "cockpit-error-reports-"));
+  if (value !== null) {
+    const db = new Database(join(dir, "cockpit.db"));
+    db.run("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    db.run("INSERT INTO settings VALUES (?, ?)", [ERROR_REPORTS_SETTING, value]);
+    db.close();
+  }
+  return dir;
+}
 
 // The installer only reaches its LaunchAgent logic through the real script, so the
 // harness fakes a checkout plus the binaries it shells out to.
@@ -210,7 +224,7 @@ test("a failed macOS installation retains its failed substep and log without del
   expect(performance.now() - startedAt).toBeLessThan(3_000);
 }, 10_000);
 
-test("installer failure reporting sends one Sentry envelope unless disabled", async () => {
+test("installer failure reporting sends one Sentry envelope only with stored consent", async () => {
   let endpoint = "";
   let envelope = "";
   const server = Bun.serve({
@@ -221,17 +235,20 @@ test("installer failure reporting sends one Sentry envelope unless disabled", as
       return new Response(null, { status: 200 });
     },
   });
+  const dataDir = process.env.COCKPIT_DATA_DIR;
+  const dirs = { none: errorReportsDataDir(null), off: errorReportsDataDir("off"), on: errorReportsDataDir("on") };
+  const failure = (detail?: string) => ({ stage: "Build UI", status: 7, platform: "Darwin", substep: "UI build", ...(detail ? { detail } : {}) });
   try {
-    await reportInstallFailure({ stage: "Build UI", status: 7, platform: "Darwin" }, "");
+    process.env.COCKPIT_DATA_DIR = dirs.on;
+    await reportInstallFailure(failure(), "");
+    for (const dir of [dirs.none, dirs.off]) {
+      process.env.COCKPIT_DATA_DIR = dir;
+      await reportInstallFailure(failure(), `http://public@127.0.0.1:${server.port}/42`);
+    }
     expect(envelope).toBe("");
+    process.env.COCKPIT_DATA_DIR = dirs.on;
     await reportInstallFailure(
-      {
-        stage: "Build UI",
-        status: 7,
-        platform: "Darwin",
-        substep: "UI build",
-        detail: `failed in ${process.env.HOME}/private token=ghp_installsecret NPM_TOKEN=enterprise-secret https://person:password@example.com/${"x".repeat(MAX_INSTALL_FAILURE_DETAIL_BYTES * 2)}`,
-      },
+      failure(`failed in ${process.env.HOME}/private token=ghp_installsecret NPM_TOKEN=enterprise-secret https://person:password@example.com/${"x".repeat(MAX_INSTALL_FAILURE_DETAIL_BYTES * 2)}`),
       `http://public@127.0.0.1:${server.port}/42`,
     );
     const [header, item, event] = envelope.split("\n").map((line) => JSON.parse(line));
@@ -254,6 +271,9 @@ test("installer failure reporting sends one Sentry envelope unless disabled", as
     expect(event.extra.error_detail).not.toContain("enterprise-secret");
     expect(Buffer.byteLength(event.extra.error_detail)).toBeLessThanOrEqual(MAX_INSTALL_FAILURE_DETAIL_BYTES);
   } finally {
+    if (dataDir === undefined) delete process.env.COCKPIT_DATA_DIR;
+    else process.env.COCKPIT_DATA_DIR = dataDir;
+    for (const dir of Object.values(dirs)) rmSync(dir, { recursive: true, force: true });
     server.stop(true);
   }
 });
@@ -268,6 +288,7 @@ test("reporter retains and redacts the end of an oversized single-line quiet log
     },
   });
   const directory = mkdtempSync(join(tmpdir(), "cockpit-install-report-"));
+  const consent = errorReportsDataDir("on");
   const detailFile = join(directory, "failure.log");
   writeFileSync(detailFile, `${"x".repeat(MAX_INSTALL_FAILURE_DETAIL_BYTES + 1_000)} token=ghp_oversizedsecret terminal compiler cause`);
   try {
@@ -280,7 +301,7 @@ test("reporter retains and redacts the end of an oversized single-line quiet log
       "UI build",
       detailFile,
     ], {
-      env: { ...process.env, COCKPIT_SENTRY_DSN: `http://public@127.0.0.1:${server.port}/42` },
+      env: { ...process.env, COCKPIT_DATA_DIR: consent, COCKPIT_SENTRY_DSN: `http://public@127.0.0.1:${server.port}/42` },
       stdout: "ignore",
       stderr: "ignore",
     });
@@ -292,6 +313,7 @@ test("reporter retains and redacts the end of an oversized single-line quiet log
   } finally {
     server.stop(true);
     rmSync(directory, { recursive: true, force: true });
+    rmSync(consent, { recursive: true, force: true });
   }
 });
 
@@ -304,11 +326,13 @@ test("Linux lifecycle reports sanitized initialization failure detail", async ()
       return new Response(null, { status: 200 });
     },
   });
+  const consent = errorReportsDataDir("on");
   try {
     const proc = Bun.spawn([process.execPath, join(import.meta.dir, "linux-lifecycle.ts"), "install", "/tmp/source"], {
       env: {
         ...process.env,
         HOME: "",
+        COCKPIT_DATA_DIR: consent,
         COCKPIT_SENTRY_DSN: `http://public@127.0.0.1:${server.port}/42`,
       },
       stdout: "pipe",
@@ -326,6 +350,7 @@ test("Linux lifecycle reports sanitized initialization failure detail", async ()
     expect(event.extra.error_detail).toMatch(/Linux lifecycle must not run as root|HOME must name a non-root absolute user home/);
   } finally {
     server.stop(true);
+    rmSync(consent, { recursive: true, force: true });
   }
 });
 

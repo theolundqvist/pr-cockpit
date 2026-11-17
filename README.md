@@ -214,7 +214,7 @@ Cockpit is a client for your existing GitHub workflow, not a second place to mai
 - **Keeping it current:** the hosted relay is enabled by default. It receives GitHub webhooks and delivers compact change markers and Actions run/job state, including runner assignment—not full PR contents or job logs—to Cockpit. Cockpit never sends the relay your GitHub token; it proves read access to each repository with commit data only readers can look up, and that proof rotates daily. Branch pushes refresh open PRs whose head or base matches, including recently viewed PRs outside the inbox. A direct GitHub poller repairs missed events.
 - **Your relay, if you prefer:** you can configure a different relay URL. See [Self-hosting](docs/self-host-relay.md) for deployment and connection instructions.
 
-Local caching does **not** mean the app makes no external connections. Besides GitHub and the relay, the backend has [Sentry error reporting enabled by default](server/sentry.ts) and sends [usage statistics](#usage-statistics).
+Local caching does **not** mean the app makes no external connections. Besides GitHub and the relay, Cockpit sends [usage statistics](#usage-statistics) and, only if you turn it on, [error reports](#error-reports).
 
 <details>
 <summary><strong>Updates, diagnostics, and configuration</strong></summary>
@@ -255,6 +255,10 @@ Cockpit counts how it is found, installed, and used. These statistics are not an
 - **Turning it off:** **Settings → Usage**, or `COCKPIT_USAGE_STATS=0` or `DO_NOT_TRACK=1` in the server's environment, which keeps it off regardless of the setting.
 
 prcockpit.com counts visits, where they came from (`utm_source` or the referring site), the OS family, and which of its links and buttons are pressed and whether the install command is copied, per browser tab without cookies; it honours Do Not Track and Global Privacy Control. The install script reports when it starts, finishes, or fails, with the failed stage, under a random run id; `DO_NOT_TRACK=1` or `COCKPIT_USAGE_STATS=0` turns that off.
+
+### Error reports
+
+Error reports are off until you turn on **Send error reports** in **Settings → Usage**. While off, the backend never initializes its [Sentry](server/sentry.ts) client and the installer sends nothing. While on, server errors go to the maintainer's Sentry with their messages and stack traces, and a failed install or update sends its stage and a redacted log tail. Messages can name repositories or file paths. An empty `COCKPIT_SENTRY_DSN` in the server's environment keeps reports off regardless of the setting.
 
 ## Contribute
 

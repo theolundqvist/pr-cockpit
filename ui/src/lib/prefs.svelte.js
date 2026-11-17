@@ -37,6 +37,8 @@ export const prefs = $state({
   // off until settings say otherwise, so nothing is counted before they load
   usageStats: false,
   usageStatsForcedOff: false,
+  errorReports: false,
+  errorReportsForcedOff: false,
   agents: [
     { id: "fixer", name: "Auto-merge fixer", enabled: true, trigger: "keybind", keybind: "a", model: "opus", prompt_template: "" },
     { id: "autofix", name: "Auto-fix", enabled: true, trigger: "keybind", keybind: "f", model: "opus", prompt_template: "" },
@@ -74,6 +76,8 @@ export function setPrefs(settings) {
   prefs.personalQuickActions = settings.personal_quick_actions ?? "";
   prefs.usageStats = settings.usage_stats === true;
   prefs.usageStatsForcedOff = settings.usage_stats_forced_off === true;
+  prefs.errorReports = settings.error_reports === true;
+  prefs.errorReportsForcedOff = settings.error_reports_forced_off === true;
   whiteboardSession.current?.setEnabled(prefs.whiteboardEnabled);
   prefs.loaded = true;
 }

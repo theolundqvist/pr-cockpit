@@ -2,10 +2,23 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { Database } from "bun:sqlite";
+import { ERROR_REPORTS_SETTING } from "../shared/sentry.ts";
 
 const LIFECYCLE = join(import.meta.dir, "linux-lifecycle.ts");
 const TEST_LIFECYCLE = join(import.meta.dir, "linux-lifecycle-test.ts");
 const cleanups: string[] = [];
+
+// The lifecycle reports failures only with the error-reports consent stored in the data dir's cockpit.db.
+function errorReportsDataDir(base: string): string {
+  const dir = join(base, "consenting-data");
+  mkdirSync(dir, { recursive: true });
+  const db = new Database(join(dir, "cockpit.db"));
+  db.run("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  db.run("INSERT INTO settings VALUES (?, ?)", [ERROR_REPORTS_SETTING, "on"]);
+  db.close();
+  return dir;
+}
 
 function executable(path: string, body: string): void {
   writeFileSync(path, `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`);
@@ -337,6 +350,7 @@ describe("transactional Linux lifecycle", () => {
       const failed = await f.lifecycle(["install", f.source], {
         COCKPIT_LINUX_FAIL_AT: "health",
         COCKPIT_SENTRY_DSN: `http://public@127.0.0.1:${server.port}/42`,
+        COCKPIT_DATA_DIR: errorReportsDataDir(f.base),
       });
       expect(failed.exitCode).toBe(1);
       const event = JSON.parse(envelope.split("\n")[2]);
@@ -360,6 +374,7 @@ describe("transactional Linux lifecycle", () => {
       const failed = await f.lifecycle(["install", f.source], {
         COCKPIT_TEST_KILL_ACTIVATION: "1",
         COCKPIT_SENTRY_DSN: `http://public@127.0.0.1:${server.port}/42`,
+        COCKPIT_DATA_DIR: errorReportsDataDir(f.base),
       });
       expect(failed.exitCode).toBe(1);
       const event = JSON.parse(envelope.split("\n")[2]);

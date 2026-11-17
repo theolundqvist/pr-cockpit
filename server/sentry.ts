@@ -1,18 +1,33 @@
 import * as Sentry from "@sentry/bun";
 import { DEFAULT_SENTRY_DSN } from "../shared/sentry.ts";
 import { runningRev } from "./version.ts";
+import { errorReportsEnabled } from "./settings.ts";
 
 export function sentryEnvironment(): "production" | "development" | "test" {
   if (Bun.env.NODE_ENV === "test" || Bun.env.COCKPIT_MOCK === "1") return "test";
   return Bun.env.COCKPIT_SUPERVISOR ? "production" : "development";
 }
 
-// explicit empty-string env means Sentry off — only absence falls through to the default
+let managed = false;
+let active = false;
+
+// Opt-in: the SDK is initialized only while error reports are on, so an uninitialized SDK drops every capture.
 export function startSentry(): void {
-  const dsn = Bun.env.COCKPIT_SENTRY_DSN ?? DEFAULT_SENTRY_DSN;
-  if (dsn === "") return;
+  managed = true;
+  void applyErrorReportsSetting();
+}
+
+// Settings saves await this so turning reports on or off takes effect without a restart. The client keeps sending
+// until close() has flushed its queue, so the save returns only after that.
+export async function applyErrorReportsSetting(): Promise<void> {
+  if (!managed || errorReportsEnabled() === active) return;
+  active = !active;
+  if (!active) {
+    await Sentry.close(2_000);
+    return;
+  }
   Sentry.init({
-    dsn,
+    dsn: Bun.env.COCKPIT_SENTRY_DSN ?? DEFAULT_SENTRY_DSN,
     release: runningRev() || undefined,
     environment: sentryEnvironment(),
     integrations: [Sentry.dedupeIntegration()],

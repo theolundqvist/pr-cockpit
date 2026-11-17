@@ -1,4 +1,7 @@
-import { DEFAULT_SENTRY_DSN } from "../shared/sentry.ts";
+import { Database } from "bun:sqlite";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { DEFAULT_SENTRY_DSN, ERROR_REPORTS_SETTING } from "../shared/sentry.ts";
 
 export interface InstallFailure {
   stage: string;
@@ -37,11 +40,26 @@ function envelopeEndpoint(dsn: URL): URL {
   return new URL(`${path.length ? `/${path.join("/")}` : ""}/api/${projectId}/envelope/`, dsn.origin);
 }
 
+// A fresh install has no database yet, and an unreadable one counts as no consent: either way nothing is sent.
+function storedErrorReportsConsent(): boolean {
+  const dataHome = process.platform === "linux" ? Bun.env.XDG_DATA_HOME || join(homedir(), ".local/share") : join(homedir(), ".local/share");
+  try {
+    const db = new Database(join(Bun.env.COCKPIT_DATA_DIR || join(dataHome, "pr-cockpit"), "cockpit.db"), { readonly: true });
+    try {
+      return db.query<{ value: string }, [string]>("SELECT value FROM settings WHERE key = ?").get(ERROR_REPORTS_SETTING)?.value === "on";
+    } finally {
+      db.close();
+    }
+  } catch {
+    return false;
+  }
+}
+
 export async function reportInstallFailure(
   failure: InstallFailure,
   dsn = Bun.env.COCKPIT_SENTRY_DSN ?? DEFAULT_SENTRY_DSN,
 ): Promise<void> {
-  if (dsn === "") return;
+  if (dsn === "" || !storedErrorReportsConsent()) return;
   try {
     const eventId = crypto.randomUUID().replaceAll("-", "");
     const sentAt = new Date().toISOString();
