@@ -142,6 +142,8 @@ export interface GithubRestUsageEvent {
   endpoint: string;
   // repo#number for a pull request or issue route, which the normalized endpoint masks.
   pr: string | null;
+  // The Actions run or job an Actions route names; the recorder files it under that run's pull request.
+  actions?: GithubRestActionsTarget | null;
   // X-RateLimit-Resource when GitHub sent it, otherwise the pool the path belongs to.
   resource: string;
   // null when the request never got an HTTP response.
@@ -186,6 +188,21 @@ const REST_PR_PATH_RE = /^\/repos\/([^/?#]+)\/([^/?#]+)\/(?:issues|pulls)\/([1-9
 export function githubRestPullRequest(path: string): string | null {
   const match = REST_PR_PATH_RE.exec(path);
   return match ? `${match[1]}/${match[2]}#${match[3]}` : null;
+}
+
+export interface GithubRestActionsTarget {
+  repo: string;
+  kind: "run" | "job";
+  id: number;
+}
+
+const REST_ACTIONS_PATH_RE = /^\/repos\/([^/?#]+)\/([^/?#]+)\/actions\/(runs|jobs)\/([1-9][0-9]*)(?:[/?#]|$)/;
+
+// Job lists and log downloads were most of the REST spend yet named no pull request, so the
+// per-PR ranking blamed the few PR reads instead.
+export function githubRestActionsTarget(path: string): GithubRestActionsTarget | null {
+  const match = REST_ACTIONS_PATH_RE.exec(path);
+  return match ? { repo: `${match[1]}/${match[2]}`, kind: match[3] === "runs" ? "run" : "job", id: Number(match[4]) } : null;
 }
 
 // The identifier after each collection, named as in GitHub's REST reference.

@@ -2228,6 +2228,19 @@ const pruneGithubRestUsageStmt = db.prepare(
   "DELETE FROM github_rest_usage WHERE julianday(occurred_at) < julianday('now', '-7 days')",
 );
 let lastGithubRestUsagePruneAt = 0;
+const actionsRunPrStmt = db.prepare<{ pr_number: number }, [string, number]>(
+  "SELECT pr_number FROM workflow_runs WHERE repo = ? AND run_id = ? AND pr_number IS NOT NULL LIMIT 1",
+);
+const actionsJobPrStmt = db.prepare<{ pr_number: number }, [string, number]>(`
+SELECT w.pr_number FROM run_jobs j
+JOIN workflow_runs w ON w.repo = j.repo AND w.run_id = j.run_id
+WHERE j.repo = ? AND j.job_id = ? AND w.pr_number IS NOT NULL LIMIT 1`);
+
+function actionsTargetPr(target: GithubRestUsageEvent["actions"]): string | null {
+  if (!target) return null;
+  const row = (target.kind === "run" ? actionsRunPrStmt : actionsJobPrStmt).get(target.repo, target.id);
+  return row ? `${target.repo}#${row.pr_number}` : null;
+}
 
 setGithubRestUsageRecorder((event: GithubRestUsageEvent) => {
   const now = Date.now();
@@ -2243,7 +2256,7 @@ setGithubRestUsageRecorder((event: GithubRestUsageEvent) => {
     $source: event.source,
     $method: event.method,
     $endpoint: event.endpoint,
-    $pr: event.pr ?? null,
+    $pr: event.pr ?? actionsTargetPr(event.actions),
     $resource: event.resource,
     $status: event.status,
     $used: event.used,
