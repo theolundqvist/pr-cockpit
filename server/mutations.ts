@@ -557,7 +557,9 @@ function mutationReflected(row: Pick<MutationRow, "repo" | "number" | "payload_j
     const { body, missing } = setTasksByKey(detail.body, payload.tasks);
     return !missing.length && body === detail.body;
   }
-  if (!payload.commentNodeId) return false;
+  // GitHub accepted a comment that neither its acknowledgement nor a lookup identified; matching its text could
+  // confirm an older duplicate instead, so the refresh alone completes it.
+  if (!payload.commentNodeId) return true;
   return detail.comments.nodes.some((comment) => comment.id === payload.commentNodeId);
 }
 

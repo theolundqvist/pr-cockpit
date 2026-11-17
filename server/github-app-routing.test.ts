@@ -423,6 +423,40 @@ esac
   expect(new Set(result.restEvents.map((event) => event.credential))).toEqual(new Set(["user"]));
 });
 
+test("a comment whose acknowledgement is lost resolves to the posted comment instead of a failure", async () => {
+  const result = await scenario<{ truncated: Outcome & { value?: string | null }; dropped: Outcome & { value?: string | null }; missing: Outcome & { value?: string | null }; posts: number }>(`
+    let posted = [];
+    respond = async (request, token, url, body) => {
+      if (url.pathname === "/rate_limit") return Response.json(rateData());
+      if (url.pathname === "/user") return json({ login: "viewer", id: 1 });
+      if (request.method === "POST") {
+        posted.push({ node_id: "comment-" + posted.length, user: { login: "viewer" }, body: body.body });
+        return new Response("", { status: 201, headers: headers() });
+      }
+      return json([{ node_id: "older", user: { login: "someone" }, body: "hello\\n" }, ...posted]);
+    };
+    const truncated = await capture(() => github.postIssueComment("acme/one", 1, "hello\\r\\n"));
+    const dispatch = globalThis.fetch;
+    globalThis.fetch = (input, options) => {
+      if (options?.method === "POST") {
+        posted.push({ node_id: "comment-" + posted.length, user: { login: "viewer" }, body: JSON.parse(options.body).body });
+        return Promise.reject(new TypeError("socket closed"));
+      }
+      return dispatch(input, options);
+    };
+    const dropped = await capture(() => github.postIssueComment("acme/one", 1, "after drop"));
+    posted = [];
+    globalThis.fetch = (input, options) => options?.method === "POST" ? Promise.reject(new TypeError("socket closed")) : dispatch(input, options);
+    const missing = await capture(() => github.postIssueComment("acme/one", 1, "never sent"));
+    globalThis.fetch = dispatch;
+    console.log(JSON.stringify({ truncated, dropped, missing, posts: calls.filter((call) => call.method === "POST").length }));
+  `, false);
+  expect(result.truncated).toEqual({ value: "comment-0" });
+  expect(result.dropped).toEqual({ value: "comment-1" });
+  expect(result.missing).toMatchObject({ kind: "transport" });
+  expect(result.posts).toBe(1);
+});
+
 test("absent app configuration adds no authentication traffic or installation UI state", async () => {
   const result = await scenario<{ calls: Call[]; quota: GithubQuota; issuances: [number, number][] }>(`
     respond = async (request, token, url) => url.pathname === "/rate_limit" ? Response.json(rateData()) : json({ workflows: [] });

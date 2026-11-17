@@ -4783,19 +4783,43 @@ export async function submitPendingReview(
   );
 }
 
-export async function postIssueComment(repo: string, number: number, body: string): Promise<string> {
+// Resolves to the new comment's node ID, or null when GitHub accepted it but neither its acknowledgement nor a
+// lookup identifies it. A dropped connection or truncated acknowledgement can follow a created comment, so
+// those failures look for the posted comment before reporting one; posting again would duplicate it.
+export async function postIssueComment(repo: string, number: number, body: string): Promise<string | null> {
   if (mockGithub) return "mock-comment";
   const path = `/repos/${repo}/issues/${number}/comments`;
-  const response = await githubRestResponse("POST", path, { body });
+  const dispatchedAt = Date.now();
+  let response: Response;
+  try {
+    response = await githubRestResponse("POST", path, { body });
+  } catch (error) {
+    if (!(error instanceof GithubRequestError && error.kind === "transport")) throw error;
+    // An unreachable lookup leaves the post as unconfirmed as the dropped connection did.
+    const posted = await findViewerIssueComment(repo, number, body, dispatchedAt).catch(() => null);
+    if (posted === null) throw error;
+    return posted;
+  }
   if (!response.ok) {
     const error = await githubResponseError(`POST ${path} failed`, response);
     throw new RestRequestError(error.message, error.status, error.kind, error.resource, error.resetAt, error);
   }
-  const result: unknown = await response.json();
-  if (!result || typeof result !== "object" || !("node_id" in result) || typeof result.node_id !== "string") {
-    throw new Error(`POST ${path} returned no comment node ID`);
-  }
-  return result.node_id;
+  const result: unknown = await response.json().catch(() => null);
+  if (result && typeof result === "object" && "node_id" in result && typeof result.node_id === "string") return result.node_id;
+  return findViewerIssueComment(repo, number, body, dispatchedAt);
+}
+
+async function findViewerIssueComment(repo: string, number: number, body: string, dispatchedAt: number): Promise<string | null> {
+  const viewer = await getViewerLogin("user action");
+  // GitHub's clock can trail this host's.
+  const since = new Date(dispatchedAt - 5 * 60_000).toISOString();
+  const comments = await fetchRestPages<{ node_id: string; user: { login: string } | null; body: string }>(
+    `https://api.github.com/repos/${repo}/issues/${number}/comments?since=${encodeURIComponent(since)}&per_page=100`,
+    undefined,
+    repo,
+  );
+  const wanted = body.replaceAll("\r\n", "\n").trimEnd();
+  return comments.findLast((comment) => comment.user?.login === viewer && comment.body.replaceAll("\r\n", "\n").trimEnd() === wanted)?.node_id ?? null;
 }
 
 export async function postReviewCommentReply(
