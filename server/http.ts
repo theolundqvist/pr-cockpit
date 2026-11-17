@@ -3802,7 +3802,7 @@ function serializeMutation(row: MutationRow) {
     number: row.number,
     kind: row.kind,
     payload: JSON.parse(row.payload_json),
-    state: row.state === "refreshing" ? "pending" : row.state,
+    state: row.state === "refreshing" || row.state === "running" ? "pending" : row.state,
     error: row.error,
     createdAt: row.created_at,
   };

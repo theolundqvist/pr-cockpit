@@ -1666,7 +1666,7 @@ export function deleteMutation(id: number): void {
 }
 
 export function failInterruptedMutations(): void {
-  db.prepare("UPDATE mutations SET state = 'failed', error = 'interrupted' WHERE state = 'pending'").run();
+  db.prepare("UPDATE mutations SET state = 'failed', error = 'interrupted' WHERE state = 'running'").run();
 }
 
 // Only a PR's newest merge attempt counts, so a fresh attempt after a failure supersedes it.

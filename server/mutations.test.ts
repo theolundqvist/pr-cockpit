@@ -128,6 +128,7 @@ test("applied mutations remain pending through refresh without becoming retryabl
     await acceptComment(interruptedCommentRow);
     db.setMutationRefreshing(interruptedCommentRow.id, interruptedCommentRow.payload_json);
     insert(105);
+    db.setMutationState(insert(115).id, "running", null);
     db.failInterruptedMutations();
     const recovered = [];
     await recoverRefreshingMutations({
@@ -141,6 +142,7 @@ test("applied mutations remain pending through refresh without becoming retryabl
     const interruptedAppliedCount = db.listMutationsForPr(repo, 104).length;
     const interruptedCommentCount = db.listMutationsForPr(repo, 109).length;
     const interruptedPending = db.listMutationsForPr(repo, 105)[0];
+    const interruptedRunning = db.listMutationsForPr(repo, 115)[0];
 
     console.log(JSON.stringify({
       persistedWhileRefreshing,
@@ -166,6 +168,7 @@ test("applied mutations remain pending through refresh without becoming retryabl
       interruptedAppliedCount,
       recovered,
       interruptedPending: { state: interruptedPending?.state, error: interruptedPending?.error },
+      interruptedRunning: { state: interruptedRunning?.state, error: interruptedRunning?.error },
     }));
   `;
 
@@ -205,7 +208,59 @@ test("applied mutations remain pending through refresh without becoming retryabl
     });
     expect(result.recovered).toEqual([103, 106, 112, 108, 104, 109]);
     expect(result.unconfirmedAfterRecovery).toBe(1);
-    expect(result.interruptedPending).toEqual({ state: "failed", error: "interrupted" });
+    // A write that never started survives a restart; only the one in flight may have reached GitHub.
+    expect(result.interruptedPending).toEqual({ state: "pending", error: null });
+    expect(result.interruptedRunning).toEqual({ state: "failed", error: "interrupted" });
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("a confirmation refresh that never settles does not hold later writes", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-mutation-stall-"));
+  const scenario = `
+    const db = await import(${JSON.stringify(new URL("./db.ts", import.meta.url).href)});
+    const { drainQueue } = await import(${JSON.stringify(new URL("./mutations.ts", import.meta.url).href)});
+    const insert = (repo, number) => db.insertMutation({
+      repo, number, kind: "resolve-thread", created_at: new Date().toISOString(),
+      payload_json: JSON.stringify({ kind: "resolve-thread", threadId: "thread-1", resolved: true }),
+    });
+    const merge = insert("fixture/merged", 1);
+    const label = insert("fixture/other", 2);
+    const executed = [];
+    const drained = await Promise.race([
+      drainQueue({
+        executeMutation: async (row) => { executed.push(row.id); return row.id === merge; },
+        refreshPr: (repo) => repo === "fixture/merged" ? new Promise(() => {}) : Promise.resolve(),
+        pollOnce: async () => {},
+        deleteMutation: db.deleteMutation,
+        setMutationRefreshing: db.setMutationRefreshing,
+        setMutationState: db.setMutationState,
+        scheduleRecovery: () => {},
+      }, 20).then(() => "drained"),
+      // The wait under test is a real timer; this only bounds a regression.
+      Bun.sleep(2_000).then(() => "stalled"),
+    ]);
+    console.log(JSON.stringify({ drained, executed: executed.map((id) => id === merge ? "merge" : "label"), remaining: [merge, label].map((id) => db.getMutation(id)?.state ?? null) }));
+  `;
+
+  try {
+    const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], {
+      env: { ...Bun.env, COCKPIT_DATA_DIR: dataDir, COCKPIT_MOCK: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(stderr);
+    expect(JSON.parse(stdout.trim().split("\n").at(-1)!)).toEqual({
+      drained: "drained",
+      executed: ["merge", "label"],
+      remaining: ["refreshing", null],
+    });
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }

@@ -1,7 +1,7 @@
 // Must stay first: db.ts opens and migrates cockpit.db as soon as it is imported.
 import "./dataDirLock.ts";
 import { db, failInterruptedMutations, prIsOpen, startCacheRetention } from "./db.ts";
-import { recoverRefreshingMutations } from "./mutations.ts";
+import { kickWorker, recoverRefreshingMutations } from "./mutations.ts";
 import { seedSettings } from "./settings.ts";
 import { startPoller } from "./poller.ts";
 import { startDaemonWatch } from "./daemonWatch.ts";
@@ -40,6 +40,7 @@ try {
   } else {
     failInterruptedMutations();
     await recoverRefreshingMutations();
+    kickWorker();
   }
 
   const fetchHandler = buildFetchHandler(port);

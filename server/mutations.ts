@@ -624,6 +624,14 @@ const mutationProcessorDependencies: MutationProcessorDependencies = {
 };
 
 export async function processMutation(row: MutationRow, dependencies = mutationProcessorDependencies): Promise<void> {
+  const { settled } = await startMutation(row, dependencies);
+  await settled;
+}
+
+// Resolves once GitHub has answered the write; `settled` follows once the cache reflects the answer.
+async function startMutation(row: MutationRow, dependencies: MutationProcessorDependencies): Promise<{ settled: Promise<void> }> {
+  // Only a running row can have reached GitHub unconfirmed, so a restart fails it and keeps the rest pending.
+  dependencies.setMutationState(row.id, "running", null);
   let merged: boolean;
   try {
     // Queued writes are labeled "user action" like their GraphQL mutations; refreshes inside name their own source.
@@ -637,21 +645,22 @@ export async function processMutation(row: MutationRow, dependencies = mutationP
       deleteSupersededFailedMerges(row.repo, row.number, row.id);
       invalidateInbox();
     }
-    if (row.kind === "merge" || taskEdit) {
-      try {
-        await dependencies.refreshPr(row.repo, row.number, "mutation recovery", "all", "detail");
-      } catch (refreshErr) {
-        // Keep the mutation error if refreshing its explanation also fails.
-        console.warn(`refresh after failed ${row.kind} of ${row.repo}#${row.number} failed: ${refreshErr instanceof Error ? refreshErr.message : String(refreshErr)}`);
-      }
-    }
-    return;
+    if (row.kind !== "merge" && !taskEdit) return { settled: Promise.resolve() };
+    const settled = dependencies.refreshPr(row.repo, row.number, "mutation recovery", "all", "detail").catch((refreshErr) => {
+      // Keep the mutation error if refreshing its explanation also fails.
+      console.warn(`refresh after failed ${row.kind} of ${row.repo}#${row.number} failed: ${refreshErr instanceof Error ? refreshErr.message : String(refreshErr)}`);
+    });
+    return { settled };
   }
   trackStep(`mutation:${row.kind}`, "ok", cliMutations.has(row.id) ? { client: "cli" } : {});
   cliMutations.delete(row.id);
   dependencies.setMutationRefreshing(row.id, row.payload_json);
-  await finalizeMutation(row, merged, dependencies);
+  return { settled: finalizeMutation(row, merged, dependencies) };
 }
+
+// Later writes wait for a confirmation so they see its refreshed cache, but GitHub already holds the
+// write, so one refresh that never settles must not stall every repository's queue behind it.
+const CONFIRMATION_WAIT_MS = 15_000;
 
 let draining = false;
 
@@ -663,10 +672,11 @@ export function kickWorker(): void {
   });
 }
 
-async function drainQueue(): Promise<void> {
+export async function drainQueue(dependencies = mutationProcessorDependencies, confirmationWaitMs = CONFIRMATION_WAIT_MS): Promise<void> {
   let row = nextPendingMutation();
   while (row) {
-    await processMutation(row);
+    const { settled } = await startMutation(row, dependencies);
+    await Promise.race([settled, Bun.sleep(confirmationWaitMs)]);
     row = nextPendingMutation();
   }
 }
