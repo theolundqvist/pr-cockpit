@@ -651,6 +651,28 @@ describe("agent PR summary", () => {
     expect(summary.openCommentsComplete).toBe(true);
   });
 
+  test("lists review bodies with author and verdict, skipping bodyless reviews", () => {
+    const reviewed = structuredClone(detail) as PrDetail;
+    reviewed.reviews = {
+      pageInfo: { hasNextPage: false, endCursor: null },
+      nodes: [
+        { id: "r1", databaseId: 77, author: { login: "review-bot" }, state: "CHANGES_REQUESTED", body: "Blocked · 2/5\n\nMissing tests.", submittedAt: "2026-07-22T09:40:00Z" },
+        { id: "r2", databaseId: 78, author: { login: "theo" }, state: "APPROVED", body: "", submittedAt: "2026-07-22T09:50:00Z" },
+      ],
+    } as unknown as PrDetail["reviews"];
+
+    const summary = buildPrAgentSummary("example-org/webapp#6133", reviewed, null);
+    expect(summary.reviews).toEqual([{
+      author: "review-bot",
+      state: "CHANGES_REQUESTED",
+      body: "Blocked · 2/5\n\nMissing tests.",
+      createdAt: "2026-07-22T09:40:00Z",
+      url: "https://github.com/example-org/webapp/pull/6133#pullrequestreview-77",
+    }]);
+    expect(summary.reviewsComplete).toBe(true);
+    expect(formatPrAgentSummary(summary)).toContain("- @review-bot · changes requested · 2026-07-22T09:40:00Z: Blocked · 2/5 Missing tests.");
+  });
+
 
   test("drops a failed check the moment the same job is queued again, so agents never chase a stale run", () => {
     const rerun = structuredClone(detail) as PrDetail;

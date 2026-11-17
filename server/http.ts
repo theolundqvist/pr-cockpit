@@ -1273,6 +1273,7 @@ function handlePrStates(url: URL): Response {
 type PrSummaryCheck = { name: string; state: CheckState; required: boolean; url: string | null; logBytes: number | null };
 type PrSummaryComment = { author: string; body: string; createdAt: string };
 type PrSummaryThread = { handle: string; path: string; line: number | null; outdated: boolean; comments: PrSummaryComment[] };
+type PrSummaryReview = PrSummaryComment & { state: string; url: string | null };
 type PrSummaryNewComment = PrSummaryComment & {
   kind: PrCommentSince["kind"];
   path: string | null;
@@ -1304,6 +1305,8 @@ export interface PrAgentSummary {
   ci: { headSha: string; checksFetched: boolean; state: string; complete: boolean; passed: number; running: number; failed: number; cancelled: number; skipped: number; checks: PrSummaryCheck[] };
   openComments: PrSummaryThread[];
   openCommentsComplete: boolean;
+  reviews: PrSummaryReview[];
+  reviewsComplete: boolean;
   newCommentsSince: string | null;
   newComments: PrSummaryNewComment[];
   newCommentsComplete: boolean;
@@ -1437,6 +1440,16 @@ export function buildPrAgentSummary(
     },
     openComments,
     openCommentsComplete: commentPagesComplete,
+    reviews: detail.reviews.nodes
+      .filter((review) => review.body.trim())
+      .map((review) => ({
+        author: review.author?.login ?? "unknown",
+        state: review.state,
+        body: review.body,
+        createdAt: review.submittedAt,
+        url: review.databaseId && detail.url ? `${detail.url}#pullrequestreview-${review.databaseId}` : null,
+      })),
+    reviewsComplete: detail.reviews.pageInfo?.hasNextPage === false,
     newCommentsSince,
     newComments: commentsSince,
     newCommentsComplete: true,
@@ -1589,6 +1602,12 @@ export function formatPrAgentSummary(summary: PrAgentSummary, options: AgentSumm
     if (summary.newComments.length === 0) lines.push("_No new comments._");
     for (const comment of summary.newComments) lines.push(newCommentLine(comment));
   } else if (includeComments) {
+    lines.push("", "## Reviews", "");
+    if (summary.reviews.length === 0) lines.push("_No review bodies._");
+    for (const review of summary.reviews) {
+      lines.push(`- @${review.author} · ${review.state.toLowerCase().replace(/_/g, " ")} · ${review.createdAt}: ${compactText(review.body)}${review.url ? ` — ${review.url}` : ""}`);
+    }
+    if (!summary.reviewsComplete) lines.push(`_Partial: newer reviews may be missing; read them with \`pr-cockpit ${summary.ref} --new-since DATE\`._`);
     lines.push("", "## Open Review Comments", "");
     lines.push(...openThreadLines(summary, staleMarkers));
   }
