@@ -321,12 +321,17 @@ if [[ "$needs_build" -eq 1 ]]; then
   fi
 fi
 
+managed_server_pid() {
+  local agent_pid
+  agent_pid="$(launchctl print "gui/$(id -u)/app.pr-cockpit.server" 2>/dev/null | sed -n 's/^[[:space:]]*pid = //p' | head -n 1)"
+  [[ "$agent_pid" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$agent_pid"
+}
+
 managed_server_owns_port() {
-  local agent="gui/$(id -u)/app.pr-cockpit.server"
   local agent_pid
   local listener_pid
-  agent_pid="$(launchctl print "$agent" 2>/dev/null | sed -n 's/^[[:space:]]*pid = //p' | head -n 1)" || return 1
-  [[ "$agent_pid" =~ ^[0-9]+$ ]] || return 1
+  agent_pid="$(managed_server_pid)" || return 1
   while IFS= read -r listener_pid; do
     [[ "$listener_pid" == "$agent_pid" ]] && return 0
   done < <(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null)
@@ -348,6 +353,18 @@ wait_for_server() {
   return 1
 }
 
+# The installer gives a managed backend 60 seconds. After the first five, wait only while launchd still runs it:
+# a slow start keeps its process, a failed one exits and goes to recovery.
+wait_for_managed_server() {
+  local started=$SECONDS
+  while (( SECONDS - started < 60 )); do
+    server_is_ours && return 0
+    (( SECONDS - started < 5 )) || managed_server_pid >/dev/null || return 1
+    sleep 0.1
+  done
+  return 1
+}
+
 ensure_managed_server() {
   local agent="gui/$(id -u)/app.pr-cockpit.server"
   local agent_plist="$HOME/Library/LaunchAgents/app.pr-cockpit.server.plist"
@@ -364,11 +381,11 @@ ensure_managed_server() {
   if [[ "$state" == "not running" ]]; then
     launchctl kickstart "$agent" >/dev/null 2>&1 || true
   fi
-  wait_for_server
+  wait_for_managed_server
 }
 
 if ! server_is_ours; then
-  if port_has_listener; then
+  if port_has_listener && ! { [[ "$managed_server" -eq 1 ]] && managed_server_owns_port; }; then
     echo "pr-cockpit: port $port is serving a different instance; set COCKPIT_PORT to a free port" >&2
     exit 1
   fi

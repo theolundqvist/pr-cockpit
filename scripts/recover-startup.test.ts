@@ -199,6 +199,44 @@ test("healthy installed backend launches without attempting an update", async ()
   expect(f.calls("installs")).toEqual([]);
 }, 20_000);
 
+function slowBackend(f: { source: string; fix(): string }, setup: string, beforeResponse: string) {
+  f.fix();
+  git(f.source, "fetch", "origin", "main");
+  git(f.source, "merge", "--ff-only", "origin/main");
+  writeFileSync(join(f.source, "server/main.ts"), `
+    import "./whiteboard.ts";
+    ${setup}
+    Bun.serve({ hostname: "127.0.0.1", port: Number(Bun.env.COCKPIT_PORT), async fetch(req) {
+      ${beforeResponse}
+      return Response.json(new URL(req.url).pathname === "/healthz" ? {root: process.cwd()} : {status: "repaired"});
+    }});
+  `);
+}
+
+test("a managed backend that takes seven seconds to listen opens without recovery", async () => {
+  const f = fixture();
+  slowBackend(f, "await Bun.sleep(7000);", "");
+  const result = await f.launches();
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout).toContain(`ELECTRON_STARTED http://127.0.0.1:${f.port}/#/pr/owner/repo/42`);
+  expect(f.calls("fetches")).toEqual([]);
+  expect(f.calls("installs")).toEqual([]);
+}, 30_000);
+
+test("a supervised backend slow to answer healthz is not mistaken for a different instance", async () => {
+  const f = fixture();
+  slowBackend(f, "const slowUntil = Date.now() + 6000;", "if (Date.now() < slowUntil) await Bun.sleep(2500);");
+  const server = Bun.spawnSync([join(f.root, "bin/launchctl"), "bootstrap", "gui/1", "fixture"], { cwd: f.source, env: f.env, stdout: "pipe", stderr: "pipe" });
+  expect(server.exitCode).toBe(0);
+  expect(await health(f)).toEqual({ root: realpathSync(f.source) });
+  const result = await f.launches();
+  expect(result.stderr).not.toContain("serving a different instance");
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout).toContain(`ELECTRON_STARTED http://127.0.0.1:${f.port}/#/pr/owner/repo/42`);
+  expect(f.calls("fetches")).toEqual([]);
+  expect(f.calls("installs")).toEqual([]);
+}, 30_000);
+
 test("disabled updates, unavailable origin, and unchanged upstream keep failed backend failed", async () => {
   for (const reason of ["disabled", "network", "unchanged"] as const) {
     const f = fixture();
