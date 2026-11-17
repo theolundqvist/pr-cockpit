@@ -2488,6 +2488,8 @@ const DETAIL_CHECKS_QUERY = `
 query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
+      mergeable
+      mergeStateStatus
       lastCommit: commits(last: 1) {
         nodes {
           commit {
@@ -2733,6 +2735,8 @@ type PrDetailShape<Rx> = {
 export type RawPrDetail = PrDetailShape<{ reactionGroups: RawReactionGroup[] }>;
 
 type RawPrDetailChecks = Pick<RawPrDetail, "lastCommit" | "commitList">;
+// A checks-only refresh advances fetched_at, so it rereads the merge state its checks decide.
+type RawPrDetailChecksRead = RawPrDetailChecks & Pick<RawPrDetail, "mergeable" | "mergeStateStatus">;
 type RawPrDetailReview = Pick<
   RawPrDetail,
   "author" | "reactionGroups" | "viewerCanMergeAsAdmin" | "reviewDecision" | "reviews" | "comments" | "reviewThreads"
@@ -3196,7 +3200,7 @@ async function fetchDetailChecks(
   number: number,
   previous: Pick<PrDetail, "commitList"> | null,
   source: GithubUsageSource,
-): Promise<RawPrDetailChecks | null> {
+): Promise<RawPrDetailChecksRead | null> {
   const listCounts = previous
     ? null
     : fetchCommitListLineCounts(owner, name, number, source).catch((error) => {
@@ -3204,7 +3208,7 @@ async function fetchDetailChecks(
       return new Map<string, CommitLineCounts>();
     });
   const data = await graphql<{
-    repository: { pullRequest: RawPrDetailChecks | null } | null;
+    repository: { pullRequest: RawPrDetailChecksRead | null } | null;
   }>(DETAIL_CHECKS_QUERY, { owner, name, number }, source, "PR checks", undefined, `${owner}/${name}`);
   const checks = data.repository?.pullRequest;
   if (!checks) return null;
@@ -3677,8 +3681,8 @@ export async function fetchPrDetailPart(
   source: GithubUsageSource,
 ): Promise<PrDetail> {
   if (mockGithub) return mockGithub.detail(repo, number);
-  // Mergeability comes only from the metadata read; a scoped refresh would keep UNKNOWN while
-  // advancing fetched_at, postponing the retry for as long as check or review events continue.
+  // A review refresh does not read mergeability and would keep UNKNOWN while advancing fetched_at,
+  // postponing the retry for as long as review events continue.
   if (current.state === "OPEN" && !current.isDraft &&
     (current.mergeable === "UNKNOWN" || current.mergeStateStatus === "UNKNOWN")) {
     return fetchPrDetail(repo, number, source, current);

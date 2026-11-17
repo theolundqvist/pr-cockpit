@@ -163,10 +163,12 @@ describe("REST PR detail parity", () => {
     });
   });
 
-  test("updates checks on a settled open PR without refetching metadata or review data", async () => {
+  test("updates checks and merge state on a settled open PR without refetching metadata or review data", async () => {
     const base = mapRestPrDetailBase({ ...restPullRequest, state: "open", merged_at: null, closed_at: null }, restFiles);
     const current = {
       ...base,
+      mergeable: "MERGEABLE",
+      mergeStateStatus: "BLOCKED",
       lastCommit: { nodes: [] },
       commitList: { nodes: [] },
       viewerLogin: "viewer",
@@ -186,11 +188,13 @@ describe("REST PR detail parity", () => {
       const url = new URL(String(input));
       paths.push(url.pathname);
       if (url.pathname === "/graphql") {
-        expect(JSON.parse(String(init?.body)).query).toContain("statusCheckRollup");
+        const query = JSON.parse(String(init?.body)).query as string;
+        expect(query).toContain("statusCheckRollup");
         return Response.json({
           data: {
             repository: {
               pullRequest: {
+                ...(query.includes("mergeStateStatus") ? { mergeable: "MERGEABLE", mergeStateStatus: "CLEAN" } : {}),
                 lastCommit: { nodes: [{ commit: { statusCheckRollup: null } }] },
                 commitList: {
                   nodes: [{
@@ -217,6 +221,7 @@ describe("REST PR detail parity", () => {
       const next = await fetchPrDetailPart("acme/repo", 42, current, "checks", "relay");
       expect(next.title).toBe(restPullRequest.title);
       expect(next.commitList.nodes[0]?.commit.oid).toBe("new-head-sha");
+      expect(next.mergeStateStatus).toBe("CLEAN");
       expect(next.reviews).toBe(current.reviews);
       expect(next.comments).toBe(current.comments);
       expect(next.reviewThreads).toBe(current.reviewThreads);

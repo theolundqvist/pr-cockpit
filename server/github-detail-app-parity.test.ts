@@ -119,12 +119,13 @@ async function scenario<T>(code: string): Promise<T> {
             } };
           }).reverse() } }, "graphql");
         }
+        if (query.includes("commitList:")) return ok({ data: { repository: { pullRequest: {
+          mergeable: base.mergeable, mergeStateStatus: base.mergeStateStatus,
+          lastCommit: { nodes: [{ commit: { statusCheckRollup: null } }] }, commitList: { nodes: [{ commit }] },
+        } } } }, "graphql");
         if (query.includes("mergeStateStatus")) return ok({ data: { repository: { pullRequest: base },
           ...(query.includes("viewer { login }") ? { viewer: { login: "viewer" } } : {}) } }, "graphql");
         if (query.includes("viewer { login }")) return ok({ data: { viewer: { login: "viewer" } } }, "graphql");
-        if (query.includes("commitList:")) return ok({ data: { repository: { pullRequest: {
-          lastCommit: { nodes: [{ commit: { statusCheckRollup: null } }] }, commitList: { nodes: [{ commit }] },
-        } } } }, "graphql");
         if (query.includes("commits(last: 100)")) return ok({ data: { repository: { pullRequest: {
           commits: { nodes: [{ commit: { oid: head, additions: 5, deletions: 2 } }] },
         } } } }, "graphql");

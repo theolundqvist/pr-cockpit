@@ -990,9 +990,9 @@ async function runCoreExhaustionScenario(body: string): Promise<unknown> {
       const commit = { oid: head, abbreviatedOid: "aaaaaaa", messageHeadline: "Fresh", committedDate: "2026-09-01T11:00:00Z", author: null, parents: { nodes: [] } };
       const previous = { commitList: { nodes: [{ commit: { oid: head, additions: 5, deletions: 2 } }] }, reviewThreads: { nodes: [] } };
       const state = { core: "ok", graphql: "ok", pull: null, operations: [], paths: [] };
-      const graphqlOperation = (query) => query.includes("mergeStateStatus") ? "metadata"
+      const graphqlOperation = (query) => query.includes("commitList:") ? "checks"
+        : query.includes("mergeStateStatus") ? "metadata"
         : query.includes("reviewThreads(first: 100)") ? "review"
-        : query.includes("commitList:") ? "checks"
         : query.includes("viewer { login }") ? "viewer"
         : "other";
       globalThis.fetch = async (input, init) => {
@@ -1004,7 +1004,10 @@ async function runCoreExhaustionScenario(body: string): Promise<unknown> {
           if (state.graphql === "exhausted") return exhausted("graphql");
           const data = operation === "metadata" ? { viewer: { login: "viewer" }, repository: { pullRequest: graphqlPull } }
             : operation === "viewer" ? { viewer: { login: "viewer" } }
-            : operation === "checks" ? { repository: { pullRequest: { lastCommit: { nodes: [{ commit: { statusCheckRollup: null } }] }, commitList: { nodes: [{ commit }] } } } }
+            : operation === "checks" ? { repository: { pullRequest: {
+              mergeable: graphqlPull.mergeable, mergeStateStatus: graphqlPull.mergeStateStatus,
+              lastCommit: { nodes: [{ commit: { statusCheckRollup: null } }] }, commitList: { nodes: [{ commit }] },
+            } } }
             : operation === "review" ? { repository: { pullRequest: {
               reactionGroups: [], viewerCanMergeAsAdmin: false, reviewDecision: "REVIEW_REQUIRED",
               reviews: { pageInfo: page, nodes: [] }, comments: { pageInfo: page, nodes: [] }, reviewThreads: { pageInfo: page, nodes: [] },
