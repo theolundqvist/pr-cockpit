@@ -11,6 +11,8 @@ import type {
   PendingReviewComment,
   PrDetail,
   PrIndexEntry,
+  PullRequestBodyEdit,
+  PullRequestBodyRevision,
   SearchHit,
   ViewerRepo,
   WorkflowRun,
@@ -574,6 +576,7 @@ type MockPendingReview = PendingReview & { nodeId: string };
 const pendingReviews = new Map<string, MockPendingReview>();
 let nextPendingReviewId = 20_000;
 let nextPendingCommentId = 30_000;
+const bodyEdits = new Map<string, PullRequestBodyEdit[]>();
 // Set by seedMockDatabase; queued fixture writes update the rows it seeded.
 let fixtureDb: Database | null = null;
 
@@ -834,6 +837,10 @@ export const mockGithub = isMockGithub ? {
     if (!row) throw new Error(`no mock fixture for ${repo}#${number}`);
     return (JSON.parse(row.detail_json) as PrDetail).body;
   },
+  pullRequestBodyRevision: (repo: string, number: number, edits: number): PullRequestBodyRevision => {
+    const history = bodyEdits.get(`${repo}#${number}`) ?? [];
+    return { body: mockGithub!.pullRequestBody(repo, number), edits: history.slice(0, edits), totalEdits: history.length };
+  },
   updatePullRequestBody: (repo: string, number: number, body: string): void => {
     const row = fixtureDb?.query<{ detail_json: string }, [string, number]>("SELECT detail_json FROM prs WHERE repo = ? AND number = ?").get(repo, number);
     const detail = details[`${repo}#${number}`];
@@ -846,6 +853,8 @@ export const mockGithub = isMockGithub ? {
       repo,
       number,
     );
+    const history = bodyEdits.get(`${repo}#${number}`) ?? [];
+    bodyEdits.set(`${repo}#${number}`, [{ id: `UCE_${history.length + 1}`, body }, ...history]);
   },
   conflictFiles: (repo: string, number: number): string[] => conflictedFixture(repo, number) ? Object.keys(CONFLICT_FIXTURES) : [],
   conflictMerge: (repo: string, number: number) => {

@@ -4932,10 +4932,34 @@ export async function reopenPullRequest(repo: string, number: number): Promise<v
 }
 
 
-export async function fetchPullRequestBody(repo: string, number: number): Promise<string> {
-  if (mockGithub) return mockGithub.pullRequestBody(repo, number);
-  const pr = await restJson<{ body: string | null }>(`/repos/${repo}/pulls/${number}`, repo);
-  return pr.body ?? "";
+const PULL_REQUEST_BODY_EDITS_QUERY = `
+query($owner: String!, $name: String!, $number: Int!, $edits: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      body
+      userContentEdits(first: $edits) { totalCount nodes { id diff } }
+    }
+  }
+}`;
+
+// GitHub keeps one edit per description write, newest first, each holding the full text it wrote.
+export type PullRequestBodyEdit = { id: string; body: string | null };
+export type PullRequestBodyRevision = { body: string; edits: PullRequestBodyEdit[]; totalEdits: number };
+
+export async function fetchPullRequestBodyRevision(repo: string, number: number, edits: number): Promise<PullRequestBodyRevision> {
+  if (mockGithub) return mockGithub.pullRequestBodyRevision(repo, number, edits);
+  const [owner, name] = repo.split("/");
+  if (!owner || !name) throw new GithubRequestError(`Invalid repository: ${repo}`, 404);
+  const data = await graphql<{
+    repository: { pullRequest: { body: string; userContentEdits: { totalCount: number; nodes: Array<{ id: string; diff: string | null }> } } | null } | null;
+  }>(PULL_REQUEST_BODY_EDITS_QUERY, { owner, name, number, edits }, "user action", "read PR description edits", undefined, repo);
+  const pr = data.repository?.pullRequest;
+  if (!pr) throw new GithubRequestError(`no pull request ${repo}#${number}`, 404);
+  return {
+    body: pr.body,
+    edits: pr.userContentEdits.nodes.map(({ id, diff }) => ({ id, body: diff })),
+    totalEdits: pr.userContentEdits.totalCount,
+  };
 }
 
 export async function updatePullRequestBody(repo: string, number: number, body: string): Promise<void> {

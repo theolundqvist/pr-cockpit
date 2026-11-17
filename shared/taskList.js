@@ -69,11 +69,17 @@ export function taskMarkers(source) {
   return tasks.map(({ checked }, i) => (flipped[i] ? { offset: offsets[i], checked, key: taskKey(source, offsets[i]) } : null));
 }
 
-/** @param {string} source @param {TaskIntent[]} tasks @returns {{ body: string, missing: TaskIntent[] }} */
-export function setTasksByKey(source, tasks) {
+/** @param {string} source @returns {Map<string, TaskMarker | null>} Ambiguous keys map to null. */
+function markersByKey(source) {
   /** @type {Map<string, TaskMarker | null>} */
   const byKey = new Map();
   for (const marker of taskMarkers(source)) if (marker) byKey.set(marker.key, byKey.has(marker.key) ? null : marker);
+  return byKey;
+}
+
+/** @param {string} source @param {TaskIntent[]} tasks @returns {{ body: string, missing: TaskIntent[] }} */
+export function setTasksByKey(source, tasks) {
+  const byKey = markersByKey(source);
   let body = source;
   /** @type {TaskIntent[]} */
   const missing = [];
@@ -83,5 +89,17 @@ export function setTasksByKey(source, tasks) {
     else if ((body[marker.offset] !== " ") !== task.checked) body = withMarker(body, marker.offset, task.checked);
   }
   return { body, missing };
+}
+
+/** @param {string} before @param {string} after @returns {TaskIntent[]} Boxes ticked or unticked between two versions. */
+export function taskChanges(before, after) {
+  const previous = markersByKey(before);
+  /** @type {TaskIntent[]} */
+  const changes = [];
+  for (const [key, marker] of markersByKey(after)) {
+    const old = previous.get(key);
+    if (marker && old && old.checked !== marker.checked) changes.push({ key, checked: marker.checked });
+  }
+  return changes;
 }
 

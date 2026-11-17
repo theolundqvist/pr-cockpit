@@ -1,5 +1,5 @@
 import { codeScanningAlertNumber, isCodeScanningThread, validateCodeScanningDismissal } from "../shared/codeScanning.js";
-import { setTasksByKey } from "../shared/taskList.js";
+import { setTasksByKey, taskChanges } from "../shared/taskList.js";
 import {
   deleteMutation,
   deleteSupersededFailedMerges,
@@ -23,7 +23,7 @@ import {
   deletePendingReviewComment,
   discardPendingReview,
   editPendingReviewComment,
-  fetchPullRequestBody,
+  fetchPullRequestBodyRevision,
   getViewerLogin,
   convertPullRequestToDraft,
   markPullRequestReadyForReview,
@@ -313,6 +313,47 @@ function requireResolutionThread(repo: string, number: number, payload: Extract<
   return thread;
 }
 
+const TASK_WRITE_EDITS = 20;
+const TASK_WRITE_ROUNDS = 5;
+
+// GitHub keeps the last description write whole. An edit that lands between our read and our write is
+// overwritten, so its checkbox changes are carried into another write, as GitHub's own task lists do.
+async function writeTasks(repo: string, number: number, writes: TaskIntent[]): Promise<string> {
+  let revision = await fetchPullRequestBodyRevision(repo, number, 1);
+  let base = revision.body;
+  let head = revision.body;
+  let cursor = revision.edits[0]?.id ?? null;
+  const carried = new Map<string, TaskIntent>();
+  for (let round = 0; round < TASK_WRITE_ROUNDS; round++) {
+    const { body, missing } = setTasksByKey(base, [...carried.values(), ...writes]);
+    if (missing.some((task) => writes.includes(task))) throw new Error("Checklist changed on GitHub; discard and reload before ticking again");
+    if (body === base) return body;
+    await updatePullRequestBody(repo, number, body);
+    revision = await fetchPullRequestBodyRevision(repo, number, TASK_WRITE_EDITS);
+    const seen = cursor === null ? revision.edits.length : revision.edits.findIndex((edit) => edit.id === cursor);
+    if (seen < 0 || (cursor === null && revision.totalEdits > revision.edits.length)) {
+      throw new Error("Description changed too often to confirm the checkbox write; reload and check the checklist");
+    }
+    const since = revision.edits.slice(0, seen).reverse();
+    const ours = since.findLastIndex((edit) => edit.body === body);
+    let previous = head;
+    let overwritten: string | null = null;
+    for (const edit of since.slice(0, Math.max(ours, 0))) {
+      if (edit.body === null) throw new Error("A hidden description edit overlapped the checkbox write; reload and check the checklist");
+      if (edit.body === previous) continue;
+      for (const change of taskChanges(previous, edit.body)) carried.set(change.key, change);
+      overwritten = edit.body;
+      previous = edit.body;
+    }
+    const oursIsLatest = ours >= 0 && ours === since.length - 1;
+    if (oursIsLatest && overwritten === null) return body;
+    base = oursIsLatest && overwritten !== null ? overwritten : revision.body;
+    head = revision.body;
+    cursor = revision.edits[0]?.id ?? cursor;
+  }
+  throw new Error("Description kept changing during the checkbox write; reload and check the checklist");
+}
+
 // returns whether this mutation took the PR out of the open set (merge/close), so the caller polls broadly
 async function executeMutation(row: MutationRow): Promise<boolean> {
   const payload: unknown = JSON.parse(row.payload_json);
@@ -384,7 +425,6 @@ async function executeMutation(row: MutationRow): Promise<boolean> {
         await updatePullRequestBody(row.repo, row.number, payload.body);
         return false;
       }
-      const current = await fetchPullRequestBody(row.repo, row.number);
       // Ticks queued behind this one join its write; accepted ticks still awaiting the cache join its confirmation.
       const queued: Array<{ id: number; state: string; tasks: TaskIntent[] }> = [];
       for (const other of listMutationsForPr(row.repo, row.number)) {
@@ -400,9 +440,7 @@ async function executeMutation(row: MutationRow): Promise<boolean> {
         queued.push({ id: other.id, state: other.state, tasks: otherPayload.tasks });
       }
       const writes = [...payload.tasks, ...queued.filter((other) => other.state === "pending").flatMap((other) => other.tasks)];
-      const { body, missing } = setTasksByKey(current, writes);
-      if (missing.length) throw new Error("Checklist changed on GitHub; discard and reload before ticking again");
-      if (body !== current) await updatePullRequestBody(row.repo, row.number, body);
+      const body = await writeTasks(row.repo, row.number, writes);
       const confirmed = [...queued.filter((other) => other.state === "refreshing").flatMap((other) => other.tasks), ...writes];
       row.payload_json = JSON.stringify({ ...payload, body, tasks: [...new Map(confirmed.map((task) => [task.key, task])).values()] });
       for (const other of queued) {
