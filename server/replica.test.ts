@@ -328,6 +328,63 @@ test("a replica mirrors the source's failed merges without touching its local mu
   }
 });
 
+test("a replica whose sync loop stops making progress no longer reports connected", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pr-cockpit-replica-stall-"));
+  const sourcePort = reservePort();
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "ssh"), "#!/usr/bin/env bash\nwhile kill -0 \"$PPID\" 2>/dev/null; do sleep 0.1; done\n");
+  chmodSync(join(bin, "ssh"), 0o755);
+  const scenario = `
+    const db = await import(${JSON.stringify(new URL("./db.ts", import.meta.url).href)});
+    const { replicaStatus, startReplicaSync } = await import(${JSON.stringify(new URL("./replica.ts", import.meta.url).href)});
+    db.setSetting("replica_ssh_host", "fixture-source");
+    const source = Bun.serve({
+      port: ${sourcePort},
+      fetch: (request) => new URL(request.url).pathname === "/healthz"
+        ? new Response("ok")
+        : Response.json({ revision: '"one"', lastPollAt: null, viewerLogin: null, tables: db.readInboxReplica() }),
+    });
+    (await startReplicaSync())();
+    const synced = replicaStatus();
+    const now = Date.now;
+    Date.now = () => now() + 60_000;
+    const late = replicaStatus();
+    Date.now = () => now() + 10 * 60_000;
+    const stalled = replicaStatus();
+    source.stop(true);
+    console.log(JSON.stringify({ synced, late, stalled }));
+    process.exit(0);
+  `;
+
+  try {
+    const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], {
+      env: {
+        ...Bun.env,
+        PATH: `${bin}:${Bun.env.PATH}`,
+        COCKPIT_DATA_DIR: join(root, "replica"),
+        COCKPIT_MOCK: "",
+        COCKPIT_REPLICA_SSH_HOST: "fixture-source",
+        COCKPIT_REPLICA_LOCAL_PORT: String(sourcePort),
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(stderr);
+    const { synced, late, stalled } = JSON.parse(stdout.trim().split("\n").at(-1)!);
+    expect(synced).toMatchObject({ connected: true, lastError: null });
+    expect(late).toEqual(synced);
+    expect(stalled).toEqual({ ...synced, connected: false, lastError: `no successful sync since ${synced.lastSyncedAt}` });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a replica mirrors its source's merge-approval flag and rows, and toggles only through the source", async () => {
   const root = mkdtempSync(join(tmpdir(), "pr-cockpit-replica-approvals-"));
   const sourcePort = reservePort();

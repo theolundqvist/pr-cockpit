@@ -10,6 +10,8 @@ import { pendingReviewsEnabled, readSettings, safeMergeApprovalEnabled, writeSet
 const SOURCE_PORT = Number(Bun.env.COCKPIT_PROXY_PORT ?? 4820);
 const TUNNEL_PORT = Number(Bun.env.COCKPIT_REPLICA_LOCAL_PORT ?? 48203);
 const SYNC_INTERVAL_MS = 5_000;
+// A healthy sync ends within the tunnel wait plus the inbox fetch deadline; no success for longer means the loop stalled.
+const SYNC_STALL_MS = 120_000;
 const PENDING_REVIEW_PATH_RE = /^\/api\/pr\/[^/]+\/[^/]+\/[1-9][0-9]*\/pending-review$/;
 const PR_DETAIL_PATH_RE = /^\/api\/pr\/[^/]+\/[^/]+\/[1-9][0-9]*$/;
 // Rows render media from the replicated PR table, so their viewer reads the same copy.
@@ -135,6 +137,9 @@ export function replicaViewerLogin(): string | null {
 }
 
 export function replicaStatus(): ReplicaState {
+  if (state.connected && state.lastSyncedAt && Date.now() - Date.parse(state.lastSyncedAt) > SYNC_STALL_MS) {
+    return { ...state, connected: false, lastError: `no successful sync since ${state.lastSyncedAt}` };
+  }
   return { ...state };
 }
 
