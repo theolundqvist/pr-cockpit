@@ -824,7 +824,7 @@ test("listen --run reconciles completion when no webhook arrives", async () => {
     },
   });
   const child = Bun.spawn([join(import.meta.dir, "pr-cockpit"), "listen", "owner/repo#17", "--run", "987"], {
-    env: { ...Bun.env, COCKPIT_PORT: String(server.port), COCKPIT_LISTEN_INTERVAL: "0.01" },
+    env: { ...Bun.env, COCKPIT_PORT: String(server.port), COCKPIT_LISTEN_INTERVAL: "0.01", COCKPIT_RUN_REFRESH_POLLS: "30" },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -1416,9 +1416,9 @@ test("proxy backend starts a local replica server", async () => {
   }
 });
 
-async function runCli(args: string[], port: number) {
+async function runCli(args: string[], port: number, env: Record<string, string> = {}) {
   const child = Bun.spawn([join(import.meta.dir, "pr-cockpit"), ...args], {
-    env: { ...Bun.env, COCKPIT_PORT: String(port), COCKPIT_LISTEN_INTERVAL: "0.01" },
+    env: { ...Bun.env, COCKPIT_PORT: String(port), COCKPIT_LISTEN_INTERVAL: "0.01", ...env },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -1467,7 +1467,7 @@ test("listen --run waits through GitHub failures and delivers a finished run who
     },
   });
   try {
-    const result = await runCli(["listen", "owner/repo#17", "--run", "987"], server.port!);
+    const result = await runCli(["listen", "owner/repo#17", "--run", "987"], server.port!, { COCKPIT_RUN_REFRESH_POLLS: "30" });
     expect(result.exitCode).toBe(0);
     expect(result.output).toBe("finished run\n");
     expect(result.error).toContain("GitHub returned 502");
@@ -1494,6 +1494,47 @@ test("listen --ci-only sleeps through pending progress and wakes once CI settles
     expect(result.exitCode).toBe(0);
     expect(result.output).toBe("ci settled\n");
     expect(reads).toBeGreaterThanOrEqual(4);
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("listen --ci-only waits past a failure already present while checks run, then wakes on the next failure", async () => {
+  let reads = 0;
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      if (new URL(request.url).searchParams.get("format") === "json") {
+        reads++;
+        return Response.json({ ci: { state: "PENDING", failed: reads < 5 ? 1 : 2, passed: reads, running: 3 } });
+      }
+      return new Response("second failure\n");
+    },
+  });
+  try {
+    const result = await runCli(["listen", "--ci-only", "owner/repo#1"], server.port!);
+    expect(result).toEqual({ output: "second failure\n", error: "", exitCode: 0 });
+    expect(reads).toBe(5);
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("listen gives up after --timeout with exit status 124", async () => {
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      if (request.method === "POST") return Response.json({});
+      return Response.json({ ci: { state: "PENDING", failed: 0, running: 3 } });
+    },
+  });
+  try {
+    for (const args of [["listen", "--ci-only", "--timeout", "1", "owner/repo#1"], ["listen", "owner/repo", "--run", "987", "--timeout", "1"]]) {
+      const result = await runCli(args, server.port!);
+      expect(result.exitCode).toBe(124);
+      expect(result.output).toBe("");
+      expect(result.error).toContain("listen timed out after 1s");
+    }
   } finally {
     server.stop(true);
   }

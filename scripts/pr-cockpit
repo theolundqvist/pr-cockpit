@@ -8,7 +8,7 @@ Read and mutate pull requests through PR Cockpit's cache and mutation queue.
 
 Usage:
   pr-cockpit [REF] [READ_OPTION]
-  pr-cockpit listen [REF] [--run RUN_ID]
+  pr-cockpit listen [REF] [--run RUN_ID] [--timeout SECONDS]
   pr-cockpit resolve REF THREAD
   pr-cockpit dismiss-alert REF THREAD REASON [--body-file FILE]
   pr-cockpit comment REF --body-file FILE
@@ -43,7 +43,8 @@ Mutation commands:
   request-reviewers, unrequest-reviewers
 
 Other commands:
-  listen [REF]         wait for substantive cached state to change, print it, then exit
+  listen [REF]         wait for substantive cached state to change, print it, then exit;
+                       exits 124 after --timeout without a change
   cache-run REF RUN_ID fetch one Actions run and retain its unsuccessful logs; REF may be OWNER/REPO
   runs OWNER/REPO      cached Actions runs outside PRs (deploys, branch pushes), newest first
   update               update and reconcile the installed app
@@ -67,6 +68,7 @@ Options:
   --comments-only     with listen REF, wake only for comment changes or current open comments
   --conflicts-only    with listen REF, wake only for merge state changes or current conflicts
   --next-change       with listen REF, wait past current blockers for the next change
+  --timeout SECONDS   with listen, give up after SECONDS without a change (default 1800) and exit 124
   --use-as-proxy HOST
                       reach the authoritative Cockpit server through SSH
   -h, --help          show this help
@@ -85,6 +87,7 @@ Read options:
   --comments-only      with listen REF, wake only for comment changes or current open comments
   --conflicts-only     with listen REF, wake only for merge state changes or current conflicts
   --next-change        with listen REF, wait past current blockers for the next change
+  --timeout SECONDS    with listen, give up after SECONDS without a change (default 1800) and exit 124
 
 Mutation options:
   --body-file FILE     read exact comment, review, or body text; use - for stdin
@@ -252,6 +255,7 @@ run_branch=""
 run_workflows=()
 run_status=""
 next_change="0"
+listen_timeout="${COCKPIT_LISTEN_TIMEOUT:-1800}"
 while (($#)); do
   case "$1" in
     --json)
@@ -327,6 +331,11 @@ while (($#)); do
       [[ "$command" = "listen" ]] || usage
       next_change="1"
       ;;
+    --timeout)
+      [[ "$command" = "listen" && $# -gt 1 && "$2" =~ ^[1-9][0-9]*$ ]] || usage
+      shift
+      listen_timeout="$1"
+      ;;
     --comments=0) comments="0" ;;
     --body-file)
       [[ $# -gt 1 ]] || usage
@@ -383,6 +392,7 @@ while (($#)); do
 done
 
 [[ -z "$since" || "$mode" = "summary" || "$mode" = "json" ]] || usage
+[[ "$listen_timeout" =~ ^[1-9][0-9]*$ ]] || { echo "pr-cockpit: COCKPIT_LISTEN_TIMEOUT must be a positive number of seconds" >&2; exit 2; }
 [[ "$comments" = "1" || "$mode" = "summary" || "$mode" = "json" ]] || usage
 [[ -z "$run_id" || "$mode" = "jobs" || "$mode" = "logs" || "$command" = "listen" || "$command" = "runs" ]] || usage
 [[ -z "$run_attempt" || ( -n "$run_id" && ( "$mode" = "jobs" || "$mode" = "logs" ) && "$command" != "listen" ) ]] || usage
@@ -512,10 +522,12 @@ switch (operation) {
     const approvedForSafeMerge = input.approvedForSafeMerge ?? false;
     const readyForReview = input.readyForReview ?? false;
     if (argument === "ci") {
-      // The second line stays PENDING while checks progress, so --ci-only waits for a settled verdict.
+      // The second line stays PENDING while checks progress, so --ci-only waits for a settled verdict;
+      // the third counts failures, so a check failing while others still run wakes it once.
       const ci = input.ci ?? null;
       console.log(stable({ state: input.state ?? null, approvedForSafeMerge, readyForReview }));
       console.log(String(ci?.state ?? "").toUpperCase() === "PENDING" ? "PENDING" : stable(ci));
+      console.log((Number(ci?.failed) || 0) + (Number(ci?.cancelled) || 0));
       break;
     }
     if (argument === "comments") {
@@ -548,7 +560,9 @@ switch (operation) {
     const conflicting = String(input.merge ?? "").toUpperCase() === "DIRTY";
     const finished = input.state === "MERGED" || input.state === "CLOSED";
     const blocked = {
-      ci: failedCi,
+      // A failure already present while other checks run is not a verdict yet; returning on it
+      // at once made agents that listen again after every read spin until CI settled.
+      ci: failedCi && String(input.ci?.state ?? "").toUpperCase() !== "PENDING",
       comments: openComments,
       conflicts: conflicting,
       // --next-change: the caller has seen the current blockers and waits for what changes next.
@@ -589,10 +603,18 @@ current_repo() {
   [[ "$candidate" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] && printf '%s' "$candidate"
 }
 
+# Listeners give up instead of waiting forever; the exit status tells a caller that nothing changed.
+listen_deadline() {
+  (( SECONDS < listen_timeout )) && return 0
+  printf 'pr-cockpit: listen timed out after %ss without a change; run listen again to keep waiting\n' "$listen_timeout" >&2
+  exit 124
+}
+
 wait_for_change() {
   local fingerprint=$1 interval=$2 previous current
   previous=$("$fingerprint")
   while sleep "$interval"; do
+    listen_deadline
     if ! current=$("$fingerprint" 2>/dev/null); then
       continue
     fi
@@ -633,6 +655,9 @@ refresh_run() {
 }
 wait_for_run_completion() {
   local interval=$1 payload state reconcile_attempt="" polls=0
+  # Webhooks keep a followed run current; the periodic reread only repairs a missed event, and at
+  # one poll a second each reread spent a job list and a run read every 30 seconds per listener.
+  local refresh_polls=${COCKPIT_RUN_REFRESH_POLLS:-300}
   refresh_run || true
   payload=$(fetch_run_json)
   while true; do
@@ -647,8 +672,9 @@ wait_for_run_completion() {
       continue
     fi
     sleep "$interval"
+    listen_deadline
     polls=$((polls + 1))
-    if [[ "$polls" -ge 30 ]]; then
+    if [[ "$polls" -ge "$refresh_polls" ]]; then
       refresh_run || true
       polls=0
     fi
@@ -673,6 +699,11 @@ if [[ "$command" = "runs" ]]; then
   exit
 fi
 
+# `listen --run RUN_ID` alone follows the run in the current repository.
+if [[ -z "$ref" && "$command" = "listen" && -n "$run_id" ]]; then
+  ref=$(current_repo || true)
+  [[ -n "$ref" ]] || { echo "pr-cockpit: current repository is unknown; use listen OWNER/REPO --run RUN_ID" >&2; exit 2; }
+fi
 # A run on a branch without a PR (a dispatched probe, a deploy) is followed by repository alone.
 if [[ "$ref" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && ( "$command" = "cache-run" || "$command" = "listen" ) ]]; then
   run_api="http://127.0.0.1:$port/api/agent/repo/$ref"
@@ -765,14 +796,22 @@ wait_for_pr_change() {
       fi
       current=$(json_transform pr-fingerprint "$listen_scope" <<<"$payload")
       if [[ "$current" != "$previous" ]]; then
-        [[ "$listen_scope" = "ci" && "${current#*$'\n'}" = "PENDING" && "${current%%$'\n'*}" = "${previous%%$'\n'*}" ]] || return 0
+        ci_progress_only "$previous" "$current" || return 0
       fi
     fi
     sleep "$interval"
+    listen_deadline
     while ! payload=$(fetch_pr_json 2>/dev/null); do
       sleep "$interval"
+      listen_deadline
     done
   done
+}
+# --ci-only sleeps through pending progress; only PR state, a settled verdict, or a new failure wakes it.
+ci_progress_only() {
+  [[ "$listen_scope" = "ci" ]] || return 1
+  local before_rest=${1#*$'\n'} after_rest=${2#*$'\n'}
+  [[ "${2%%$'\n'*}" = "${1%%$'\n'*}" && "${after_rest%%$'\n'*}" = "PENDING" && "${after_rest#*$'\n'}" -le "${before_rest#*$'\n'}" ]]
 }
 # Cached Actions rows stay readable when GitHub refuses the refresh (quota, outage); say why they may be stale.
 activate_actions_lease() {
@@ -811,6 +850,7 @@ if [[ "$command" = "listen" && ( "$mode" = "summary" || "$mode" = "json" ) ]]; t
     status=${response##*$'\n'}
     if [[ "$status" = "409" ]]; then
       sleep "${COCKPIT_LISTEN_INTERVAL:-1}"
+      listen_deadline
       continue
     fi
     if [[ "$status" != "200" ]]; then

@@ -532,6 +532,38 @@ test("current-head catalog refresh fetches running workflows' jobs in parallel, 
   expect(result.peak).toBe(4);
 });
 
+test("current-head catalog refresh lists a run that finished without jobs once, after it finished", async () => {
+  const result = await runScenario("pr-cockpit-actions-jobless-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    const run = (id, status, conclusion, updated_at) => ({
+      id, run_attempt: 1, head_sha: head, head_branch: "feature", name: "W" + id,
+      path: ".github/workflows/w" + id + ".yml", event: "pull_request",
+      status, conclusion, updated_at, html_url: null,
+    });
+    let listing = 0;
+    const fetched = [];
+    const fetchers = {
+      fetchWorkflowRuns: async () => ++listing === 1
+        ? [run(90, "completed", "action_required", "2026-09-17T02:40:00Z"), run(91, "queued", null, "2026-09-17T02:40:00Z")]
+        // 91 finishes after its empty queued listing, so that listing may predate its jobs.
+        : [run(90, "completed", "action_required", "2026-09-17T02:40:00Z"), run(91, "completed", "cancelled", "2999-01-01T00:00:00Z")],
+      fetchRunJobs: async (_repo, runId) => { fetched.push(runId); return []; },
+      fetchJobLog: async () => "",
+      restRemaining: async () => 5000,
+    };
+    const passes = [];
+    for (let pass = 0; pass < 3; pass++) {
+      await actions.cacheGithubActionsForCommit("acme/app", 7, head, fetchers, true);
+      passes.push([...fetched].sort());
+      fetched.length = 0;
+    }
+    console.log(JSON.stringify({ passes }));
+  `);
+  expect(result.passes).toEqual([[90, 91], [91], [91]]);
+});
+
 test("a head read in full under webhook coverage is not reread until coverage restarts or the head moves", async () => {
   const result = await runScenario("pr-cockpit-actions-covered-", `
     const actions = await import(${JSON.stringify(runLogsUrl)});

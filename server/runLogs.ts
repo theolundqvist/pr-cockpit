@@ -796,8 +796,12 @@ export async function cacheGithubActionsForCommit(
   for (const run of runs) storeRun(repo, number, run);
   const stale = runs.filter((run) => {
     const stored = latestWorkflowRunAttempt(repo, run.id);
-    return !(stored?.run_attempt === run.attempt && stored.status === "completed" && stored.jobs_fetched_at !== null
-      && listRunJobsForRun(repo, run.id, run.attempt).length > 0);
+    if (!(stored?.run_attempt === run.attempt && stored.status === "completed" && stored.jobs_fetched_at !== null)) return true;
+    if (listRunJobsForRun(repo, run.id, run.attempt).length > 0) return false;
+    // A run that finished without jobs (awaiting approval, cancelled before a runner started) stays
+    // empty; only a list read before it completed can still be missing jobs. Every catalog refresh
+    // reread such runs, about a dozen job lists per refresh on a head with blocked workflows.
+    return stored.updated_at !== null && Date.parse(`${stored.jobs_fetched_at.replace(" ", "T")}Z`) < Date.parse(stored.updated_at);
   });
   // A busy head has a dozen running workflows; fetching their jobs one by one held every
   // refresh for seconds. The request count, and so the REST quota spent, is unchanged.
