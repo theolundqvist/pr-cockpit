@@ -372,8 +372,10 @@ export function createPollOnce(deps: PollDeps): () => Promise<{ checked: number;
       new Set(hits.map((hit) => prKeyOf(hit.repo, hit.number))),
     );
 
-    for (const repo of repos) {
-      const keepNumbers = hits.filter((hit) => hit.repo === repo).map((hit) => hit.number);
+    // Registrations still open after reconciling keep their rows, including in repositories nobody tracks.
+    const openRegistrations = deps.listWebhookRegistrations();
+    for (const repo of searchRepos) {
+      const keepNumbers = [...hits, ...openRegistrations].filter((entry) => entry.repo === repo).map((entry) => entry.number);
       // A PR leaves the open search when it merges or closes; a merge event that was lost, or read
       // GitHub before the merge showed, would otherwise leave its stored snapshot open until reloaded.
       for (const number of deps.evictStalePrs(repo, keepNumbers)) {

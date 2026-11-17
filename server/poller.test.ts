@@ -337,6 +337,24 @@ describe("poll-loop registration lifecycle", () => {
     expect(invalidateInbox).toHaveBeenCalledTimes(1);
   });
 
+  test("a registered PR merged outside Cockpit leaves the inbox and its snapshot is reread", async () => {
+    registrations = [registration("ext/repo", 5), registration("ext/repo", 6)];
+    registrationStatuses.set("ext/repo#5", { state: "MERGED" });
+    registrationStatuses.set("ext/repo#6", { state: "OPEN" });
+    const evicted: Array<[string, number[]]> = [];
+    const reread: string[] = [];
+    await createPollOnce({
+      ...deps,
+      evictStalePrs: (repo, keep) => {
+        evicted.push([repo, keep]);
+        return repo === "ext/repo" ? [5] : [];
+      },
+      refreshCachedPrDetail: async (repo, number) => { reread.push(`${repo}#${number}`); },
+    })();
+    expect(evicted).toEqual([["acme/tracked", []], ["ext/repo", [6]]]);
+    expect(reread).toEqual(["ext/repo#5"]);
+  });
+
   test("registration whose PR lookup finds nothing is dropped", async () => {
     registrations = [registration("ext/repo", 5)];
     await createPollOnce(deps)();
