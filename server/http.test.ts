@@ -1369,6 +1369,31 @@ describe("agent PR summary", () => {
     }
   });
 
+  test("an agent read that cannot catch up with newer activity says why", async () => {
+    const repo = "test/agent-refresh-error";
+    const number = 1;
+    const now = Date.parse("2026-10-25T12:00:00Z");
+    setSystemTime(now);
+    const fetchedAt = new Date(now - 10 * 60_000).toISOString();
+    upsertPr(trackedPrRow({ repo, number, fetchedAt }));
+    recordPrWebhookActivity(repo, number, new Date(now - 60_000).toISOString());
+    const window = { limit: 5000, used: 0, remaining: 5000, resetAt: fetchedAt };
+    const handler = buildFetchHandler(4820, {
+      fetchGithubQuota: async () => ({ rest: window, graphql: window, search: window, fetchedAt }),
+      refreshPr: async () => { throw new Error("GitHub secondary rate limit; retry after 12:05"); },
+    });
+    const url = `http://127.0.0.1:4820/api/agent/pr/${repo}/${number}`;
+    try {
+      const summary = await (await handler(new Request(`${url}?format=json`))).json() as { snapshot: { refreshError?: string } };
+      expect(summary.snapshot.refreshError).toBe("GitHub secondary rate limit; retry after 12:05");
+      setSystemTime(now + 61_000);
+      expect(await (await handler(new Request(url))).text()).toContain("Refresh failed: GitHub secondary rate limit; retry after 12:05");
+    } finally {
+      setSystemTime();
+      for (const table of ["prs", "pr_detail_cache", "pr_webhook_activity"]) db.query(`DELETE FROM ${table} WHERE repo = ?`).run(repo);
+    }
+  });
+
   test("agent reads join known newer activity and fresh responses reject a webhook arriving during refresh", async () => {
     const repo = "test/known-newer";
     const number = 1;

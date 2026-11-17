@@ -1037,6 +1037,8 @@ type AgentSnapshotStatus = {
   fetchedAt: string;
   freshness: "recent" | "outdated";
   newerActivityAt: string | null;
+  // Why the read could not catch up with newerActivityAt.
+  refreshError?: string;
 };
 
 export function snapshotStatus(fetchedAt: string, lastWebhookAt: string | null, nowMs = Date.now()): AgentSnapshotStatus {
@@ -1093,11 +1095,12 @@ async function handlePrDetail(
         // Age alone can refresh in the background; known newer activity must be joined.
         if (agentSnapshot.newerActivityAt) {
           // The revalidator reports failures; retain an explicitly outdated cache on quota/outage.
-          await revalidation.catch(() => {});
+          const refreshError = await revalidation.then(() => null, (error) => error instanceof Error ? error.message : String(error));
           snapshot = cachedPrSnapshot(repoName, num);
           if (snapshot) {
             detail = JSON.parse(snapshot.row.detail_json);
             agentSnapshot = snapshotStatus(snapshot.row.fetched_at, lastWebhookAtForPr(repoName, num));
+            if (refreshError !== null && agentSnapshot.newerActivityAt) agentSnapshot.refreshError = refreshError;
           }
         }
       }
@@ -1483,6 +1486,7 @@ function formatPrAgentDigest(summary: PrAgentSummary, includeComments: boolean, 
   if (summary.snapshot?.freshness === "outdated") {
     lines.push(`Cached snapshot: OUTDATED · ${snapshotAge(summary.snapshot.fetchedAt)} old · ${summary.snapshot.fetchedAt}`);
     if (summary.snapshot.newerActivityAt) lines.push(`Known newer activity: webhook received ${summary.snapshot.newerActivityAt}.`);
+    if (summary.snapshot.refreshError) lines.push(`Refresh failed: ${summary.snapshot.refreshError}`);
   }
   const coreExhausted = coreExhaustionLine(summary);
   if (coreExhausted) lines.push(coreExhausted);
@@ -1558,11 +1562,12 @@ export function formatPrAgentSummary(summary: PrAgentSummary, options: AgentSumm
     `URL: ${summary.url}`,
   ];
   if (summary.snapshot) {
-    const { fetchedAt, freshness, newerActivityAt } = summary.snapshot;
+    const { fetchedAt, freshness, newerActivityAt, refreshError } = summary.snapshot;
     lines.push("", `Cached snapshot: ${freshness === "outdated" ? "OUTDATED · " : ""}${snapshotAge(fetchedAt)} old · ${fetchedAt}`);
     if (newerActivityAt) {
       lines.push(`Known newer activity: webhook received ${newerActivityAt}. This snapshot does not include that activity.`);
     }
+    if (refreshError) lines.push(`Refresh failed: ${refreshError}`);
     const activeQuota = activeAgentQuota(summary);
     if (activeQuota?.graphql?.remaining === 0 && !restFallbackEnabled()) {
       lines.push(`Refresh unavailable until ${activeQuota.graphql.resetAt}: GitHub ${"kind" in activeQuota && activeQuota.kind === "app" ? "App " : ""}GraphQL quota exhausted.`);
@@ -1667,6 +1672,7 @@ async function handleAgentPr(
   const detailResponse = await handlePrDetail(owner, repo, number, runtime, true);
   if (!detailResponse.ok) return detailResponse;
   const detail = await detailResponse.json() as unknown as PrDetail & { agentSnapshot: AgentSnapshotStatus };
+  const { refreshError } = detail.agentSnapshot;
   detail.agentSnapshot = snapshotStatus(detail.agentSnapshot.fetchedAt, lastWebhookAtForPr(`${owner}/${repo}`, Number(number)));
   // A webhook may arrive during revalidation. Listen retries rather than emitting that snapshot.
   if (url.searchParams.get("fresh") === "1" && detail.agentSnapshot?.newerActivityAt) {
@@ -1682,6 +1688,7 @@ async function handleAgentPr(
     }
   }
   detail.agentSnapshot = snapshotStatus(detail.agentSnapshot.fetchedAt, lastWebhookAtForPr(`${owner}/${repo}`, Number(number)));
+  if (refreshError && detail.agentSnapshot.newerActivityAt) detail.agentSnapshot.refreshError = refreshError;
   if (url.searchParams.get("fresh") === "1" && detail.agentSnapshot.newerActivityAt) {
     return json({ error: "PR snapshot predates known activity" }, 409);
   }
