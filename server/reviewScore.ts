@@ -143,6 +143,12 @@ export function reviewedShaAt(detail: CommitSourceDetail, at: string): string | 
   return best?.oid ?? null;
 }
 
+const REVIEWED_COMMIT_RE = /Last reviewed commit:.*?\/commit\/([0-9a-f]{40})/is;
+
+export function reviewedCommitIn(body: string): string | null {
+  return body.match(REVIEWED_COMMIT_RE)?.[1] ?? null;
+}
+
 export function reviewerLogins(detail: LoginSourceDetail): Set<string> {
   const logins = new Set<string>();
   for (const review of detail.reviews.nodes) if (review.author?.login) logins.add(review.author.login);
@@ -178,7 +184,8 @@ export function currentReviewerScores(detail: ScoreSourceDetail): Record<string,
       }
     }
     if (!scored) continue;
-    const reviewedSha = reviewedShaAt(detail, scored.text.at);
+    // A bot that edits its summary in place keeps the comment's creation time, so the commit it names wins.
+    const reviewedSha = reviewedCommitIn(scored.text.body) ?? reviewedShaAt(detail, scored.text.at);
     out[login] = {
       score: scored.score,
       stale: reviewedSha != null && reviewedSha !== detail.headRefOid,

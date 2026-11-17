@@ -165,6 +165,17 @@ describe("currentReviewerScores", () => {
     });
   });
 
+  test("an edited summary naming the current head is current, whenever it was first posted", () => {
+    const head = "a".repeat(40);
+    const summary = (sha: string) => comment("greptile-apps", "summary", `Confidence Score: 5/5\n\nLast reviewed commit: [fix](https://github.com/acme/app/commit/${sha})`);
+    const source = (body: CommentFixture) => ({ ...detail([], [body]), headRefOid: head, commitList: { nodes: [
+      { commit: { oid: "b".repeat(40), committedDate: "2026-01-01T00:00:00Z" } },
+      { commit: { oid: head, committedDate: "2026-01-03T00:00:00Z" } },
+    ] } });
+    expect(currentReviewerScores(source(summary(head)))).toEqual({ "greptile-apps": { score: 5, stale: false } });
+    expect(currentReviewerScores(source(summary("b".repeat(40))))).toEqual({ "greptile-apps": { score: 5, stale: true } });
+  });
+
   test("scoreless reviewers have no score entry", () => {
     expect(currentReviewerScores(detail([review("human-reviewer", "plain", "Looks good to me.")], []))).toEqual({});
   });

@@ -24,6 +24,7 @@ import { needsMeRank } from "./rank.ts";
 import { refreshRepoUsers } from "./repoUsers.ts";
 import { createPrRefreshScheduler } from "./refreshScheduler.ts";
 import { createMergeabilityRetry } from "./mergeabilityRetry.ts";
+import { reviewedCommitIn } from "./reviewScore.ts";
 import { pollIntervalMs, readSettings, restFallbackEnabled, settingsRepos } from "./settings.ts";
 import { discoveredRepos, refreshWorktreeScan } from "./worktreeScan.ts";
 import { onPrActivity } from "./activity.ts";
@@ -104,8 +105,6 @@ function countUnresolved(detail: PrDetail): number {
 
 const GREPTILE_LOGIN = "greptile-apps";
 const GREPTILE_CONFIDENCE_RE = /Confidence Score:\s*(\d)\/5/i;
-// greptile embeds the commit its summary was written against as a link in the same comment
-const GREPTILE_REVIEWED_COMMIT_RE = /Last reviewed commit:.*?\/commit\/([0-9a-f]{40})/is;
 
 type GreptileComments = { comments: { nodes: Array<{ author: { login: string } | null; body: string }> } };
 type GreptileThreads = { reviewThreads: { nodes: Array<{ isResolved: boolean; isOutdated: boolean; comments: { nodes: Array<{ author: { login: string } | null }> } }> } };
@@ -121,9 +120,10 @@ export function greptileConfidence(detail: GreptileComments): number | null {
   return match ? Number(match[1]) : null;
 }
 
+// greptile embeds the commit its summary was written against as a link in the same comment
 export function greptileReviewedSha(detail: GreptileComments): string | null {
   const body = lastGreptileComment(detail);
-  return body?.match(GREPTILE_REVIEWED_COMMIT_RE)?.[1] ?? null;
+  return body === null ? null : reviewedCommitIn(body);
 }
 
 export function greptileUnresolvedCount(detail: GreptileThreads): number {
