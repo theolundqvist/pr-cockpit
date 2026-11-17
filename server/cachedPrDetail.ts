@@ -2,6 +2,7 @@ import { getCachedPrDetail, upsertCachedPrDetail } from "./db.ts";
 import { fetchPrDetail, fetchPrDetailPart, type PrDetail, type PrDetailScope } from "./github.ts";
 import { withGithubUsageSource, type GithubUsageSource } from "./githubUsage.ts";
 import { prefetchDetailImages } from "./imageproxy.ts";
+import { createMergeabilityRetry } from "./mergeabilityRetry.ts";
 import { invalidatePr } from "./rendererInvalidation.ts";
 import { cacheGithubActionsForCommit } from "./runLogs.ts";
 
@@ -12,6 +13,7 @@ export interface CachedPrDetailDeps {
 }
 
 const defaultDeps: CachedPrDetailDeps = { fetchPrDetail, fetchPrDetailPart, cacheGithubActionsForCommit };
+const retryCachedMergeability = createMergeabilityRetry((repo, number, source) => refreshCachedPrDetail(repo, number, source, "checks"));
 
 // Refreshes the detail snapshot of a PR outside the tracked inbox (one the user opened from
 // All PRs or a link). Like a tracked refresh, the snapshot is published before the Actions
@@ -39,6 +41,7 @@ export function refreshCachedPrDetail(
       detail_json: JSON.stringify(detail),
       fetched_at: snapshotCutoffAt,
     });
+    retryCachedMergeability(repo, number, detail, source);
     invalidatePr(repo, number);
     prefetchDetailImages(detail);
     if (scope === "review") return;

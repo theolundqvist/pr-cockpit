@@ -23,6 +23,7 @@ import { fetchMirror, pruneMirrors } from "./mirror.ts";
 import { needsMeRank } from "./rank.ts";
 import { refreshRepoUsers } from "./repoUsers.ts";
 import { createPrRefreshScheduler } from "./refreshScheduler.ts";
+import { createMergeabilityRetry } from "./mergeabilityRetry.ts";
 import { pollIntervalMs, readSettings, restFallbackEnabled, settingsRepos } from "./settings.ts";
 import { discoveredRepos, refreshWorktreeScan } from "./worktreeScan.ts";
 import { onPrActivity } from "./activity.ts";
@@ -192,6 +193,7 @@ async function refreshPrNow(
   }
   const next = prRowFromDetail(repo, number, detail, snapshotCutoffAt);
   upsertPr(next);
+  retryTrackedMergeability(repo, number, detail, source);
   observePrNotifications(previous, next);
 
   upsertPrIndex([{
@@ -234,6 +236,7 @@ async function refreshPrNow(
 }
 
 export const refreshPr = createPrRefreshScheduler(refreshPrNow);
+const retryTrackedMergeability = createMergeabilityRetry((repo, number, source) => refreshPr(repo, number, source, "checks", "detail"));
 
 export interface PollDeps {
   backgroundPollAllowed: typeof backgroundPollAllowed;

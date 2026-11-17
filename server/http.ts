@@ -69,6 +69,7 @@ import {
 } from "./db.ts";
 import { localCheckoutBranchFor, localCheckoutPathFor, setLocalCheckoutBranch, worktreePathFor, worktreeWindowIdFor } from "./worktreeScan.ts";
 import { prKey } from "./prKey.ts";
+import { mergeabilityPending, type MergeabilityFields } from "./mergeabilityRetry.ts";
 import { isTransportFailure, lastPollAt, pollOnce, prRowFromDetail, refreshPr, trackedRepos } from "./poller.ts";
 import { createConcurrencyLimit } from "./concurrency.ts";
 import {
@@ -903,27 +904,18 @@ export function trackedDetailIsStale(
   return nowMs - fetchedAtMs > COVERED_STALE_MS;
 }
 
-type MergeabilityDetail = {
-  state?: string;
-  isDraft?: boolean;
-  mergeable?: string;
-  mergeStateStatus?: string;
-};
-
-// GitHub computes mergeability asynchronously; retry unresolved open PRs sooner than normal detail refreshes.
+// A stored UNKNOWN is retried by the refresh that found it; one stored long ago is reread when opened.
 const TRANSIENT_MERGEABILITY_STALE_MS = 30_000;
 
 export function mergeabilityNeedsRefresh(
   fetchedAt: string,
-  detail: MergeabilityDetail,
+  detail: MergeabilityFields,
   nowMs: number,
 ): boolean {
-  if (detail.state !== "OPEN" || detail.isDraft) return false;
-  if (detail.mergeable !== "UNKNOWN" && detail.mergeStateStatus !== "UNKNOWN") return false;
-  return nowMs - new Date(fetchedAt).getTime() > TRANSIENT_MERGEABILITY_STALE_MS;
+  return mergeabilityPending(detail) && nowMs - new Date(fetchedAt).getTime() > TRANSIENT_MERGEABILITY_STALE_MS;
 }
 
-function trackedMergeabilityDetail(tracked: PrRow): MergeabilityDetail {
+function trackedMergeabilityDetail(tracked: PrRow): MergeabilityFields {
   return {
     state: tracked.state,
     isDraft: tracked.is_draft === 1,

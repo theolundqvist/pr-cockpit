@@ -30,6 +30,7 @@ import {
 import { readSettings, restFallbackEnabled, restUsageEnabled, settingsRepos } from "./settings.ts";
 import { mergeAttributionWanted } from "./notifications.ts";
 import { createConcurrencyLimit } from "./concurrency.ts";
+import { mergeabilityPending } from "./mergeabilityRetry.ts";
 import { GRAPHQL_BACKGROUND_RESERVE } from "../ui/src/lib/quotaImpact.js";
 import type { PrCheck } from "./checkState.ts";
 import {
@@ -3681,12 +3682,10 @@ export async function fetchPrDetailPart(
   source: GithubUsageSource,
 ): Promise<PrDetail> {
   if (mockGithub) return mockGithub.detail(repo, number);
-  // A review refresh does not read mergeability and would keep UNKNOWN while advancing fetched_at,
-  // postponing the retry for as long as review events continue.
-  if (current.state === "OPEN" && !current.isDraft &&
-    (current.mergeable === "UNKNOWN" || current.mergeStateStatus === "UNKNOWN")) {
-    return fetchPrDetail(repo, number, source, current);
-  }
+  // Review reads and REST checks do not read mergeability and would keep UNKNOWN while advancing
+  // fetched_at, postponing the retry for as long as events continue.
+  const unresolved = mergeabilityPending(current);
+  if (unresolved && scope === "review") return fetchPrDetail(repo, number, source, current);
   const [owner, name] = repo.split("/");
   if (!owner || !name) throw new GithubRequestError(`Invalid repository: ${repo}`, 404);
   assertQuotaAvailable("graphql", false);
@@ -3694,7 +3693,7 @@ export async function fetchPrDetailPart(
   return readWithRestFallback<PrDetail>(
     source,
     () => fetchPrDetailPartGraphql(repo, owner, name, number, current, scope, source, repositoryReview),
-    () => scope === "checks" ? fetchRestPrChecks(repo, current) : fetchRestPrDetail(repo, number, current, source),
+    () => scope === "checks" && !unresolved ? fetchRestPrChecks(repo, current) : fetchRestPrDetail(repo, number, current, source),
     repo,
   );
 }

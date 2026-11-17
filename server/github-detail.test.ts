@@ -380,7 +380,8 @@ describe("REST PR detail parity", () => {
       if (url.pathname === "/repos/acme/repo/pulls/42/files") return Response.json(restFiles);
       const query = JSON.parse(String(init?.body)).query as string;
       if (query.includes("statusCheckRollup")) {
-        return Response.json({ data: { repository: { pullRequest: { lastCommit: { nodes: [{ commit: { statusCheckRollup: null } }] }, commitList: { nodes: [] } } } } });
+        const merge = query.includes("mergeStateStatus") ? { mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" } : {};
+        return Response.json({ data: { repository: { pullRequest: { ...merge, lastCommit: { nodes: [{ commit: { statusCheckRollup: null } }] }, commitList: { nodes: [] } } } } });
       }
       const page = { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] };
       return Response.json({
