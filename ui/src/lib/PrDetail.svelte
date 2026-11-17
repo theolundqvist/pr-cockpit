@@ -1388,6 +1388,7 @@
       kind: "merge",
       force,
       baseRef: pr.baseRefName,
+      headSha: pr.headRefOid,
       method: pr.mergeMethod ?? "squash",
       source: pr.mergeMethodSource ?? "default",
     });

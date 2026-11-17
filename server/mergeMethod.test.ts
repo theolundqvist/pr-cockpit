@@ -183,10 +183,12 @@ test("merge method learning semantics against an isolated database", async () =>
   }
 });
 
-test("merge worker refreshes the base and enforces its gate", async () => {
+test("merge worker refreshes the base and head and enforces its gate", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-merge-retarget-"));
   const scenario = `
     const { enqueueMutation, mutationsForPr } = await import(${JSON.stringify(new URL("./mutations.ts", import.meta.url).href)});
+    const { mockGithub } = await import(${JSON.stringify(new URL("./mockGithub.ts", import.meta.url).href)});
+    const headSha = mockGithub.detail("fixture/cockpit", 102).headRefOid;
     const waitForFailure = async (id) => {
       let row;
       for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -199,16 +201,21 @@ test("merge worker refreshes the base and enforces its gate", async () => {
     const retargeted = await waitForFailure(enqueueMutation({
       repo: "fixture/cockpit",
       number: 102,
-      payload: { kind: "merge", force: false, baseRef: "production", method: "merge", source: "explicit" },
+      payload: { kind: "merge", force: false, baseRef: "production", headSha, method: "merge", source: "explicit" },
+    }));
+    const moved = await waitForFailure(enqueueMutation({
+      repo: "fixture/cockpit",
+      number: 102,
+      payload: { kind: "merge", force: true, baseRef: "main", headSha: "0".repeat(40), method: "merge", source: "explicit" },
     }));
     const gated = await waitForFailure(enqueueMutation({
       repo: "fixture/cockpit",
       number: 102,
-      payload: { kind: "merge", force: false, baseRef: "main", method: "merge", source: "explicit" },
+      payload: { kind: "merge", force: false, baseRef: "main", headSha, method: "merge", source: "explicit" },
     }));
-    console.log(JSON.stringify({ retargeted, gated }));
+    console.log(JSON.stringify({ retargeted, moved, gated }));
     await Bun.sleep(10);
-    process.exit(retargeted?.state === "failed" && gated?.state === "failed" ? 0 : 2);
+    process.exit(retargeted?.state === "failed" && moved?.state === "failed" && gated?.state === "failed" ? 0 : 2);
   `;
 
   try {
@@ -226,6 +233,8 @@ test("merge worker refreshes the base and enforces its gate", async () => {
     const result = JSON.parse(stdout);
     expect(result.retargeted.state).toBe("failed");
     expect(result.retargeted.error).toContain("retargeted from production to main");
+    expect(result.moved.state).toBe("failed");
+    expect(result.moved.error).toContain(`PR head moved from 0000000 to `);
     expect(result.gated.state).toBe("failed");
     expect(result.gated.error).toContain("Cockpit merge gate rejected BLOCKED");
   } finally {

@@ -1111,6 +1111,7 @@ describe("agent PR summary", () => {
       kind: "merge",
       force: true,
       baseRef: "main",
+      headSha: detail.headRefOid,
       method: "rebase",
       source: "explicit",
     });

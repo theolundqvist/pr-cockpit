@@ -1793,6 +1793,7 @@ export function normalizeAgentMutation(repo: string, number: number, detail: PrD
         kind: "merge",
         force: force === true,
         baseRef,
+        headSha: detail.headRefOid,
         method: isMergeMethod(method) ? method : mergeMethodFor(repo, baseRef),
         source: isMergeMethod(method) ? "explicit" : mergeMethodSourceFor(repo, baseRef),
       };

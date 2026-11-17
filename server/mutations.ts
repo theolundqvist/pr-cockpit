@@ -69,7 +69,7 @@ export type MutationPayload =
   | { kind: "reply-to-thread"; rootCommentId: number; body: string }
   | { kind: "resolve-thread"; threadId: string; resolved: boolean; codeScanningDismissal?: { reason: string; comment?: string } }
   | { kind: "review-verdict"; event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT"; body: string; pendingReviewId?: number }
-  | { kind: "merge"; force: boolean; baseRef: string; method: MergeMethod; source: MergeMethodSource }
+  | { kind: "merge"; force: boolean; baseRef: string; headSha: string; method: MergeMethod; source: MergeMethodSource }
   | { kind: "update-branch" }
   | { kind: "ready-for-review" }
   | { kind: "convert-to-draft" }
@@ -179,6 +179,9 @@ function assertMutationPayload(value: unknown): asserts value is MutationPayload
       !("source" in value) || !isMergeMethodSource(value.source) || (value.source === "default" && value.method !== "squash")) {
       throw new Error("merge requires a valid branch and method snapshot");
     }
+    // A window still running the previous build sends no head, which would merge whatever was pushed since review.
+    if (!("headSha" in value)) throw new Error("Cockpit was updated; reload the window before merging");
+    if (typeof value.headSha !== "string" || !/^[0-9a-f]{40}$/i.test(value.headSha)) throw new Error("merge requires the reviewed head SHA");
   }
   if (value.kind === "github-auto-merge") {
     if (!("enable" in value) || typeof value.enable !== "boolean") throw new Error("GitHub auto-merge requires enable");
@@ -283,12 +286,13 @@ export function discardMutation(id: number): void {
 }
 
 // untracked PRs opened in the detail view live in pr_detail_cache, not the tracked prs table
-function requirePrRef(repo: string, number: number): { headSha: string; nodeId: string } {
+function requirePrRef(repo: string, number: number): { headSha: string; nodeId: string; mergeStateStatus: string } {
   const pr = getPr(repo, number);
-  if (pr) return { headSha: pr.head_sha, nodeId: (JSON.parse(pr.detail_json) as { id: string }).id };
+  if (pr) return { headSha: pr.head_sha, nodeId: (JSON.parse(pr.detail_json) as { id: string }).id, mergeStateStatus: pr.merge_state_status };
   const cached = getCachedPrDetail(repo, number);
   if (!cached) throw new Error(`no cached PR for ${repo}#${number}`);
-  return { headSha: cached.head_sha, nodeId: (JSON.parse(cached.detail_json) as { id: string }).id };
+  const detail = JSON.parse(cached.detail_json) as PrDetail;
+  return { headSha: cached.head_sha, nodeId: detail.id, mergeStateStatus: detail.mergeStateStatus };
 }
 
 // Reads the freshest cached base after refreshes and for preference writes.
@@ -396,12 +400,14 @@ async function executeMutation(row: MutationRow): Promise<boolean> {
       if (currentBase !== payload.baseRef) {
         throw new Error(`PR retargeted from ${payload.baseRef} to ${currentBase}; confirm the merge method again`);
       }
-      const pr = getPr(row.repo, row.number);
-      if (!pr) throw new Error(`no cached PR for ${row.repo}#${row.number}`);
-      if (!payload.force && !mergeAllowedNow(row.repo, pr)) {
-        throw new Error(`Cockpit merge gate rejected ${pr.merge_state_status}`);
+      const pr = requirePrRef(row.repo, row.number);
+      if (pr.headSha !== payload.headSha) {
+        throw new Error(`PR head moved from ${payload.headSha.slice(0, 7)} to ${pr.headSha.slice(0, 7)}; review the new head before merging`);
       }
-      await mergeWithSelection(row.repo, row.number, payload.baseRef, payload.method, payload.source);
+      if (!payload.force && !mergeAllowedNow(row.repo, { merge_state_status: pr.mergeStateStatus })) {
+        throw new Error(`Cockpit merge gate rejected ${pr.mergeStateStatus}`);
+      }
+      await mergeWithSelection(row.repo, row.number, payload.baseRef, payload.method, payload.source, payload.headSha);
       return true;
     }
     case "update-branch":
