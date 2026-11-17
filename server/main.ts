@@ -1,3 +1,5 @@
+// Must stay first: db.ts opens and migrates cockpit.db as soon as it is imported.
+import "./dataDirLock.ts";
 import { db, failInterruptedMutations, prIsOpen, startCacheRetention } from "./db.ts";
 import { recoverRefreshingMutations } from "./mutations.ts";
 import { seedSettings } from "./settings.ts";
