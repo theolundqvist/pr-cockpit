@@ -609,7 +609,7 @@ test("checkbox ticks queued during a write share one description update, and lat
   }
 });
 
-test("a checkbox write keeps description edits that landed between its read and its write", async () => {
+async function taskRace(checklist: string[], script: string): Promise<Record<string, unknown>> {
   const dataDir = mkdtempSync(join(tmpdir(), "pr-cockpit-task-race-"));
   const url = (path: string) => JSON.stringify(new URL(path, import.meta.url).href);
   const scenario = `
@@ -618,9 +618,8 @@ test("a checkbox write keeps description edits that landed between its read and 
     const { processMutation } = await import(${url("./mutations.ts")});
     const repo = "fixture/cockpit";
     seedMockDatabase(db.db, ${JSON.stringify(dataDir)});
-    const checklist = ["Release checklist", "", ...[1, 2, 3, 4, 5].map((step) => "- [ ] Step " + step + " verified")].join("\\n");
     const write = mockGithub.updatePullRequestBody;
-    await write(repo, 101, checklist);
+    await write(repo, 101, ${JSON.stringify(checklist.join("\n"))});
     let writes = 0;
     let before = null;
     let after = null;
@@ -632,27 +631,30 @@ test("a checkbox write keeps description edits that landed between its read and 
       if (after) write(repo, 101, after(mockGithub.pullRequestBody(repo, 101)));
       after = null;
     };
-    const tick = async (step) => {
+    const history = mockGithub.pullRequestBodyRevision;
+    let reads = [];
+    mockGithub.pullRequestBodyRevision = (...args) => {
+      const revision = history(...args);
+      const rewrite = reads.shift();
+      return rewrite ? rewrite(revision) : revision;
+    };
+    const tick = async (key) => {
       writes = 0;
       const id = db.insertMutation({
         repo, number: 101, kind: "edit-body", created_at: new Date().toISOString(),
-        payload_json: JSON.stringify({ kind: "edit-body", body: "preview", tasks: [{ key: "text:Step " + step + " verified", checked: true }] }),
+        payload_json: JSON.stringify({ kind: "edit-body", body: "preview", tasks: [{ key, checked: true }] }),
       });
       await processMutation(db.getMutation(id));
       const body = mockGithub.pullRequestBody(repo, 101);
-      return { writes, title: body.split("\\n")[0], state: body.split("\\n").filter((line) => line.startsWith("- [")).map((line) => line[3]).join("") };
+      const { error } = db.getMutation(id) ?? {};
+      return {
+        writes,
+        title: body.split("\\n")[0],
+        state: body.split("\\n").filter((line) => line.startsWith("- [")).map((line) => line[3]).join(""),
+        ...(error ? { error } : {}),
+      };
     };
-
-    // Another author ticks step 2 in the same second as our step 1.
-    before = (body) => body.replace("- [ ] Step 2", "- [x] Step 2");
-    const concurrentTick = await tick(1);
-    // A republish rewrites the text and unticks step 1 while our step 3 is in flight.
-    before = (body) => body.replace("Release checklist", "Release checklist v2").replace("- [x] Step 1", "- [ ] Step 1");
-    const republish = await tick(3);
-    // A later edit built on ours needs no second write.
-    after = (body) => body.replace("- [ ] Step 5", "- [x] Step 5");
-    const later = await tick(4);
-    console.log(JSON.stringify({ concurrentTick, republish, later }));
+    ${script}
   `;
 
   try {
@@ -667,11 +669,81 @@ test("a checkbox write keeps description edits that landed between its read and 
       new Response(child.stderr).text(),
     ]);
     if (exitCode !== 0) throw new Error(stderr);
-    const result = JSON.parse(stdout.trim().split("\n").at(-1)!);
-    expect(result.concurrentTick).toEqual({ writes: 2, title: "Release checklist", state: "xx   " });
-    expect(result.republish).toEqual({ writes: 2, title: "Release checklist v2", state: " xx  " });
-    expect(result.later).toEqual({ writes: 1, title: "Release checklist v2", state: " xxxx" });
+    return JSON.parse(stdout.trim().split("\n").at(-1)!);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }
+}
+
+const steps = (count: number) => ["Release checklist", "", ...Array.from({ length: count }, (_, i) => `- [ ] Step ${i + 1} verified`)];
+
+test("a checkbox write keeps description edits that landed between its read and its write", async () => {
+  const result = await taskRace(steps(5), `
+    // Another author ticks step 2 in the same second as our step 1.
+    before = (body) => body.replace("- [ ] Step 2", "- [x] Step 2");
+    const concurrentTick = await tick("text:Step 1 verified");
+    // A republish rewrites the text and unticks step 1 while our step 3 is in flight.
+    before = (body) => body.replace("Release checklist", "Release checklist v2").replace("- [x] Step 1", "- [ ] Step 1");
+    const republish = await tick("text:Step 3 verified");
+    // A later edit built on ours needs no second write.
+    after = (body) => body.replace("- [ ] Step 5", "- [x] Step 5");
+    const later = await tick("text:Step 4 verified");
+    console.log(JSON.stringify({ concurrentTick, republish, later }));
+  `);
+  expect(result.concurrentTick).toEqual({ writes: 2, title: "Release checklist", state: "xx   " });
+  expect(result.republish).toEqual({ writes: 2, title: "Release checklist v2", state: " xx  " });
+  expect(result.later).toEqual({ writes: 1, title: "Release checklist v2", state: " xxxx" });
+});
+
+test("a whole-body edit from a stale page changes only the boxes it ticked", async () => {
+  const result = await taskRace(["Release checklist", "", "- [ ] #15687 Fix login", "- [ ] #17441 Bump parser", "- [ ] #17913 Retry uploads"], `
+    const loaded = mockGithub.pullRequestBody(repo, 101);
+    await write(repo, 101, loaded.replace("- [ ] #15687", "- [x] #15687"));
+    before = () => loaded.replace("- [ ] #17441", "- [x] #17441");
+    const staleBeforeOurs = await tick("pr:17913");
+
+    await write(repo, 101, loaded);
+    after = () => loaded.replace("- [ ] #17441", "- [x] #17441");
+    const staleAfterOurs = await tick("pr:15687");
+    console.log(JSON.stringify({ staleBeforeOurs, staleAfterOurs }));
+  `);
+  expect(result.staleBeforeOurs).toEqual({ writes: 2, title: "Release checklist", state: "xxx" });
+  expect(result.staleAfterOurs).toEqual({ writes: 2, title: "Release checklist", state: "xx " });
+});
+
+test("a checkbox write waits for GitHub's edit history to record it and the edit it overwrote", async () => {
+  const result = await taskRace(steps(8), `
+    const lagging = (revision) => ({ ...revision, edits: revision.edits.slice(2), totalEdits: revision.totalEdits - 2 });
+    before = (body) => body.replace("- [ ] Step 2", "- [x] Step 2");
+    reads = [null, lagging];
+    const unrecorded = await tick("text:Step 1 verified");
+
+    const overwrittenWithout = (fields) => (revision) => ({ ...revision, edits: revision.edits.map((edit, i) => (i === 1 ? { ...edit, ...fields } : edit)) });
+    before = (body) => body.replace("- [ ] Step 3", "- [x] Step 3");
+    reads = [null, overwrittenWithout({ body: null }), overwrittenWithout({ body: null })];
+    const nullDiff = await tick("text:Step 4 verified");
+
+    before = (body) => body.replace("- [ ] Step 5", "- [x] Step 5");
+    reads = [null, overwrittenWithout({ body: null, deletedAt: "2026-11-16T16:12:19Z" })];
+    const deleted = await tick("text:Step 6 verified");
+
+    before = (body) => body.replace("- [ ] Step 7", "- [x] Step 7");
+    reads = [null, lagging, lagging, lagging, lagging];
+    const neverRecorded = await tick("text:Step 8 verified");
+    console.log(JSON.stringify({ unrecorded, nullDiff, deleted, neverRecorded }));
+  `);
+  expect(result.unrecorded).toEqual({ writes: 2, title: "Release checklist", state: "xx      " });
+  expect(result.nullDiff).toEqual({ writes: 2, title: "Release checklist", state: "xxxx    " });
+  expect(result.deleted).toEqual({
+    writes: 1,
+    title: "Release checklist",
+    state: "xxxx x  ",
+    error: "Error: A hidden description edit overlapped the checkbox write; reload and check the checklist",
+  });
+  expect(result.neverRecorded).toEqual({
+    writes: 1,
+    title: "Release checklist",
+    state: "xxxx x x",
+    error: "Error: GitHub has not recorded the checkbox write in the description history; reload and check the checklist",
+  });
 });

@@ -1,5 +1,5 @@
 import { codeScanningAlertNumber, isCodeScanningThread, validateCodeScanningDismissal } from "../shared/codeScanning.js";
-import { setTasksByKey, taskChanges } from "../shared/taskList.js";
+import { revisionTaskChanges, setTasksByKey, taskChanges, taskStates } from "../shared/taskList.js";
 import {
   deleteMutation,
   deleteSupersededFailedMerges,
@@ -319,41 +319,74 @@ function requireResolutionThread(repo: string, number: number, payload: Extract<
 
 const TASK_WRITE_EDITS = 20;
 const TASK_WRITE_ROUNDS = 5;
+const TASK_WRITE_LOOKUP_DELAYS_MS = [250, 500, 1000];
 
-// GitHub keeps the last description write whole. An edit that lands between our read and our write is
-// overwritten, so its checkbox changes are carried into another write, as GitHub's own task lists do.
-async function writeTasks(repo: string, number: number, writes: TaskIntent[]): Promise<string> {
-  let revision = await fetchPullRequestBodyRevision(repo, number, 1);
-  let base = revision.body;
-  let head = revision.body;
-  let cursor = revision.edits[0]?.id ?? null;
-  const carried = new Map<string, TaskIntent>();
-  for (let round = 0; round < TASK_WRITE_ROUNDS; round++) {
-    const { body, missing } = setTasksByKey(base, [...carried.values(), ...writes]);
-    if (missing.some((task) => writes.includes(task))) throw new Error("Checklist changed on GitHub; discard and reload before ticking again");
-    if (body === base) return body;
-    await updatePullRequestBody(repo, number, body);
-    revision = await fetchPullRequestBodyRevision(repo, number, TASK_WRITE_EDITS);
+// GitHub's edit history can trail a description write it already acknowledged, and can list an edit before its
+// text; only `deletedAt` marks an edit whose text is gone.
+async function readTaskWrite(repo: string, number: number, cursor: string | null, body: string) {
+  for (let attempt = 0; ; attempt++) {
+    const revision = await fetchPullRequestBodyRevision(repo, number, TASK_WRITE_EDITS);
     const seen = cursor === null ? revision.edits.length : revision.edits.findIndex((edit) => edit.id === cursor);
     if (seen < 0 || (cursor === null && revision.totalEdits > revision.edits.length)) {
       throw new Error("Description changed too often to confirm the checkbox write; reload and check the checklist");
     }
     const since = revision.edits.slice(0, seen).reverse();
     const ours = since.findLastIndex((edit) => edit.body === body);
-    let previous = head;
-    let overwritten: string | null = null;
-    for (const edit of since.slice(0, Math.max(ours, 0))) {
-      if (edit.body === null) throw new Error("A hidden description edit overlapped the checkbox write; reload and check the checklist");
-      if (edit.body === previous) continue;
-      for (const change of taskChanges(previous, edit.body)) carried.set(change.key, change);
-      overwritten = edit.body;
-      previous = edit.body;
+    const overwritten = since.slice(0, Math.max(ours, 0));
+    if (overwritten.some((edit) => edit.deletedAt !== null)) {
+      throw new Error("A hidden description edit overlapped the checkbox write; reload and check the checklist");
     }
-    const oursIsLatest = ours >= 0 && ours === since.length - 1;
-    if (oursIsLatest && overwritten === null) return body;
-    base = oursIsLatest && overwritten !== null ? overwritten : revision.body;
-    head = revision.body;
-    cursor = revision.edits[0]?.id ?? cursor;
+    const readable = overwritten.flatMap((edit) => edit.body ?? []);
+    if (ours >= 0 && readable.length === overwritten.length) {
+      return {
+        revision,
+        earlier: revision.edits.slice(seen).reverse().flatMap((edit) => edit.body ?? []),
+        overwritten: readable,
+        latest: ours === since.length - 1,
+      };
+    }
+    const delay = TASK_WRITE_LOOKUP_DELAYS_MS[attempt];
+    if (delay === undefined) {
+      throw new Error(ours < 0
+        ? "GitHub has not recorded the checkbox write in the description history; reload and check the checklist"
+        : "GitHub has not recorded an edit that overlapped the checkbox write; reload and check the checklist");
+    }
+    await Bun.sleep(delay);
+  }
+}
+
+// GitHub keeps the last description write whole. An edit that lands between our read and our write is
+// overwritten, so its own checkbox changes, and its text when ours is the newest write, are carried into
+// another write, as GitHub's own task lists do.
+async function writeTasks(repo: string, number: number, writes: TaskIntent[]): Promise<string> {
+  const read = await fetchPullRequestBodyRevision(repo, number, 1);
+  let base = read.body;
+  let head = read.body;
+  let cursor = read.edits[0]?.id ?? null;
+  const carried = new Map<string, TaskIntent>();
+  for (let round = 0; round < TASK_WRITE_ROUNDS; round++) {
+    const { body, missing } = setTasksByKey(base, [...carried.values(), ...writes]);
+    if (missing.some((task) => writes.includes(task))) throw new Error("Checklist changed on GitHub; discard and reload before ticking again");
+    if (body === base) return body;
+    await updatePullRequestBody(repo, number, body);
+    const write = await readTaskWrite(repo, number, cursor, body);
+    const earlier = [...write.earlier, head];
+    let previous = head;
+    let text: string | null = null;
+    let overwrote = false;
+    for (const edit of write.overwritten) {
+      if (edit === previous) continue;
+      const own = revisionTaskChanges(earlier, edit);
+      for (const change of own ?? taskChanges(previous, edit)) carried.set(change.key, change);
+      if (own === null) text = edit;
+      overwrote = true;
+      earlier.push(edit);
+      previous = edit;
+    }
+    if (write.latest && !overwrote) return body;
+    base = !write.latest ? write.revision.body : text === null ? body : setTasksByKey(text, taskStates(body)).body;
+    head = write.revision.body;
+    cursor = write.revision.edits[0]?.id ?? cursor;
   }
   throw new Error("Description kept changing during the checkbox write; reload and check the checklist");
 }

@@ -91,15 +91,52 @@ export function setTasksByKey(source, tasks) {
   return { body, missing };
 }
 
-/** @param {string} before @param {string} after @returns {TaskIntent[]} Boxes ticked or unticked between two versions. */
-export function taskChanges(before, after) {
-  const previous = markersByKey(before);
+/** @param {Map<string, TaskMarker | null>} previous @param {Map<string, TaskMarker | null>} next @returns {TaskIntent[]} */
+function markerChanges(previous, next) {
   /** @type {TaskIntent[]} */
   const changes = [];
-  for (const [key, marker] of markersByKey(after)) {
+  for (const [key, marker] of next) {
     const old = previous.get(key);
     if (marker && old && old.checked !== marker.checked) changes.push({ key, checked: marker.checked });
   }
   return changes;
+}
+
+/** @param {string} before @param {string} after @returns {TaskIntent[]} Boxes ticked or unticked between two versions. */
+export function taskChanges(before, after) {
+  return markerChanges(markersByKey(before), markersByKey(after));
+}
+
+/** @param {string} source @returns {TaskIntent[]} */
+export function taskStates(source) {
+  return [...markersByKey(source)].flatMap(([key, marker]) => (marker ? [{ key, checked: marker.checked }] : []));
+}
+
+/** @param {string} source @returns {string} */
+function withoutTicks(source) {
+  let body = source;
+  for (const marker of taskMarkers(source)) if (marker?.checked) body = withMarker(body, marker.offset, false);
+  return body;
+}
+
+/**
+ * A whole-body write from a page loaded before other edits also reverts their boxes. A revision's own changes are
+ * taken against the revision it was based on: of the earlier ones with its text, the newest whose boxes differ
+ * least but not at all, since a click always changes one.
+ * @param {string[]} earlier Revisions before `revision`, oldest first.
+ * @param {string} revision
+ * @returns {TaskIntent[] | null} Null when no earlier revision has its text.
+ */
+export function revisionTaskChanges(earlier, revision) {
+  const text = withoutTicks(revision);
+  const markers = markersByKey(revision);
+  /** @type {TaskIntent[] | null} */
+  let own = null;
+  for (let i = earlier.length - 1; i >= 0; i--) {
+    if (earlier[i].length !== revision.length || withoutTicks(earlier[i]) !== text) continue;
+    const changes = markerChanges(markersByKey(earlier[i]), markers);
+    if (own === null || (changes.length > 0 && (own.length === 0 || changes.length < own.length))) own = changes;
+  }
+  return own;
 }
 

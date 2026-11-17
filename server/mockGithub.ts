@@ -854,7 +854,7 @@ export const mockGithub = isMockGithub ? {
       number,
     );
     const history = bodyEdits.get(`${repo}#${number}`) ?? [];
-    bodyEdits.set(`${repo}#${number}`, [{ id: `UCE_${history.length + 1}`, body }, ...history]);
+    bodyEdits.set(`${repo}#${number}`, [{ id: `UCE_${history.length + 1}`, body, deletedAt: null }, ...history]);
   },
   conflictFiles: (repo: string, number: number): string[] => conflictedFixture(repo, number) ? Object.keys(CONFLICT_FIXTURES) : [],
   conflictMerge: (repo: string, number: number) => {
