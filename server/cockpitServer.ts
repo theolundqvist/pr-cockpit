@@ -79,6 +79,11 @@ export function startCockpitServer(port: number, fetchHandler: FetchHandler, all
       if ((UNSAFE_BROWSER_METHODS[request.method] || pathname === "/api/quick-generate/models") && !originAllowed(request)) {
         return new Response("Forbidden", { status: 403 });
       }
+      // Lease bootstraps and run reconciliation download job logs one at a time; the 30s idle
+      // limit below cut them off and the CLI saw an empty reply.
+      if (request.method === "POST" && /^\/api\/agent\/(?:pr|repo)\/.+\/(?:actions-lease|cache)$/.test(pathname)) {
+        bunServer.timeout(request, 600);
+      }
       if (pathname === "/api/debug/profile" && request.method === "POST") {
         bunServer.timeout(request, 150);
         const seconds = Number(new URL(request.url).searchParams.get("seconds") ?? 20);

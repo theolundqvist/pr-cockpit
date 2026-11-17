@@ -6,6 +6,7 @@ import {
   claimWorkflowRunForPr,
   getFileContents,
   getRunJobLog,
+  latestRunJobAttempt,
   latestWorkflowRunAttempt,
   listRunJobs,
   listRunJobsForRun,
@@ -26,7 +27,10 @@ import {
   type WorkflowRunRow,
 } from "./db.ts";
 import {
+  GithubRequestError,
   fetchActionWorkflows,
+  fetchCheckRunAnnotations,
+  type CheckRunAnnotation,
   fetchFileContents,
   repositoryReadQuota,
   fetchJobLog,
@@ -133,6 +137,12 @@ const liveFetchers: ActionsFetchers = {
   },
   webhookCoveredSince: webhookCoverageSince,
 };
+
+export interface AgentLogFetchers extends ActionsFetchers {
+  fetchCheckRunAnnotations: typeof fetchCheckRunAnnotations;
+}
+
+const liveAgentLogFetchers: AgentLogFetchers = { ...liveFetchers, fetchCheckRunAnnotations };
 
 export interface RequestedRunFetchers extends ActionsFetchers {
   fetchWorkflowRun: typeof fetchWorkflowRun;
@@ -552,7 +562,12 @@ export function reconciliationError(error: unknown): string {
     .slice(0, 1024);
 }
 
-async function fetchLogs(repo: string, jobs: CompactJob[], fetchers: ActionsFetchers, background: boolean): Promise<boolean> {
+async function fetchLogs(
+  repo: string,
+  jobs: Array<Pick<CompactJob, "id" | "runId" | "attempt" | "headSha" | "status" | "conclusion">>,
+  fetchers: ActionsFetchers,
+  background: boolean,
+): Promise<boolean> {
   // Reconciliation keeps the evidence agents and failing-check rows need; a busy head's
   // successful logs cost one REST request each and load when someone opens them.
   const wanted = jobs.filter((job) => jobProducesLog(job) && getRunJobLog(repo, job.id) === null
@@ -570,7 +585,9 @@ async function fetchLogs(repo: string, jobs: CompactJob[], fetchers: ActionsFetc
       const compressed = await gzipAsync(body);
       saveRunJobLog(repo, job.id, job.runId, job.attempt, job.headSha, compressed, Buffer.byteLength(body));
     } catch (error) {
-      complete = false;
+      // A job cancelled or failed before it ran never has a log, so GitHub's 404 cannot hold the
+      // run unreconciled; agentJobLogs retries the fetch when someone asks for the logs.
+      if (!(error instanceof GithubRequestError && error.status === 404)) complete = false;
       saveRunJobLogError(repo, job.id, job.attempt, reconciliationError(error));
     }
   }
@@ -658,9 +675,23 @@ export async function cacheActionsRun(
       return "ownership-mismatch";
     }
   }
+  if (!mergeRun) renewActionsLease(repo, number, headSha);
+  return settleRequestedRun(repo, runId, fetchers);
+}
+
+// Runs on branches without a PR (dispatched probes, deploys) are followed by repository and run ID alone.
+export async function cacheRepoActionsRun(
+  repo: string,
+  runId: number,
+  fetchers: RequestedRunFetchers = liveRequestedRunFetchers,
+): Promise<"cached" | "fetched"> {
+  storeRun(repo, null, compactRun(await fetchers.fetchWorkflowRun(repo, runId)));
+  return settleRequestedRun(repo, runId, fetchers);
+}
+
+async function settleRequestedRun(repo: string, runId: number, fetchers: RequestedRunFetchers): Promise<"cached" | "fetched"> {
   const latest = latestWorkflowRunAttempt(repo, runId);
   if (!latest) throw new Error("Actions run disappeared while caching");
-  if (!mergeRun) renewActionsLease(repo, number, headSha);
   if (latest.status === "completed" && latest.reconciled_at !== null) {
     return "cached";
   }
@@ -672,6 +703,15 @@ export async function cacheActionsRun(
     throw new Error(`Actions run ${runId} reconciliation incomplete; cached jobs and logs remain readable. ${causes.join("; ") || "Retry cache-run to finish reconciliation"}`);
   }
   return "fetched";
+}
+
+// A listed run that stays active in the cache is read again; its completion event may never arrive.
+export async function refreshRepoActionsRun(
+  run: WorkflowRunRow,
+  fetchers: Pick<RequestedRunFetchers, "fetchWorkflowRun"> = liveRequestedRunFetchers,
+): Promise<WorkflowRunRow> {
+  storeRun(run.repo, null, compactRun(await fetchers.fetchWorkflowRun(run.repo, run.run_id)));
+  return latestWorkflowRunAttempt(run.repo, run.run_id) ?? run;
 }
 
 async function repairActionsLease(repo: string, number: number, headSha: string, fetchers: ActionsFetchers, refreshCatalog: boolean): Promise<void> {
@@ -724,6 +764,17 @@ function queueActionsLease(
   return entry.promise;
 }
 
+const RUN_EVENT_GRACE_MS = 60_000;
+
+function runEventMissed(run: WorkflowRunRow, now = Date.now()): boolean {
+  if ((latestRunJobAttempt(run.repo, run.run_id) ?? 0) > (latestWorkflowRunAttempt(run.repo, run.run_id)?.run_attempt ?? 0)) return true;
+  if (run.status === "completed") return false;
+  const jobs = listRunJobsForRun(run.repo, run.run_id, run.run_attempt);
+  if (jobs.length === 0 || !jobs.every(jobIsComplete)) return false;
+  const settledBy = Math.max(...jobs.map((job) => Date.parse(job.completed_at ?? "") || 0)) + RUN_EVENT_GRACE_MS;
+  return now >= settledBy && Date.parse(`${run.fetched_at.replace(" ", "T")}Z`) < settledBy;
+}
+
 export async function cacheGithubActionsForCommit(
   repo: string,
   number: number,
@@ -735,9 +786,11 @@ export async function cacheGithubActionsForCommit(
     const lease = renewActionsLease(repo, number, headSha);
     // Once this head is read in full, webhooks deliver every later run and job change, so
     // rereading it on each check event only spent REST quota (a job list per running workflow).
+    // Job events can still arrive without their run's completion or rerun event, which only a reread settles.
     const coveredSince = fetchers.webhookCoveredSince?.(repo) ?? null;
+    const cached = workflowRunsForLease(repo, number, headSha);
     if (lease.bootstrapped_at !== null && coveredSince !== null && coveredSince <= Date.parse(lease.bootstrapped_at)
-      && workflowRunsForLease(repo, number, headSha).every((run) => run.jobs_fetched_at !== null)) return;
+      && cached.every((run) => run.jobs_fetched_at !== null && !runEventMissed(run))) return;
   }
   const runs = (await catalogRequest(() => fetchers.fetchWorkflowRuns(repo, headSha))).map(compactRun);
   for (const run of runs) storeRun(repo, number, run);
@@ -858,6 +911,7 @@ export async function ingestActionsState(
 export interface CachedJobLog {
   job: RunJobRow;
   body: string | null;
+  annotations?: CheckRunAnnotation[] | string;
 }
 
 export interface ActionJobLog extends CachedJobLog {
@@ -931,6 +985,48 @@ export async function cachedJobLogs(
   return { jobs, entries };
 }
 
+// Reconciliation can defer a log under quota or meet GitHub's 404 before the log is archived, and
+// nothing retries it later; an agent asking for the logs fetches each missing one again. A job that
+// failed before a runner started has no log at all, and lint logs omit file and line, so the
+// check run's annotations come with every unsuccessful job.
+export async function agentJobLogs(
+  repo: string,
+  headSha: string,
+  checkName?: string,
+  run?: Pick<WorkflowRunRow, "run_id" | "run_attempt">,
+  fetchers: AgentLogFetchers = liveAgentLogFetchers,
+): Promise<{ jobs: RunJobRow[]; entries: CachedJobLog[] }> {
+  let logs = await cachedJobLogs(repo, headSha, checkName, run);
+  const missing = logs.entries.filter((entry) => entry.body === null && jobProducesLog(entry.job)).map(({ job }) => ({
+    id: job.job_id, runId: job.run_id, attempt: job.run_attempt, headSha: job.head_sha, status: job.status, conclusion: job.conclusion,
+  }));
+  if (missing.length > 0) {
+    await fetchLogs(repo, missing, fetchers, false);
+    logs = await cachedJobLogs(repo, headSha, checkName, run);
+  }
+  await forEachWithConcurrency(logs.entries, AGENT_ANNOTATION_CONCURRENCY, async (entry) => {
+    try {
+      entry.annotations = await fetchers.fetchCheckRunAnnotations(repo, entry.job.job_id);
+    } catch (error) {
+      entry.annotations = reconciliationError(error);
+    }
+  });
+  return logs;
+}
+
+const AGENT_ANNOTATION_CONCURRENCY = 4;
+
+function formatAnnotations(annotations: CachedJobLog["annotations"]): string {
+  if (annotations === undefined || annotations.length === 0) return "";
+  if (typeof annotations === "string") return `annotations unavailable: ${annotations}\n\n`;
+  const lines = annotations.map((annotation) => {
+    const span = annotation.end_line > annotation.start_line ? `${annotation.start_line}-${annotation.end_line}` : `${annotation.start_line}`;
+    const title = annotation.title ? `${annotation.title}: ` : "";
+    return `- ${annotation.annotation_level} ${annotation.path}:${span} · ${title}${annotation.message.replace(/\s+/g, " ").trim()}`;
+  });
+  return `Annotations\n${lines.join("\n")}\n\n`;
+}
+
 export function formatRunJobs(headSha: string, jobs: RunJobRow[]): string {
   if (jobs.length === 0) return `No cached Actions jobs for ${headSha}.\n`;
   const rows = jobs.map((job) => {
@@ -950,7 +1046,7 @@ export function formatJobLogs(headSha: string, { jobs, entries }: { jobs: RunJob
       ? `No unsuccessful jobs are cached for ${headSha}; selected jobs are still running.\n`
       : `No unsuccessful jobs in the cached results for ${headSha}.\n`;
   }
-  const sections = entries.map(({ job, body }) => {
+  const sections = entries.map(({ job, body, annotations }) => {
     const facts = [
       `run ${job.run_id}, attempt ${job.run_attempt}`,
       job.conclusion ?? job.status,
@@ -959,7 +1055,7 @@ export function formatJobLogs(headSha: string, { jobs, entries }: { jobs: RunJob
       job.html_url,
     ].filter((fact) => fact !== null);
     const text = body ?? `no log cached: ${job.log_error ?? (jobIsComplete(job) ? "log fetch pending" : "job is not complete")}`;
-    return `===== ${job.name} · ${facts.join(" · ")}\n\n${text.endsWith("\n") ? text : `${text}\n`}`;
+    return `===== ${job.name} · ${facts.join(" · ")}\n\n${formatAnnotations(annotations)}${text.endsWith("\n") ? text : `${text}\n`}`;
   });
   return `Cached job logs for ${headSha} · ${entries.length} job(s)\n\n${sections.join("\n")}`;
 }

@@ -1215,6 +1215,12 @@ export function latestWorkflowRunAttempt(repo: string, runId: number): WorkflowR
   ).get(repo, runId) ?? null;
 }
 
+export function latestRunJobAttempt(repo: string, runId: number): number | null {
+  return db.prepare<{ attempt: number | null }, [string, number]>(
+    "SELECT MAX(run_attempt) AS attempt FROM run_jobs WHERE repo = ? AND run_id = ?",
+  ).get(repo, runId)?.attempt ?? null;
+}
+
 export function queueWorkflowRunRerun(repo: string, runId: number, status: "queued" | "in_progress" = "queued"): WorkflowRunRow | null {
   const current = latestWorkflowRunAttempt(repo, runId);
   if (!current) return null;

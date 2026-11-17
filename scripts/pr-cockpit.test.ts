@@ -1415,3 +1415,144 @@ test("proxy backend starts a local replica server", async () => {
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+async function runCli(args: string[], port: number) {
+  const child = Bun.spawn([join(import.meta.dir, "pr-cockpit"), ...args], {
+    env: { ...Bun.env, COCKPIT_PORT: String(port), COCKPIT_LISTEN_INTERVAL: "0.01" },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [output, error, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  return { output, error, exitCode };
+}
+
+test("cached Actions reads continue with the server's reason when GitHub refuses the lease refresh", async () => {
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      if (new URL(request.url).pathname.endsWith("actions-lease")) {
+        return Response.json({ error: "GitHub core quota exhausted until 2026-10-01T15:59:37Z", kind: "quota" }, { status: 403 });
+      }
+      return new Response("cached jobs\n");
+    },
+  });
+  try {
+    const result = await runCli(["owner/repo#17", "--jobs"], server.port!);
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toBe("cached jobs\n");
+    expect(result.error).toContain("HTTP 403");
+    expect(result.error).toContain("GitHub core quota exhausted until 2026-10-01T15:59:37Z");
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("listen --run waits through GitHub failures and delivers a finished run whose reconciliation GitHub refused", async () => {
+  let statusReads = 0;
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const url = new URL(request.url);
+      if (url.pathname.endsWith("/cache")) return Response.json({ error: "GitHub returned 502", cachedDataUsable: true }, { status: 502 });
+      if (url.searchParams.get("format") === "json") {
+        statusReads++;
+        const completed = statusReads > 32;
+        return Response.json({ selectedRun: { id: 987, attempt: 1, status: completed ? "completed" : "in_progress", reconciled: false }, jobs: [] });
+      }
+      return new Response("finished run\n");
+    },
+  });
+  try {
+    const result = await runCli(["listen", "owner/repo#17", "--run", "987"], server.port!);
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toBe("finished run\n");
+    expect(result.error).toContain("GitHub returned 502");
+    expect(statusReads).toBe(33);
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("listen --ci-only sleeps through pending progress and wakes once CI settles", async () => {
+  let reads = 0;
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      if (new URL(request.url).searchParams.get("format") === "json") {
+        reads++;
+        return Response.json({ approvedForSafeMerge: false, ci: { state: reads < 4 ? "PENDING" : "SUCCESS", passed: reads, running: 4 - reads } });
+      }
+      return new Response("ci settled\n");
+    },
+  });
+  try {
+    const result = await runCli(["listen", "--ci-only", "owner/repo#1"], server.port!);
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toBe("ci settled\n");
+    expect(reads).toBeGreaterThanOrEqual(4);
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("listen --next-change waits past acknowledged blockers for the next change", async () => {
+  let reads = 0;
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      if (new URL(request.url).searchParams.get("format") === "json") {
+        reads++;
+        return Response.json({ title: reads < 4 ? "before" : "after", openComments: [{ path: "src/a.ts", comments: [] }] });
+      }
+      return new Response("changed\n");
+    },
+  });
+  try {
+    const result = await runCli(["listen", "--next-change", "owner/repo#1"], server.port!);
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toBe("changed\n");
+    expect(reads).toBeGreaterThanOrEqual(4);
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("runs outside any PR are cached, followed, and read by repository and run ID", async () => {
+  const requests: string[] = [];
+  let statusReads = 0;
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const url = new URL(request.url);
+      requests.push(`${request.method} ${url.pathname}${url.search}`);
+      if (url.searchParams.get("format") === "json") {
+        statusReads++;
+        return Response.json({ selectedRun: { id: 987, attempt: 1, status: statusReads > 1 ? "completed" : "queued", reconciled: statusReads > 1 }, jobs: [] });
+      }
+      return new Response("ok\n");
+    },
+  });
+  try {
+    for (const args of [
+      ["cache-run", "owner/repo", "987"],
+      ["listen", "owner/repo", "--run", "987"],
+      ["runs", "owner/repo", "--run", "987", "--logs", "lint"],
+    ]) {
+      expect(await runCli(args, server.port!)).toEqual({ output: "ok\n", error: "", exitCode: 0 });
+    }
+    expect(requests).toEqual([
+      "POST /api/agent/repo/owner/repo/runs/987/cache",
+      "POST /api/agent/repo/owner/repo/runs/987/cache",
+      "GET /api/agent/repo/owner/repo/runs?runId=987&format=json",
+      "GET /api/agent/repo/owner/repo/runs?runId=987&format=json",
+      "GET /api/agent/repo/owner/repo/runs?runId=987",
+      "GET /api/agent/repo/owner/repo/logs?runId=987&check=lint",
+    ]);
+  } finally {
+    server.stop(true);
+  }
+});

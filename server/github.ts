@@ -4014,6 +4014,21 @@ export async function fetchWorkflowRun(repo: string, runId: number): Promise<Wor
   return githubRestJson<WorkflowRun>("GET", `/repos/${repo}/actions/runs/${runId}`, undefined, repo);
 }
 
+export interface CheckRunAnnotation {
+  path: string;
+  start_line: number;
+  end_line: number;
+  annotation_level: string;
+  title: string | null;
+  message: string;
+}
+
+// An Actions job ID is its check run ID; annotations keep the file and line a log's ##[error] drops.
+export async function fetchCheckRunAnnotations(repo: string, checkRunId: number): Promise<CheckRunAnnotation[]> {
+  if (mockGithub) return [];
+  return githubRestJson<CheckRunAnnotation[]>("GET", `/repos/${repo}/check-runs/${checkRunId}/annotations?per_page=50`, undefined, repo);
+}
+
 export interface RefActivity {
   after: string;
   activity_type: string;

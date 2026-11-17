@@ -149,11 +149,12 @@ pr-cockpit owner/repo#123                   # state, checks, and review threads
 pr-cockpit owner/repo#123 --diff            # cached unified diff
 pr-cockpit owner/repo#123 --file src/app.ts # file contents at the PR head
 pr-cockpit owner/repo#123 --jobs            # queued, running, and completed jobs
-pr-cockpit owner/repo#123 --logs            # cached failed and cancelled job logs
+pr-cockpit owner/repo#123 --logs            # failed and cancelled job logs with check annotations
 pr-cockpit owner/repo#123 --logs verify --run 987 --attempt 2
+pr-cockpit runs owner/repo --run 987 --logs  # a run on a branch without a PR
 ```
 
-`--run` selects a cached run even after the PR head advances; `--attempt` selects its rerun attempt. Without these selectors, jobs and logs use the current head.
+`--run` selects a cached run even after the PR head advances; `--attempt` selects its rerun attempt. Without these selectors, jobs and logs use the current head. A log missing from the cache is fetched once more when you ask for it. If GitHub refuses to refresh Actions data, for example while quota is exhausted, reads print the reason and serve the cached rows.
 
 **Waiting on CI or a review? Listen instead of polling.**
 
@@ -161,9 +162,9 @@ pr-cockpit owner/repo#123 --logs verify --run 987 --attempt 2
 pr-cockpit listen owner/repo#123
 ```
 
-`listen` waits for substantive cached state changes—a push, check result, review, comment, or merge conflict—then prints what changed and exits. It returns at once when the PR already has failing checks, open comments, or merge conflicts, but never from a snapshot older than known webhook activity: it waits for revalidation first. `--ci-only`, `--comments-only`, and `--conflicts-only` narrow the wake signal.
+`listen` waits for substantive cached state changes—a push, check result, review, comment, or merge conflict—then prints what changed and exits. It returns at once when the PR already has failing checks, open comments, or merge conflicts, but never from a snapshot older than known webhook activity: it waits for revalidation first. `--next-change` skips those current blockers and waits for the next change. `--ci-only`, `--comments-only`, and `--conflicts-only` narrow the wake signal; `--ci-only` waits for pending CI to settle or fail.
 
-`pr-cockpit listen owner/repo#123 --run 987` waits for a specific run and reconciles it about every 30 seconds at the default interval, so missed webhooks cannot leave completion unobserved. A failed reconciliation exits with an error.
+`pr-cockpit listen owner/repo#123 --run 987` waits for a specific run and reconciles it about every 30 seconds at the default interval, so missed webhooks cannot leave completion unobserved. GitHub failures during the wait are printed and retried; a finished run is delivered even when GitHub withholds some of its logs. Runs on branches without a PR use the repository instead: `pr-cockpit cache-run owner/repo 987` and `pr-cockpit listen owner/repo --run 987`.
 
 CI completeness is durable for the observed head; an expired Actions viewing lease does not turn settled jobs back into pending work. Checks use the latest result per job name within each workflow/App, so metadata-only workflows with different names do not erase earlier required checks on that head. Skipped and neutral jobs retain their displayed state but satisfy required checks, [as on GitHub](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks); missing checks, incomplete pages, and unobserved jobs remain pending.
 

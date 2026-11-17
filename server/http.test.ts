@@ -631,6 +631,7 @@ describe("agent PR summary", () => {
         { name: "trpc compat", state: "skipped", required: true, url: null, logBytes: null },
         { name: "browser", state: "cancelled", required: false, url: null, logBytes: null },
       ],
+      workflowRuns: [],
     });
     expect(summary.openComments).toEqual([
       {
@@ -751,6 +752,48 @@ describe("agent PR summary", () => {
       });
     } finally {
       for (const table of ["workflow_runs", "run_jobs", "actions_leases", "pr_detail_cache"]) db.query(`DELETE FROM ${table} WHERE repo = ?`).run(repo);
+    }
+  });
+
+  test("a run cancelled before any job settles CI visibly, and a check's log size is its own job's", () => {
+    const repo = "test/zero-job-settled";
+    const current = structuredClone(detail);
+    const head = current.headRefOid;
+    current.lastCommit.nodes[0]!.commit.statusCheckRollup!.contexts.nodes = [{
+      __typename: "CheckRun" as const, databaseId: 21, name: "gate", status: "COMPLETED", conclusion: "SKIPPED",
+      detailsUrl: null, startedAt: null, completedAt: null, isRequired: true,
+      checkSuite: { workflowRun: { databaseId: 20, workflow: { name: "Gate" } } },
+    }];
+    renewActionsLease(repo, 1, head);
+    markActionsLeaseBootstrapped(repo, 1, head);
+    const run = (id: number, workflow: string, conclusion: string) => {
+      upsertWorkflowRun({
+        repo, run_id: id, run_attempt: 1, pr_number: 1, head_sha: head, head_branch: current.headRefName,
+        workflow_name: workflow, workflow_path: `${workflow}.yml`, status: "completed", conclusion,
+        event_at: `2026-11-13T06:${id}:00Z`, html_url: null,
+      });
+      markWorkflowRunJobsFetched(repo, id, 1);
+    };
+    const job = (id: number, conclusion: string) => upsertRunJob({
+      repo, job_id: id, run_id: id - 1, run_attempt: 1, head_sha: head, head_branch: current.headRefName,
+      workflow_name: "Gate", name: "gate", status: "completed", conclusion, started_at: null, completed_at: null,
+      html_url: null, runner_name: null, runner_group_name: null, labels_json: "[]", failed_step: null,
+    });
+    run(18, "Gate", "success");
+    job(19, "success");
+    saveRunJobLog(repo, 19, 18, 1, head, Bun.gzipSync(Buffer.from("earlier success")), 15);
+    run(20, "Gate", "skipped");
+    job(21, "skipped");
+    run(30, "Approval", "cancelled");
+    try {
+      const summary = buildPrAgentSummary(`${repo}#1`, current, null);
+      expect(summary.ci).toMatchObject({
+        state: "CANCELLED", complete: true, cancelled: 0, checks: [{ name: "gate", logBytes: null }],
+        workflowRuns: [{ id: 30, workflow: "Approval", holds: "CANCELLED" }],
+      });
+      expect(formatPrAgentSummary(summary, { digest: true })).toContain("- WORKFLOW CANCELLED: Approval · run 30 attempt 1");
+    } finally {
+      for (const table of ["workflow_runs", "run_jobs", "actions_leases"]) db.query(`DELETE FROM ${table} WHERE repo = ?`).run(repo);
     }
   });
 
@@ -1391,6 +1434,32 @@ describe("agent PR summary", () => {
     } finally {
       setSystemTime();
       for (const table of ["prs", "pr_detail_cache", "pr_webhook_activity"]) db.query(`DELETE FROM ${table} WHERE repo = ?`).run(repo);
+    }
+  });
+
+  test("a failed comment delta keeps the PR answer and says the comments are unavailable", async () => {
+    const repo = "test/comment-quota";
+    const number = 1;
+    const fetchedAt = new Date().toISOString();
+    upsertPr(trackedPrRow({ repo, number, fetchedAt }));
+    const window = { limit: 5000, used: 5000, remaining: 0, resetAt: fetchedAt };
+    const handler = buildFetchHandler(4820, {
+      fetchGithubQuota: async () => ({ rest: window, graphql: window, search: window, fetchedAt }),
+      fetchPrCommentsSince: async () => {
+        throw new GithubRequestError("GitHub core quota exhausted until 2026-10-15T19:10:00Z", 403);
+      },
+    });
+    const url = `http://127.0.0.1:4820/api/agent/pr/${repo}/${number}?fresh=1&since=${encodeURIComponent(fetchedAt)}`;
+    try {
+      const json = await handler(new Request(`${url}&format=json`));
+      expect(json.status).toBe(200);
+      expect(await json.json()).toMatchObject({
+        state: "OPEN", newCommentsComplete: false, newCommentsError: "GitHub core quota exhausted until 2026-10-15T19:10:00Z",
+      });
+      expect(await (await handler(new Request(`${url}&digest=1`))).text())
+        .toContain("New comments unavailable: GitHub core quota exhausted until 2026-10-15T19:10:00Z");
+    } finally {
+      for (const table of ["prs", "pr_detail_cache"]) db.query(`DELETE FROM ${table} WHERE repo = ?`).run(repo);
     }
   });
 
@@ -3016,6 +3085,54 @@ describe("Actions viewer API", () => {
     } finally {
       setSetting("repos", previousRepos);
       db.run("DELETE FROM run_jobs WHERE repo = ?", [repo]);
+      db.run("DELETE FROM workflow_runs WHERE repo = ?", [repo]);
+    }
+  });
+
+  test("agent repo routes reread runs the cache still shows active and cache any repository run", async () => {
+    const repo = "http-actions/dispatched";
+    const previousRepos = getSetting("repos") ?? "";
+    setSetting("repos", [previousRepos, repo].filter(Boolean).join(","));
+    const store = (id: number, status: string) => upsertWorkflowRun({
+      repo, run_id: id, run_attempt: 1, pr_number: null, head_sha: "9".repeat(40), head_branch: "probe",
+      workflow_name: "Probe", workflow_path: ".github/workflows/probe.yml", event: "workflow_dispatch",
+      status, conclusion: status === "completed" ? "success" : null, event_at: `2026-11-13T06:0${id - 90}:00Z`, html_url: null,
+    });
+    store(90, "queued");
+    store(91, "in_progress");
+    db.run("UPDATE workflow_runs SET fetched_at = datetime('now', '-10 minutes') WHERE repo = ? AND run_id = 90", [repo]);
+    const refreshed: number[] = [];
+    const cached: unknown[] = [];
+    const fetchHandler = buildFetchHandler(4820, {
+      refreshRepoActionsRun: async (run) => {
+        refreshed.push(run.run_id);
+        store(run.run_id, "completed");
+        return { ...run, status: "completed", conclusion: "success" };
+      },
+      cacheRepoActionsRun: async (...args) => {
+        cached.push(args);
+        store(95, "completed");
+        return "fetched";
+      },
+    });
+    const cacheRun = (headers: Record<string, string>) => fetchHandler(new Request(
+      `http://127.0.0.1:4820/api/agent/repo/${repo}/runs/95/cache`, { method: "POST", headers },
+    ));
+
+    try {
+      const listed = await fetchHandler(new Request(`http://127.0.0.1:4820/api/agent/repo/${repo}/runs?format=json&branch=probe`));
+      expect(await listed.json()).toMatchObject({
+        runs: [{ id: 91, status: "in_progress" }, { id: 90, status: "completed", conclusion: "success" }],
+        refreshError: null,
+      });
+      expect(refreshed).toEqual([90]);
+      expect((await cacheRun({})).status).toBe(403);
+      const response = await cacheRun({ "X-PR-Cockpit-CLI": "1" });
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("Actions run 95: fetched");
+      expect(cached).toEqual([[repo, 95]]);
+    } finally {
+      setSetting("repos", previousRepos);
       db.run("DELETE FROM workflow_runs WHERE repo = ?", [repo]);
     }
   });

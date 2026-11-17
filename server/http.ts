@@ -71,7 +71,7 @@ import { localCheckoutBranchFor, localCheckoutPathFor, setLocalCheckoutBranch, w
 import { prKey } from "./prKey.ts";
 import { mergeabilityPending, type MergeabilityFields } from "./mergeabilityRetry.ts";
 import { isTransportFailure, lastPollAt, pollOnce, prRowFromDetail, refreshPr, trackedRepos } from "./poller.ts";
-import { createConcurrencyLimit } from "./concurrency.ts";
+import { createConcurrencyLimit, forEachWithConcurrency } from "./concurrency.ts";
 import {
   commitPrFileEdit,
   commitPrMerge,
@@ -180,7 +180,7 @@ import { createTmuxFocusHandler } from "./tmuxFocus.ts";
 import type { TmuxFocusHandler } from "./tmuxFocus.ts";
 import { needsMeRank } from "./rank.ts";
 import { invalidateInbox, invalidatePr } from "./rendererInvalidation.ts";
-import { actionJobLog, actionWorkflowGraphs, activateActionsLease, cacheActionsRun, cacheGithubActionsForCommit, cacheRepoActionsRunJobs, cachedJobLogs, formatJobLogs, formatRunJobs, reconciliationError, refreshWorkflowRuns, repoActionWorkflowGraphs, storedActionWorkflowGraphs, workflowRunsFetched, type CompactStep } from "./runLogs.ts";
+import { actionJobLog, actionWorkflowGraphs, activateActionsLease, agentJobLogs, cacheActionsRun, cacheGithubActionsForCommit, cacheRepoActionsRun, cacheRepoActionsRunJobs, formatJobLogs, formatRunJobs, reconciliationError, refreshRepoActionsRun, refreshWorkflowRuns, repoActionWorkflowGraphs, storedActionWorkflowGraphs, workflowRunsFetched, type CompactStep } from "./runLogs.ts";
 import { claimNotifications, viewerMergedPr } from "./notifications.ts";
 import type { NotificationSettings } from "../shared/notificationRules.ts";
 const cockpitRoot = process.cwd();
@@ -663,6 +663,8 @@ type HttpDependencies = {
   handleTmuxFocus: TmuxFocusHandler;
   activateActionsLease: typeof activateActionsLease;
   cacheActionsRun: typeof cacheActionsRun;
+  cacheRepoActionsRun: typeof cacheRepoActionsRun;
+  refreshRepoActionsRun: typeof refreshRepoActionsRun;
   cacheGithubActionsForCommit: typeof cacheGithubActionsForCommit;
   actionWorkflowGraphs: typeof actionWorkflowGraphs;
   actionJobLog: typeof actionJobLog;
@@ -699,6 +701,8 @@ const defaultHttpDependencies: HttpDependencies = {
   handleTmuxFocus: createTmuxFocusHandler(),
   activateActionsLease,
   cacheActionsRun,
+  cacheRepoActionsRun,
+  refreshRepoActionsRun,
   cacheGithubActionsForCommit,
   actionWorkflowGraphs,
   actionJobLog,
@@ -1266,6 +1270,7 @@ function handlePrStates(url: URL): Response {
 }
 
 type PrSummaryCheck = { name: string; state: CheckState; required: boolean; url: string | null; logBytes: number | null };
+type PrSummaryWorkflowRun = { id: number; attempt: number; workflow: string; status: string; conclusion: string | null; holds: "PENDING" | "FAILURE" | "CANCELLED" };
 type PrSummaryComment = { author: string; body: string; createdAt: string };
 type PrSummaryThread = { handle: string; path: string; line: number | null; outdated: boolean; comments: PrSummaryComment[] };
 type PrSummaryReview = PrSummaryComment & { state: string; url: string | null };
@@ -1297,7 +1302,7 @@ export interface PrAgentSummary {
   review: string;
   updatedAt: string;
   snapshot: AgentSnapshotStatus | null;
-  ci: { headSha: string; checksFetched: boolean; state: string; complete: boolean; passed: number; running: number; failed: number; cancelled: number; skipped: number; checks: PrSummaryCheck[] };
+  ci: { headSha: string; checksFetched: boolean; state: string; complete: boolean; passed: number; running: number; failed: number; cancelled: number; skipped: number; checks: PrSummaryCheck[]; workflowRuns: PrSummaryWorkflowRun[] };
   openComments: PrSummaryThread[];
   openCommentsComplete: boolean;
   reviews: PrSummaryReview[];
@@ -1305,6 +1310,7 @@ export interface PrAgentSummary {
   newCommentsSince: string | null;
   newComments: PrSummaryNewComment[];
   newCommentsComplete: boolean;
+  newCommentsError: string | null;
   quota: (Omit<GithubQuota, "identities"> & {
     hotPrs: GithubHotPr[];
     identities?: Array<GithubCredentialQuota & { hotPrs: GithubHotPr[] }>;
@@ -1334,6 +1340,7 @@ export function buildPrAgentSummary(
   quota: GithubQuota | null,
   newCommentsSince: string | null = null,
   commentsSince: PrCommentSince[] = [],
+  commentsError: string | null = null,
 ): PrAgentSummary {
   const rollup = detail.lastCommit?.nodes?.[0]?.commit?.statusCheckRollup;
   const checksFetched = detail.lastCommit?.nodes?.[0] !== undefined;
@@ -1356,30 +1363,42 @@ export function buildPrAgentSummary(
   let workflowsPending = false;
   let workflowsFailed = false;
   let workflowsCancelled = false;
+  const workflowRuns: PrSummaryWorkflowRun[] = [];
   for (const run of latestRuns.values()) {
-    workflowsPending ||= run.status !== "completed" || run.jobs_fetched_at === null
-      || listRunJobsForRun(repo, run.run_id, run.run_attempt).length === 0;
-    workflowsFailed ||= run.conclusion !== null && FAILED_ACTION_CONCLUSIONS[run.conclusion] === true;
-    workflowsCancelled ||= run.conclusion === "cancelled";
+    // A completed run may own no jobs (approval required, cancelled before start); its conclusion settles it.
+    const pending = run.status !== "completed" || run.jobs_fetched_at === null;
+    const failed = run.conclusion !== null && FAILED_ACTION_CONCLUSIONS[run.conclusion] === true;
+    const cancelled = run.conclusion === "cancelled";
+    workflowsPending ||= pending;
+    workflowsFailed ||= failed;
+    workflowsCancelled ||= cancelled;
+    if (pending || failed || cancelled) {
+      workflowRuns.push({
+        id: run.run_id, attempt: run.run_attempt, workflow: run.workflow_name, status: run.status, conclusion: run.conclusion,
+        holds: pending ? "PENDING" : failed ? "FAILURE" : "CANCELLED",
+      });
+    }
   }
   const checks: PrSummaryCheck[] = [];
   const counts: Record<CheckState, number> = { passed: 0, running: 0, failed: 0, cancelled: 0, skipped: 0 };
   // a cached log turns a red check into something an agent can read without another GitHub call
-  const logBytesByJob: Record<string, number> = {};
+  const logBytesByJob = new Map<number, number>();
   for (const job of listRunJobs(ref.slice(0, ref.lastIndexOf("#")), String(detail.headRefOid ?? ""))) {
-    if (job.log_bytes !== null) logBytesByJob[job.name] = job.log_bytes;
+    if (job.log_bytes !== null) logBytesByJob.set(job.job_id, job.log_bytes);
   }
   for (const check of checkNodes) {
     const state = checkState(check);
     // Historical contexts remain in the detail cache, not in this current-head summary.
     counts[state] += 1;
     const name = String(check.__typename === "CheckRun" ? check.name : check.context);
+    const jobId = check.__typename === "CheckRun"
+      ? check.databaseId ?? Number(check.detailsUrl?.match(/\/jobs?\/(\d+)/)?.[1] ?? 0) : 0;
     checks.push({
       name,
       state,
       required: check.isRequired === true,
       url: check.__typename === "CheckRun" ? check.detailsUrl ?? null : check.targetUrl ?? null,
-      logBytes: logBytesByJob[name] ?? null,
+      logBytes: logBytesByJob.get(jobId) ?? null,
     });
   }
 
@@ -1431,7 +1450,7 @@ export function buildPrAgentSummary(
         : !workflowCoverageComplete || !checkPageComplete ? "PENDING"
         : counts.cancelled || workflowsCancelled ? "CANCELLED" : checks.length || latestRuns.size ? "SUCCESS" : "NONE",
       complete: checkPageComplete && workflowCoverageComplete && !workflowsPending,
-      ...counts, checks,
+      ...counts, checks, workflowRuns,
     },
     openComments,
     openCommentsComplete: commentPagesComplete,
@@ -1447,7 +1466,8 @@ export function buildPrAgentSummary(
     reviewsComplete: detail.reviews.pageInfo?.hasNextPage === false,
     newCommentsSince,
     newComments: commentsSince,
-    newCommentsComplete: true,
+    newCommentsComplete: commentsError === null,
+    newCommentsError: commentsError,
     quota: quota && {
       ...quota,
       hotPrs: githubHotPrs(Date.now(), quota.identity ?? "user"),
@@ -1491,12 +1511,14 @@ function formatPrAgentDigest(summary: PrAgentSummary, includeComments: boolean, 
   const coreExhausted = coreExhaustionLine(summary);
   if (coreExhausted) lines.push(coreExhausted);
   const attention = summary.ci.checks.filter((check) => check.state === "failed" || check.state === "cancelled");
-  if (attention.length > 0) {
+  const settledRuns = summary.ci.workflowRuns.filter((run) => run.holds !== "PENDING");
+  if (attention.length > 0 || settledRuns.length > 0) {
     lines.push(`CI: ${summary.ci.state}`);
     for (const check of attention) {
       const log = check.logBytes === null ? "" : ` · log cached (${Math.max(1, Math.round(check.logBytes / 1024))} KB)`;
       lines.push(`- ${check.state.toUpperCase()}${check.required ? " required" : ""}: ${check.name}${log}`);
     }
+    lines.push(...settledRuns.map(workflowRunLine));
     if (attention.some((check) => check.logBytes !== null)) {
       lines.push(`Read a cached log with \`pr-cockpit ${summary.ref} --logs [check name]\`.`);
     }
@@ -1505,6 +1527,7 @@ function formatPrAgentDigest(summary: PrAgentSummary, includeComments: boolean, 
     lines.push(`Inspect queued and running Actions state with \`pr-cockpit ${summary.ref} --jobs\`.`);
   }
   if (includeComments) {
+    if (summary.newCommentsError) lines.push(`New comments unavailable: ${summary.newCommentsError}`);
     const commentLines = summary.newComments.length > 0
       ? summary.newComments.map(newCommentLine)
       : summary.openComments.length > 0 ? openThreadLines(summary, staleMarkers) : [];
@@ -1515,6 +1538,12 @@ function formatPrAgentDigest(summary: PrAgentSummary, includeComments: boolean, 
   }
   if (lines.length === 0) lines.push(`No new comments. CI: ${summary.ci.state} · Review: ${summary.review}.`);
   return `${mergeApprovalLine(summary)}\n${reviewHandoffLine(summary)}\n${lines.join("\n")}\n`;
+}
+
+function workflowRunLine(run: PrSummaryWorkflowRun): string {
+  const state = run.status === "completed" ? run.conclusion ?? "completed" : run.status;
+  const jobs = run.status === "completed" && run.holds === "PENDING" ? " · jobs not cached yet" : "";
+  return `- WORKFLOW ${state.toUpperCase()}: ${run.workflow} · run ${run.id} attempt ${run.attempt}${jobs}`;
 }
 
 function mergeApprovalLine(summary: PrAgentSummary): string {
@@ -1587,6 +1616,7 @@ export function formatPrAgentSummary(summary: PrAgentSummary, options: AgentSumm
     const log = check.logBytes === null ? "" : ` · log cached (${Math.max(1, Math.round(check.logBytes / 1024))} KB)`;
     lines.push(`- ${check.state.toUpperCase()}${check.required ? " required" : ""}: ${check.name}${log}${check.url ? ` — ${check.url}` : ""}`);
   }
+  lines.push(...summary.ci.workflowRuns.map(workflowRunLine));
   if (summary.ci.checks.some((check) => check.logBytes !== null)) {
     lines.push("", `Read a cached log with \`pr-cockpit ${summary.ref} --logs [check name]\` instead of polling GitHub Actions.`);
   }
@@ -1596,7 +1626,8 @@ export function formatPrAgentSummary(summary: PrAgentSummary, options: AgentSumm
 
   if (includeComments && summary.newCommentsSince) {
     lines.push("", `## New Comments Since ${summary.newCommentsSince}`, "");
-    if (summary.newComments.length === 0) lines.push("_No new comments._");
+    if (summary.newCommentsError) lines.push(`_New comments unavailable: ${summary.newCommentsError}_`);
+    else if (summary.newComments.length === 0) lines.push("_No new comments._");
     for (const comment of summary.newComments) lines.push(newCommentLine(comment));
   } else if (includeComments) {
     lines.push("", "## Reviews", "");
@@ -1679,12 +1710,14 @@ async function handleAgentPr(
     return json({ error: "PR snapshot predates known activity" }, 409);
   }
   let commentsSince: PrCommentSince[] = [];
+  let commentsError: string | null = null;
   if (includeComments && newCommentsSince !== null) {
     try {
       commentsSince = await runtime.fetchPrCommentsSince(`${owner}/${repo}`, Number(number), newCommentsSince);
     } catch (err) {
+      // The cached PR state is still current; only the comment delta is missing from this answer.
       console.error(`GitHub comments fetch failed for ${owner}/${repo}#${number}:`, err);
-      return githubErrorResponse(err, "GitHub comments fetch failed", { hotPrs: true });
+      commentsError = reconciliationError(err);
     }
   }
   detail.agentSnapshot = snapshotStatus(detail.agentSnapshot.fetchedAt, lastWebhookAtForPr(`${owner}/${repo}`, Number(number)));
@@ -1692,7 +1725,7 @@ async function handleAgentPr(
   if (url.searchParams.get("fresh") === "1" && detail.agentSnapshot.newerActivityAt) {
     return json({ error: "PR snapshot predates known activity" }, 409);
   }
-  const summary = buildPrAgentSummary(`${owner}/${repo}#${number}`, detail, quota, newCommentsSince, commentsSince);
+  const summary = buildPrAgentSummary(`${owner}/${repo}#${number}`, detail, quota, newCommentsSince, commentsSince, commentsError);
   if (format === "json") return json(summary);
   return new Response(formatPrAgentSummary(summary, { comments: includeComments, body: includeBody, digest }), {
     headers: { "content-type": "text/markdown; charset=utf-8" },
@@ -2774,7 +2807,7 @@ async function handleAgentPrLogs(owner: string, repo: string, number: string, ur
   if (selectedRun instanceof Response) return selectedRun;
   const headSha = selectedRun?.head_sha ?? context.headSha;
   const check = url.searchParams.get("check") ?? undefined;
-  const logs = await cachedJobLogs(context.repoName, headSha, check, selectedRun ?? undefined);
+  const logs = await agentJobLogs(context.repoName, headSha, check, selectedRun ?? undefined);
   const selection = selectedRun ? `Actions run ${selectedRun.run_id}, attempt ${selectedRun.run_attempt} · ${selectedRun.status} · ${headSha}\n\n` : "";
   return new Response(selection + formatJobLogs(headSha, logs), {
     headers: { "content-type": "text/plain; charset=utf-8" },
@@ -2788,29 +2821,58 @@ function formatAgentRun(run: WorkflowRunRow): string {
   return `- ${run.workflow_name} · run ${run.run_id}, attempt ${run.run_attempt} · ${run.conclusion ?? run.status} · ${run.head_branch} ${run.head_sha.slice(0, 11)} · ${run.event} · ${run.event_at}${title}`;
 }
 
+const AGENT_RUN_REFRESH_MS = 120_000;
+const AGENT_RUN_REFRESH_CONCURRENCY = 4;
+
+// A run's completion event can be lost while its jobs' events arrive, and the repository listing
+// scrolls past a busy repo's runs within hours, so a run the cache still shows active is reread.
+async function refreshActiveRuns(runs: WorkflowRunRow[], runtime: HttpRuntime): Promise<{ runs: WorkflowRunRow[]; error: string | null }> {
+  const refreshed = new Map<number, WorkflowRunRow>();
+  let error: string | null = null;
+  const stale = runs.filter((run) => run.status !== "completed"
+    && Date.now() - Date.parse(`${run.fetched_at.replace(" ", "T")}Z`) >= AGENT_RUN_REFRESH_MS);
+  await forEachWithConcurrency(stale, AGENT_RUN_REFRESH_CONCURRENCY, async (run) => {
+    try {
+      refreshed.set(run.run_id, await runtime.refreshRepoActionsRun(run));
+    } catch (failure) {
+      error ??= `could not refresh run ${run.run_id} from GitHub: ${reconciliationError(failure)}`;
+    }
+  });
+  return { runs: runs.map((run) => refreshed.get(run.run_id) ?? run), error };
+}
+
 // Branch runs (staging and production deploys among them) that belong to no PR.
-async function handleAgentRepoRuns(owner: string, name: string, url: URL): Promise<Response> {
+async function handleAgentRepoRuns(owner: string, name: string, url: URL, runtime: HttpRuntime): Promise<Response> {
   const repo = `${owner}/${name}`;
   if (!(await trackedRepos()).includes(repo)) return json({ error: "repo is not tracked" }, 404);
   const branch = url.searchParams.get("branch") ?? "";
   const workflows = url.searchParams.getAll("workflow").filter(Boolean);
   const status = url.searchParams.get("status") ?? "all";
   const rawRunId = url.searchParams.get("runId");
-  const runs = latestActionRunAttempts(listWorkflowRunsMatching({ repo, branch, workflows }, 1000))
-    .filter((run) => actionRunMatchesStatus(run, status))
-    .slice(0, AGENT_RUN_ROWS);
   const scope = `${branch ? `branch ${branch} in ` : ""}${repo}`;
   if (rawRunId === null) {
-    if (url.searchParams.get("format") === "json") return json({ repo, branch: branch || null, runs: runs.map((run) => serializeActionRun(run)) });
+    const listed = await refreshActiveRuns(
+      latestActionRunAttempts(listWorkflowRunsMatching({ repo, branch, workflows }, 1000))
+        .filter((run) => actionRunMatchesStatus(run, status))
+        .slice(0, AGENT_RUN_ROWS),
+      runtime,
+    );
+    const runs = listed.runs.filter((run) => actionRunMatchesStatus(run, status));
+    if (url.searchParams.get("format") === "json") {
+      return json({ repo, branch: branch || null, runs: runs.map((run) => serializeActionRun(run)), refreshError: listed.error });
+    }
+    const warning = listed.error ? `Warning: ${listed.error}; active runs may be stale.\n\n` : "";
     const body = runs.length === 0
       ? `No cached Actions runs match for ${scope}.\n`
       : `Cached Actions runs for ${scope}, newest first\n\n${runs.map(formatAgentRun).join("\n")}\n`;
-    return new Response(body, { headers: { "content-type": "text/plain; charset=utf-8" } });
+    return new Response(warning + body, { headers: { "content-type": "text/plain; charset=utf-8" } });
   }
   const runId = Number(rawRunId);
   if (!Number.isSafeInteger(runId) || runId <= 0) return json({ error: "valid Actions run ID required" }, 400);
-  const run = latestWorkflowRunAttempt(repo, runId);
-  if (!run || (branch && run.head_branch !== branch)) return json({ error: `Actions run is not cached for ${scope}` }, 404);
+  const cached = latestWorkflowRunAttempt(repo, runId);
+  if (!cached || (branch && cached.head_branch !== branch)) return json({ error: `Actions run is not cached for ${scope}` }, 404);
+  const selected = await refreshActiveRuns([cached], runtime);
+  const run = selected.runs[0]!;
   // Webhooks keep active runs' jobs current; a completed run is fetched once if none arrived.
   if (run.status === "completed" && run.jobs_fetched_at === null) {
     try {
@@ -2821,9 +2883,42 @@ async function handleAgentRepoRuns(owner: string, name: string, url: URL): Promi
   }
   const jobs = listRunJobsForRun(repo, run.run_id, run.run_attempt);
   if (url.searchParams.get("format") === "json") {
-    return json({ repo, branch: branch || null, selectedRun: serializeActionRun(run), jobs: jobs.map(serializeActionJob) });
+    return json({ repo, branch: branch || null, selectedRun: serializeActionRun(run), jobs: jobs.map(serializeActionJob), refreshError: selected.error });
   }
-  return new Response(`${formatAgentRun(run)}\n\n${formatRunJobs(run.head_sha, jobs)}`, {
+  const warning = selected.error ? `Warning: ${selected.error}; run state may be stale.\n\n` : "";
+  return new Response(`${warning}${formatAgentRun(run)}\n\n${formatRunJobs(run.head_sha, jobs)}`, {
+    headers: { "content-type": "text/plain; charset=utf-8" },
+  });
+}
+
+async function handleAgentRepoCacheRun(owner: string, name: string, runId: string, runtime: HttpRuntime): Promise<Response> {
+  const repo = `${owner}/${name}`;
+  if (!(await trackedRepos()).includes(repo)) return json({ error: "repo is not tracked" }, 404);
+  const id = Number(runId);
+  if (!Number.isSafeInteger(id) || id <= 0) return json({ error: "valid Actions run ID required" }, 400);
+  try {
+    const result = await runtime.cacheRepoActionsRun(repo, id);
+    const run = latestWorkflowRunAttempt(repo, id)!;
+    return new Response(`Actions run ${id}: ${result}\n\n${formatAgentRun(run)}\n\n${formatRunJobs(run.head_sha, listRunJobsForRun(repo, id, run.run_attempt))}`, {
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  } catch (error) {
+    return json({
+      error: reconciliationError(error),
+      cachedDataUsable: latestWorkflowRunAttempt(repo, id) !== null,
+    }, 502);
+  }
+}
+
+async function handleAgentRepoLogs(owner: string, name: string, url: URL): Promise<Response> {
+  const repo = `${owner}/${name}`;
+  if (!(await trackedRepos()).includes(repo)) return json({ error: "repo is not tracked" }, 404);
+  const runId = Number(url.searchParams.get("runId"));
+  if (!Number.isSafeInteger(runId) || runId <= 0) return json({ error: "valid Actions run ID required" }, 400);
+  const run = latestWorkflowRunAttempt(repo, runId);
+  if (!run) return json({ error: `Actions run is not cached for ${repo}; run cache-run first` }, 404);
+  const logs = await agentJobLogs(repo, run.head_sha, url.searchParams.get("check") ?? undefined, run);
+  return new Response(`Actions run ${run.run_id}, attempt ${run.run_attempt} · ${run.status} · ${run.head_sha}\n\n${formatJobLogs(run.head_sha, logs)}`, {
     headers: { "content-type": "text/plain; charset=utf-8" },
   });
 }
@@ -4553,9 +4648,26 @@ export function buildFetchHandler(port: number, dependencyOverrides: Partial<Htt
       parts[0] === "api" &&
       parts[1] === "agent" &&
       parts[2] === "repo" &&
-      parts[5] === "runs"
+      (parts[5] === "runs" || parts[5] === "logs")
     ) {
-      return handleAgentRepoRuns(parts[3]!, parts[4]!, url);
+      return parts[5] === "runs"
+        ? handleAgentRepoRuns(parts[3]!, parts[4]!, url, runtime)
+        : handleAgentRepoLogs(parts[3]!, parts[4]!, url);
+    }
+    if (
+      req.method === "POST" &&
+      parts.length === 8 &&
+      parts[0] === "api" &&
+      parts[1] === "agent" &&
+      parts[2] === "repo" &&
+      parts[5] === "runs" &&
+      parts[7] === "cache"
+    ) {
+      const trustedCliHost = /^(?:127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(req.headers.get("host") ?? url.host);
+      if (!trustedCliHost || req.headers.get("x-pr-cockpit-cli") !== "1") {
+        return json({ error: "trusted CLI request required" }, 403);
+      }
+      return handleAgentRepoCacheRun(parts[3]!, parts[4]!, parts[6]!, runtime);
     }
     if (
       req.method === "POST" &&

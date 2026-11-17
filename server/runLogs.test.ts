@@ -1196,3 +1196,87 @@ test("recent Actions refresh persists each successful component without clearing
     afterWorkflowSuccess: { runs: [70], workflows: ["Fresh workflow"] },
   });
 });
+
+test("a covered head is reread when a run outlives its finished jobs or a rerun's jobs arrive first", async () => {
+  const result = await runScenario("pr-cockpit-actions-missed-run-event-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    ${seed}
+    const run = (status, attempt = 1) => ({
+      id: 90, run_attempt: attempt, head_sha: head, head_branch: "feature", name: "W", path: ".github/workflows/w.yml",
+      event: "pull_request", status, conclusion: status === "completed" ? "success" : null,
+      updated_at: "2026-09-17T02:4" + attempt + ":00Z", html_url: null,
+    });
+    const job = (id, attempt) => dbm.upsertRunJob({
+      repo: "acme/app", job_id: id, run_id: 90, run_attempt: attempt, head_sha: head, head_branch: "feature",
+      workflow_name: "W", name: "build", status: "completed", conclusion: "success", started_at: null,
+      completed_at: new Date(Date.now() - 120_000).toISOString(), html_url: null, runner_name: null,
+      runner_group_name: null, labels_json: "[]", failed_step: null,
+    });
+    let catalog = [run("in_progress")];
+    const calls = [];
+    const fetchers = {
+      fetchWorkflowRuns: async () => { calls.push("runs"); return catalog; },
+      fetchRunJobs: async (_repo, runId) => { calls.push("jobs:" + runId); return []; },
+      fetchJobLog: async () => "",
+      restRemaining: async () => 5000,
+      webhookCoveredSince: () => 0,
+    };
+    const pass = async () => {
+      calls.length = 0;
+      await actions.cacheGithubActionsForCommit("acme/app", 7, head, fetchers, true);
+      return [...calls];
+    };
+    await pass();
+    const running = await pass();
+    job(901, 1);
+    dbm.db.query("UPDATE workflow_runs SET fetched_at = datetime('now', '-3 minutes')").run();
+    catalog = [run("completed")];
+    const missedCompletion = await pass();
+    const settled = await pass();
+    job(902, 2);
+    catalog = [run("in_progress", 2)];
+    const missedRerun = await pass();
+    console.log(JSON.stringify({ running, missedCompletion, settled, missedRerun }));
+  `);
+  expect(result.running).toEqual([]);
+  expect(result.missedCompletion).toEqual(["runs"]);
+  expect(result.settled).toEqual([]);
+  expect(result.missedRerun).toEqual(["runs", "jobs:90"]);
+});
+
+test("a job log GitHub cannot serve does not hold reconciliation, and a later log read retries it with annotations", async () => {
+  const result = await runScenario("pr-cockpit-actions-missing-log-", `
+    const actions = await import(${JSON.stringify(runLogsUrl)});
+    const dbm = await import(${JSON.stringify(dbUrl)});
+    const gh = await import(${JSON.stringify(new URL("./github.ts", import.meta.url).href)});
+    ${seed}
+    let log = null;
+    const fetchers = {
+      fetchWorkflowRun: async () => ({
+        id: 55, run_attempt: 1, head_sha: head, head_branch: "feature", name: "CI", path: ".github/workflows/ci.yml",
+        event: "pull_request", status: "completed", conclusion: "cancelled", updated_at: "2026-08-24T10:04:00Z", html_url: null,
+      }),
+      fetchWorkflowRuns: async () => [],
+      fetchRunJobs: async () => [{
+        id: 551, run_id: 55, run_attempt: 1, head_sha: head, head_branch: "feature", workflow_name: "CI", name: "lint",
+        status: "completed", conclusion: "cancelled", started_at: null, completed_at: "2026-08-24T10:04:00Z",
+        html_url: null, runner_name: null, runner_group_name: null, labels: [], steps: [],
+      }],
+      fetchJobLog: async () => {
+        if (log === null) throw new gh.GithubRequestError("job log download failed: 404", 404);
+        return log;
+      },
+      fetchCheckRunAnnotations: async () => [{ path: "src/a.ts", start_line: 3, end_line: 3, annotation_level: "failure", title: null, message: "boom" }],
+      restRemaining: async () => 5000,
+    };
+    const cached = await actions.cacheActionsRun("acme/app", 7, head, "feature", null, 55, fetchers);
+    const reconciled = dbm.db.query("SELECT reconciled_at IS NOT NULL AS done FROM workflow_runs WHERE run_id = 55").get().done;
+    log = "late log";
+    const read = actions.formatJobLogs(head, await actions.agentJobLogs("acme/app", head, "lint", undefined, fetchers));
+    console.log(JSON.stringify({ cached, reconciled, read }));
+  `);
+  expect(result.cached).toBe("fetched");
+  expect(result.reconciled).toBe(1);
+  expect(result.read).toContain("Annotations\n- failure src/a.ts:3 · boom\n\nlate log");
+});

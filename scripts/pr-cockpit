@@ -44,7 +44,7 @@ Mutation commands:
 
 Other commands:
   listen [REF]         wait for substantive cached state to change, print it, then exit
-  cache-run REF RUN_ID fetch one Actions run and retain its unsuccessful logs
+  cache-run REF RUN_ID fetch one Actions run and retain its unsuccessful logs; REF may be OWNER/REPO
   runs OWNER/REPO      cached Actions runs outside PRs (deploys, branch pushes), newest first
   update               update and reconcile the installed app
   status               report the process supervising the local server
@@ -52,7 +52,8 @@ Other commands:
 
 Options:
   --jobs              cached Actions jobs, including queued and running state
-  --run RUN_ID        with --jobs/--logs, select a run; with listen, wait for completion
+  --run RUN_ID        with --jobs/--logs, select a run; with listen, wait for completion;
+                      with runs or listen OWNER/REPO, any run in the repository
   --attempt NUMBER   with --run and --jobs/--logs, select a cached rerun attempt
   --branch NAME       with runs, only runs on this branch
   --workflow NAME     with runs, only this workflow name or path; repeatable
@@ -60,27 +61,30 @@ Options:
   --json              machine-readable Cockpit status
   --diff              cached unified diff
   --file PATH         file contents at the PR head
-  --logs [CHECK]      cached Actions job logs for failed and cancelled checks
+  --logs [CHECK]      cached Actions job logs and annotations for failed and cancelled checks
   --new-since DATE    only comments at or after DATE
-  --ci-only           with listen REF, wake only for CI changes or current failure
+  --ci-only           with listen REF, wake once CI settles or fails, or the PR state changes
   --comments-only     with listen REF, wake only for comment changes or current open comments
   --conflicts-only    with listen REF, wake only for merge state changes or current conflicts
+  --next-change       with listen REF, wait past current blockers for the next change
   --use-as-proxy HOST
                       reach the authoritative Cockpit server through SSH
   -h, --help          show this help
 
 Read options:
   --jobs               cached Actions jobs, including queued and running state
-  --run RUN_ID         with --jobs/--logs, select a run; with listen, wait for completion
+  --run RUN_ID         with --jobs/--logs, select a run; with listen, wait for completion;
+                       with runs or listen OWNER/REPO, any run in the repository
   --attempt NUMBER    with --run and --jobs/--logs, select a cached rerun attempt
   --json               machine-readable Cockpit status
   --diff               cached unified diff
   --file PATH          file contents at the PR head
-  --logs [CHECK]       cached Actions job logs for failed and cancelled checks
+  --logs [CHECK]       cached Actions job logs and annotations for failed and cancelled checks
   --new-since DATE     only comments at or after DATE
-  --ci-only            with listen REF, wake only for CI changes or current failure
+  --ci-only            with listen REF, wake once CI settles or fails, or the PR state changes
   --comments-only      with listen REF, wake only for comment changes or current open comments
   --conflicts-only     with listen REF, wake only for merge state changes or current conflicts
+  --next-change        with listen REF, wait past current blockers for the next change
 
 Mutation options:
   --body-file FILE     read exact comment, review, or body text; use - for stdin
@@ -247,6 +251,7 @@ proxy_arg=""
 run_branch=""
 run_workflows=()
 run_status=""
+next_change="0"
 while (($#)); do
   case "$1" in
     --json)
@@ -318,6 +323,10 @@ while (($#)); do
       [[ "$command" = "listen" && "$listen_scope" = "all" ]] || usage
       listen_scope="conflicts"
       ;;
+    --next-change)
+      [[ "$command" = "listen" ]] || usage
+      next_change="1"
+      ;;
     --comments=0) comments="0" ;;
     --body-file)
       [[ $# -gt 1 ]] || usage
@@ -378,13 +387,13 @@ done
 [[ -z "$run_id" || "$mode" = "jobs" || "$mode" = "logs" || "$command" = "listen" || "$command" = "runs" ]] || usage
 [[ -z "$run_attempt" || ( -n "$run_id" && ( "$mode" = "jobs" || "$mode" = "logs" ) && "$command" != "listen" ) ]] || usage
 if [[ "$command" = "listen" && -n "$run_id" ]]; then
-  [[ "$listen_scope" = "all" && -z "$since" && "$comments" = "1" && ( "$mode" = "summary" || "$mode" = "jobs" ) ]] || usage
+  [[ "$listen_scope" = "all" && "$next_change" = "0" && -z "$since" && "$comments" = "1" && ( "$mode" = "summary" || "$mode" = "jobs" ) ]] || usage
   mode="jobs"
 fi
 if [[ "$command" = "resolve" ]]; then
   [[ -n "$ref" && "$mode" = "summary" && -z "$since" && "$comments" = "1" && "${#positionals[@]}" -eq 1 && "${positionals[0]}" =~ ^[0-9a-f]{10}$ ]] || usage
 elif [[ "$command" = "runs" ]]; then
-  [[ "$ref" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && ( "$mode" = "summary" || "$mode" = "json" ) && -z "$since" && "$comments" = "1" && -z "$run_attempt" && "${#positionals[@]}" -eq 0 ]] || usage
+  [[ "$ref" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && ( "$mode" = "summary" || "$mode" = "json" || ( "$mode" = "logs" && -n "$run_id" ) ) && -z "$since" && "$comments" = "1" && -z "$run_attempt" && "${#positionals[@]}" -eq 0 ]] || usage
 elif [[ "$command" = "cache-run" ]]; then
   [[ -n "$ref" && "$mode" = "summary" && -z "$since" && "$comments" = "1" && "${#positionals[@]}" -eq 1 && "${positionals[0]}" =~ ^[1-9][0-9]*$ ]] || usage
 elif [[ "$mutation_command" = "1" ]]; then
@@ -430,17 +439,24 @@ server_health() {
   curl --noproxy '*' --max-time 2 -fsS "http://127.0.0.1:$port/healthz" 2>/dev/null
 }
 
+serves_proxy() {
+  [[ -z "$proxy_arg" || "$1" == *"\"host\":\"$proxy\""* ]]
+}
+
 server_ready() {
   local health
   health="$(server_health)" || return 1
-  [[ -z "$proxy_arg" || "$health" == *"\"host\":\"$proxy\""* ]]
+  serves_proxy "$health"
 }
 
-if [[ -n "$proxy" ]] && ! server_ready; then
-  if server_health >/dev/null; then
+# Only an answered probe can show a different source; an unanswered one goes to the launcher,
+# which leaves a running server alone.
+if [[ -n "$proxy" ]] && health="$(server_health)"; then
+  if ! serves_proxy "$health"; then
     echo "pr-cockpit: port $port is serving a different Cockpit source" >&2
     exit 1
   fi
+elif [[ -n "$proxy" ]]; then
   launcher="$root/scripts/cockpit"
   mkdir -p "$data_dir"
   launcher_proxy_args=()
@@ -496,7 +512,10 @@ switch (operation) {
     const approvedForSafeMerge = input.approvedForSafeMerge ?? false;
     const readyForReview = input.readyForReview ?? false;
     if (argument === "ci") {
-      console.log(stable({ state: input.state ?? null, approvedForSafeMerge, readyForReview, ci: input.ci ?? null }));
+      // The second line stays PENDING while checks progress, so --ci-only waits for a settled verdict.
+      const ci = input.ci ?? null;
+      console.log(stable({ state: input.state ?? null, approvedForSafeMerge, readyForReview }));
+      console.log(String(ci?.state ?? "").toUpperCase() === "PENDING" ? "PENDING" : stable(ci));
       break;
     }
     if (argument === "comments") {
@@ -532,6 +551,8 @@ switch (operation) {
       ci: failedCi,
       comments: openComments,
       conflicts: conflicting,
+      // --next-change: the caller has seen the current blockers and waits for what changes next.
+      next: false,
     }[argument] ?? (failedCi || openComments || conflicting);
     console.log(Number(finished || blocked));
     break;
@@ -593,7 +614,54 @@ index_fingerprint() {
   )
 }
 
+fetch_run_json() {
+  curl --noproxy '*' -sS --fail-with-body --get \
+    --data-urlencode "runId=$run_id" \
+    --data-urlencode "format=json" \
+    "$run_json_url"
+}
+# Server refusals end the command. A GitHub failure is printed and returns 1: the cached run stays
+# readable and a later refresh can still succeed.
+refresh_run() {
+  local response status
+  response=$(curl --noproxy '*' -sS -w $'\n%{http_code}' -X POST -H "X-PR-Cockpit-CLI: 1" "$run_api/runs/$run_id/cache") || exit $?
+  status=${response##*$'\n'}
+  [[ "$status" != "200" ]] || return 0
+  printf 'pr-cockpit: %s\n' "${response%$'\n'*}" >&2
+  [[ "$status" -ge 500 ]] || exit 1
+  return 1
+}
+wait_for_run_completion() {
+  local interval=$1 payload state reconcile_attempt="" polls=0
+  refresh_run || true
+  payload=$(fetch_run_json)
+  while true; do
+    state=$(json_transform run-state <<<"$payload")
+    [[ "$state" != "complete" ]] || return 0
+    if [[ "$state" = reconcile:* && "${state#reconcile:}" != "$reconcile_attempt" ]]; then
+      reconcile_attempt=${state#reconcile:}
+      polls=0
+      # The run is over; logs GitHub would not serve are reported, not waited for.
+      refresh_run || return 0
+      payload=$(fetch_run_json)
+      continue
+    fi
+    sleep "$interval"
+    polls=$((polls + 1))
+    if [[ "$polls" -ge 30 ]]; then
+      refresh_run || true
+      polls=0
+    fi
+    payload=$(fetch_run_json)
+  done
+}
+
 if [[ "$command" = "runs" ]]; then
+  if [[ "$mode" = "logs" ]]; then
+    curl --noproxy '*' -sS --fail-with-body --get --data-urlencode "runId=$run_id" --data-urlencode "check=$check_name" \
+      "http://127.0.0.1:$port/api/agent/repo/$ref/logs"
+    exit
+  fi
   args=(--get)
   [[ -z "$run_branch" ]] || args+=(--data-urlencode "branch=$run_branch")
   for workflow in "${run_workflows[@]+"${run_workflows[@]}"}"; do args+=(--data-urlencode "workflow=$workflow"); done
@@ -602,6 +670,20 @@ if [[ "$command" = "runs" ]]; then
   [[ "$mode" != "json" ]] || args+=(--data-urlencode "format=json")
   curl --noproxy '*' -sS --fail-with-body "${args[@]}" "http://127.0.0.1:$port/api/agent/repo/$ref/runs"
   [[ "$mode" != "json" ]] || printf '\n'
+  exit
+fi
+
+# A run on a branch without a PR (a dispatched probe, a deploy) is followed by repository alone.
+if [[ "$ref" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && ( "$command" = "cache-run" || "$command" = "listen" ) ]]; then
+  run_api="http://127.0.0.1:$port/api/agent/repo/$ref"
+  if [[ "$command" = "cache-run" ]]; then
+    curl --noproxy '*' -sS --fail-with-body -X POST -H "X-PR-Cockpit-CLI: 1" "$run_api/runs/${positionals[0]}/cache"
+    exit 0
+  fi
+  [[ -n "$run_id" ]] || usage
+  run_json_url="$run_api/runs"
+  wait_for_run_completion "${COCKPIT_LISTEN_INTERVAL:-1}"
+  curl --noproxy '*' -sS --fail-with-body --get --data-urlencode "runId=$run_id" "$run_json_url"
   exit
 fi
 
@@ -668,51 +750,23 @@ fetch_pr_json() {
     --data-urlencode "comments=1" \
     "$base_url"
 }
-
-
-fetch_run_json() {
-  curl --noproxy '*' -sS --fail-with-body --get \
-    --data-urlencode "runId=$run_id" \
-    --data-urlencode "format=json" \
-    "$base_url/jobs"
-}
-wait_for_run_completion() {
-  local interval=$1 payload state reconcile_attempt="" polls=0
-  curl --noproxy '*' -sS --fail-with-body -X POST -H "X-PR-Cockpit-CLI: 1" \
-    "$base_url/runs/$run_id/cache" >/dev/null
-  payload=$(fetch_run_json)
-  while true; do
-    state=$(json_transform run-state <<<"$payload")
-    [[ "$state" != "complete" ]] || return 0
-    if [[ "$state" = reconcile:* && "${state#reconcile:}" != "$reconcile_attempt" ]]; then
-      reconcile_attempt=${state#reconcile:}
-      polls=0
-      curl --noproxy '*' -sS --fail-with-body -X POST -H "X-PR-Cockpit-CLI: 1" \
-        "$base_url/runs/$run_id/cache" >/dev/null
-      payload=$(fetch_run_json)
-      continue
-    fi
-    sleep "$interval"
-    polls=$((polls + 1))
-    if [[ "$polls" -ge 30 ]]; then
-      curl --noproxy '*' -sS --fail-with-body -X POST -H "X-PR-Cockpit-CLI: 1" \
-        "$base_url/runs/$run_id/cache" >/dev/null
-      polls=0
-    fi
-    payload=$(fetch_run_json)
-  done
-}
+run_api="$base_url"
+run_json_url="$base_url/jobs"
+blocked_scope="$listen_scope"
+[[ "$next_change" = "0" ]] || blocked_scope="next"
 wait_for_pr_change() {
   local interval=$1 payload previous current
   payload=$(fetch_pr_json) || return
   previous=$(json_transform pr-fingerprint "$listen_scope" <<<"$payload")
   while true; do
     if [[ "$(json_transform pr-current <<<"$payload" 2>/dev/null)" = "1" ]]; then
-      if [[ "$(json_transform pr-blocked "$listen_scope" <<<"$payload")" = "1" ]]; then
+      if [[ "$(json_transform pr-blocked "$blocked_scope" <<<"$payload")" = "1" ]]; then
         return 0
       fi
       current=$(json_transform pr-fingerprint "$listen_scope" <<<"$payload")
-      [[ "$current" = "$previous" ]] || return 0
+      if [[ "$current" != "$previous" ]]; then
+        [[ "$listen_scope" = "ci" && "${current#*$'\n'}" = "PENDING" && "${current%%$'\n'*}" = "${previous%%$'\n'*}" ]] || return 0
+      fi
     fi
     sleep "$interval"
     while ! payload=$(fetch_pr_json 2>/dev/null); do
@@ -720,8 +774,13 @@ wait_for_pr_change() {
     done
   done
 }
+# Cached Actions rows stay readable when GitHub refuses the refresh (quota, outage); say why they may be stale.
 activate_actions_lease() {
-  curl --noproxy '*' -sS --fail-with-body -X POST -H "X-PR-Cockpit-CLI: 1" "$base_url/actions-lease" >/dev/null
+  local response status
+  response=$(curl --noproxy '*' -sS -w $'\n%{http_code}' -X POST -H "X-PR-Cockpit-CLI: 1" "$base_url/actions-lease") || exit $?
+  status=${response##*$'\n'}
+  [[ "$status" != "200" ]] || return 0
+  printf 'pr-cockpit: Actions refresh failed (HTTP %s), using cached Actions data: %s\n' "$status" "${response%$'\n'*}" >&2
 }
 
 if [[ "$mode" = "jobs" || "$mode" = "logs" || ( "$command" = "listen" && "$listen_scope" != "comments" && "$listen_scope" != "conflicts" ) ]]; then
