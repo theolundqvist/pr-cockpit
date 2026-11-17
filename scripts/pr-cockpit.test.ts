@@ -995,6 +995,7 @@ test("update delegates to the running server and waits for the new revision", as
   });
   copyFileSync(join(import.meta.dir, "pr-cockpit"), join(scripts, "pr-cockpit"));
   copyFileSync(join(import.meta.dir, "private-bun.sh"), join(scripts, "private-bun.sh"));
+  copyFileSync(join(import.meta.dir, "install-linux-tools"), join(scripts, "install-linux-tools"));
   chmodSync(join(scripts, "pr-cockpit"), 0o755);
   symlinkSync(join(scripts, "pr-cockpit"), command);
 
@@ -1334,6 +1335,7 @@ test("an installed CLI symlink starts the repository launcher with a configured 
   mkdirSync(bin);
   copyFileSync(join(import.meta.dir, "pr-cockpit"), join(scripts, "pr-cockpit"));
   copyFileSync(join(import.meta.dir, "private-bun.sh"), join(scripts, "private-bun.sh"));
+  copyFileSync(join(import.meta.dir, "install-linux-tools"), join(scripts, "install-linux-tools"));
   writeFileSync(join(scripts, "cockpit"), `#!/usr/bin/env bash\ntouch ${JSON.stringify(ready)}\n`);
   writeFileSync(join(bin, "curl"), `#!/usr/bin/env bash
 if [[ "$*" == *"/healthz"* ]]; then
@@ -1392,6 +1394,7 @@ test("proxy backend starts a local replica server", async () => {
         env: {
           ...Bun.env,
           HOME: home,
+          XDG_DATA_HOME: join(home, ".local/share"),
           PATH: `${bin}:${Bun.env.PATH}`,
           COCKPIT_DATA_DIR: dataDir,
           COCKPIT_PORT: "4891",
