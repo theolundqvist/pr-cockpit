@@ -385,6 +385,74 @@ test("a replica whose sync loop stops making progress no longer reports connecte
   }
 });
 
+test("a replica replaces an ssh tunnel that is still running but no longer forwards", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pr-cockpit-replica-dead-tunnel-"));
+  const sourcePort = reservePort();
+  const bin = join(root, "bin");
+  const spawns = join(root, "spawns");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "ssh"), `#!/usr/bin/env bash\necho spawned >> ${JSON.stringify(spawns)}\nwhile kill -0 "$PPID" 2>/dev/null; do sleep 0.1; done\n`);
+  chmodSync(join(bin, "ssh"), 0o755);
+  const scenario = `
+    const db = await import(${JSON.stringify(new URL("./db.ts", import.meta.url).href)});
+    const { proxyReplicaRequest, startReplicaSync } = await import(${JSON.stringify(new URL("./replica.ts", import.meta.url).href)});
+    db.setSetting("replica_ssh_host", "fixture-source");
+    const serve = () => Bun.serve({
+      port: ${sourcePort},
+      fetch: (request) => {
+        const path = new URL(request.url).pathname;
+        if (path === "/healthz") return new Response("ok");
+        if (path === "/api/replica/inbox") {
+          return Response.json({ revision: '"one"', lastPollAt: null, viewerLogin: null, tables: db.readInboxReplica() });
+        }
+        return Response.json({ ok: true });
+      },
+    });
+    const fs = require("node:fs");
+    const spawned = () => fs.existsSync(${JSON.stringify(spawns)}) ? fs.readFileSync(${JSON.stringify(spawns)}, "utf8").split("\\n").filter(Boolean).length : 0;
+    const awaitSpawns = async (count) => {
+      for (let waited = 0; spawned() < count && waited < 3_000; waited += 50) await Bun.sleep(50);
+    };
+    let source = serve();
+    const stop = await startReplicaSync();
+    await awaitSpawns(1);
+    source.stop(true);
+    const url = new URL("http://127.0.0.1/api/pr/acme/api/7");
+    const refused = (await proxyReplicaRequest(new Request(url), url))?.status;
+    source = serve();
+    const healed = (await proxyReplicaRequest(new Request(url), url))?.status;
+    await awaitSpawns(2);
+    stop();
+    source.stop(true);
+    console.log(JSON.stringify({ refused, healed, tunnels: spawned() }));
+    process.exit(0);
+  `;
+
+  try {
+    const child = Bun.spawn([Bun.which("bun") ?? "bun", "-e", scenario], {
+      env: {
+        ...Bun.env,
+        PATH: `${bin}:${Bun.env.PATH}`,
+        COCKPIT_DATA_DIR: join(root, "replica"),
+        COCKPIT_MOCK: "",
+        COCKPIT_REPLICA_SSH_HOST: "fixture-source",
+        COCKPIT_REPLICA_LOCAL_PORT: String(sourcePort),
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(stderr);
+    expect(JSON.parse(stdout.trim().split("\n").at(-1)!)).toEqual({ refused: 503, healed: 200, tunnels: 2 });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a replica mirrors its source's merge-approval flag and rows, and toggles only through the source", async () => {
   const root = mkdtempSync(join(tmpdir(), "pr-cockpit-replica-approvals-"));
   const sourcePort = reservePort();

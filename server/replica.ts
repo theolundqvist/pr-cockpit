@@ -221,6 +221,12 @@ async function ensureTunnel(): Promise<void> {
   state = { ...state, host, connected: true, lastError: null };
 }
 
+// ssh can outlive its local forward (a hung reconnect), so any failed source request replaces the tunnel.
+function dropTunnel(): void {
+  tunnel?.kill();
+  tunnel = null;
+}
+
 export function importInboxReplica(tables: InboxReplica): void {
   const previousPrs = new Map<string, PrRow | null>();
   for (const row of tables.prs) {
@@ -281,6 +287,7 @@ async function syncReplica(): Promise<void> {
       invalidateInbox();
       if (snapshot.lastPollAt) publishPollCompleted(snapshot.lastPollAt);
     } catch (error) {
+      dropTunnel();
       state = { ...state, connected: false, lastError: error instanceof Error ? error.message : String(error) };
       console.error(`replica sync failed for ${replicaSshHost()}:`, error);
     }
@@ -420,6 +427,7 @@ export async function proxyReplicaRequest(request: Request, url: URL): Promise<R
     if (upstream.ok && request.method !== "GET" && request.method !== "HEAD") void syncReplica();
     return response;
   } catch (error) {
+    dropTunnel();
     state = { ...state, connected: false, lastError: error instanceof Error ? error.message : String(error) };
     return Response.json({ error: `PR Cockpit source ${replicaSshHost()} is unavailable` }, { status: 503 });
   }
