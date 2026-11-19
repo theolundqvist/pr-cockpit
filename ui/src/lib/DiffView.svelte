@@ -2181,12 +2181,12 @@
           <Chevron direction={isCollapsed ? "right" : "down"} />
           {#if file.previousPath}
             <span class="rename-paths">
-              <span class="file-path" title={file.previousPath}>{file.previousPath}</span>
+              <span class="file-path" title={file.previousPath}><bdi>{file.previousPath}</bdi></span>
               <span class="rename-arrow" aria-hidden="true">→</span>
-              <span class="file-path" title={file.path}>{file.path}</span>
+              <span class="file-path" title={file.path}><bdi>{file.path}</bdi></span>
             </span>
           {:else}
-            <span class="file-path">{file.path}</span>
+            <span class="file-path" title={file.path}><bdi>{file.path}</bdi></span>
           {/if}
           <span
             class="path-copy"
@@ -2551,6 +2551,8 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    direction: rtl;
+    text-align: left;
   }
   .path-copy {
     flex: none;
